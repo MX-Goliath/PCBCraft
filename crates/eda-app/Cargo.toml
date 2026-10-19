@@ -1,0 +1,23 @@
+[package]
+name = "eda-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "pcbcraft"
+path = "src/main.rs"
+
+[dependencies]
+eda-core.workspace = true
+eda-geom.workspace = true
+eda-io.workspace = true
+eda-render.workspace = true
+egui.workspace = true
+eframe.workspace = true
+wgpu.workspace = true
+serde.workspace = true
+uuid.workspace = true
+rfd = "0.15.4"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

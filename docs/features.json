@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "features": [
+    {"id":"shell.layout","source":"interface/altium-observations.md","state":"implemented","checks":"Windows: main window, new PCB/SCH, tabs, Home, hide/restore Properties; resize not confirmed","differences":"Messages at bottom; no full docking/autohide"},
+    {"id":"shell.documents","source":"interface/altium-observations.md","state":"implemented","checks":"Windows: main window, new PCB/SCH, tabs, Home, hide/restore Properties; resize not confirmed","differences":"Own documents; no project file model"},
+    {"id":"canvas.camera","source":"own specification","state":"implemented","checks":"camera roundtrip and zoom anchor test","differences":"Painter primitives; no culling cache"},
+    {"id":"canvas.pad_properties","source":"own specification; Altium selection properties not yet observed","state":"implemented","checks":"PASS: atomic history test; GUI X 10 -> 12 mm, undo/redo, save/reopen","differences":"Only rectangular pads; no electrical model"},
+    {"id":"io.pcbcraft_json_v1","source":"decisions/0001-shell-and-coordinates.md","state":"implemented","checks":"PASS: roundtrip/overwrite/reject-invalid test and Windows save/reopen","differences":"No native Altium reader/writer"},
+    {"id":"shell.preferences","source":"own specification","state":"implemented","checks":"Settings file written on normal exit; changed preferences restart still unverified","differences":"Units/grid/panel visibility only"},
+    {"id":"shell.docking","source":"original agent plan section 7","state":"specified","checks":null,"differences":"Only resize/hide implemented"},
+    {"id":"altium.native_io","source":"original agent plan section 5","state":"unsupported","checks":null,"dependencies":["native fixtures","precision ADR"]},
+    {"id":"engineering.routing_erc_drc","source":"original agent plan sections 10-16","state":"specified","checks":null,"dependencies":["connectivity","rules","geometry"]}
+  ]
+}

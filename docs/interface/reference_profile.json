@@ -1,0 +1,14 @@
+{
+  "observed_on": "2026-10-19",
+  "application": "Altium Designer Enterprise",
+  "version": "24.4.1",
+  "project": "ReferenceB.PrjPcb",
+  "language": "English",
+  "theme": "dark",
+  "capture_logical_size": [1707, 1027],
+  "dpi": null,
+  "extensions": null,
+  "observed_editors": ["Home", "PCB"],
+  "evidence": "Live UI observations in this chat; see altium-observations.md",
+  "status": "partial_observation"
+}

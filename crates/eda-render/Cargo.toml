@@ -1,0 +1,12 @@
+[package]
+name = "eda-render"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+eda-core.workspace = true
+eda-geom.workspace = true
+egui.workspace = true
+serde.workspace = true
+uuid.workspace = true

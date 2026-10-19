@@ -1,0 +1,10 @@
+[package]
+name = "eda-io"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+eda-core.workspace = true
+serde_json.workspace = true
+tempfile = "3.23"
