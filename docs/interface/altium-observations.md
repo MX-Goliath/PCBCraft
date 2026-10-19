@@ -51,3 +51,15 @@ y194, Snap Options y356, Board Information y827. Это ориентиры, сч
 
 Установленная тема DevExpress содержит имя Segoe UI. Windows-версия PCBCraft
 читает системный Segoe UI и Semibold; метрики WPF и egui отдельно не измерены.
+
+## Schematic: наблюдение 19 октября 2026
+
+Altium Designer Enterprise 24.4.1, ReferenceB.PrjPcb/ReferenceB.SchDoc.
+Меню File/Edit/View/Project/Place/Design/Tools/Simulate/Reports/Window/Help;
+Active Bar над листом; снизу Editor и вкладка документа. Properties без
+выделения: Document Options, General/Parameters, Selection Filter, General,
+Page Options, Margin and Zones. Видимая сетка 1 mm, snap grid 2.5 mm,
+документный шрифт Altium GOST Type A 10, Landscape, A4 292.1×193.04 mm.
+Числа сопоставлены с записями файла. Они не означают проверки всех вариантов
+настроек редактора. Собственный minimal.SchDoc открыт в эталоне и показал
+основные объекты; пользовательский исходник не сохранялся поверх оригинала.

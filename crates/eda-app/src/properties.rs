@@ -4,7 +4,7 @@ use egui::{Align2, FontFamily, FontId, Sense, Stroke, Vec2};
 
 #[derive(Default)]
 pub(super) struct PropertiesUi {
-    search: String,
+    pub(super) search: String,
     parameters: bool,
     pub focused: bool,
 }
@@ -145,6 +145,10 @@ impl PcbCraft {
             ui.label("No document selected");
             return;
         };
+        if self.documents[index].model.kind == DocumentKind::Schematic {
+            self.schematic_properties(ui, index);
+            return;
+        }
         let pad = self.documents[index]
             .view
             .selected

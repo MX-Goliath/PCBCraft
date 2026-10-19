@@ -376,6 +376,56 @@ fn install_fonts(ctx: &egui::Context) {
         egui::FontFamily::Name("ui-bold".into()),
         vec!["ui-bold".into(), "ui".into()],
     );
+    // Document fonts are separate from UI typography. Read installed/user fonts;
+    // proprietary Windows/Altium faces are never bundled with the application.
+    for (family, faces) in [
+        (
+            "sch-serif",
+            ["times.ttf", "timesbd.ttf", "timesi.ttf", "timesbi.ttf"],
+        ),
+        (
+            "sch-sans",
+            ["arial.ttf", "arialbd.ttf", "ariali.ttf", "arialbi.ttf"],
+        ),
+        (
+            "sch-mono",
+            ["cour.ttf", "courbd.ttf", "couri.ttf", "courbi.ttf"],
+        ),
+        (
+            "sch-gost",
+            ["GOST_AU.ttf", "GOST_AU.ttf", "GOST_AU.ttf", "GOST_AU.ttf"],
+        ),
+    ] {
+        for (i, face) in faces.iter().enumerate() {
+            let key = format!(
+                "{family}{}{}",
+                if i % 2 == 1 { "-bold" } else { "" },
+                if i >= 2 { "-italic" } else { "" }
+            );
+            let user = std::env::var_os("PCBCRAFT_SCHEMATIC_FONT_DIR")
+                .map(|d| std::path::PathBuf::from(d).join(face));
+            #[cfg(windows)]
+            let system = std::env::var_os("WINDIR")
+                .map(|d| std::path::PathBuf::from(d).join("Fonts").join(face));
+            #[cfg(not(windows))]
+            let system: Option<std::path::PathBuf> = None;
+            let data = user
+                .and_then(|p| std::fs::read(p).ok())
+                .or_else(|| system.and_then(|p| std::fs::read(p).ok()));
+            let mut fallbacks = vec![];
+            if let Some(data) = data {
+                fonts.font_data.insert(
+                    key.clone(),
+                    std::sync::Arc::new(egui::FontData::from_owned(data)),
+                );
+                fallbacks.push(key.clone());
+            }
+            fallbacks.push(if i % 2 == 1 { "ui-bold" } else { "ui" }.into());
+            fonts
+                .families
+                .insert(egui::FontFamily::Name(key.into()), fallbacks);
+        }
+    }
     ctx.set_fonts(fonts);
 }
 

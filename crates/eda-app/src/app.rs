@@ -9,11 +9,14 @@ use uuid::Uuid;
 mod chrome;
 #[path = "properties.rs"]
 mod properties;
+#[path = "schematic_properties.rs"]
+mod schematic_properties;
 
 struct OpenDocument {
     session_id: Uuid,
     model: Document,
     path: Option<PathBuf>,
+    source_path: Option<PathBuf>,
     saved: Option<Document>,
     history: History,
     view: View,
@@ -26,6 +29,7 @@ impl OpenDocument {
             session_id: Uuid::new_v4(),
             model,
             path,
+            source_path: None,
             saved,
             history: History::default(),
             view: View::default(),
@@ -69,6 +73,7 @@ enum Command {
     NewBoard,
     NewSchematic,
     Open,
+    OpenProject,
     Save,
     SaveAs,
     SaveAll,
@@ -107,6 +112,7 @@ struct PadEdit {
 pub struct PcbCraft {
     file_dialog: rfd::FileDialog,
     documents: Vec<OpenDocument>,
+    projects: Vec<eda_io::altium::Project>,
     active: Option<usize>,
     settings: Settings,
     search: String,
@@ -134,6 +140,7 @@ impl PcbCraft {
         let mut app = Self {
             file_dialog: rfd::FileDialog::new().set_parent(cc),
             documents: vec![],
+            projects: vec![],
             active: None,
             settings,
             search: String::new(),
@@ -150,7 +157,7 @@ impl PcbCraft {
         let mut opened = false;
         if let Some(path) = std::env::args_os().nth(1) {
             app.open_path(path.into());
-            opened = !app.documents.is_empty();
+            opened = !app.documents.is_empty() || !app.projects.is_empty();
         }
         if !opened {
             app.add_document(Document::example(), None);
@@ -177,6 +184,11 @@ impl PcbCraft {
         let mut opened = OpenDocument::new(doc, path);
         opened.view.grid = self.settings.show_grid;
         opened.view.grid_nm = self.settings.grid_nm;
+        if let Some(s) = &opened.model.schematic {
+            opened.view.grid = s.sheet.grid_visible;
+            opened.view.grid_nm = s.sheet.grid_nm;
+            opened.view.snap.distance_nm = s.sheet.snap_nm;
+        }
         self.documents.push(opened);
         self.active = Some(self.documents.len() - 1);
         self.pad_edit = None;
@@ -193,18 +205,100 @@ impl PcbCraft {
         if let Some(index) = self
             .documents
             .iter()
-            .position(|d| d.path.as_ref() == Some(&path))
+            .position(|d| d.path.as_ref() == Some(&path) || d.source_path.as_ref() == Some(&path))
         {
             self.active = Some(index);
             return;
         }
-        match eda_io::load(&path) {
+        let extension = path
+            .extension()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_ascii_lowercase();
+        if extension == "prjpcb" {
+            self.open_project(path);
+            return;
+        }
+        if extension == "pcbdoc" {
+            self.message(
+                true,
+                "PCB import is deferred; open a SchDoc or PrjPcb project",
+            );
+            return;
+        }
+        let native = extension == "schdoc";
+        let loaded = if native {
+            eda_io::altium::load_schematic(&path)
+        } else {
+            eda_io::load(&path)
+        };
+        match loaded {
             Ok(doc) => {
                 self.message(false, format!("Opened {}", path.display()));
                 self.recent(path.clone());
-                self.add_document(doc, Some(path));
+                let warnings = doc
+                    .schematic
+                    .as_ref()
+                    .map(|s| s.warnings.clone())
+                    .unwrap_or_default();
+                if native {
+                    self.add_document(doc, None);
+                    let opened = self.documents.last_mut().unwrap();
+                    opened.source_path = Some(path);
+                    opened.saved = Some(opened.model.clone());
+                } else {
+                    self.add_document(doc, Some(path));
+                }
+                for warning in warnings {
+                    self.message(false, format!("Import warning: {warning}"));
+                }
             }
             Err(error) => self.message(true, format!("Could not open {}: {error}", path.display())),
+        }
+    }
+
+    fn open_project(&mut self, path: PathBuf) {
+        if let Some(project) = self.projects.iter().find(|p| p.path == path) {
+            if let Some(first) = project
+                .documents
+                .iter()
+                .find(|d| d.kind == "schdoc" && d.exists)
+                .map(|d| d.path.clone())
+            {
+                self.open_path(first);
+            }
+            return;
+        }
+        match eda_io::altium::load_project(&path) {
+            Ok(project) => {
+                let first = project
+                    .documents
+                    .iter()
+                    .find(|d| d.kind == "schdoc" && d.exists)
+                    .map(|d| d.path.clone());
+                for warning in &project.warnings {
+                    self.message(false, warning.clone());
+                }
+                self.message(
+                    false,
+                    format!(
+                        "Opened project {}: {} document references",
+                        project.name,
+                        project.documents.len()
+                    ),
+                );
+                self.projects.push(project);
+                self.recent(path);
+                if let Some(first) = first {
+                    self.open_path(first);
+                } else {
+                    self.active = None;
+                }
+            }
+            Err(e) => self.message(
+                true,
+                format!("Could not open project {}: {e}", path.display()),
+            ),
         }
     }
 
@@ -216,7 +310,16 @@ impl PcbCraft {
             self.file_dialog
                 .clone()
                 .add_filter("PCBCraft document", &["json"])
-                .set_file_name(&doc.model.name)
+                .set_file_name(
+                    if doc.model.name.to_ascii_lowercase().ends_with(".schdoc") {
+                        format!(
+                            "{}.pcbcraft.json",
+                            &doc.model.name[..doc.model.name.len() - 7]
+                        )
+                    } else {
+                        doc.model.name.clone()
+                    },
+                )
                 .save_file()
         } else {
             doc.path.clone()
@@ -302,7 +405,19 @@ impl PcbCraft {
                 if let Some(path) = self
                     .file_dialog
                     .clone()
-                    .add_filter("PCBCraft document", &["json"])
+                    .add_filter("Design documents", &["SchDoc", "PrjPcb", "json"])
+                    .add_filter("Altium schematic", &["SchDoc"])
+                    .add_filter("Altium project", &["PrjPcb"])
+                    .pick_file()
+                {
+                    self.open_path(path);
+                }
+            }
+            Command::OpenProject => {
+                if let Some(path) = self
+                    .file_dialog
+                    .clone()
+                    .add_filter("Altium PCB project", &["PrjPcb"])
                     .pick_file()
                 {
                     self.open_path(path);
@@ -352,9 +467,10 @@ impl PcbCraft {
                 self.settings.right_messages = true;
             }
             Command::ToggleGrid => {
-                self.settings.show_grid = !self.settings.show_grid;
-                for doc in &mut self.documents {
-                    doc.view.grid = self.settings.show_grid;
+                if let Some(index) = self.active {
+                    let view = &mut self.documents[index].view;
+                    view.grid = !view.grid;
+                    self.settings.show_grid = view.grid;
                 }
             }
             Command::ToggleUnits => {
@@ -419,7 +535,7 @@ impl PcbCraft {
                         self.action(ui, "Open…", "Ctrl+O", Command::Open, true);
                         self.action(ui, "Close", "Ctrl+F4", Command::Close, has_doc);
                         ui.separator();
-                        ui.add_enabled(false, egui::Button::new("Open Project…"));
+                        self.action(ui, "Open Project…", "", Command::OpenProject, true);
                         ui.add_enabled(false, egui::Button::new("Open Project Group…"));
                         ui.separator();
                         self.action(ui, "Save", "Ctrl+S", Command::Save, has_doc);
@@ -510,7 +626,16 @@ impl PcbCraft {
                     });
                     // The names mirror the observed editor. Unsupported tools are visibly disabled.
                     if has_doc {
-                        for label in ["Place", "Design", "Tools", "Route", "Reports"] {
+                        let schematic = self.active.is_some_and(|i| {
+                            self.documents[i].model.kind == DocumentKind::Schematic
+                        });
+                        for label in [
+                            "Place",
+                            "Design",
+                            "Tools",
+                            if schematic { "Simulate" } else { "Route" },
+                            "Reports",
+                        ] {
                             ui.menu_button(label, |ui| {
                                 ui.add_enabled(
                                     false,
@@ -560,6 +685,7 @@ impl PcbCraft {
     }
 
     fn projects(&mut self, ctx: &egui::Context) {
+        let mut open_path = None;
         egui::SidePanel::left("projects_altium_v2")
             .default_width(330.0)
             .width_range(190.0..=500.0)
@@ -585,7 +711,7 @@ impl PcbCraft {
                         (theme::Icon::Save, "Save document", Some(Command::Save)),
                         (theme::Icon::SaveAll, "Save All", Some(Command::SaveAll)),
                         (theme::Icon::Open, "Open document", Some(Command::Open)),
-                        (theme::Icon::Folder, "Open project (not supported)", None),
+                        (theme::Icon::Folder, "Open project", Some(Command::OpenProject)),
                         (
                             theme::Icon::Settings,
                             "Preferences",
@@ -619,6 +745,21 @@ impl PcbCraft {
                     egui::CollapsingHeader::new(RichText::new("Project Group 1").strong())
                         .default_open(true)
                         .show(ui, |ui| {
+                            for project in &self.projects {
+                                egui::CollapsingHeader::new(RichText::new(&project.name).strong()).id_salt(&project.path).default_open(true).show(ui,|ui|{
+                                    egui::CollapsingHeader::new("Source Documents").id_salt((&project.path,"sources")).default_open(true).show(ui,|ui|{
+                                        for entry in &project.documents {
+                                            let filename=entry.path.file_name().unwrap_or_default().to_string_lossy();
+                                            if !filename.to_lowercase().contains(&self.search.to_lowercase()){continue;}
+                                            let selected=self.active.is_some_and(|i|self.documents[i].source_path.as_ref()==Some(&entry.path));
+                                            let label=format!("{} {}{}",if entry.kind=="schdoc"{"SCH"}else if entry.kind=="pcbdoc"{"PCB"}else{"LIB"},filename,if entry.exists{""}else{" (missing)"});
+                                            let response=ui.add_enabled(entry.exists&&entry.kind=="schdoc",egui::Button::new(label).frame(selected).selected(selected));
+                                            if response.clicked(){open_path=Some(entry.path.clone());}
+                                            response.on_disabled_hover_text(if !entry.exists{"Referenced file was not found"}else{"This document type is deferred; schematic import is available"});
+                                        }
+                                    });
+                                });
+                            }
                             let folder_header = |ui: &mut egui::Ui, label: &str| {
                                 let (rect, _) = ui.allocate_exact_size(
                                     egui::vec2(18.0, 18.0),
@@ -643,6 +784,7 @@ impl PcbCraft {
                                 .body(|ui| {
                                     let query = self.search.to_lowercase();
                                     for (index, doc) in self.documents.iter().enumerate() {
+                                        if doc.source_path.as_ref().is_some_and(|path|self.projects.iter().any(|p|p.documents.iter().any(|d|&d.path==path))){continue;}
                                         if !doc.model.name.to_lowercase().contains(&query) {
                                             continue;
                                         }
@@ -670,6 +812,9 @@ impl PcbCraft {
                         });
                 });
             });
+        if let Some(path) = open_path {
+            self.open_path(path);
+        }
     }
 
     fn status(&mut self, ctx: &egui::Context) {
@@ -695,9 +840,15 @@ impl PcbCraft {
                         self.command = Some(Command::ToggleUnits);
                     }
                     ui.label(
-                        RichText::new(format!("Grid: {} mm", self.settings.grid_nm as f64 / 1e6))
-                            .small()
-                            .color(MUTED),
+                        RichText::new(format!(
+                            "Grid: {:.3} mm",
+                            self.active
+                                .map_or(self.settings.grid_nm, |i| self.documents[i].view.grid_nm)
+                                as f64
+                                / 1e6
+                        ))
+                        .small()
+                        .color(MUTED),
                     );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.menu_button("Panels", |ui| {
@@ -984,8 +1135,8 @@ impl PcbCraft {
                     ui.label("Independent EDA application written in Rust.");
                     ui.label("egui / eframe · wgpu");
                     ui.separator();
-                    ui.label("Current milestone: main window and document foundation.");
-                    ui.label("Routing, ERC/DRC and Altium file import are not implemented.");
+                    ui.label("Current milestone: Altium project and schematic viewing.");
+                    ui.label("Schematic editing, native writing, PCB import and ERC/DRC are not implemented.");
                 });
         }
         if let Some(pending) = self.pending {

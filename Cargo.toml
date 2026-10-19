@@ -11,7 +11,7 @@ license = "MIT OR Apache-2.0"
 [workspace.dependencies]
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-uuid = { version = "1.18", features = ["v4", "serde"] }
+uuid = { version = "1.18", features = ["v4", "v5", "serde"] }
 egui = { version = "=0.32.3", features = ["serde"] }
 eframe = { version = "=0.32.3", default-features = false, features = ["default_fonts", "wgpu", "persistence", "accesskit", "x11", "wayland"] }
 wgpu = { version = "=25.0.2", default-features = false, features = ["dx12", "vulkan", "metal", "gles", "wgsl"] }

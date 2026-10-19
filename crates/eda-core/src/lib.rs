@@ -1,4 +1,5 @@
-//! GUI-independent document model and history. No native Altium reader exists yet.
+//! GUI-independent document model and history.
+pub mod schematic;
 use eda_geom::Point;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -81,6 +82,8 @@ pub struct Document {
     pub size: Point,
     pub pads: Vec<Pad>,
     pub tracks: Vec<Track>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schematic: Option<schematic::Schematic>,
 }
 
 impl Document {
@@ -96,6 +99,7 @@ impl Document {
             },
             pads: vec![],
             tracks: vec![],
+            schematic: None,
         }
     }
 
@@ -148,6 +152,12 @@ impl Document {
             return Err("Invalid document dimensions".into());
         }
         let mut ids = std::collections::HashSet::new();
+        if let Some(schematic) = &self.schematic {
+            if self.kind != DocumentKind::Schematic {
+                return Err("Schematic data requires a schematic document".into());
+            }
+            schematic.validate()?;
+        }
         for pad in &self.pads {
             if !ids.insert(pad.id)
                 || pad.name.trim().is_empty()

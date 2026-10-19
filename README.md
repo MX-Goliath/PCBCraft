@@ -1,7 +1,7 @@
 # PCBCraft
 
 Самостоятельная EDA на Rust с интерфейсом, исследуемым по Altium Designer.
-Первая итерация: главное окно, собственные документы и небольшой PCB canvas.
+Текущий этап: просмотр проектов и схем Altium, собственные документы и PCB canvas.
 
 ## Запуск
 
@@ -10,6 +10,7 @@ Rust 1.90.0, Windows (обычно MSVC + Windows SDK) или Linux.
 ```powershell
 cargo run -p eda-app
 cargo run -p eda-app -- fixtures/controller.pcbcraft.json
+cargo run -p eda-app -- fixtures/schematic/minimal.PrjPcb
 ```
 
 В текущем рабочем каталоге также подготовлен локальный GNU toolchain
@@ -54,10 +55,17 @@ Windows-скрипт `scripts/dev.ps1` для Linux не нужен. CI наст
 - Защита несохранённых изменений при закрытии вкладки или окна.
 - Preferences: единицы, сетка; G — сетка, Q — единицы.
 
-Схема пока отображается как пустой лист; её электрического редактора нет.
-Полный docking, native Altium IO, routing, ERC/DRC, библиотеки и выпуск
+Открываются `.PrjPcb` и `.SchDoc` (CFB Binary / ASCII Version 5.0): дерево
+файлов проекта, символы, выводы, провода, текст, параметры, встроенные изображения,
+выбор компонентов/объектов и Properties. Файлы схем загружаются по выбору из дерева.
+Подробные границы совместимости: [импорт Altium](docs/altium-import.md).
+Редактирование схем, native-запись, PCB import, полный docking, routing, ERC/DRC, библиотеки и выпуск
 производственных файлов запланированы. Неактивные инженерные меню
 не выполняют операции. Altium не нужен для запуска PCBCraft.
+
+Save / Save As импортированной схемы создаёт собственный `.pcbcraft.json`,
+сохраняя исходный SchDoc целиком; запись JSON поверх native-файла запрещена.
+Для проверки импорта без GUI: `cargo run -p eda-io --example altium_inspect -- path/to/file.SchDoc`.
 
 ## Проверки и план
 
@@ -82,3 +90,6 @@ cargo test --workspace
 Интерфейс использует установленный Segoe UI на Windows и встроенный Selawik
 на Linux. Пути к своим шрифтам можно задать через `PCBCRAFT_UI_FONT` и
 `PCBCRAFT_UI_FONT_SEMIBOLD`. Лицензия и происхождение — [assets/fonts](assets/fonts/README.md).
+Шрифты схем отделены от интерфейса: Times/Arial/Courier/GOST читаются из
+установленных шрифтов Windows либо каталога `PCBCRAFT_SCHEMATIC_FONT_DIR`.
+На Linux без этих файлов применяется свободный fallback; метрики могут отличаться.

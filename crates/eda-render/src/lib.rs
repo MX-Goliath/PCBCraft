@@ -4,6 +4,7 @@ use eda_geom::Point;
 use egui::{Color32, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+mod schematic;
 
 pub fn layer_color(layer: Layer) -> Color32 {
     match layer {
@@ -36,8 +37,13 @@ impl Camera {
         let width = doc.size.x as f64 / 1e6;
         let height = doc.size.y as f64 / 1e6;
         self.centre_mm = [width / 2.0, height / 2.0];
-        self.pixels_per_mm = ((rect.width() as f64 - 120.0) / width)
-            .min((rect.height() as f64 - 120.0) / height)
+        let padding = if doc.kind == DocumentKind::Schematic {
+            40.0
+        } else {
+            120.0
+        };
+        self.pixels_per_mm = ((rect.width() as f64 - padding) / width)
+            .min((rect.height() as f64 - padding) / height)
             .clamp(0.05, 500.0);
         self.fitted = true;
     }
@@ -79,6 +85,10 @@ pub struct View {
     pub select_pads: bool,
     pub show_axes: bool,
     pub snap: SnapOptions,
+    pub sch_select_components: bool,
+    pub sch_select_wires: bool,
+    pub sch_select_text: bool,
+    pub sch_select_graphics: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -125,6 +135,10 @@ impl Default for View {
             select_pads: true,
             show_axes: true,
             snap: SnapOptions::default(),
+            sch_select_components: true,
+            sch_select_wires: true,
+            sch_select_text: true,
+            sch_select_graphics: true,
         }
     }
 }
@@ -230,6 +244,9 @@ pub fn canvas(ui: &mut egui::Ui, doc: &Document, view: &mut View) -> CanvasOutpu
     }
     if response.double_clicked() {
         view.camera.fit(doc, rect);
+    }
+    if doc.kind == DocumentKind::Schematic {
+        return schematic::paint(ui, doc, view, rect, &response);
     }
     let top_left = view.camera.screen(
         Point {

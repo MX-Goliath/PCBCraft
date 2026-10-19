@@ -2,6 +2,7 @@ param(
     [ValidateSet('run','build','test','check','fmt','clippy')]
     [string]$Task = 'run',
     [switch]$Release,
+    [string]$Package = 'eda-app',
     [Parameter(ValueFromRemainingArguments=$true)]
     [string[]]$ExtraArgs
 )
@@ -37,7 +38,7 @@ try {
         }
     }
     $taskArguments = @($Task)
-    if ($Task -in @('run','build')) { $taskArguments += @('-p','eda-app') }
+    if ($Task -in @('run','build')) { $taskArguments += @('-p',$Package) }
     if ($Task -in @('test','check','clippy')) { $taskArguments += '--workspace' }
     if ($Release -and $Task -in @('run','build','test')) { $taskArguments += '--release' }
     if ($ExtraArgs) {

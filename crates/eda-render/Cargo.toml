@@ -5,6 +5,9 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+base64 = "0.22"
+earcutr = "0.5"
+image = { version = "0.25", default-features = false, features = ["png","jpeg","bmp","gif","tiff","ico"] }
 eda-core.workspace = true
 eda-geom.workspace = true
 egui.workspace = true

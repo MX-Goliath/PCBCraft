@@ -6,3 +6,4 @@
 *.json text eol=lf
 *.yml text eol=lf
 *.ps1 text eol=lf
+fixtures/schematic/*.SchDoc text eol=crlf
