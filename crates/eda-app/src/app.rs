@@ -5,6 +5,10 @@ use egui::{Color32, Key, RichText};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use uuid::Uuid;
+#[path = "chrome.rs"]
+mod chrome;
+#[path = "properties.rs"]
+mod properties;
 
 struct OpenDocument {
     session_id: Uuid,
@@ -97,6 +101,7 @@ struct PadEdit {
     y: f64,
     width: f64,
     height: f64,
+    layer: Layer,
 }
 
 pub struct PcbCraft {
@@ -113,6 +118,7 @@ pub struct PcbCraft {
     allow_exit: bool,
     cursor_mm: Option<[f64; 2]>,
     pad_edit: Option<PadEdit>,
+    property_ui: properties::PropertiesUi,
 }
 
 impl PcbCraft {
@@ -139,6 +145,7 @@ impl PcbCraft {
             allow_exit: false,
             cursor_mm: None,
             pad_edit: None,
+            property_ui: properties::PropertiesUi::default(),
         };
         let mut opened = false;
         if let Some(path) = std::env::args_os().nth(1) {
@@ -395,7 +402,7 @@ impl PcbCraft {
             .active
             .is_some_and(|i| self.documents[i].history.can_redo());
         egui::TopBottomPanel::top("menu")
-            .exact_height(23.0)
+            .exact_height(29.0)
             .show(ctx, |ui| {
                 egui::MenuBar::new().ui(ui, |ui| {
                     ui.menu_button("File", |ui| {
@@ -488,6 +495,15 @@ impl PcbCraft {
                         ui.separator();
                         self.action(ui, "Toggle Grid", "G", Command::ToggleGrid, has_doc);
                         self.action(ui, "Toggle Units", "Q", Command::ToggleUnits, true);
+                        if let Some(index) = self.active {
+                            ui.menu_button("Layers", |ui| {
+                                for layer in Layer::ALL {
+                                    let visible = &mut self.documents[index].view.visible
+                                        [eda_render::layer_index(layer)];
+                                    ui.checkbox(visible, layer.label());
+                                }
+                            });
+                        }
                     });
                     ui.menu_button("Project", |ui| {
                         ui.add_enabled(false, egui::Button::new("Project Options…"));
@@ -530,13 +546,11 @@ impl PcbCraft {
                     });
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.label(RichText::new("Not Connected").small().color(MUTED));
-                        for (label, command) in [
-                            ("Home", Command::Home),
-                            ("Preferences", Command::Preferences),
-                            ("Save", Command::Save),
-                            ("Open", Command::Open),
+                        for (icon, command) in [
+                            (theme::Icon::Home, Command::Home),
+                            (theme::Icon::Settings, Command::Preferences),
                         ] {
-                            if ui.small_button(label).clicked() {
+                            if theme::icon_button(ui, icon, false, true).clicked() {
                                 self.command = Some(command);
                             }
                         }
@@ -552,36 +566,46 @@ impl PcbCraft {
             .resizable(true)
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
-                    ui.strong("Projects");
+                    ui.label("Projects");
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui
-                            .small_button("×")
+                        if theme::icon_button(ui, theme::Icon::Close, false, true)
                             .on_hover_text("Hide Projects")
                             .clicked()
                         {
                             self.command = Some(Command::ToggleProjects);
                         }
+                        theme::icon_button(ui, theme::Icon::Pin, false, false);
                     });
                 });
                 ui.separator();
                 ui.horizontal(|ui| {
-                    for (label, command) in [
-                        ("New", Command::NewBoard),
-                        ("Open", Command::Open),
-                        ("Save", Command::Save),
-                        ("Preferences", Command::Preferences),
+                    ui.spacing_mut().item_spacing.x = 9.0;
+                    ui.add_space(7.0);
+                    for (icon, label, command) in [
+                        (theme::Icon::Save, "Save document", Some(Command::Save)),
+                        (theme::Icon::SaveAll, "Save All", Some(Command::SaveAll)),
+                        (theme::Icon::Open, "Open document", Some(Command::Open)),
+                        (theme::Icon::Folder, "Open project (not supported)", None),
+                        (
+                            theme::Icon::Settings,
+                            "Preferences",
+                            Some(Command::Preferences),
+                        ),
                     ] {
-                        if ui.small_button(label).clicked() {
-                            self.command = Some(command);
+                        if theme::icon_button(ui, icon, false, command.is_some())
+                            .on_hover_text(label)
+                            .clicked()
+                        {
+                            self.command = command;
                         }
                     }
                 });
-                ui.add_space(5.0);
-                ui.add_sized(
-                    [ui.available_width(), 21.0],
-                    egui::TextEdit::singleline(&mut self.search).hint_text("Search"),
-                );
-                ui.add_space(7.0);
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    ui.add_space(10.0);
+                    theme::search_field(ui, &mut self.search, ui.available_width() - 8.0);
+                });
+                ui.add_space(13.0);
                 egui::TopBottomPanel::bottom("project_panel_tabs")
                     .exact_height(21.0)
                     .show_inside(ui, |ui| {
@@ -595,192 +619,57 @@ impl PcbCraft {
                     egui::CollapsingHeader::new(RichText::new("Project Group 1").strong())
                         .default_open(true)
                         .show(ui, |ui| {
-                            egui::CollapsingHeader::new("Free Documents")
-                                .default_open(true)
-                                .show(ui, |ui| {
-                                    egui::CollapsingHeader::new("Source Documents")
-                                        .default_open(true)
-                                        .show(ui, |ui| {
-                                            let query = self.search.to_lowercase();
-                                            for (index, doc) in self.documents.iter().enumerate() {
-                                                if !doc.model.name.to_lowercase().contains(&query) {
-                                                    continue;
-                                                }
-                                                ui.horizontal(|ui| {
-                                                    theme::logo(ui);
-                                                    let title = format!(
-                                                        "{}{}",
-                                                        doc.model.name,
-                                                        if doc.dirty() { " *" } else { "" }
-                                                    );
-                                                    if ui
-                                                        .selectable_label(
-                                                            self.active == Some(index),
-                                                            title,
-                                                        )
-                                                        .clicked()
-                                                    {
-                                                        self.active = Some(index);
-                                                        self.pad_edit = None;
-                                                    }
-                                                });
-                                            }
-                                            if self.documents.is_empty() {
-                                                ui.label(
-                                                    RichText::new("No documents open").color(MUTED),
-                                                );
+                            let folder_header = |ui: &mut egui::Ui, label: &str| {
+                                let (rect, _) = ui.allocate_exact_size(
+                                    egui::vec2(18.0, 18.0),
+                                    egui::Sense::hover(),
+                                );
+                                theme::draw_icon(ui.painter(), rect, theme::Icon::Folder, true);
+                                ui.label(label);
+                            };
+                            egui::collapsing_header::CollapsingState::load_with_default_open(
+                                ui.ctx(),
+                                ui.make_persistent_id("free_documents"),
+                                true,
+                            )
+                            .show_header(ui, |ui| folder_header(ui, "Free Documents"))
+                            .body(|ui| {
+                                egui::collapsing_header::CollapsingState::load_with_default_open(
+                                    ui.ctx(),
+                                    ui.make_persistent_id("source_documents"),
+                                    true,
+                                )
+                                .show_header(ui, |ui| folder_header(ui, "Source Documents"))
+                                .body(|ui| {
+                                    let query = self.search.to_lowercase();
+                                    for (index, doc) in self.documents.iter().enumerate() {
+                                        if !doc.model.name.to_lowercase().contains(&query) {
+                                            continue;
+                                        }
+                                        ui.horizontal(|ui| {
+                                            theme::logo(ui);
+                                            let title = format!(
+                                                "{}{}",
+                                                doc.model.name,
+                                                if doc.dirty() { " *" } else { "" }
+                                            );
+                                            if ui
+                                                .selectable_label(self.active == Some(index), title)
+                                                .clicked()
+                                            {
+                                                self.active = Some(index);
+                                                self.pad_edit = None;
                                             }
                                         });
+                                    }
+                                    if self.documents.is_empty() {
+                                        ui.label(RichText::new("No documents open").color(MUTED));
+                                    }
                                 });
+                            });
                         });
                 });
             });
-    }
-
-    fn properties(&mut self, ui: &mut egui::Ui) {
-        let Some(index) = self.active else {
-            ui.label("Select a document to view its properties.");
-            return;
-        };
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            let doc = &self.documents[index];
-            let selected = doc
-                .view
-                .selected
-                .and_then(|id| doc.model.pads.iter().find(|p| p.id == id))
-                .cloned();
-            if let Some(pad) = selected {
-                theme::heading(ui, "Pad", &pad.name);
-                if self.pad_edit.as_ref().is_none_or(|e| e.id != pad.id) {
-                    self.pad_edit = Some(PadEdit {
-                        id: pad.id,
-                        name: pad.name.clone(),
-                        x: pad.position.x as f64 / 1e6,
-                        y: pad.position.y as f64 / 1e6,
-                        width: pad.size.x as f64 / 1e6,
-                        height: pad.size.y as f64 / 1e6,
-                    });
-                }
-                let edit = self.pad_edit.as_mut().unwrap();
-                ui.label("Designator");
-                ui.text_edit_singleline(&mut edit.name);
-                ui.add_space(8.0);
-                egui::Grid::new("pad_values")
-                    .num_columns(2)
-                    .spacing([12.0, 10.0])
-                    .show(ui, |ui| {
-                        for (label, value) in [
-                            ("X (mm)", &mut edit.x),
-                            ("Y (mm)", &mut edit.y),
-                            ("Width (mm)", &mut edit.width),
-                            ("Height (mm)", &mut edit.height),
-                        ] {
-                            ui.label(label);
-                            ui.add(egui::DragValue::new(value).speed(0.1).max_decimals(6));
-                            ui.end_row();
-                        }
-                    });
-                ui.add_space(10.0);
-                if ui.button("Apply Pad Properties").clicked() {
-                    if ![edit.x, edit.y, edit.width, edit.height]
-                        .iter()
-                        .all(|v| v.is_finite())
-                    {
-                        self.message(true, "Pad properties must contain finite numbers");
-                        return;
-                    }
-                    let mut next = self.documents[index].model.clone();
-                    if let Some(pad) = next.pads.iter_mut().find(|p| p.id == edit.id) {
-                        pad.name = edit.name.clone();
-                        pad.position = eda_geom::Point {
-                            x: (edit.x * 1e6).round() as i64,
-                            y: (edit.y * 1e6).round() as i64,
-                        };
-                        pad.size = eda_geom::Point {
-                            x: (edit.width * 1e6).round() as i64,
-                            y: (edit.height * 1e6).round() as i64,
-                        };
-                    }
-                    let doc = &mut self.documents[index];
-                    if let Err(error) = doc.history.commit(&mut doc.model, next) {
-                        self.message(true, error);
-                    }
-                }
-                ui.add_space(8.0);
-                ui.label(
-                    RichText::new("One Apply = one undo step")
-                        .small()
-                        .color(MUTED),
-                );
-            } else {
-                self.pad_edit = None;
-                theme::heading(
-                    ui,
-                    if doc.model.kind == DocumentKind::Board {
-                        "Board"
-                    } else {
-                        "Schematic"
-                    },
-                    "Document properties",
-                );
-                ui.label(RichText::new(&doc.model.name).color(ACCENT));
-                ui.add_space(10.0);
-                theme::heading(ui, "Selection", "Click a pad in the workspace");
-                ui.label(RichText::new("Nothing selected").color(MUTED));
-                theme::heading(ui, "Document Information", "");
-                let unit = self.settings.units;
-                egui::Grid::new("doc_info")
-                    .spacing([16.0, 9.0])
-                    .show(ui, |ui| {
-                        for (label, value) in [
-                            (
-                                "Width",
-                                format!(
-                                    "{:.3} {}",
-                                    unit.from_nm(doc.model.size.x as f64),
-                                    unit.label()
-                                ),
-                            ),
-                            (
-                                "Height",
-                                format!(
-                                    "{:.3} {}",
-                                    unit.from_nm(doc.model.size.y as f64),
-                                    unit.label()
-                                ),
-                            ),
-                            ("Pads", doc.model.pads.len().to_string()),
-                            ("Tracks", doc.model.tracks.len().to_string()),
-                            ("Revision", doc.history.revision.to_string()),
-                        ] {
-                            ui.label(RichText::new(label).color(MUTED));
-                            ui.label(value);
-                            ui.end_row();
-                        }
-                    });
-            }
-            ui.add_space(15.0);
-            theme::heading(ui, "View Configuration", "");
-            if self.documents[index].model.kind == DocumentKind::Board {
-                ui.label("Visible layers");
-                for (i, layer) in Layer::ALL.iter().enumerate() {
-                    ui.horizontal(|ui| {
-                        ui.checkbox(
-                            &mut self.documents[index].view.visible[i],
-                            RichText::new("■").color(layer_color(*layer)),
-                        );
-                        ui.label(layer.label());
-                    });
-                }
-            }
-            ui.add_space(12.0);
-            if ui.button("Fit Document").clicked() {
-                self.command = Some(Command::Fit);
-            }
-            if ui.button("Preferences…").clicked() {
-                self.command = Some(Command::Preferences);
-            }
-        });
     }
 
     fn status(&mut self, ctx: &egui::Context) {
@@ -788,9 +677,6 @@ impl PcbCraft {
             .exact_height(23.0)
             .show(ctx, |ui| {
                 ui.horizontal_centered(|ui| {
-                    ui.label(RichText::new("●").color(Color32::from_rgb(124, 180, 146)));
-                    ui.label("Ready");
-                    ui.separator();
                     let u = self.settings.units;
                     let coordinates = self
                         .cursor_mm
@@ -803,7 +689,7 @@ impl PcbCraft {
                             )
                         })
                         .unwrap_or_else(|| format!("X: —    Y: —  {}", u.label()));
-                    ui.label(RichText::new(coordinates).monospace().size(11.0));
+                    ui.label(RichText::new(coordinates).size(11.0));
                     ui.separator();
                     if ui.small_button(format!("Units: {}", u.label())).clicked() {
                         self.command = Some(Command::ToggleUnits);
@@ -819,13 +705,6 @@ impl PcbCraft {
                             self.action(ui, "Properties", "", Command::ToggleProperties, true);
                             self.action(ui, "Messages", "", Command::ToggleMessages, true);
                         });
-                        if ui
-                            .selectable_label(self.settings.messages, "Messages")
-                            .clicked()
-                        {
-                            self.command = Some(Command::ToggleMessages);
-                        }
-                        ui.label(RichText::new("2D Layout").small().color(MUTED));
                     });
                 });
             });
@@ -837,21 +716,38 @@ impl PcbCraft {
             .width_range(230.0..=500.0)
             .resizable(true)
             .show(ctx, |ui| {
+                if let Some(position) = ctx.input(|i| i.pointer.press_origin()) {
+                    self.property_ui.focused = ui.max_rect().contains(position);
+                }
                 let messages = self.settings.messages
                     && (self.settings.right_messages || !self.settings.properties);
-                ui.horizontal(|ui| {
-                    ui.strong(if messages { "Messages" } else { "Properties" });
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.small_button("×").clicked() {
-                            self.command = Some(if messages {
-                                Command::ToggleMessages
-                            } else {
-                                Command::ToggleProperties
-                            });
-                        }
+                egui::Frame::NONE
+                    .fill(if self.property_ui.focused {
+                        Color32::from_rgb(57, 91, 112)
+                    } else {
+                        Color32::from_gray(66)
+                    })
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(if messages { "Messages" } else { "Properties" });
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if theme::icon_button(ui, theme::Icon::Close, false, true)
+                                        .clicked()
+                                    {
+                                        self.command = Some(if messages {
+                                            Command::ToggleMessages
+                                        } else {
+                                            Command::ToggleProperties
+                                        });
+                                    }
+                                    theme::icon_button(ui, theme::Icon::Pin, false, false);
+                                },
+                            );
+                        });
                     });
-                });
-                ui.separator();
+                ui.add_space(4.0);
                 egui::TopBottomPanel::bottom("right_dock_tabs")
                     .exact_height(21.0)
                     .show_inside(ui, |ui| {
@@ -895,7 +791,11 @@ impl PcbCraft {
 
     fn workspace(&mut self, ctx: &egui::Context) {
         egui::CentralPanel::default()
-            .frame(egui::Frame::NONE.fill(Color32::from_rgb(109, 106, 105)))
+            .frame(
+                egui::Frame::NONE
+                    .fill(Color32::from_rgb(109, 106, 105))
+                    .inner_margin(egui::Margin::symmetric(5, 0)),
+            )
             .show(ctx, |ui| {
                 let mut close = None;
                 egui::Frame::NONE
@@ -945,29 +845,6 @@ impl PcbCraft {
                     self.request_close(id);
                 }
                 if let Some(index) = self.active {
-                    ui.horizontal(|ui| {
-                        ui.add_space(((ui.available_width() - 260.0) / 2.0).max(0.0));
-                        egui::Frame::NONE
-                            .fill(theme::PANEL)
-                            .inner_margin(3)
-                            .show(ui, |ui| {
-                                ui.horizontal(|ui| {
-                                    ui.selectable_label(true, "↖").on_hover_text("Select");
-                                    if ui.small_button("Fit").clicked() {
-                                        self.command = Some(Command::Fit);
-                                    }
-                                    if ui
-                                        .selectable_label(self.settings.show_grid, "Grid")
-                                        .clicked()
-                                    {
-                                        self.command = Some(Command::ToggleGrid);
-                                    }
-                                    for label in ["Track", "Pad", "Via"] {
-                                        ui.add_enabled(false, egui::Button::new(label));
-                                    }
-                                });
-                            });
-                    });
                     if self.documents[index].model.kind == DocumentKind::Board {
                         egui::TopBottomPanel::bottom("layers")
                             .exact_height(22.0)
@@ -992,9 +869,11 @@ impl PcbCraft {
                                 });
                             });
                     }
+                    let canvas = ui.available_rect_before_wrap();
                     let doc = &mut self.documents[index];
                     let output = eda_render::canvas(ui, &doc.model, &mut doc.view);
                     self.cursor_mm = output.cursor_mm;
+                    self.active_bar(ctx, canvas);
                 } else {
                     self.home(ui);
                     self.cursor_mm = None;
@@ -1218,6 +1097,7 @@ impl eframe::App for PcbCraft {
             self.run(Command::Quit, ctx);
         }
         self.shortcuts(ctx);
+        self.title_bar(ctx);
         self.menus(ctx);
         self.status(ctx);
         if self.settings.projects {
@@ -1228,6 +1108,7 @@ impl eframe::App for PcbCraft {
         }
         self.workspace(ctx);
         self.dialogs(ctx);
+        self.resize_edges(ctx);
         if let Some(command) = self.command.take() {
             self.run(command, ctx);
         }

@@ -29,6 +29,12 @@ try {
             & "$taskRoot\.tools\dlltool.exe" -d "$taskRoot\.tools\shlwapi.def" -D shlwapi.dll -l $taskImportLib -m i386:x86-64
             if ($LASTEXITCODE -ne 0) { throw 'Could not prepare the local shlwapi import library' }
         }
+        # Cross-checking Linux does not link a target binary. Host build scripts
+        # still use Windows GCC; Windows-only lld flags must not reach Linux.
+        if ($Task -in @('check','clippy') -and ($ExtraArgs -join ' ') -match 'x86_64-unknown-linux-gnu') {
+            $env:CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER = $taskLinker
+            $env:CARGO_ENCODED_RUSTFLAGS = ''
+        }
     }
     $taskArguments = @($Task)
     if ($Task -in @('run','build')) { $taskArguments += @('-p','eda-app') }

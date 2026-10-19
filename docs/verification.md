@@ -54,3 +54,31 @@ scripts/windows-linker.rs и LLVM dlltool. Этот обход относитс�
 Проверено переключение Messages/Properties в общей правой области.
 Точное совпадение не заявляется; список расхождений — interface/visual-parity.md.
 Открытый до пересборки документ сохранён в .tools/ui-before-layout.json.
+
+## Итерация Properties и общего оформления окна
+
+Успешны Windows build, fmt --check, clippy -D warnings и все 6 тестов.
+Два новых теста проверяют привязки: радиус/границу, выключение, область
+слоёв/видимость, отсутствие мутации документа, проекцию на конечный край pad.
+Те же исходники, включая все test targets, успешно проверены через
+`scripts/dev.ps1 check --locked --all-targets --target x86_64-unknown-linux-gnu`.
+Это cross cargo check, не запуск/линковка Linux. Первый запуск этой команды
+выявил попадание Windows linker flags в cross-check; dev.ps1 исправлен,
+повторный запуск с этим скриптом успешен.
+
+В реальном Windows-окне проверены новые Board/Pad Properties, прокрутка,
+синий заголовок активной правой области, отсутствие Apply и применение X
+по Tab: 10 → 12mm, затем выход из поля и Ctrl+Z возвращает 10mm и геометрию.
+Через View → Layers проверены скрытие и восстановление Top Layer;
+при скрытии его pads/tracks исчезают с canvas.
+Повторно просмотрены итоговые обычное (1440×900) и развёрнутое окна,
+поиск с векторной иконкой, плотная таблица snapping, Pad Stack preview.
+До каждой пересборки открытые примеры сохранены в .tools/ui-before-properties.json,
+.tools/ui-properties-qa.json, .tools/ui-density-qa.json и .tools/ui-padstack-qa.json; файлы проекта Altium
+не менялись. Состояния недоступных инженерных контролов отключены.
+
+Title bar создан общим Rust UI без Win32; maximize двойным щелчком
+и закрытие через системный Alt+F4 проверены. Drag/edge-resize/minimize
+и отдельные кнопки оконных команд требуют дополнительного ручного сценария.
+Linux GUI, DPI, визуальная эквивалентность шрифтов и точное пиксельное
+соответствие остаются непроверенными. См. interface/visual-parity.md.

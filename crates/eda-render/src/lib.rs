@@ -68,6 +68,7 @@ impl Camera {
 }
 
 #[derive(Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct View {
     pub camera: Camera,
     pub grid: bool,
@@ -75,6 +76,41 @@ pub struct View {
     pub visible: [bool; 4],
     pub active_layer: Layer,
     pub selected: Option<Uuid>,
+    pub select_pads: bool,
+    pub show_axes: bool,
+    pub snap: SnapOptions,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SnapMode {
+    AllLayers,
+    #[default]
+    CurrentLayer,
+    Off,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SnapOptions {
+    pub mode: SnapMode,
+    pub track_vertices: bool,
+    pub pad_centres: bool,
+    pub pad_vertices: bool,
+    pub pad_edges: bool,
+    pub distance_nm: i64,
+}
+
+impl Default for SnapOptions {
+    fn default() -> Self {
+        Self {
+            mode: SnapMode::CurrentLayer,
+            track_vertices: true,
+            pad_centres: true,
+            pad_vertices: false,
+            pad_edges: false,
+            distance_nm: 250_000,
+        }
+    }
 }
 
 impl Default for View {
@@ -86,7 +122,83 @@ impl Default for View {
             visible: [true; 4],
             active_layer: Layer::Top,
             selected: None,
+            select_pads: true,
+            show_axes: true,
+            snap: SnapOptions::default(),
         }
+    }
+}
+
+impl View {
+    /// Candidate search reads the actual visible geometry; it never edits document coordinates.
+    pub fn snap_point(&self, doc: &Document, raw: Point) -> Point {
+        if self.snap.mode == SnapMode::Off {
+            return raw;
+        }
+        let mut result = raw;
+        let mut best = self.snap.distance_nm.max(0) as i128;
+        best *= best;
+        let mut consider = |point: Point| {
+            let dx = point.x as i128 - raw.x as i128;
+            let dy = point.y as i128 - raw.y as i128;
+            let distance = dx * dx + dy * dy;
+            if distance <= best {
+                best = distance;
+                result = point;
+            }
+        };
+        let eligible = |layer: Layer| {
+            self.visible[layer_index(layer)]
+                && (self.snap.mode == SnapMode::AllLayers || layer == self.active_layer)
+        };
+        if self.snap.track_vertices {
+            for track in &doc.tracks {
+                if eligible(track.layer) {
+                    consider(track.start);
+                    consider(track.end);
+                }
+            }
+        }
+        for pad in &doc.pads {
+            if !eligible(pad.layer) {
+                continue;
+            }
+            if self.snap.pad_centres {
+                consider(pad.position);
+            }
+            let left = pad.position.x - pad.size.x / 2;
+            let right = pad.position.x + pad.size.x / 2;
+            let bottom = pad.position.y - pad.size.y / 2;
+            let top = pad.position.y + pad.size.y / 2;
+            if self.snap.pad_vertices {
+                for (x, y) in [(left, bottom), (left, top), (right, bottom), (right, top)] {
+                    consider(Point { x, y });
+                }
+            }
+            if self.snap.pad_edges {
+                for point in [
+                    Point {
+                        x: raw.x.clamp(left, right),
+                        y: bottom,
+                    },
+                    Point {
+                        x: raw.x.clamp(left, right),
+                        y: top,
+                    },
+                    Point {
+                        x: left,
+                        y: raw.y.clamp(bottom, top),
+                    },
+                    Point {
+                        x: right,
+                        y: raw.y.clamp(bottom, top),
+                    },
+                ] {
+                    consider(point);
+                }
+            }
+        }
+        result
     }
 }
 
@@ -135,15 +247,10 @@ pub fn canvas(ui: &mut egui::Ui, doc: &Document, view: &mut View) -> CanvasOutpu
     );
     let board = Rect::from_two_pos(top_left, bottom_right);
     painter.rect_filled(
-        board.translate(Vec2::splat(5.0)),
-        2.0,
-        Color32::from_black_alpha(55),
-    );
-    painter.rect_filled(
         board,
         1.0,
         if doc.kind == DocumentKind::Board {
-            Color32::from_rgb(22, 26, 25)
+            Color32::BLACK
         } else {
             Color32::from_rgb(232, 230, 218)
         },
@@ -227,7 +334,7 @@ pub fn canvas(ui: &mut egui::Ui, doc: &Document, view: &mut View) -> CanvasOutpu
                 layer_color(Layer::Overlay),
             );
         }
-        if pointer.is_some_and(|pos| pad_rect.expand(4.0).contains(pos)) {
+        if view.select_pads && pointer.is_some_and(|pos| pad_rect.expand(4.0).contains(pos)) {
             hit = Some(pad.id);
         }
     }
@@ -237,34 +344,38 @@ pub fn canvas(ui: &mut egui::Ui, doc: &Document, view: &mut View) -> CanvasOutpu
     if response.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
     }
-    if view.visible[2] && doc.kind == DocumentKind::Board {
-        painter.text(
-            board.left_top() + Vec2::new(14.0, 14.0),
-            egui::Align2::LEFT_TOP,
-            format!("PCBCraft  /  {}", doc.name),
-            egui::FontId::monospace(12.0),
-            layer_color(Layer::Overlay),
+    let origin = view.camera.screen(Point::default(), rect);
+    if view.show_axes {
+        painter.line_segment(
+            [origin - Vec2::new(8.0, 0.0), origin + Vec2::new(8.0, 0.0)],
+            Stroke::new(1.0, Color32::GRAY),
+        );
+        painter.line_segment(
+            [origin - Vec2::new(0.0, 8.0), origin + Vec2::new(0.0, 8.0)],
+            Stroke::new(1.0, Color32::GRAY),
         );
     }
-    let origin = view.camera.screen(Point::default(), rect);
-    painter.line_segment(
-        [origin - Vec2::new(8.0, 0.0), origin + Vec2::new(8.0, 0.0)],
-        Stroke::new(1.0, Color32::GRAY),
-    );
-    painter.line_segment(
-        [origin - Vec2::new(0.0, 8.0), origin + Vec2::new(0.0, 8.0)],
-        Stroke::new(1.0, Color32::GRAY),
-    );
-    painter.text(
-        rect.left_bottom() + Vec2::new(16.0, -16.0),
-        egui::Align2::LEFT_BOTTOM,
-        "Wheel: zoom   ·   Middle / right drag: pan   ·   Double-click: fit",
-        egui::FontId::proportional(11.0),
-        Color32::from_gray(125),
-    );
-    CanvasOutput {
-        cursor_mm: pointer.map(|p| view.camera.world_mm(p, rect)),
-    }
+    let cursor_mm = pointer.map(|p| {
+        let raw = view.camera.world_mm(p, rect);
+        let snapped = view.snap_point(
+            doc,
+            Point {
+                x: (raw[0] * 1e6).round() as i64,
+                y: (raw[1] * 1e6).round() as i64,
+            },
+        );
+        if (snapped.x as f64 / 1e6 - raw[0]).abs() > 1e-9
+            || (snapped.y as f64 / 1e6 - raw[1]).abs() > 1e-9
+        {
+            painter.circle_stroke(
+                view.camera.screen(snapped, rect),
+                4.0,
+                Stroke::new(1.0, Color32::YELLOW),
+            );
+        }
+        [snapped.x as f64 / 1e6, snapped.y as f64 / 1e6]
+    });
+    CanvasOutput { cursor_mm }
 }
 
 pub fn layer_index(layer: Layer) -> usize {
@@ -274,6 +385,67 @@ pub fn layer_index(layer: Layer) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn snapping_respects_radius_layer_visibility_and_off() {
+        let mut doc = Document::example();
+        doc.tracks.clear();
+        doc.pads.truncate(1);
+        doc.pads[0].layer = Layer::Bottom;
+        let original = doc.clone();
+        let target = doc.pads[0].position;
+        let raw = Point {
+            x: target.x + 100_000,
+            y: target.y,
+        };
+        let mut view = View::default();
+        assert_eq!(view.snap_point(&doc, raw), raw);
+        view.snap.mode = SnapMode::AllLayers;
+        assert_eq!(view.snap_point(&doc, raw), target);
+        view.visible[layer_index(Layer::Bottom)] = false;
+        assert_eq!(view.snap_point(&doc, raw), raw);
+        view.visible[layer_index(Layer::Bottom)] = true;
+        view.snap.distance_nm = 99_999;
+        assert_eq!(view.snap_point(&doc, raw), raw);
+        view.snap.distance_nm = 100_000;
+        assert_eq!(view.snap_point(&doc, raw), target);
+        view.snap.mode = SnapMode::Off;
+        assert_eq!(view.snap_point(&doc, raw), raw);
+        assert_eq!(doc, original);
+    }
+
+    #[test]
+    fn edge_snapping_projects_onto_finite_rectangular_pad_edges() {
+        let mut doc = Document::example();
+        doc.tracks.clear();
+        doc.pads.truncate(1);
+        let pad = &doc.pads[0];
+        let corner = Point {
+            x: pad.position.x + pad.size.x / 2,
+            y: pad.position.y + pad.size.y / 2,
+        };
+        let raw = Point {
+            x: corner.x + 100_000,
+            y: corner.y + 100_000,
+        };
+        let mut view = View::default();
+        view.snap.pad_centres = false;
+        view.snap.track_vertices = false;
+        assert_eq!(view.snap_point(&doc, raw), raw);
+        view.snap.pad_edges = true;
+        assert_eq!(view.snap_point(&doc, raw), corner);
+        let side = Point {
+            x: corner.x + 100_000,
+            y: pad.position.y,
+        };
+        assert_eq!(
+            view.snap_point(&doc, side),
+            Point {
+                x: corner.x,
+                y: side.y
+            }
+        );
+    }
     #[test]
     fn camera_roundtrip_and_zoom_anchor() {
         let rect = Rect::from_min_size(Pos2::new(300.0, 80.0), Vec2::new(900.0, 600.0));

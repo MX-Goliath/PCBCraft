@@ -46,7 +46,10 @@ Windows-скрипт `scripts/dev.ps1` для Linux не нужен. CI наст
 - Изменение размеров и видимости панелей; сохранение раскладки egui.
 - PCB/SCH документы, Home, пример платы, поиск по открытым документам.
 - Zoom колесом, pan средней/правой кнопкой, fit двойным щелчком или Home.
-- Выбор прямоугольных pads; Properties → Apply; Ctrl+Z / Ctrl+Y.
+- Properties: Board/Pad, поиск, сворачиваемые секции и таблица привязок.
+- Выбор прямоугольных pads; правки Properties применяются при завершении ввода;
+  Ctrl+Z / Ctrl+Y.
+- Фильтр выбора pads, оси и привязки к вершинам tracks, центрам/вершинам/краям pads.
 - Open/Save/Save As/Save All собственного JSON v1, recent documents.
 - Защита несохранённых изменений при закрытии вкладки или окна.
 - Preferences: единицы, сетка; G — сетка, Q — единицы.
@@ -70,3 +73,12 @@ cargo test --workspace
 [План](PLAN.md), [архитектура](docs/architecture.md),
 [наблюдения интерфейса](docs/interface/altium-observations.md),
 [реестр функций](docs/features.json), [проверки](docs/verification.md).
+
+Для локальной проверки исходников Linux из подготовленного Windows toolchain:
+`scripts/dev.ps1 check --locked --all-targets --target x86_64-unknown-linux-gnu`.
+Предварительно добавить target через rustup. Это проверка компиляции без
+линковки и запуска Linux-приложения.
+
+Интерфейс использует установленный Segoe UI на Windows и встроенный Selawik
+на Linux. Пути к своим шрифтам можно задать через `PCBCRAFT_UI_FONT` и
+`PCBCRAFT_UI_FONT_SEMIBOLD`. Лицензия и происхождение — [assets/fonts](assets/fonts/README.md).

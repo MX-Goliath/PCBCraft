@@ -39,6 +39,12 @@ Linux и Windows — равноправные целевые платформы.
 файловый слой использует стандартный Rust API и tempfile; платформенные
 диалоги предоставляет rfd. X11/Wayland включены явно. Настройка локального
 GNU linker на Windows ограничена scripts/dev.ps1 и игнорируемым .tools.
+Общая строка заголовка и оконные команды используют egui viewport API;
+Win32 не добавлен в UI-код. Системные шрифты Windows читаются опционально;
+Linux и fallback используют включённые в binary Selawik по OFL.
+Properties вынесена в properties.rs, chrome — в chrome.rs, отрисовка
+иконок/шрифты/общая тема — в theme.rs. Геометрический snapping остаётся
+состоянием View в eda-render и не меняет координаты документа.
 Проверки Linux и Windows заданы в .github/workflows/check.yml; визуальный
 запуск на каждой ОС требует отдельной проверки.
 

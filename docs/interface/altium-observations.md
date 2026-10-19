@@ -21,7 +21,12 @@ Window, Help. Projects слева; вкладки над canvas; Active Bar на
 Properties без выделения: Board, Search, General/Parameters/Health Check,
 Selection Filter, Snap Options, Grids/Guides/Axes, snapping all/current/off,
 objects for snapping, snap distance, axis snap range, Board Information.
-Контекстные свойства выбранного объекта в этом обследовании не изучены.
+Повторно исследованы свойства выбранной площадки rep1 (без правок документа):
+Net Information; Properties с Designator, Layer, Net, Electrical Type,
+Propagation Delay, Pin Package Length, Jumper; Template/Library; X/Y/Rotation;
+Pad Stack с preview, Simple/Top-Middle-Bottom/Full Stack и таблицами
+COPPER/PASTE/SOLDER. Значения электрических полей и stack относятся к
+пользовательскому документу, их нельзя переносить в собственную плату PCBCraft.
 
 File в PCB: New, Open (Ctrl+O), Close (Ctrl+F4), Open Project,
 Open Project Group, Save (Ctrl+S), Save As, Save Copy As, Save All,
@@ -35,3 +40,14 @@ PCBCraft использует Ctrl+F4 для Close (Ctrl+W сохранён ка
 Повторная сверка: оба окна развёрнуты, полученные изображения 1707 × 1027.
 Системный DPI и точные шрифтовые метрики ещё не подтверждены.
 Состояние визуального соответствия: `visual-parity.md`.
+
+Повторная сессия: наблюдаемая ширина Projects около 330 points, Properties
+около 316. Title strip около 23, меню до y52, document tabs до y78;
+Active Bar около x623..1097/y84..114. В Board Properties: Selection Filter
+y194, Snap Options y356, Board Information y827. Это ориентиры, считанные
+по изображениям 1707 points по ширине, а не результаты пиксельного анализа.
+Изображения этой сессии имели высоту 1019..1027 points в зависимости от
+состояния рамки/захвата; сравнение полной высоты не считается нормализованным.
+
+Установленная тема DevExpress содержит имя Segoe UI. Windows-версия PCBCraft
+читает системный Segoe UI и Semibold; метрики WPF и egui отдельно не измерены.

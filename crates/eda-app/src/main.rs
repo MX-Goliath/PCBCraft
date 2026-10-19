@@ -13,6 +13,7 @@ fn main() -> eframe::Result {
         "PCBCraft",
         eframe::NativeOptions {
             viewport: egui::ViewportBuilder::default()
+                .with_decorations(false)
                 .with_inner_size([1440.0, 900.0])
                 .with_min_inner_size([1000.0, 650.0]),
             renderer: eframe::Renderer::Wgpu,
