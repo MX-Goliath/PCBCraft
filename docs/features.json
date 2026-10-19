@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "features": [
-    {"id":"shell.layout","source":"interface/altium-observations.md","state":"implemented","checks":"Windows: main window, new PCB/SCH, tabs, Home, hide/restore Properties; resize not confirmed","differences":"Messages at bottom; no full docking/autohide"},
+    {"id":"shell.layout","source":"interface/altium-observations.md","state":"implemented","checks":"Windows: maximized window, common right dock Messages/Properties, tab switching; see interface/visual-parity.md","differences":"Exact visual parity unfinished: fonts, icons, geometry, full docking/autohide"},
     {"id":"shell.documents","source":"interface/altium-observations.md","state":"implemented","checks":"Windows: main window, new PCB/SCH, tabs, Home, hide/restore Properties; resize not confirmed","differences":"Own documents; no project file model"},
     {"id":"canvas.camera","source":"own specification","state":"implemented","checks":"camera roundtrip and zoom anchor test","differences":"Painter primitives; no culling cache"},
     {"id":"canvas.pad_properties","source":"own specification; Altium selection properties not yet observed","state":"implemented","checks":"PASS: atomic history test; GUI X 10 -> 12 mm, undo/redo, save/reopen","differences":"Only rectangular pads; no electrical model"},

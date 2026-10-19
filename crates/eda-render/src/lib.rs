@@ -97,7 +97,7 @@ pub struct CanvasOutput {
 pub fn canvas(ui: &mut egui::Ui, doc: &Document, view: &mut View) -> CanvasOutput {
     let (rect, response) = ui.allocate_exact_size(ui.available_size(), Sense::click_and_drag());
     let painter = ui.painter_at(rect);
-    painter.rect_filled(rect, 0.0, Color32::from_rgb(38, 40, 43));
+    painter.rect_filled(rect, 0.0, Color32::from_rgb(109, 106, 105));
     if !view.camera.fitted {
         view.camera.fit(doc, rect);
     }

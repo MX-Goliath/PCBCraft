@@ -1,8 +1,8 @@
 use egui::{Color32, FontId, Stroke, TextStyle};
 
-pub const ACCENT: Color32 = Color32::from_rgb(103, 167, 207);
-pub const MUTED: Color32 = Color32::from_rgb(144, 151, 157);
-pub const PANEL: Color32 = Color32::from_rgb(48, 51, 55);
+pub const ACCENT: Color32 = Color32::from_rgb(100, 139, 167);
+pub const MUTED: Color32 = Color32::from_rgb(166, 166, 166);
+pub const PANEL: Color32 = Color32::from_rgb(58, 58, 58);
 
 pub fn logo(ui: &mut egui::Ui) {
     let (rect, _) = ui.allocate_exact_size(egui::vec2(23.0, 23.0), egui::Sense::hover());
@@ -30,11 +30,11 @@ pub fn logo(ui: &mut egui::Ui) {
 pub fn apply(ctx: &egui::Context) {
     let mut visuals = egui::Visuals::dark();
     visuals.panel_fill = PANEL;
-    visuals.window_fill = Color32::from_rgb(45, 48, 52);
-    visuals.extreme_bg_color = Color32::from_rgb(35, 38, 41);
-    visuals.faint_bg_color = Color32::from_rgb(53, 57, 62);
+    visuals.window_fill = Color32::from_rgb(65, 65, 65);
+    visuals.extreme_bg_color = Color32::from_rgb(44, 44, 44);
+    visuals.faint_bg_color = Color32::from_rgb(68, 68, 68);
     visuals.widgets.noninteractive.bg_fill = PANEL;
-    visuals.widgets.noninteractive.fg_stroke = Stroke::new(1.0, Color32::from_rgb(204, 209, 214));
+    visuals.widgets.noninteractive.fg_stroke = Stroke::new(1.0, Color32::from_rgb(212, 212, 212));
     visuals.widgets.noninteractive.bg_stroke = Stroke::new(1.0, Color32::from_rgb(65, 69, 74));
     visuals.widgets.inactive.bg_fill = Color32::from_rgb(60, 64, 69);
     visuals.widgets.inactive.weak_bg_fill = Color32::from_rgb(53, 57, 62);
@@ -44,15 +44,24 @@ pub fn apply(ctx: &egui::Context) {
     visuals.selection.stroke = Stroke::new(1.0, Color32::WHITE);
     ctx.set_visuals(visuals);
     ctx.style_mut(|style| {
-        style.spacing.item_spacing = egui::vec2(7.0, 6.0);
-        style.spacing.button_padding = egui::vec2(9.0, 5.0);
-        style.spacing.interact_size.y = 25.0;
+        style.spacing.item_spacing = egui::vec2(4.0, 3.0);
+        style.spacing.button_padding = egui::vec2(5.0, 2.0);
+        style.spacing.interact_size.y = 20.0;
+        style.spacing.menu_margin = egui::Margin::same(3);
+        for widget in [
+            &mut style.visuals.widgets.inactive,
+            &mut style.visuals.widgets.hovered,
+            &mut style.visuals.widgets.active,
+            &mut style.visuals.widgets.noninteractive,
+        ] {
+            widget.corner_radius = egui::CornerRadius::same(1);
+        }
         style
             .text_styles
-            .insert(TextStyle::Body, FontId::proportional(13.0));
+            .insert(TextStyle::Body, FontId::proportional(12.0));
         style
             .text_styles
-            .insert(TextStyle::Button, FontId::proportional(13.0));
+            .insert(TextStyle::Button, FontId::proportional(12.0));
         style
             .text_styles
             .insert(TextStyle::Small, FontId::proportional(11.0));
