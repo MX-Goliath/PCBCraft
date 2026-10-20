@@ -11,8 +11,8 @@ pub fn symbol_preview(
     ui: &mut egui::Ui,
     fragment: &eda_core::schematic_edit::Fragment,
     height: f32,
-) {
-    schematic::symbol_preview(ui, fragment, height);
+) -> egui::Response {
+    schematic::symbol_preview(ui, fragment, height)
 }
 
 pub fn layer_color(layer: Layer) -> Color32 {
@@ -255,6 +255,8 @@ pub struct CanvasOutput {
 
 #[derive(Default)]
 pub struct SchematicInput {
+    /// Pointer over the unobscured canvas, including a drag originating in another panel.
+    pub drop_point: Option<Point>,
     pub point: Option<Point>,
     pub press_origin: Option<Point>,
     pub hit: Option<Uuid>,

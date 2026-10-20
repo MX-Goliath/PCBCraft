@@ -1453,6 +1453,7 @@ impl eframe::App for PcbCraft {
         }
         self.library_dialog(ctx);
         self.workspace(ctx);
+        self.finish_library_drag(ctx);
         self.dialogs(ctx);
         self.resize_edges(ctx);
         if let Some(command) = self.command.take() {

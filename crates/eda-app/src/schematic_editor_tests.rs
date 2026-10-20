@@ -406,3 +406,418 @@ fn fast_drag_release_commits_group_once_and_stale_move_does_not_overwrite() {
     assert_eq!(app.documents[0].history.revision, 3);
     assert!(app.log.last().unwrap().0);
 }
+
+fn drag_app() -> PcbCraft {
+    use eda_core::library::{Library, Symbol, SymbolVariant};
+    let mut app = app();
+    let mut fragment = edit::place(
+        Placement::Resistor,
+        Point::default(),
+        0,
+        "R?",
+        "=Resistance",
+        0,
+    )
+    .unwrap();
+    fragment.fonts = app.documents[0]
+        .model
+        .schematic
+        .as_ref()
+        .unwrap()
+        .fonts
+        .clone();
+    fragment.components[0]
+        .parameters
+        .insert("Resistance".into(), "10k".into());
+    fragment.components[0].comment = "10k".into();
+    let symbol = Symbol {
+        name: "DRAG_TEST".into(),
+        description: "Test library symbol".into(),
+        parts: 1,
+        display_modes: 1,
+        variants: vec![SymbolVariant {
+            part: 1,
+            display_mode: 0,
+            fragment,
+        }],
+    };
+    app.components_ui.libraries.push((
+        PathBuf::from("fixture.SchLib"),
+        Library {
+            embedded_footprints: None,
+            name: "fixture.SchLib".into(),
+            symbols: vec![symbol],
+            warnings: vec![],
+        },
+    ));
+    app.settings.components = true;
+    app.settings.right_components = true;
+    app
+}
+fn drag_frame(
+    app: &mut PcbCraft,
+    ctx: &egui::Context,
+    events: Vec<egui::Event>,
+    focused: bool,
+) -> egui::FullOutput {
+    ctx.run(
+        egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1707.0, 1027.0),
+            )),
+            events,
+            focused,
+            ..Default::default()
+        },
+        |ctx| {
+            app.right_dock(ctx);
+            app.workspace(ctx);
+            app.finish_library_drag(ctx);
+        },
+    )
+}
+fn button(at: egui::Pos2, pressed: bool) -> egui::Event {
+    egui::Event::PointerButton {
+        pos: at,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::NONE,
+    }
+}
+fn row_origin(output: &egui::FullOutput) -> egui::Pos2 {
+    output
+        .shapes
+        .iter()
+        .filter_map(|s| {
+            if let egui::Shape::Text(t) = &s.shape {
+                (t.galley.job.text == "DRAG_TEST" && t.pos.y < 150.0)
+                    .then_some(t.pos + egui::vec2(8.0, 5.0))
+            } else {
+                None
+            }
+        })
+        .next()
+        .expect("library row text")
+}
+#[test]
+fn components_real_drag_drop_is_one_atomic_insert_and_history_transaction() {
+    let mut app = drag_app();
+    let ctx = egui::Context::default();
+    theme::apply(&ctx);
+    let mut output = drag_frame(&mut app, &ctx, vec![], true);
+    for _ in 0..3 {
+        output = drag_frame(&mut app, &ctx, vec![], true);
+    }
+    let from = row_origin(&output);
+    let to = egui::pos2(1000.0, 500.0);
+    let original = app.documents[0].model.clone();
+    drag_frame(
+        &mut app,
+        &ctx,
+        vec![egui::Event::PointerMoved(from), button(from, true)],
+        true,
+    );
+    drag_frame(&mut app, &ctx, vec![egui::Event::PointerMoved(to)], true);
+    assert_eq!(app.documents[0].model, original);
+    assert!(app.documents[0].view.sch_preview.is_some());
+    drag_frame(&mut app, &ctx, vec![button(to, false)], true);
+    let placed = app.documents[0].model.clone();
+    let doc = &mut app.documents[0];
+    let s = doc.model.schematic.as_ref().unwrap();
+    assert_eq!(s.components.len(), 1);
+    assert_eq!(s.components[0].designator, "R1");
+    assert_eq!(s.components[0].comment, "10k");
+    assert_eq!(doc.history.revision, 1);
+    assert!(!doc.sch_editor.active());
+    assert!(doc.view.sch_preview.is_none());
+    doc.history.undo(&mut doc.model);
+    assert_eq!(doc.model, original);
+    doc.history.redo(&mut doc.model);
+    assert_eq!(doc.model, placed);
+    drag_frame(
+        &mut app,
+        &ctx,
+        vec![button(to, true), button(to, false)],
+        true,
+    );
+    assert_eq!(
+        app.documents[0]
+            .model
+            .schematic
+            .as_ref()
+            .unwrap()
+            .components
+            .len(),
+        1
+    );
+}
+#[test]
+fn components_collapsed_details_remains_accessible_above_dock_tabs() {
+    let mut app = drag_app();
+    let ctx = egui::Context::default();
+    theme::apply(&ctx);
+    let mut output = drag_frame(&mut app, &ctx, vec![], true);
+    for _ in 0..3 {
+        output = drag_frame(&mut app, &ctx, vec![], true);
+    }
+    let title_position = |output: &egui::FullOutput, name: &str| {
+        output
+            .shapes
+            .iter()
+            .filter_map(|s| match &s.shape {
+                egui::Shape::Text(t) if t.galley.job.text == name => Some(t.pos),
+                _ => None,
+            })
+            .max_by(|a, b| a.y.total_cmp(&b.y))
+            .expect("panel heading")
+    };
+    let from = title_position(&output, "Details") + egui::vec2(10.0, 5.0);
+    drag_frame(
+        &mut app,
+        &ctx,
+        vec![egui::Event::PointerMoved(from), button(from, true)],
+        true,
+    );
+    drag_frame(&mut app, &ctx, vec![button(from, false)], true);
+    output = drag_frame(&mut app, &ctx, vec![], true);
+    let collapsed = title_position(&output, "Details");
+    let tab = title_position(&output, "Components");
+    assert!(collapsed.y > from.y);
+    assert!(
+        collapsed.y + 16.0 < tab.y,
+        "heading {collapsed:?}, tab {tab:?}"
+    );
+    let at = collapsed + egui::vec2(10.0, 5.0);
+    drag_frame(
+        &mut app,
+        &ctx,
+        vec![egui::Event::PointerMoved(at), button(at, true)],
+        true,
+    );
+    drag_frame(&mut app, &ctx, vec![button(at, false)], true);
+    output = drag_frame(&mut app, &ctx, vec![], true);
+    assert!(title_position(&output, "Details").y < collapsed.y);
+}
+#[test]
+fn components_preview_card_can_be_dragged_to_canvas() {
+    for fast in [false, true] {
+        let mut app = drag_app();
+        let ctx = egui::Context::default();
+        theme::apply(&ctx);
+        let mut output = drag_frame(&mut app, &ctx, vec![], true);
+        for _ in 0..3 {
+            output = drag_frame(&mut app, &ctx, vec![], true);
+        }
+        let from = output
+            .shapes
+            .iter()
+            .find_map(|s| match &s.shape {
+                egui::Shape::Rect(r)
+                    if r.fill == Color32::WHITE && (r.rect.height() - 184.0).abs() < 1.0 =>
+                {
+                    Some(r.rect.center())
+                }
+                _ => None,
+            })
+            .expect("preview card");
+        let to = egui::pos2(1000.0, 500.0);
+        if fast {
+            drag_frame(
+                &mut app,
+                &ctx,
+                vec![
+                    egui::Event::PointerMoved(from),
+                    button(from, true),
+                    egui::Event::PointerMoved(to),
+                    button(to, false),
+                ],
+                true,
+            );
+        } else {
+            drag_frame(
+                &mut app,
+                &ctx,
+                vec![egui::Event::PointerMoved(from), button(from, true)],
+                true,
+            );
+            drag_frame(&mut app, &ctx, vec![egui::Event::PointerMoved(to)], true);
+            assert!(app.documents[0].view.sch_preview.is_some());
+            drag_frame(&mut app, &ctx, vec![button(to, false)], true);
+        }
+        assert_eq!(
+            app.documents[0]
+                .model
+                .schematic
+                .as_ref()
+                .unwrap()
+                .components
+                .len(),
+            1,
+            "fast: {fast}"
+        );
+    }
+}
+#[test]
+fn components_drag_cancels_outside_canvas_on_escape_focus_loss_and_tab_switch() {
+    for cancel in 0..4 {
+        let mut app = drag_app();
+        let ctx = egui::Context::default();
+        theme::apply(&ctx);
+        let mut output = drag_frame(&mut app, &ctx, vec![], true);
+        for _ in 0..3 {
+            output = drag_frame(&mut app, &ctx, vec![], true);
+        }
+        let from = row_origin(&output);
+        let to = egui::pos2(1000.0, 500.0);
+        let original = app.documents[0].model.clone();
+        drag_frame(
+            &mut app,
+            &ctx,
+            vec![egui::Event::PointerMoved(from), button(from, true)],
+            true,
+        );
+        drag_frame(&mut app, &ctx, vec![egui::Event::PointerMoved(to)], true);
+        match cancel {
+            0 => {
+                let outside = egui::pos2(1500.0, 900.0);
+                drag_frame(
+                    &mut app,
+                    &ctx,
+                    vec![egui::Event::PointerMoved(outside), button(outside, false)],
+                    true,
+                );
+            }
+            1 => {
+                drag_frame(
+                    &mut app,
+                    &ctx,
+                    vec![
+                        egui::Event::Key {
+                            key: Key::Escape,
+                            physical_key: None,
+                            pressed: true,
+                            repeat: false,
+                            modifiers: egui::Modifiers::NONE,
+                        },
+                        button(to, false),
+                    ],
+                    true,
+                );
+            }
+            2 => {
+                drag_frame(&mut app, &ctx, vec![], false);
+            }
+            _ => {
+                app.add_document(Document::new(DocumentKind::Schematic, "Other"), None);
+                drag_frame(&mut app, &ctx, vec![button(to, false)], true);
+                assert!(
+                    app.documents[1]
+                        .model
+                        .schematic
+                        .as_ref()
+                        .unwrap()
+                        .components
+                        .is_empty()
+                );
+            }
+        }
+        assert_eq!(app.documents[0].model, original, "cancel case {cancel}");
+        assert!(!app.documents[0].sch_editor.active());
+        assert!(app.components_ui.drag_document.is_none());
+    }
+}
+#[test]
+fn components_fast_drop_and_stale_drop_preserve_revision_rules() {
+    for stale in [false, true] {
+        let mut app = drag_app();
+        let ctx = egui::Context::default();
+        theme::apply(&ctx);
+        let mut output = drag_frame(&mut app, &ctx, vec![], true);
+        for _ in 0..3 {
+            output = drag_frame(&mut app, &ctx, vec![], true);
+        }
+        let from = row_origin(&output);
+        let to = egui::pos2(1000.0, 500.0);
+        if stale {
+            drag_frame(
+                &mut app,
+                &ctx,
+                vec![egui::Event::PointerMoved(from), button(from, true)],
+                true,
+            );
+            drag_frame(&mut app, &ctx, vec![egui::Event::PointerMoved(to)], true);
+            app.documents[0]
+                .edit_schematic(
+                    Edit::Insert(Fragment {
+                        primitives: vec![edit::primitive(
+                            K::Junction {
+                                position: Point::mm(90, 90),
+                                radius_nm: 254_000,
+                            },
+                            None,
+                        )],
+                        ..Default::default()
+                    }),
+                    0,
+                )
+                .unwrap();
+            let confirmed = app.documents[0].model.clone();
+            drag_frame(&mut app, &ctx, vec![button(to, false)], true);
+            assert_eq!(app.documents[0].model, confirmed);
+            assert!(app.log.last().unwrap().0);
+        } else {
+            drag_frame(
+                &mut app,
+                &ctx,
+                vec![
+                    egui::Event::PointerMoved(from),
+                    button(from, true),
+                    egui::Event::PointerMoved(to),
+                    button(to, false),
+                ],
+                true,
+            );
+            assert_eq!(
+                app.documents[0]
+                    .model
+                    .schematic
+                    .as_ref()
+                    .unwrap()
+                    .components
+                    .len(),
+                1
+            );
+        }
+    }
+}
+#[test]
+fn library_preview_uses_raw_gray_comment_without_mutating_symbol() {
+    let app = drag_app();
+    let ctx = egui::Context::default();
+    theme::apply(&ctx);
+    let fragment = &app.components_ui.libraries[0].1.symbols[0].variants[0].fragment;
+    let before = fragment.clone();
+    let output = ctx.run(egui::RawInput::default(), |ctx| {
+        egui::CentralPanel::default().show(ctx, |ui| {
+            ui.set_max_width(248.0);
+            eda_render::symbol_preview(ui, fragment, 184.0);
+        });
+    });
+    assert_eq!(*fragment, before);
+    assert!(output.shapes.iter().any(|s|matches!(&s.shape,egui::Shape::Text(t) if t.galley.job.text=="=Resistance" && t.fallback_color==Color32::from_gray(128))));
+    let mut with_io = before;
+    let mut types = [0, 2].into_iter();
+    for primitive in &mut with_io.primitives {
+        if let K::Pin { electrical, .. } = &mut primitive.kind {
+            *electrical = types.next().unwrap();
+        }
+    }
+    let output = ctx.run(egui::RawInput::default(), |ctx| {
+        egui::CentralPanel::default().show(ctx, |ui| {
+            ui.set_max_width(248.0);
+            eda_render::symbol_preview(ui, &with_io, 184.0);
+        });
+    });
+    assert_eq!(output.shapes.iter().filter(|s| s.clip_rect.is_positive() && matches!(&s.shape, egui::Shape::Mesh(m) if m.vertices.len() == 3 && m.vertices.iter().all(|v| v.color == Color32::WHITE))).count(), 2);
+}

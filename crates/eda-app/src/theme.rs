@@ -8,8 +8,17 @@ pub const FIELD: Color32 = Color32::from_rgb(43, 43, 43);
 pub const BORDER: Color32 = Color32::from_rgb(35, 35, 35);
 
 pub fn search_field(ui: &mut egui::Ui, text: &mut String, width: f32) -> egui::Response {
+    search_field_height(ui, text, width, 22.0)
+}
+
+pub fn search_field_height(
+    ui: &mut egui::Ui,
+    text: &mut String,
+    width: f32,
+    height: f32,
+) -> egui::Response {
     let response = ui.add_sized(
-        [width, 22.0],
+        [width, height],
         egui::TextEdit::singleline(text)
             .hint_text("Search")
             .margin(egui::Margin {

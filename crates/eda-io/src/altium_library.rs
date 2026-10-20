@@ -35,6 +35,12 @@ pub fn import(bytes: &[u8], name: &str) -> Result<Library, String> {
         return Err("No embedded SchLib found in IntLib".into());
     }
     let mut result = Library {
+        embedded_footprints: Some(file.walk().any(|e| {
+            e.is_stream()
+                && e.path()
+                    .extension()
+                    .is_some_and(|x| x.eq_ignore_ascii_case("pcblib"))
+        })),
         name: name.into(),
         symbols: vec![],
         warnings: vec![],
@@ -163,6 +169,7 @@ fn schlib(mut file: Compound, name: &str) -> Result<Library, String> {
         return Err("Invalid SchLib component count".into());
     }
     let mut library = Library {
+        embedded_footprints: None,
         name: name.into(),
         symbols: vec![],
         warnings: vec![],

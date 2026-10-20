@@ -5,6 +5,8 @@ use eda_geom::Point;
 
 #[derive(Clone, Debug)]
 pub struct Library {
+    /// None for a standalone SchLib, whose footprint files may be external.
+    pub embedded_footprints: Option<bool>,
     pub name: String,
     pub symbols: Vec<Symbol>,
     pub warnings: Vec<String>,

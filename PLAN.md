@@ -212,3 +212,20 @@ multi-board, harness, сервер Workspace. Для каждой подсист
       footprint/3D (в PCB-этапе), проверка Linux GUI.
 
 Карта наблюдений и границы: docs/interface/components-libraries.md.
+
+### Components: визуальная сверка и drag-and-drop — 20.10.2026
+
+- [x] Повторно наблюдать IntLib в AD 24.4.1: Models с белой карточкой,
+      raw Comment, электрические маркеры LMV321, References и нижние секции;
+      уточнить отличие от ранее наблюдавшегося состояния Symbol/Model.
+- [x] Геометрия таблицы/Details/Models при dock 316; сортировка и ширины
+      колонок, разделитель, активный фильтр, избранное и Show More/Less.
+- [x] Preview с исходными серыми выражениями, скрытыми параметрами,
+      переносимыми шрифтами, подбором масштаба и input/output маркерами.
+- [x] Перенос строки и карточки на canvas: preview, одна атомарная вставка,
+      snap, отмена, guard сеанса/ревизии, Undo/Redo; без Windows-only API.
+- [x] Windows GUI: 1396 и 7086, drag C1/C2, Undo/Redo и save/reopen на
+      собственной проверочной схеме. 43 workspace tests; Linux GNU all-targets check.
+- [ ] Полная пиксельная совместимость всех символов/режимов/DPI, остальные
+      pin markers, native dialogs и Linux GUI. Оставшиеся отличия явно
+      перечислены в docs/features.json и docs/interface/components-libraries.md.

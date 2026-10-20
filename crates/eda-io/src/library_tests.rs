@@ -101,6 +101,7 @@ fn fixture(pin_data: Vec<u8>) -> Vec<u8> {
 fn schlib_variants_binary_pins_unicode_fractions_fonts_and_models() {
     let bytes = fixture(pin(1, 0));
     let lib = library::import(&bytes, "parts.SchLib").unwrap();
+    assert_eq!(lib.embedded_footprints, None);
     assert!(lib.warnings.is_empty(), "{:?}", lib.warnings);
     assert_eq!(lib.symbols.len(), 1);
     let symbol = &lib.symbols[0];
@@ -142,6 +143,7 @@ fn intlib_instances_are_independent_and_survive_history_and_save_reopen() {
         ("Version.Txt", vec![0, 2, 0, 0, 0]),
     ]);
     let library = library::import(&intlib, "parts.IntLib").unwrap();
+    assert_eq!(library.embedded_footprints, Some(false));
     let mut doc = Document::new(DocumentKind::Schematic, "library instances");
     let initial = doc.clone();
     let mut history = History::default();

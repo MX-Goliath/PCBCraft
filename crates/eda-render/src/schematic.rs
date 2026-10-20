@@ -44,14 +44,32 @@ struct Scene<'a> {
     rect: Rect,
     schematic: Option<&'a Schematic>,
     document_id: Uuid,
+    library_preview: bool,
 }
 
 pub(super) fn symbol_preview(
     ui: &mut egui::Ui,
     fragment: &eda_core::schematic_edit::Fragment,
     height: f32,
-) {
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), height), Sense::hover());
+) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(
+        Vec2::new(ui.available_width(), height),
+        Sense::click_and_drag(),
+    );
+    let mut primitives = fragment.primitives.clone();
+    for p in &mut primitives {
+        if (p.text_role == Some(eda_core::schematic::TextRole::Comment)
+            || p.presentation
+                .raw_text
+                .as_ref()
+                .is_some_and(|s| s.starts_with('=')))
+            && let K::Text { text, .. } = &mut p.kind
+            && let Some(raw) = &p.presentation.raw_text
+        {
+            *text = raw.clone();
+            p.color = 0x808080;
+        }
+    }
     let mut schematic = Schematic::blank();
     schematic.fonts = fragment.fonts.clone();
     schematic.images = fragment.images.clone();
@@ -63,37 +81,32 @@ pub(super) fn symbol_preview(
         rect,
         schematic: Some(&schematic),
         document_id: id,
+        library_preview: true,
     };
     let mut bounds = Rect::NOTHING;
-    for p in fragment
-        .primitives
-        .iter()
-        .filter(|p| !p.presentation.hidden)
-    {
+    for p in primitives.iter().filter(|p| !p.presentation.hidden) {
         bounds = bounds.union(measure.primitive(p, None).0);
     }
     if bounds.is_finite() && bounds.is_positive() {
         camera.centre_mm = camera.world_mm(bounds.center(), rect);
-        camera.pixels_per_mm *= ((rect.width() - 20.0) / bounds.width())
-            .min((rect.height() - 20.0) / bounds.height())
+        camera.pixels_per_mm *= ((rect.width() - 30.0) / bounds.width())
+            .min((rect.height() - 50.0) / bounds.height())
             .clamp(0.01, 20.0) as f64;
     }
     let painter = ui.painter_at(rect);
-    painter.rect_filled(rect, 0.0, Color32::from_rgb(255, 255, 246));
+    painter.rect_filled(rect, 4.0, Color32::WHITE);
     let scene = Scene {
         painter,
         camera: &camera,
         rect,
         schematic: Some(&schematic),
         document_id: id,
+        library_preview: true,
     };
-    for p in fragment
-        .primitives
-        .iter()
-        .filter(|p| !p.presentation.hidden)
-    {
+    for p in primitives.iter().filter(|p| !p.presentation.hidden) {
         scene.primitive(p, None);
     }
+    response
 }
 impl Scene<'_> {
     fn screen(&self, p: Point) -> Pos2 {
@@ -567,6 +580,7 @@ impl Scene<'_> {
                 number_font,
                 outer_symbol,
                 inner_symbol,
+                electrical,
                 ..
             } => {
                 let a = self.screen(*position);
@@ -575,6 +589,24 @@ impl Scene<'_> {
                 let perpendicular = Vec2::new(d.y, -d.x);
                 let margin = self.nm(1_778_000);
                 self.line(a, b, stroke);
+                if self.library_preview && matches!(electrical, 0 | 2) {
+                    let size = self.nm(1_270_000);
+                    let (tip, base) = if *electrical == 0 {
+                        (a, a + d * size)
+                    } else {
+                        (a + d * size, a)
+                    };
+                    self.poly(
+                        vec![
+                            tip,
+                            base + perpendicular * size * 0.4,
+                            base - perpendicular * size * 0.4,
+                        ],
+                        true,
+                        Some(Color32::WHITE),
+                        stroke,
+                    );
+                }
                 if *outer_symbol == 1 {
                     self.painter
                         .circle(a, self.nm(508_000).max(1.0), Color32::WHITE, stroke);
@@ -896,6 +928,7 @@ pub(super) fn paint(
         rect,
         schematic: doc.schematic.as_ref(),
         document_id: doc.id,
+        library_preview: false,
     };
     let sheet = doc.schematic.as_ref().map(|s| &s.sheet);
     if let Some(sheet) = sheet {
@@ -1256,6 +1289,17 @@ pub(super) fn paint(
     CanvasOutput {
         cursor_mm: response.hover_pos().map(|p| view.camera.world_mm(p, rect)),
         schematic_input: Some(SchematicInput {
+            drop_point: ui
+                .rect_contains_pointer(rect)
+                .then(|| ui.ctx().pointer_latest_pos())
+                .flatten()
+                .map(|p| {
+                    let mm = view.camera.world_mm(p, rect);
+                    Point {
+                        x: (mm[0] * 1e6).round() as i64,
+                        y: (mm[1] * 1e6).round() as i64,
+                    }
+                }),
             point: release
                 .or_else(|| {
                     response

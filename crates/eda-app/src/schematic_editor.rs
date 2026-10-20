@@ -23,6 +23,7 @@ enum Tool {
     #[default]
     Select,
     Library {
+        drag: bool,
         symbol: Box<eda_core::library::Symbol>,
         part: u32,
         display_mode: u32,
@@ -117,6 +118,7 @@ impl PcbCraft {
         }
         doc.sch_editor.cancel(&mut doc.view);
         doc.sch_editor.tool = Tool::Library {
+            drag: false,
             symbol: Box::new(symbol),
             part,
             display_mode,
@@ -126,6 +128,41 @@ impl PcbCraft {
         doc.view.sch_tool_active = true;
         doc.view.selected = None;
         doc.view.sch_selection.clear();
+    }
+    pub(super) fn start_library_drag(
+        &mut self,
+        symbol: eda_core::library::Symbol,
+        part: u32,
+        mode: u32,
+        ctx: &egui::Context,
+    ) {
+        self.start_library_tool(symbol, part, mode);
+        if let Some(i) = self.active
+            && let Tool::Library { drag, .. } = &mut self.documents[i].sch_editor.tool
+        {
+            *drag = true;
+            let target = self.documents[i].session_id;
+            self.components_ui.drag_document = Some(target);
+            egui::DragAndDrop::set_payload(ctx, target);
+        }
+    }
+    pub(super) fn finish_library_drag(&mut self, ctx: &egui::Context) {
+        if let Some(target) = self.components_ui.drag_document {
+            let active = self
+                .active
+                .is_some_and(|i| self.documents[i].session_id == target);
+            let cancelled = ctx
+                .input(|i| !i.focused || i.key_pressed(Key::Escape) || !i.pointer.primary_down())
+                || egui::DragAndDrop::payload::<Uuid>(ctx).is_none();
+            if !active || cancelled {
+                if let Some(doc) = self.documents.iter_mut().find(|d| d.session_id == target) {
+                    doc.sch_editor.cancel(&mut doc.view);
+                }
+                self.components_ui.drag_document = None;
+                egui::DragAndDrop::clear_payload(ctx);
+                ctx.request_repaint();
+            }
+        }
     }
     pub(super) fn schematic_place_menu(&mut self, ui: &mut egui::Ui) {
         for label in ["Bus", "Bus Entry"] {
@@ -499,20 +536,36 @@ impl PcbCraft {
         match &mut doc.sch_editor.tool {
             Tool::Select => {}
             Tool::Library {
+                drag,
                 symbol,
                 part,
                 display_mode,
                 turns,
                 revision,
             } => {
-                if let Some(at) = point {
+                let at = if *drag {
+                    input.drop_point.map(snap)
+                } else {
+                    point
+                };
+                if let Some(at) = at {
                     match symbol
                         .instantiate(*part, *display_mode, s)
                         .and_then(|f| f.transformed(Point::default(), *turns, at))
                     {
                         Ok(fragment) => {
-                            if input.clicked {
+                            if if *drag {
+                                ctx.input(|i| {
+                                    i.pointer.primary_released()
+                                        && i.focused
+                                        && !i.key_pressed(Key::Escape)
+                                }) && egui::DragAndDrop::payload::<Uuid>(ctx)
+                                    .is_some_and(|id| *id == doc.session_id)
+                            } else {
+                                input.clicked
+                            } {
                                 command = Some((Edit::Insert(fragment.clone()), *revision));
+                                finish = *drag;
                             }
                             preview = Some(fragment);
                         }
@@ -523,6 +576,9 @@ impl PcbCraft {
                     }
                 }
                 finish |= input.secondary_clicked;
+                if *drag && ctx.input(|i| !i.pointer.primary_down() || !i.focused) {
+                    finish = true;
+                }
             }
             Tool::Place { turns, revision } => {
                 if let Some(at) = point {
