@@ -2,6 +2,8 @@ use eda_core::Document;
 pub mod altium;
 #[cfg(test)]
 mod altium_tests;
+#[cfg(test)]
+mod library_tests;
 use std::{io::Write, path::Path};
 
 pub fn load(path: &Path) -> Result<Document, String> {
@@ -18,9 +20,11 @@ pub fn load(path: &Path) -> Result<Document, String> {
 
 pub fn save(path: &Path, doc: &Document) -> Result<(), String> {
     if path.extension().is_some_and(|e| {
-        ["SchDoc", "PrjPcb", "PcbDoc", "SchLib", "SchDot"]
-            .iter()
-            .any(|suffix| e.eq_ignore_ascii_case(suffix))
+        [
+            "SchDoc", "PrjPcb", "PcbDoc", "SchLib", "SchDot", "IntLib", "PcbLib", "DbLib",
+        ]
+        .iter()
+        .any(|suffix| e.eq_ignore_ascii_case(suffix))
     }) {
         return Err("Native Altium writing is not implemented. Choose a .pcbcraft.json destination; the original cannot be overwritten.".into());
     }

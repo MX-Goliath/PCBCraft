@@ -45,6 +45,56 @@ struct Scene<'a> {
     schematic: Option<&'a Schematic>,
     document_id: Uuid,
 }
+
+pub(super) fn symbol_preview(
+    ui: &mut egui::Ui,
+    fragment: &eda_core::schematic_edit::Fragment,
+    height: f32,
+) {
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), height), Sense::hover());
+    let mut schematic = Schematic::blank();
+    schematic.fonts = fragment.fonts.clone();
+    schematic.images = fragment.images.clone();
+    let id = fragment.components.first().map_or(Uuid::nil(), |c| c.id);
+    let mut camera = Camera::default();
+    let measure = Scene {
+        painter: ui.painter().with_clip_rect(Rect::NOTHING),
+        camera: &camera,
+        rect,
+        schematic: Some(&schematic),
+        document_id: id,
+    };
+    let mut bounds = Rect::NOTHING;
+    for p in fragment
+        .primitives
+        .iter()
+        .filter(|p| !p.presentation.hidden)
+    {
+        bounds = bounds.union(measure.primitive(p, None).0);
+    }
+    if bounds.is_finite() && bounds.is_positive() {
+        camera.centre_mm = camera.world_mm(bounds.center(), rect);
+        camera.pixels_per_mm *= ((rect.width() - 20.0) / bounds.width())
+            .min((rect.height() - 20.0) / bounds.height())
+            .clamp(0.01, 20.0) as f64;
+    }
+    let painter = ui.painter_at(rect);
+    painter.rect_filled(rect, 0.0, Color32::from_rgb(255, 255, 246));
+    let scene = Scene {
+        painter,
+        camera: &camera,
+        rect,
+        schematic: Some(&schematic),
+        document_id: id,
+    };
+    for p in fragment
+        .primitives
+        .iter()
+        .filter(|p| !p.presentation.hidden)
+    {
+        scene.primitive(p, None);
+    }
+}
 impl Scene<'_> {
     fn screen(&self, p: Point) -> Pos2 {
         self.camera.screen(p, self.rect)
@@ -1176,7 +1226,7 @@ pub(super) fn paint(
             painter: painter.with_clip_rect(rect),
             ..scene
         };
-        for p in &preview.primitives {
+        for p in preview.primitives.iter().filter(|p| !p.presentation.hidden) {
             scene.primitive(p, None);
         }
     }

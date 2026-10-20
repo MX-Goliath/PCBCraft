@@ -1,4 +1,5 @@
 //! GUI-independent document model and history.
+pub mod library;
 pub mod schematic;
 pub mod schematic_edit;
 use eda_geom::Point;

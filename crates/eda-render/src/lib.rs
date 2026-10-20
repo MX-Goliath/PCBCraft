@@ -6,6 +6,15 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 mod schematic;
 
+/// Read-only preview of a library fragment, fitted to its visible geometry.
+pub fn symbol_preview(
+    ui: &mut egui::Ui,
+    fragment: &eda_core::schematic_edit::Fragment,
+    height: f32,
+) {
+    schematic::symbol_preview(ui, fragment, height);
+}
+
 pub fn layer_color(layer: Layer) -> Color32 {
     match layer {
         Layer::Top => Color32::from_rgb(219, 77, 72),

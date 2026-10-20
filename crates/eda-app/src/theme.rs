@@ -55,6 +55,7 @@ pub enum Icon {
     Pad,
     Via,
     Component,
+    LibraryComponent,
     Polygon,
     Text,
     Line,
@@ -281,11 +282,16 @@ pub fn draw_icon(p: &egui::Painter, rect: egui::Rect, icon: Icon, enabled: bool)
             p.circle_filled(rect.center(), 6.0, yellow);
             p.circle_filled(rect.center(), 2.0, FIELD);
         }
-        Icon::Component | Icon::Chip => {
+        Icon::Component | Icon::Chip | Icon::LibraryComponent => {
+            let body = if matches!(icon, Icon::LibraryComponent) {
+                yellow
+            } else {
+                blue
+            };
             p.rect_filled(
                 egui::Rect::from_min_max(point(4.0, 3.0), point(12.0, 13.0)),
                 1.0,
-                blue,
+                body,
             );
             for y in [4.0, 8.0, 12.0] {
                 line((0.0, y), (4.0, y), c);

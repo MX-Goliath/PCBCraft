@@ -22,6 +22,7 @@ fn app() -> PcbCraft {
         pad_edit: None,
         property_ui: Default::default(),
         sch_clipboard: None,
+        components_ui: Default::default(),
     }
 }
 
@@ -31,6 +32,147 @@ fn pointer(point: Point, clicked: bool) -> SchematicInput {
         clicked,
         ..Default::default()
     }
+}
+
+#[test]
+fn library_placement_preview_repeat_rotation_cancel_and_stale_revision() {
+    use eda_core::library::{Symbol, SymbolVariant};
+    let mut app = app();
+    let ctx = egui::Context::default();
+    theme::apply(&ctx);
+    let mut fragment =
+        edit::place(Placement::Resistor, Point::default(), 0, "R?", "10k", 0).unwrap();
+    let mut hidden = edit::primitive(
+        K::Text {
+            position: Point::default(),
+            text: "hidden library metadata".into(),
+            font: 0,
+            orientation: 0,
+            justification: 0,
+        },
+        Some(fragment.components[0].id),
+    );
+    hidden.presentation.hidden = true;
+    fragment.primitives.push(hidden);
+    fragment.fonts = app.documents[0]
+        .model
+        .schematic
+        .as_ref()
+        .unwrap()
+        .fonts
+        .clone();
+    let symbol = Symbol {
+        name: "Library R".into(),
+        description: "fixture".into(),
+        parts: 1,
+        display_modes: 1,
+        variants: vec![SymbolVariant {
+            part: 1,
+            display_mode: 0,
+            fragment,
+        }],
+    };
+    let initial = app.documents[0].model.clone();
+    app.start_library_tool(symbol.clone(), 1, 0);
+    app.schematic_input(0, pointer(Point::mm(20, 20), false), &ctx);
+    assert_eq!(app.documents[0].model, initial);
+    assert!(app.documents[0].view.sch_preview.is_some());
+    let output = ctx.run(egui::RawInput::default(), |ctx| {
+        egui::CentralPanel::default().show(ctx, |ui| {
+            let doc = &mut app.documents[0];
+            eda_render::canvas(ui, &doc.model, &mut doc.view);
+        });
+    });
+    fn contains_text(shape: &egui::Shape, text: &str) -> bool {
+        match shape {
+            egui::Shape::Text(t) => t.galley.job.text.contains(text),
+            egui::Shape::Vec(v) => v.iter().any(|s| contains_text(s, text)),
+            _ => false,
+        }
+    }
+    assert!(output.shapes.iter().any(|s| contains_text(&s.shape, "R1")));
+    assert!(
+        !output
+            .shapes
+            .iter()
+            .any(|s| contains_text(&s.shape, "hidden library metadata"))
+    );
+    app.schematic_action(SchAction::Select, &ctx);
+    assert!(!app.documents[0].sch_editor.active());
+    assert_eq!(app.documents[0].history.revision, 0);
+    app.start_library_tool(symbol.clone(), 1, 0);
+    app.schematic_input(0, pointer(Point::mm(20, 20), true), &ctx);
+    assert!(app.documents[0].sch_editor.active());
+    if let Tool::Library { turns, .. } = &mut app.documents[0].sch_editor.tool {
+        *turns = 1;
+    }
+    app.schematic_input(0, pointer(Point::mm(40, 30), true), &ctx);
+    let scene = app.documents[0].model.schematic.as_ref().unwrap();
+    assert_eq!(scene.components[0].designator, "R1");
+    assert_eq!(scene.components[1].designator, "R2");
+    assert_eq!(scene.components[1].settings.rotation, 1);
+    assert_ne!(scene.components[0].id, scene.components[1].id);
+    assert_eq!(app.documents[0].history.revision, 2);
+    app.schematic_input(
+        0,
+        SchematicInput {
+            secondary_clicked: true,
+            ..Default::default()
+        },
+        &ctx,
+    );
+    assert!(!app.documents[0].sch_editor.active());
+    app.run(Command::Undo, &ctx);
+    assert_eq!(
+        app.documents[0]
+            .model
+            .schematic
+            .as_ref()
+            .unwrap()
+            .components
+            .len(),
+        1
+    );
+    app.run(Command::Redo, &ctx);
+    assert_eq!(
+        app.documents[0]
+            .model
+            .schematic
+            .as_ref()
+            .unwrap()
+            .components
+            .len(),
+        2
+    );
+    app.start_library_tool(symbol, 1, 0);
+    let revision = app.documents[0].history.revision;
+    app.documents[0]
+        .edit_schematic(
+            Edit::Insert(Fragment {
+                primitives: vec![edit::primitive(
+                    K::Junction {
+                        position: Point::mm(90, 90),
+                        radius_nm: 254_000,
+                    },
+                    None,
+                )],
+                ..Default::default()
+            }),
+            revision,
+        )
+        .unwrap();
+    app.schematic_input(0, pointer(Point::mm(60, 30), true), &ctx);
+    assert_eq!(
+        app.documents[0]
+            .model
+            .schematic
+            .as_ref()
+            .unwrap()
+            .components
+            .len(),
+        2
+    );
+    assert!(!app.documents[0].sch_editor.active());
 }
 
 #[test]

@@ -7,6 +7,8 @@ use std::path::PathBuf;
 use uuid::Uuid;
 #[path = "chrome.rs"]
 mod chrome;
+#[path = "components.rs"]
+mod components;
 #[path = "properties.rs"]
 mod properties;
 #[path = "schematic_editor.rs"]
@@ -60,6 +62,9 @@ impl OpenDocument {
 #[derive(Serialize, Deserialize)]
 #[serde(default)]
 struct Settings {
+    components: bool,
+    right_components: bool,
+    libraries: Vec<PathBuf>,
     projects: bool,
     properties: bool,
     messages: bool,
@@ -73,6 +78,9 @@ struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            components: false,
+            right_components: false,
+            libraries: vec![],
             projects: true,
             properties: true,
             messages: false,
@@ -87,6 +95,8 @@ impl Default for Settings {
 
 #[derive(Clone, Copy)]
 enum Command {
+    ShowComponents,
+    ToggleComponents,
     SchPlace(Placement),
     SchEdit(SchAction),
     NewBoard,
@@ -145,6 +155,7 @@ pub struct PcbCraft {
     pad_edit: Option<PadEdit>,
     property_ui: properties::PropertiesUi,
     sch_clipboard: Option<(eda_core::schematic_edit::Fragment, eda_geom::Point)>,
+    components_ui: components::Panel,
 }
 
 impl PcbCraft {
@@ -174,7 +185,11 @@ impl PcbCraft {
             pad_edit: None,
             property_ui: properties::PropertiesUi::default(),
             sch_clipboard: None,
+            components_ui: Default::default(),
         };
+        for path in app.settings.libraries.clone() {
+            app.import_library(path, false);
+        }
         let mut opened = false;
         if let Some(path) = std::env::args_os().nth(1) {
             app.open_path(path.into());
@@ -240,6 +255,10 @@ impl PcbCraft {
             self.open_project(path);
             return;
         }
+        if matches!(extension.as_str(), "schlib" | "intlib") {
+            self.import_library(path, true);
+            return;
+        }
         if extension == "pcbdoc" {
             self.message(
                 true,
@@ -299,6 +318,13 @@ impl PcbCraft {
                     .map(|d| d.path.clone());
                 for warning in &project.warnings {
                     self.message(false, warning.clone());
+                }
+                for entry in project
+                    .documents
+                    .iter()
+                    .filter(|d| d.exists && matches!(d.kind.as_str(), "schlib" | "intlib"))
+                {
+                    self.import_library(entry.path.clone(), false);
                 }
                 self.message(
                     false,
@@ -428,7 +454,11 @@ impl PcbCraft {
                 if let Some(path) = self
                     .file_dialog
                     .clone()
-                    .add_filter("Design documents", &["SchDoc", "PrjPcb", "json"])
+                    .add_filter(
+                        "Design documents and libraries",
+                        &["SchDoc", "PrjPcb", "SchLib", "IntLib", "json"],
+                    )
+                    .add_filter("Altium libraries", &["SchLib", "IntLib"])
                     .add_filter("Altium schematic", &["SchDoc"])
                     .add_filter("Altium project", &["PrjPcb"])
                     .pick_file()
@@ -485,10 +515,25 @@ impl PcbCraft {
             Command::ToggleProperties => {
                 self.settings.properties = !self.settings.properties;
                 self.settings.right_messages = false;
+                self.settings.right_components = false;
+            }
+            Command::ToggleComponents => {
+                if self.settings.right_components && self.settings.components {
+                    self.settings.components = false;
+                    self.settings.right_components = false;
+                } else {
+                    self.settings.components = true;
+                    self.settings.right_components = true;
+                }
+            }
+            Command::ShowComponents => {
+                self.settings.components = true;
+                self.settings.right_components = true;
             }
             Command::ToggleMessages => {
                 self.settings.messages = !self.settings.messages;
                 self.settings.right_messages = true;
+                self.settings.right_components = false;
             }
             Command::ToggleGrid => {
                 if let Some(index) = self.active {
@@ -657,6 +702,7 @@ impl PcbCraft {
                         });
                     }
                     ui.menu_button("View", |ui| {
+                        self.action(ui, "Components", "", Command::ToggleComponents, true);
                         self.action(ui, "Fit Document", "Home", Command::Fit, has_doc);
                         self.action(ui, "Home Page", "", Command::Home, true);
                         ui.separator();
@@ -670,12 +716,16 @@ impl PcbCraft {
                             .checkbox(&mut self.settings.properties, "Properties")
                             .clicked()
                         {
+                            self.settings.right_components = false;
+                            self.settings.right_messages = false;
                             ui.close();
                         }
                         if ui
                             .checkbox(&mut self.settings.messages, "Messages")
                             .clicked()
                         {
+                            self.settings.right_components = false;
+                            self.settings.right_messages = true;
                             ui.close();
                         }
                         ui.separator();
@@ -723,6 +773,8 @@ impl PcbCraft {
                             self.settings.projects = true;
                             self.settings.properties = true;
                             self.settings.messages = false;
+                            self.settings.components = false;
+                            self.settings.right_components = false;
                             ctx.memory_mut(|m| *m = egui::Memory::default());
                             theme::apply(ctx);
                             for doc in &mut self.documents {
@@ -834,7 +886,7 @@ impl PcbCraft {
                                             if !filename.to_lowercase().contains(&self.search.to_lowercase()){continue;}
                                             let selected=self.active.is_some_and(|i|self.documents[i].source_path.as_ref()==Some(&entry.path));
                                             let label=format!("{} {}{}",if entry.kind=="schdoc"{"SCH"}else if entry.kind=="pcbdoc"{"PCB"}else{"LIB"},filename,if entry.exists{""}else{" (missing)"});
-                                            let response=ui.add_enabled(entry.exists&&entry.kind=="schdoc",egui::Button::new(label).frame(selected).selected(selected));
+                                            let response=ui.add_enabled(entry.exists&&matches!(entry.kind.as_str(),"schdoc"|"schlib"|"intlib"),egui::Button::new(label).frame(selected).selected(selected));
                                             if response.clicked(){open_path=Some(entry.path.clone());}
                                             response.on_disabled_hover_text(if !entry.exists{"Referenced file was not found"}else{"This document type is deferred; schematic import is available"});
                                         }
@@ -933,6 +985,7 @@ impl PcbCraft {
                     );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.menu_button("Panels", |ui| {
+                            self.action(ui, "Components", "", Command::ToggleComponents, true);
                             self.action(ui, "Projects", "", Command::ToggleProjects, true);
                             self.action(ui, "Properties", "", Command::ToggleProperties, true);
                             self.action(ui, "Messages", "", Command::ToggleMessages, true);
@@ -958,7 +1011,11 @@ impl PcbCraft {
             if let Some(position) = ctx.input(|i| i.pointer.press_origin()) {
                 self.property_ui.focused = ui.max_rect().contains(position);
             }
-            let messages = self.settings.messages
+            let components = self.settings.components
+                && (self.settings.right_components
+                    || (!self.settings.properties && !self.settings.messages));
+            let messages = !components
+                && self.settings.messages
                 && (self.settings.right_messages || !self.settings.properties);
             egui::Frame::NONE
                 .fill(if self.property_ui.focused {
@@ -968,10 +1025,18 @@ impl PcbCraft {
                 })
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
-                        ui.label(if messages { "Messages" } else { "Properties" });
+                        ui.label(if components {
+                            "Components"
+                        } else if messages {
+                            "Messages"
+                        } else {
+                            "Properties"
+                        });
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if theme::icon_button(ui, theme::Icon::Close, false, true).clicked() {
-                                self.command = Some(if messages {
+                                self.command = Some(if components {
+                                    Command::ToggleComponents
+                                } else if messages {
                                     Command::ToggleMessages
                                 } else {
                                     Command::ToggleProperties
@@ -989,14 +1054,26 @@ impl PcbCraft {
                         if ui.selectable_label(messages, "Messages").clicked() {
                             self.settings.messages = true;
                             self.settings.right_messages = true;
+                            self.settings.right_components = false;
                         }
-                        if ui.selectable_label(!messages, "Properties").clicked() {
+                        if ui
+                            .selectable_label(!messages && !components, "Properties")
+                            .clicked()
+                        {
                             self.settings.properties = true;
                             self.settings.right_messages = false;
+                            self.settings.right_components = false;
+                        }
+                        if self.settings.components
+                            && ui.selectable_label(components, "Components").clicked()
+                        {
+                            self.settings.right_components = true;
                         }
                     });
                 });
-            if messages {
+            if components {
+                self.components_panel(ui);
+            } else if messages {
                 ui.horizontal(|ui| {
                     ui.label("Class");
                     ui.separator();
@@ -1371,9 +1448,10 @@ impl eframe::App for PcbCraft {
         if self.settings.projects {
             self.projects(ctx);
         }
-        if self.settings.properties || self.settings.messages {
+        if self.settings.properties || self.settings.messages || self.settings.components {
             self.right_dock(ctx);
         }
+        self.library_dialog(ctx);
         self.workspace(ctx);
         self.dialogs(ctx);
         self.resize_edges(ctx);

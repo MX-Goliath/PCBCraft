@@ -64,7 +64,11 @@ Windows-скрипт `scripts/dev.ps1` для Linux не нужен. CI наст
 линий и junctions; перемещение, поворот, копирование, удаление, Properties,
 Undo/Redo и сохранение в собственный JSON. Управление и границы:
 [редактор схем](docs/schematic-editing.md).
-Native-запись, PCB import, полный docking, routing, ERC/DRC, библиотеки и выпуск
+Панель Components: импорт локальных `.SchLib` Binary 5.0 / `.IntLib`, поиск,
+предпросмотр и размещение библиотечных символов. Откройте библиотеку через
+Ctrl+O или меню Components → Install Library…. Space — поворот, Esc — завершение.
+[Поддержка и ограничения библиотек](docs/interface/components-libraries.md).
+Native-запись, PCB import, полный docking, routing, ERC/DRC, редактор библиотек и выпуск
 производственных файлов запланированы. Неактивные инженерные меню
 не выполняют операции. Altium не нужен для запуска PCBCraft.
 

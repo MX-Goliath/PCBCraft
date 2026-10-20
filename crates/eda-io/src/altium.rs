@@ -13,6 +13,9 @@ use uuid::Uuid;
 const MAX_FILE: usize = 128 * 1024 * 1024;
 const MAX_RECORDS: usize = 500_000;
 
+#[path = "altium_library.rs"]
+pub mod library;
+
 #[derive(Clone, Debug)]
 pub struct ProjectEntry {
     pub original_path: String,
@@ -467,41 +470,7 @@ pub fn import_schematic(bytes: &[u8], name: &str) -> Result<Document, String> {
             if data.len() > MAX_FILE {
                 return Err("Image storage exceeds limit".into());
             }
-            let mut blocks = vec![];
-            framed("Storage", &data, &mut blocks)?;
-            let mut expanded = 0usize;
-            for (_, flag, raw) in blocks {
-                if flag == 0 {
-                    continue;
-                }
-                if raw.first() != Some(&0xd0) || raw.len() < 2 {
-                    warnings.push("Unsupported embedded image storage record retained".into());
-                    continue;
-                }
-                let length = raw[1] as usize;
-                let end = 2 + length;
-                let filename = raw
-                    .get(2..end)
-                    .ok_or("Truncated embedded image filename")?
-                    .to_vec();
-                let size_bytes = raw
-                    .get(end..end + 4)
-                    .ok_or("Truncated embedded image length")?;
-                let size = u32::from_le_bytes(size_bytes.try_into().unwrap()) as usize;
-                let compressed = raw
-                    .get(end + 4..end + 4 + size)
-                    .ok_or("Truncated compressed image")?;
-                let mut decoded = vec![];
-                flate2::read::ZlibDecoder::new(compressed)
-                    .take(32 * 1024 * 1024 + 1)
-                    .read_to_end(&mut decoded)
-                    .map_err(|e| format!("Invalid compressed image: {e}"))?;
-                expanded += decoded.len();
-                if decoded.len() > 32 * 1024 * 1024 || expanded > MAX_FILE {
-                    return Err("Expanded image storage exceeds limit".into());
-                }
-                stored_images.push((filename, decoded));
-            }
+            stored_images = decode_image_storage(&data, &mut warnings)?;
         }
     } else {
         let text = bytes.strip_prefix(&[0xef, 0xbb, 0xbf]).unwrap_or(bytes);
@@ -1214,4 +1183,46 @@ fn primitive_kind(
         }
     };
     Ok(Some(kind))
+}
+
+type StoredImages = Vec<(Vec<u8>, Vec<u8>)>;
+
+fn decode_image_storage(data: &[u8], warnings: &mut Vec<String>) -> Result<StoredImages, String> {
+    let mut stored_images = vec![];
+    let mut blocks = vec![];
+    framed("Storage", data, &mut blocks)?;
+    let mut expanded = 0usize;
+    for (_, flag, raw) in blocks {
+        if flag == 0 {
+            continue;
+        }
+        if raw.first() != Some(&0xd0) || raw.len() < 2 {
+            warnings.push("Unsupported embedded image storage record retained".into());
+            continue;
+        }
+        let length = raw[1] as usize;
+        let end = 2 + length;
+        let filename = raw
+            .get(2..end)
+            .ok_or("Truncated embedded image filename")?
+            .to_vec();
+        let size_bytes = raw
+            .get(end..end + 4)
+            .ok_or("Truncated embedded image length")?;
+        let size = u32::from_le_bytes(size_bytes.try_into().unwrap()) as usize;
+        let compressed = raw
+            .get(end + 4..end + 4 + size)
+            .ok_or("Truncated compressed image")?;
+        let mut decoded = vec![];
+        flate2::read::ZlibDecoder::new(compressed)
+            .take(32 * 1024 * 1024 + 1)
+            .read_to_end(&mut decoded)
+            .map_err(|e| format!("Invalid compressed image: {e}"))?;
+        expanded += decoded.len();
+        if decoded.len() > 32 * 1024 * 1024 || expanded > MAX_FILE {
+            return Err("Expanded image storage exceeds limit".into());
+        }
+        stored_images.push((filename, decoded));
+    }
+    Ok(stored_images)
 }

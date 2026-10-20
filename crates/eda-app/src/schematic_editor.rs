@@ -22,6 +22,13 @@ pub(super) struct Editor {
 enum Tool {
     #[default]
     Select,
+    Library {
+        symbol: Box<eda_core::library::Symbol>,
+        part: u32,
+        display_mode: u32,
+        turns: u32,
+        revision: u64,
+    },
     Place {
         turns: u32,
         revision: u64,
@@ -95,11 +102,38 @@ fn next_designator(s: &Schematic, prefix: &str) -> String {
 }
 
 impl PcbCraft {
+    pub(super) fn start_library_tool(
+        &mut self,
+        symbol: eda_core::library::Symbol,
+        part: u32,
+        display_mode: u32,
+    ) {
+        let Some(index) = self.active else {
+            return;
+        };
+        let doc = &mut self.documents[index];
+        if doc.model.kind != DocumentKind::Schematic {
+            return;
+        }
+        doc.sch_editor.cancel(&mut doc.view);
+        doc.sch_editor.tool = Tool::Library {
+            symbol: Box::new(symbol),
+            part,
+            display_mode,
+            turns: 0,
+            revision: doc.history.revision,
+        };
+        doc.view.sch_tool_active = true;
+        doc.view.selected = None;
+        doc.view.sch_selection.clear();
+    }
     pub(super) fn schematic_place_menu(&mut self, ui: &mut egui::Ui) {
         for label in ["Bus", "Bus Entry"] {
             ui.add_enabled(false, egui::Button::new(label));
         }
         ui.menu_button("Part…", |ui| {
+            self.action(ui, "Components", "", Command::ShowComponents, true);
+            ui.separator();
             for (label, kind) in [
                 ("Resistor", Placement::Resistor),
                 ("Capacitor", Placement::Capacitor),
@@ -379,7 +413,9 @@ impl PcbCraft {
         }
         if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Space)) {
             match &mut self.documents[i].sch_editor.tool {
-                Tool::Place { turns, .. } | Tool::Move { turns, .. } => *turns = (*turns + 1) % 4,
+                Tool::Place { turns, .. }
+                | Tool::Move { turns, .. }
+                | Tool::Library { turns, .. } => *turns = (*turns + 1) % 4,
                 Tool::Path { vertical_first, .. } => *vertical_first = !*vertical_first,
                 Tool::Select => self.schematic_action(SchAction::Rotate, ctx),
             }
@@ -462,6 +498,32 @@ impl PcbCraft {
         let kind = doc.sch_editor.kind;
         match &mut doc.sch_editor.tool {
             Tool::Select => {}
+            Tool::Library {
+                symbol,
+                part,
+                display_mode,
+                turns,
+                revision,
+            } => {
+                if let Some(at) = point {
+                    match symbol
+                        .instantiate(*part, *display_mode, s)
+                        .and_then(|f| f.transformed(Point::default(), *turns, at))
+                    {
+                        Ok(fragment) => {
+                            if input.clicked {
+                                command = Some((Edit::Insert(fragment.clone()), *revision));
+                            }
+                            preview = Some(fragment);
+                        }
+                        Err(e) => {
+                            error = Some(e);
+                            finish = true;
+                        }
+                    }
+                }
+                finish |= input.secondary_clicked;
+            }
             Tool::Place { turns, revision } => {
                 if let Some(at) = point {
                     match edit::place(
@@ -589,11 +651,16 @@ impl PcbCraft {
             }
         }
         if let Some((command, revision)) = command {
-            let is_place = matches!(doc.sch_editor.tool, Tool::Place { .. });
+            let is_place = matches!(
+                doc.sch_editor.tool,
+                Tool::Place { .. } | Tool::Library { .. }
+            );
             match doc.edit_schematic(command, revision) {
                 Ok(_) => {
                     if is_place {
-                        if let Tool::Place { revision, .. } = &mut doc.sch_editor.tool {
+                        if let Tool::Place { revision, .. } | Tool::Library { revision, .. } =
+                            &mut doc.sch_editor.tool
+                        {
                             *revision = doc.history.revision;
                         }
                         if matches!(kind, Some(Placement::Resistor | Placement::Capacitor)) {

@@ -236,3 +236,39 @@ redacted-source-sha256.
 Оставшиеся расхождения и ненаблюдённые контексты перечислены в
 interface/schematic-properties.md и features.json. Components/IntLib не начаты:
 условие пользователя о завершении Properties ещё не выполнено.
+
+## Components / SchLib / IntLib — 20.10.2026
+
+По новому указанию пользователя начат этап Components независимо от оставшихся
+расхождений Properties. Наблюдалась живая панель Components AD 24.4.1
+с предоставленной ReferenceB.IntLib. Карта и ограничения:
+interface/components-libraries.md. Исходный ALTIUM_RUST_AGENT_PLAN.md сохранён.
+
+Проверки: fmt --check, clippy workspace/all-targets -D warnings, 37 workspace
+tests, Windows debug build, Linux GNU check --all-targets. Linux-проверка
+не включает линковку/запуск GUI или подтверждение визуальных метрик.
+
+Тесты охватывают Binary SchLib/IntLib, части/режимы, binary pins, PinFrac,
+UTF-16 PinWideText, разные шрифты надписей, скрытые/raw параметры, связи моделей,
+копирование image Storage, свежие UUID/обозначения, поворот, повторную вставку,
+отмену, конфликт ревизии, Undo/Redo, save/reopen без библиотеки, запрет записи
+JSON поверх IntLib. Повреждённые CFB/пины/zlib/checksum/ссылки auxiliary и
+некорректные/чрезмерные количества отклоняются. Регрессия canvas проверяет,
+что скрытые параметры отсутствуют в отрисованном preview.
+
+Реальный пример: library_inspect читает все 31 символ без предупреждений.
+Windows GUI: импорт через Ctrl+O, Results: 31, поиск LMV321 (1 результат),
+предпросмотр 7086, вставка 1396 на отдельной копии схемы как C7, Esc,
+Undo (возврат clean), Redo, Undo; восстановление библиотек после перезапуска.
+Пользовательские изменения открытого PCBCraft до перезапуска сохранены отдельно:
+.tools/ReferenceB-before-components-20261020.pcbcraft.json; оригинал SchDoc не заменялся.
+
+Altium использовался для чтения панели/меню/списка библиотек, без редактирования
+и сохранения схемы. SHA256 ReferenceB.SchDoc совпадает с прежним:
+redacted-source-sha256.
+Предоставленная IntLib только читалась; SHA256:
+redacted-source-sha256.
+Пользовательские схемы/библиотеки и извлечённые из них файлы в Git не добавлены.
+
+Проверки подтверждают первый рабочий путь импорта/размещения. Они не означают
+полную совместимость всех библиотечных форматов или точное совпадение Components.
