@@ -4,6 +4,28 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use uuid::Uuid;
 
+/// Native standard sheet drawing areas, in nm; labels observed in AD 24.4.1.
+pub const STANDARD_SHEETS: [(&str, i64, i64); 18] = [
+    ("A4", 1150 * 254_000, 760 * 254_000),
+    ("A3", 1550 * 254_000, 1110 * 254_000),
+    ("A2", 2230 * 254_000, 1570 * 254_000),
+    ("A1", 3150 * 254_000, 2230 * 254_000),
+    ("A0", 4460 * 254_000, 3150 * 254_000),
+    ("A", 950 * 254_000, 750 * 254_000),
+    ("B", 1500 * 254_000, 950 * 254_000),
+    ("C", 2000 * 254_000, 1500 * 254_000),
+    ("D", 3200 * 254_000, 2000 * 254_000),
+    ("E", 4200 * 254_000, 3200 * 254_000),
+    ("Letter", 1100 * 254_000, 850 * 254_000),
+    ("Legal", 1400 * 254_000, 850 * 254_000),
+    ("Tabloid", 1700 * 254_000, 1100 * 254_000),
+    ("OrCAD A", 990 * 254_000, 790 * 254_000),
+    ("OrCAD B", 1540 * 254_000, 990 * 254_000),
+    ("OrCAD C", 2060 * 254_000, 1560 * 254_000),
+    ("OrCAD D", 3260 * 254_000, 2060 * 254_000),
+    ("OrCAD E", 4280 * 254_000, 3280 * 254_000),
+];
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Schematic {
@@ -14,6 +36,9 @@ pub struct Schematic {
     pub fonts: Vec<SchFont>,
     pub components: Vec<Component>,
     pub primitives: Vec<SchPrimitive>,
+    /// Hidden parameter objects have identity and editable presentation as well.
+    #[serde(default)]
+    pub parameter_objects: Vec<SchPrimitive>,
     pub records: Vec<SourceRecord>,
     #[serde(default)]
     pub images: BTreeMap<String, String>,
@@ -42,6 +67,8 @@ pub struct SourceRecord {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Sheet {
+    #[serde(default)]
+    pub options: SheetOptions,
     pub background: u32,
     pub border: bool,
     pub title_block: bool,
@@ -58,6 +85,22 @@ pub struct Sheet {
     pub parameters: BTreeMap<String, String>,
 }
 
+impl Sheet {
+    pub fn format_name(&self) -> &str {
+        if let Some(value) = self.style.strip_prefix("Standard ") {
+            if let Ok(n) = value.parse::<usize>()
+                && let Some((name, _, _)) = STANDARD_SHEETS.get(n)
+            {
+                return name;
+            }
+            if STANDARD_SHEETS.iter().any(|(name, _, _)| *name == value) {
+                return value;
+            }
+        }
+        &self.style
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SchFont {
@@ -71,6 +114,8 @@ pub struct SchFont {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Component {
+    #[serde(default)]
+    pub settings: ComponentSettings,
     pub id: Uuid,
     pub source_index: u32,
     pub position: Point,
@@ -86,6 +131,8 @@ pub struct Component {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SchPrimitive {
+    #[serde(default)]
+    pub presentation: Presentation,
     #[serde(default)]
     pub text_role: Option<TextRole>,
     pub id: Uuid,
@@ -109,6 +156,105 @@ pub enum TextRole {
     Designator,
     Comment,
     NetLabel,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct SheetOptions {
+    pub border_color: u32,
+    pub show_zones: bool,
+    pub snap_enabled: bool,
+    pub electrical_snap: bool,
+    pub snap_distance_nm: i64,
+}
+impl Default for SheetOptions {
+    fn default() -> Self {
+        Self {
+            border_color: 0,
+            show_zones: true,
+            snap_enabled: true,
+            electrical_snap: true,
+            snap_distance_nm: 2_540_000,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ComponentSettings {
+    pub models: Vec<ComponentModel>,
+    pub rotation: u32,
+    pub part_count: u32,
+    pub kind: u32,
+    pub source: String,
+    pub design_item_id: String,
+    pub designator_locked: bool,
+    pub part_locked: bool,
+}
+impl Default for ComponentSettings {
+    fn default() -> Self {
+        Self {
+            models: vec![],
+            rotation: 0,
+            part_count: 1,
+            kind: 0,
+            source: String::new(),
+            design_item_id: String::new(),
+            designator_locked: false,
+            part_locked: false,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ComponentModel {
+    pub name: String,
+    pub kind: String,
+    pub current: bool,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Presentation {
+    pub record_type: u32,
+    pub url: String,
+    pub name: String,
+    pub raw_text: Option<String>,
+    pub hidden: bool,
+    pub show_name: bool,
+    pub auto_position: bool,
+    pub locked: bool,
+    pub allow_sync: bool,
+}
+
+pub fn parameter_text(
+    text: &str,
+    local: &BTreeMap<String, String>,
+    sheet: &BTreeMap<String, String>,
+) -> String {
+    let mut value = text.to_owned();
+    let mut visited = std::collections::BTreeSet::new();
+    for _ in 0..32 {
+        let Some(key) = value.strip_prefix('=') else {
+            break;
+        };
+        let key = key.trim().trim_matches('"');
+        if !visited.insert(key.to_lowercase()) {
+            return text.to_owned();
+        }
+        let lookup = |values: &BTreeMap<String, String>| {
+            values
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case(key))
+                .map(|(_, v)| v.clone())
+        };
+        let Some(next) = lookup(local).or_else(|| lookup(sheet)) else {
+            return value;
+        };
+        value = next;
+    }
+    value
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -213,6 +359,7 @@ impl Schematic {
         Self {
             source_modified: false,
             sheet: Sheet {
+                options: Default::default(),
                 background: 0xf8fcff,
                 border: true,
                 title_block: true,
@@ -235,6 +382,7 @@ impl Schematic {
             }],
             components: vec![],
             primitives: vec![],
+            parameter_objects: vec![],
             records: vec![],
             images: BTreeMap::new(),
             source: None,
@@ -243,7 +391,7 @@ impl Schematic {
     }
     pub fn validate(&self) -> Result<(), String> {
         if self.records.len() > 500_000
-            || self.primitives.len() > 500_000
+            || self.primitives.len() + self.parameter_objects.len() > 500_000
             || self.components.len() > 100_000
         {
             return Err("Schematic object limit exceeded".into());
@@ -253,8 +401,13 @@ impl Schematic {
         {
             return Err("Invalid schematic grid".into());
         }
+        if !(0..=1_000_000_000).contains(&self.sheet.options.snap_distance_nm) {
+            return Err("Invalid electrical snap distance".into());
+        }
         let mut ids = std::collections::HashSet::new();
-        if self.fonts.len() > 128
+        if self.fonts.is_empty()
+            || self.sheet.system_font >= self.fonts.len()
+            || self.fonts.len() > 128
             || self
                 .fonts
                 .iter()
@@ -268,13 +421,28 @@ impl Schematic {
             return Err("Invalid sheet border or zones".into());
         }
         for c in &self.components {
-            if !ids.insert(c.id) || !c.position.valid() {
+            if !ids.insert(c.id)
+                || !c.position.valid()
+                || c.settings.rotation > 3
+                || !(1..=1024).contains(&c.settings.part_count)
+            {
                 return Err("Invalid schematic component".into());
             }
         }
         let component_ids = ids.clone();
-        for p in &self.primitives {
+        for p in self.primitives.iter().chain(&self.parameter_objects) {
+            let font_valid = match &p.kind {
+                SchPrimitiveKind::Text { font, .. }
+                | SchPrimitiveKind::TextFrame { font, .. }
+                | SchPrimitiveKind::PowerPort { font, .. }
+                | SchPrimitiveKind::Port { font, .. } => *font < self.fonts.len(),
+                SchPrimitiveKind::Pin {
+                    font, number_font, ..
+                } => *font < self.fonts.len() && number_font.is_none_or(|n| n < self.fonts.len()),
+                _ => true,
+            };
             if !ids.insert(p.id)
+                || !font_valid
                 || p.width_nm < 0
                 || p.width_nm > 1_000_000_000
                 || p.component.is_some_and(|id| !component_ids.contains(&id))
@@ -342,5 +510,12 @@ impl Schematic {
             }
         }
         Ok(())
+    }
+
+    pub fn primitive(&self, id: Uuid) -> Option<&SchPrimitive> {
+        self.primitives
+            .iter()
+            .chain(&self.parameter_objects)
+            .find(|p| p.id == id)
     }
 }

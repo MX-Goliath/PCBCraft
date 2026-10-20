@@ -185,28 +185,7 @@ pub fn load_project(path: &Path) -> Result<Project, String> {
 
 type Fields = BTreeMap<String, String>;
 pub(super) fn parameter_text(text: &str, local: &Fields, sheet: &Fields) -> String {
-    let mut value = text.to_owned();
-    let mut visited = BTreeSet::new();
-    for _ in 0..32 {
-        let Some(key) = value.strip_prefix('=') else {
-            break;
-        };
-        let key = key.trim().trim_matches('"');
-        if !visited.insert(key.to_lowercase()) {
-            return text.to_owned();
-        }
-        let lookup = |values: &Fields| {
-            values
-                .iter()
-                .find(|(k, _)| k.eq_ignore_ascii_case(key))
-                .map(|(_, v)| v.clone())
-        };
-        let Some(next) = lookup(local).or_else(|| lookup(sheet)) else {
-            return value;
-        };
-        value = next;
-    }
-    value
+    eda_core::schematic::parameter_text(text, local, sheet)
 }
 trait Values {
     fn n(&self, k: &str) -> i64;
@@ -676,27 +655,7 @@ fn build_document(
 ) -> Result<Document, String> {
     let f = &records[0].fields;
     let custom = f.yes("USECUSTOMSHEET");
-    let sizes = [
-        (1150, 760),
-        (1550, 1110),
-        (2230, 1570),
-        (3150, 2230),
-        (4460, 3150),
-        (950, 750),
-        (1500, 950),
-        (2000, 1500),
-        (3200, 2000),
-        (4200, 3200),
-        (1100, 850),
-        (1400, 850),
-        (1700, 1100),
-        (990, 790),
-        (1540, 990),
-        (2060, 1560),
-        (3260, 2060),
-        (4280, 3280),
-    ];
-    let (w, h) = sizes
+    let (_, w, h) = eda_core::schematic::STANDARD_SHEETS
         .get(f.n("SHEETSTYLE") as usize)
         .copied()
         .ok_or("Unsupported sheet size enumeration")?;
@@ -706,10 +665,7 @@ fn build_document(
             y: f.coord("CUSTOMY"),
         }
     } else {
-        Point {
-            x: w * 254_000,
-            y: h * 254_000,
-        }
+        Point { x: w, y: h }
     };
     if !custom && f.n("WORKSPACEORIENTATION") == 1 {
         std::mem::swap(&mut size.x, &mut size.y);
@@ -738,10 +694,30 @@ fn build_document(
     let mut parameters = BTreeMap::new();
     for r in &records {
         if r.record_type == 41 && owner(&r.fields) == 0 {
-            parameters.insert(r.fields.text("NAME"), r.fields.text("TEXT"));
+            parameters.insert(
+                r.fields.text("NAME"),
+                r.fields.text("TEXT").replace("~1", "\n"),
+            );
         }
     }
     let mut components = vec![];
+    let mut models: BTreeMap<usize, Vec<eda_core::schematic::ComponentModel>> = BTreeMap::new();
+    for (index, r) in records
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| r.record_type == 45)
+    {
+        if let Some(owner) = component_owner(&records, index) {
+            models
+                .entry(owner)
+                .or_default()
+                .push(eda_core::schematic::ComponentModel {
+                    name: r.fields.text("MODELNAME"),
+                    kind: r.fields.text("MODELTYPE"),
+                    current: r.fields.yes("ISCURRENT"),
+                });
+        }
+    }
     let mut child_parameters: BTreeMap<usize, Vec<&SourceRecord>> = BTreeMap::new();
     for r in &records {
         if [34, 41].contains(&r.record_type) {
@@ -766,7 +742,10 @@ fn build_document(
                 designator = child.fields.text("TEXT");
             }
             if child.record_type == 41 {
-                params.insert(child.fields.text("NAME"), child.fields.text("TEXT"));
+                params.insert(
+                    child.fields.text("NAME"),
+                    child.fields.text("TEXT").replace("~1", "\n"),
+                );
             }
         }
         let part = r.fields.n("CURRENTPARTID").max(1) as u32;
@@ -774,6 +753,16 @@ fn build_document(
             designator.push(char::from_u32('A' as u32 + part - 1).unwrap_or('?'));
         }
         components.push(Component {
+            settings: eda_core::schematic::ComponentSettings {
+                models: models.remove(&(r.index as usize)).unwrap_or_default(),
+                rotation: r.fields.n("ORIENTATION") as u32 % 4,
+                part_count: (r.fields.n("PARTCOUNT") - 1).clamp(1, 1024) as u32,
+                kind: r.fields.n("COMPONENTKIND") as u32,
+                source: r.fields.text("SOURCELIBRARYNAME"),
+                design_item_id: r.fields.text("DESIGNITEMID"),
+                designator_locked: r.fields.yes("DESIGNATORLOCKED"),
+                part_locked: r.fields.yes("PARTIDLOCKED"),
+            },
             id: uuid(id, r.index),
             source_index: r.index,
             position: r.fields.point("LOCATION"),
@@ -795,6 +784,17 @@ fn build_document(
         });
     }
     let sheet = Sheet {
+        options: eda_core::schematic::SheetOptions {
+            border_color: f.n("BORDERCOLOR") as u32,
+            show_zones: !f.yes("REFERENCEZONESOFF"),
+            snap_enabled: !f.contains_key("SNAPGRIDON") || f.yes("SNAPGRIDON"),
+            electrical_snap: !f.contains_key("HOTSPOTGRIDON") || f.yes("HOTSPOTGRIDON"),
+            snap_distance_nm: if f.contains_key("HOTSPOTGRIDSIZE") {
+                f.coord("HOTSPOTGRIDSIZE")
+            } else {
+                2_540_000
+            },
+        },
         background: if f.contains_key("AREACOLOR") {
             f.n("AREACOLOR") as u32
         } else {
@@ -828,13 +828,21 @@ fn build_document(
         parameters,
     };
     let mut primitives = vec![];
+    let mut parameter_objects = vec![];
     let component_lookup: BTreeMap<u32, &Component> =
         components.iter().map(|c| (c.source_index, c)).collect();
     let mut unsupported = BTreeMap::<u32, usize>::new();
     let show_template = f.yes("SHOWTEMPLATEGRAPHICS");
     let default_font = f.n("SYSTEMFONT").max(1) as usize - 1;
     for (index, r) in records.iter().enumerate() {
-        if r.stream != "FileHeader" || !is_visible(&records, index, show_template) {
+        let visible = is_visible(&records, index, show_template);
+        let hidden_parameter = r.record_type == 41
+            && r.fields.yes("ISHIDDEN")
+            && (owner(&r.fields) == 0
+                || records
+                    .get(owner(&r.fields))
+                    .is_some_and(|p| p.record_type == 1));
+        if r.stream != "FileHeader" || (!visible && !hidden_parameter) {
             continue;
         }
         let f = &r.fields;
@@ -858,7 +866,25 @@ fn build_document(
                     warnings.push(format!("Image resource is unavailable: {filename}"));
                 }
             }
-            primitives.push(SchPrimitive {
+            let p = SchPrimitive {
+                presentation: eda_core::schematic::Presentation {
+                    record_type: r.record_type,
+                    url: f.text("URL"),
+                    name: if r.record_type == 34 {
+                        "Designator".into()
+                    } else {
+                        f.text("NAME")
+                    },
+                    raw_text: matches!(r.record_type, 4 | 25 | 34 | 41)
+                        .then(|| f.text("TEXT").replace("~1", "\n")),
+                    hidden: !visible,
+                    show_name: f.yes("SHOWNAME"),
+                    auto_position: matches!(r.record_type, 34 | 41)
+                        && !f.yes("AUTOPOSITIONOFF")
+                        && !f.yes("NOTAUTOPOSITION"),
+                    locked: f.yes("ISREADONLY"),
+                    allow_sync: !f.yes("DISABLESYNC"),
+                },
                 text_role: match r.record_type {
                     34 => Some(eda_core::schematic::TextRole::Designator),
                     41 if f.text("NAME").eq_ignore_ascii_case("Comment") => {
@@ -888,7 +914,12 @@ fn build_document(
                 end_shape: f.n("ENDLINESHAPE") as u32,
                 line_shape_size: f.n("LINESHAPESIZE") as u32,
                 kind,
-            });
+            };
+            if visible {
+                primitives.push(p);
+            } else {
+                parameter_objects.push(p);
+            }
         }
     }
     for (kind, count) in unsupported {
@@ -907,6 +938,7 @@ fn build_document(
         fonts,
         components,
         primitives,
+        parameter_objects,
         records,
         images,
         source: Some(NativeSource {
@@ -1030,7 +1062,7 @@ fn primitive_kind(
             {
                 text = c.designator.clone();
             }
-            if text.is_empty() {
+            if text.is_empty() && !(r.record_type == 41 && f.yes("ISHIDDEN")) {
                 return Ok(None);
             }
             let justification = if f.contains_key("JUSTIFICATION") {

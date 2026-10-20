@@ -467,7 +467,6 @@ impl PcbCraft {
                 if let Some(i) = self.active {
                     let doc = &mut self.documents[i];
                     doc.sch_editor.cancel(&mut doc.view);
-                    doc.sch_editor.properties = None;
                     if matches!(command, Command::Undo) {
                         doc.history.undo(&mut doc.model);
                     } else {
@@ -493,9 +492,23 @@ impl PcbCraft {
             }
             Command::ToggleGrid => {
                 if let Some(index) = self.active {
-                    let view = &mut self.documents[index].view;
-                    view.grid = !view.grid;
-                    self.settings.show_grid = view.grid;
+                    let doc = &mut self.documents[index];
+                    if let Some(s) = &doc.model.schematic {
+                        let mut sheet = s.sheet.clone();
+                        sheet.grid_visible = !sheet.grid_visible;
+                        if let Err(error) = doc.edit_schematic(
+                            eda_core::schematic_edit::Edit::SheetProperties {
+                                sheet: Box::new(sheet),
+                                size: doc.model.size,
+                            },
+                            doc.history.revision,
+                        ) {
+                            self.message(true, error);
+                        }
+                    } else {
+                        doc.view.grid = !doc.view.grid;
+                        self.settings.show_grid = doc.view.grid;
+                    }
                 }
             }
             Command::ToggleUnits => {
@@ -611,9 +624,10 @@ impl PcbCraft {
                                 self.documents[i].model.kind == DocumentKind::Schematic
                             });
                             if schematic {
-                                let selected = self
-                                    .active
-                                    .is_some_and(|i| self.documents[i].view.selected.is_some());
+                                let selected = self.active.is_some_and(|i| {
+                                    self.documents[i].view.selected.is_some()
+                                        && self.documents[i].view.sch_selection.len() <= 1
+                                });
                                 ui.separator();
                                 for (label, shortcut, action, enabled) in [
                                     ("Cut", "Ctrl+X", SchAction::Cut, selected),
@@ -750,7 +764,10 @@ impl PcbCraft {
 
     fn projects(&mut self, ctx: &egui::Context) {
         let mut open_path = None;
-        egui::SidePanel::left("projects_altium_v2")
+        let schematic = self
+            .active
+            .is_some_and(|i| self.documents[i].model.kind == DocumentKind::Schematic);
+        egui::SidePanel::left(if schematic {"projects_schematic_v3"}else{"projects_altium_v2"})
             .default_width(330.0)
             .width_range(190.0..=500.0)
             .resizable(true)
@@ -926,82 +943,84 @@ impl PcbCraft {
     }
 
     fn right_dock(&mut self, ctx: &egui::Context) {
-        egui::SidePanel::right("right_dock_altium_v2")
-            .default_width(316.0)
-            .width_range(230.0..=500.0)
-            .resizable(true)
-            .show(ctx, |ui| {
-                if let Some(position) = ctx.input(|i| i.pointer.press_origin()) {
-                    self.property_ui.focused = ui.max_rect().contains(position);
-                }
-                let messages = self.settings.messages
-                    && (self.settings.right_messages || !self.settings.properties);
-                egui::Frame::NONE
-                    .fill(if self.property_ui.focused {
-                        Color32::from_rgb(57, 91, 112)
-                    } else {
-                        Color32::from_gray(66)
-                    })
-                    .show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            ui.label(if messages { "Messages" } else { "Properties" });
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    if theme::icon_button(ui, theme::Icon::Close, false, true)
-                                        .clicked()
-                                    {
-                                        self.command = Some(if messages {
-                                            Command::ToggleMessages
-                                        } else {
-                                            Command::ToggleProperties
-                                        });
-                                    }
-                                    theme::icon_button(ui, theme::Icon::Pin, false, false);
-                                },
-                            );
-                        });
-                    });
-                ui.add_space(4.0);
-                egui::TopBottomPanel::bottom("right_dock_tabs")
-                    .exact_height(21.0)
-                    .show_inside(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            if ui.selectable_label(messages, "Messages").clicked() {
-                                self.settings.messages = true;
-                                self.settings.right_messages = true;
-                            }
-                            if ui.selectable_label(!messages, "Properties").clicked() {
-                                self.settings.properties = true;
-                                self.settings.right_messages = false;
-                            }
-                        });
-                    });
-                if messages {
+        let schematic = self
+            .active
+            .is_some_and(|i| self.documents[i].model.kind == DocumentKind::Schematic);
+        egui::SidePanel::right(if schematic {
+            "right_dock_schematic_v3"
+        } else {
+            "right_dock_altium_v2"
+        })
+        .default_width(316.0)
+        .width_range(230.0..=500.0)
+        .resizable(true)
+        .show(ctx, |ui| {
+            if let Some(position) = ctx.input(|i| i.pointer.press_origin()) {
+                self.property_ui.focused = ui.max_rect().contains(position);
+            }
+            let messages = self.settings.messages
+                && (self.settings.right_messages || !self.settings.properties);
+            egui::Frame::NONE
+                .fill(if self.property_ui.focused {
+                    Color32::from_rgb(57, 91, 112)
+                } else {
+                    Color32::from_gray(66)
+                })
+                .show(ui, |ui| {
                     ui.horizontal(|ui| {
-                        ui.label("Class");
-                        ui.separator();
-                        ui.label("Document");
-                        ui.separator();
-                        ui.label("Message");
+                        ui.label(if messages { "Messages" } else { "Properties" });
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if theme::icon_button(ui, theme::Icon::Close, false, true).clicked() {
+                                self.command = Some(if messages {
+                                    Command::ToggleMessages
+                                } else {
+                                    Command::ToggleProperties
+                                });
+                            }
+                            theme::icon_button(ui, theme::Icon::Pin, false, false);
+                        });
                     });
-                    ui.separator();
-                    egui::ScrollArea::both().show(ui, |ui| {
-                        for (error, text) in &self.log {
-                            ui.horizontal(|ui| {
-                                ui.label(
-                                    RichText::new(if *error { "Error" } else { "Info" })
-                                        .color(if *error { Color32::LIGHT_RED } else { ACCENT }),
-                                );
-                                ui.separator();
-                                ui.label(text);
-                            });
+                });
+            ui.add_space(4.0);
+            egui::TopBottomPanel::bottom("right_dock_tabs")
+                .exact_height(21.0)
+                .show_inside(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        if ui.selectable_label(messages, "Messages").clicked() {
+                            self.settings.messages = true;
+                            self.settings.right_messages = true;
+                        }
+                        if ui.selectable_label(!messages, "Properties").clicked() {
+                            self.settings.properties = true;
+                            self.settings.right_messages = false;
                         }
                     });
-                } else {
-                    self.properties(ui);
-                }
-            });
+                });
+            if messages {
+                ui.horizontal(|ui| {
+                    ui.label("Class");
+                    ui.separator();
+                    ui.label("Document");
+                    ui.separator();
+                    ui.label("Message");
+                });
+                ui.separator();
+                egui::ScrollArea::both().show(ui, |ui| {
+                    for (error, text) in &self.log {
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                RichText::new(if *error { "Error" } else { "Info" })
+                                    .color(if *error { Color32::LIGHT_RED } else { ACCENT }),
+                            );
+                            ui.separator();
+                            ui.label(text);
+                        });
+                    }
+                });
+            } else {
+                self.properties(ui);
+            }
+        });
     }
 
     fn workspace(&mut self, ctx: &egui::Context) {

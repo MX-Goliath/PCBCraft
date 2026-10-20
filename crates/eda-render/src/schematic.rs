@@ -345,9 +345,14 @@ impl Scene<'_> {
                 orientation,
                 justification,
             } => {
+                let displayed = if p.presentation.show_name && !p.presentation.name.is_empty() {
+                    format!("{} = {text}", p.presentation.name)
+                } else {
+                    text.clone()
+                };
                 let rect = self.label(
                     self.screen(*position),
-                    text,
+                    &displayed,
                     *font,
                     *orientation,
                     *justification,
@@ -395,6 +400,11 @@ impl Scene<'_> {
                         f32::INFINITY
                     },
                 );
+                if font.underline {
+                    for section in &mut job.sections {
+                        section.format.underline = Stroke::new((size / 14.0).max(0.4), c);
+                    }
+                }
                 job.halign = match alignment {
                     0 => egui::Align::Center,
                     2 => egui::Align::Max,
@@ -838,6 +848,10 @@ pub(super) fn paint(
         document_id: doc.id,
     };
     let sheet = doc.schematic.as_ref().map(|s| &s.sheet);
+    if let Some(sheet) = sheet {
+        view.grid = sheet.grid_visible;
+        view.grid_nm = sheet.grid_nm;
+    }
     let board = Rect::from_two_pos(
         scene.screen(Point {
             x: 0,
@@ -850,8 +864,8 @@ pub(super) fn paint(
     );
     let background = sheet.map_or(Color32::from_rgb(255, 252, 248), |s| color(s.background));
     painter.rect_filled(board, 0.0, background);
-    if view.grid {
-        let mut step = view.grid_nm as f64 / 1e6;
+    if view.grid && sheet.is_none_or(|s| s.grid_visible) {
+        let mut step = sheet.map_or(view.grid_nm, |s| s.grid_nm) as f64 / 1e6;
         while step * view.camera.pixels_per_mm < 5.0 {
             step *= 10.0;
         }
@@ -890,9 +904,15 @@ pub(super) fn paint(
             ],
             true,
             None,
-            Stroke::new(0.75, Color32::BLACK),
+            Stroke::new(0.75, color(sheet.map_or(0, |s| s.options.border_color))),
         );
-        let zones = sheet.map_or([4, 4], |s| s.zones);
+        let zones = sheet.map_or([4, 4], |s| {
+            if s.options.show_zones {
+                s.zones
+            } else {
+                [0, 0]
+            }
+        });
         let system_font = sheet.map_or(0, |s| s.system_font);
         let lower_right = sheet.is_some_and(|s| s.zone_origin_lower_right);
         for x in 0..zones[0] {
@@ -996,11 +1016,7 @@ pub(super) fn paint(
             text(5.0, 30.0, "Size");
             text(55.0, 30.0, "Number");
             text(255.0, 30.0, "Revision");
-            let format = if sheet.unwrap().style == "Standard 0" {
-                "A4"
-            } else {
-                sheet.unwrap().style.as_str()
-            };
+            let format = sheet.unwrap().format_name();
             text(10.0, 45.0, format);
             text(55.0, 45.0, value("DocumentNumber"));
             text(255.0, 45.0, value("Revision"));
@@ -1075,7 +1091,12 @@ pub(super) fn paint(
             painter: painter.with_clip_rect(board.intersect(rect)),
             ..scene
         };
-        for primitive in &schematic.primitives {
+        for primitive in schematic
+            .primitives
+            .iter()
+            .chain(&schematic.parameter_objects)
+            .filter(|p| !p.presentation.hidden)
+        {
             let (bounds, is_hit) = scene.primitive(primitive, hit_pointer);
             if let Some(id) = primitive.component {
                 component_bounds
@@ -1083,30 +1104,55 @@ pub(super) fn paint(
                     .and_modify(|r| *r = r.union(bounds))
                     .or_insert(bounds);
             }
-            if view.selected.is_some()
-                && (view.selected == Some(primitive.id) || view.selected == primitive.component)
+            if (view.selected.is_some()
+                && (view.selected == Some(primitive.id) || view.selected == primitive.component))
+                || view.sch_selection.contains(&primitive.id)
+                || primitive
+                    .component
+                    .is_some_and(|id| view.sch_selection.contains(&id))
             {
                 selected_bounds = selected_bounds.union(bounds);
             }
-            let allowed = if primitive.component.is_some() {
-                view.sch_select_components
+            let category = if primitive.text_role == Some(eda_core::schematic::TextRole::NetLabel) {
+                5
+            } else if primitive.text_role.is_some()
+                || (matches!(primitive.kind, K::Text { .. })
+                    && !primitive.presentation.name.is_empty())
+            {
+                6
+            } else if primitive.component.is_some() {
+                0
+            } else if primitive.presentation.record_type == 15 {
+                3
+            } else if primitive.presentation.record_type == 16 {
+                4
             } else {
                 match &primitive.kind {
-                    K::Polyline { electrical, .. }
-                        if electrical == "Wire" || electrical == "Bus" =>
-                    {
-                        view.sch_select_wires
-                    }
-                    K::Text { .. } => view.sch_select_text,
-                    _ => view.sch_select_graphics,
+                    K::Polyline { electrical, .. } if electrical == "Wire" => 1,
+                    K::Polyline { electrical, .. } if electrical == "Bus" => 2,
+                    K::Port { .. } => 7,
+                    K::PowerPort { .. } => 8,
+                    K::Text { .. } => 9,
+                    K::Junction { .. } | K::NoErc { .. } => 11,
+                    _ => 10,
                 }
             };
-            if is_hit && allowed {
-                hit = Some(primitive.component.unwrap_or(primitive.id));
+            if is_hit && view.sch_filters[category] {
+                let parameter = category == 5 || category == 6;
+                hit = Some(
+                    if parameter
+                        || (matches!(primitive.kind, K::Pin { .. })
+                            && ui.input(|i| i.modifiers.ctrl))
+                    {
+                        primitive.id
+                    } else {
+                        primitive.component.unwrap_or(primitive.id)
+                    },
+                );
             }
         }
         if hit.is_none()
-            && view.sch_select_components
+            && view.sch_filters[0]
             && let Some(pointer) = hit_pointer
         {
             hit = component_bounds
@@ -1135,7 +1181,24 @@ pub(super) fn paint(
         }
     }
     if response.clicked() && !view.sch_tool_active {
-        view.selected = hit;
+        if ui.input(|i| i.modifiers.shift) {
+            if view.sch_selection.is_empty()
+                && let Some(id) = view.selected
+            {
+                view.sch_selection.push(id);
+            }
+            if let Some(id) = hit {
+                if view.sch_selection.contains(&id) {
+                    view.sch_selection.retain(|v| *v != id);
+                } else {
+                    view.sch_selection.push(id);
+                }
+            }
+            view.selected = view.sch_selection.first().copied();
+        } else {
+            view.selected = hit;
+            view.sch_selection = hit.into_iter().collect();
+        }
     }
     if response.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);

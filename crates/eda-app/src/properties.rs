@@ -7,9 +7,10 @@ pub(super) struct PropertiesUi {
     pub(super) search: String,
     parameters: bool,
     pub focused: bool,
+    pub(super) schematic: super::schematic_properties::Panel,
 }
 
-fn section(ui: &mut egui::Ui, title: &str, contents: impl FnOnce(&mut egui::Ui)) {
+pub(super) fn section(ui: &mut egui::Ui, title: &str, contents: impl FnOnce(&mut egui::Ui)) {
     let id = ui.make_persistent_id(title);
     let mut open = ui.data_mut(|d| d.get_persisted::<bool>(id).unwrap_or(true));
     let (rect, response) =

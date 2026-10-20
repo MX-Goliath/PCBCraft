@@ -9,6 +9,160 @@ use std::io::{Cursor, Write};
 const ASCII: &[u8] = include_bytes!("../../../fixtures/schematic/minimal.SchDoc");
 
 #[test]
+fn contextual_properties_preserve_raw_parameters_visibility_fonts_models_and_history() {
+    use eda_core::{
+        History,
+        schematic_edit::{Edit, Request},
+    };
+    let ascii = String::from_utf8(ASCII.to_vec())
+        .unwrap()
+        .replace("%UTF8%TEXT=Пример схемы", "%UTF8%TEXT=Первая~1Вторая")
+        .replace("TEXT=100k|NAME=Comment", "TEXT==Resistance|NAME=Comment")
+        + "\r\n|RECORD=41|OWNERINDEX=1|OWNERPARTID=-1|NAME=Resistance|TEXT=10k|ISHIDDEN=T|FONTID=1\r\n|RECORD=44|OWNERINDEX=1\r\n|RECORD=45|OWNERINDEX=16|MODELNAME=R0805|MODELTYPE=PCBLIB|ISCURRENT=T\r\n";
+    let mut doc = import_schematic(ascii.as_bytes(), "properties.SchDoc").unwrap();
+    let original = doc.clone();
+    let s = doc.schematic.as_ref().unwrap();
+    let owner = s.components[0].id;
+    assert_eq!(s.components[0].comment, "10k");
+    assert_eq!(s.components[0].settings.rotation, 1);
+    assert_eq!(s.components[0].settings.models[0].name, "R0805");
+    let hidden = s
+        .parameter_objects
+        .iter()
+        .find(|p| p.presentation.name == "Resistance")
+        .unwrap();
+    let hidden_id = hidden.id;
+    assert!(hidden.presentation.hidden);
+    let mut shown = hidden.clone();
+    shown.presentation.hidden = false;
+    shown.presentation.show_name = true;
+    let mut font = s.fonts[0].clone();
+    font.bold = true;
+    font.name = "Liberation Sans".into();
+    let mut history = History::default();
+    let document = doc.id;
+    history
+        .schematic_edit(
+            &mut doc,
+            Request {
+                document,
+                expected_revision: 0,
+                edit: Edit::Batch(vec![
+                    Edit::PrimitiveProperties {
+                        id: hidden_id,
+                        value: Box::new(shown),
+                    },
+                    Edit::ParameterValue {
+                        component: Some(owner),
+                        name: "resistance".into(),
+                        value: Some("22k".into()),
+                    },
+                    Edit::Font {
+                        id: hidden_id,
+                        font: font.clone(),
+                    },
+                ]),
+            },
+        )
+        .unwrap();
+    let s = doc.schematic.as_ref().unwrap();
+    assert_eq!(s.components[0].comment, "22k");
+    assert!(
+        s.primitives
+            .iter()
+            .any(|p| matches!(&p.kind,K::Text{text,..}if text=="Первая\nВторая"))
+    );
+    assert_eq!(s.components[0].parameters.get("Resistance").unwrap(), "22k");
+    assert!(!s.components[0].parameters.contains_key("resistance"));
+    let p = s.primitive(hidden_id).unwrap();
+    assert!(!p.presentation.hidden);
+    assert!(matches!(&p.kind,K::Text{text,font:index,..} if text=="22k" && s.fonts[*index]==font));
+    let comment = s
+        .primitives
+        .iter()
+        .find(|p| p.text_role == Some(eda_core::schematic::TextRole::Comment))
+        .unwrap();
+    assert_eq!(
+        comment.presentation.raw_text.as_deref(),
+        Some("=Resistance")
+    );
+    assert!(matches!(&comment.kind,K::Text{text,..} if text=="22k"));
+    assert_eq!(s.source, original.schematic.as_ref().unwrap().source);
+    assert_eq!(s.records, original.schematic.as_ref().unwrap().records);
+    let edited = doc.clone();
+    history.undo(&mut doc);
+    assert_eq!(doc, original);
+    history.redo(&mut doc);
+    assert_eq!(doc, edited);
+    // Replacing an expression by its current displayed value still changes the raw property.
+    history
+        .schematic_edit(
+            &mut doc,
+            Request {
+                document,
+                expected_revision: history.revision,
+                edit: Edit::ComponentProperties {
+                    id: owner,
+                    designator: "R1".into(),
+                    comment: "22k".into(),
+                },
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        doc.schematic.as_ref().unwrap().components[0]
+            .parameters
+            .get("Comment")
+            .unwrap(),
+        "22k"
+    );
+    history.undo(&mut doc);
+    assert_eq!(doc, edited);
+    let mut invalid = doc.schematic.as_ref().unwrap().sheet.clone();
+    invalid.options.snap_distance_nm = -1;
+    assert!(
+        history
+            .schematic_edit(
+                &mut doc,
+                Request {
+                    document,
+                    expected_revision: history.revision,
+                    edit: Edit::SheetProperties {
+                        sheet: Box::new(invalid),
+                        size: Point::mm(100, 100)
+                    }
+                }
+            )
+            .is_err()
+    );
+    assert_eq!(doc, edited);
+    let encoded = serde_json::to_vec(&doc).unwrap();
+    let restored: eda_core::Document = serde_json::from_slice(&encoded).unwrap();
+    assert_eq!(restored, doc);
+    history
+        .schematic_edit(
+            &mut doc,
+            Request {
+                document,
+                expected_revision: history.revision,
+                edit: Edit::ParameterValue {
+                    component: Some(owner),
+                    name: "RESISTANCE".into(),
+                    value: None,
+                },
+            },
+        )
+        .unwrap();
+    assert!(
+        doc.schematic
+            .as_ref()
+            .unwrap()
+            .primitive(hidden_id)
+            .is_none()
+    );
+}
+
+#[test]
 fn edited_import_roundtrips_scene_without_changing_native_archive_or_source_records() {
     use eda_core::{
         History,

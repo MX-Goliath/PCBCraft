@@ -21,6 +21,29 @@ pub struct Fragment {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Edit {
+    SheetFont(crate::schematic::SchFont),
+    Font {
+        id: Uuid,
+        font: crate::schematic::SchFont,
+    },
+    SheetProperties {
+        sheet: Box<crate::schematic::Sheet>,
+        size: Point,
+    },
+    PrimitiveProperties {
+        id: Uuid,
+        value: Box<SchPrimitive>,
+    },
+    ComponentDetails {
+        id: Uuid,
+        description: String,
+        settings: crate::schematic::ComponentSettings,
+    },
+    ParameterValue {
+        component: Option<Uuid>,
+        name: String,
+        value: Option<String>,
+    },
     Insert(Fragment),
     Delete(Uuid),
     Transform {
@@ -71,7 +94,8 @@ pub fn preview(doc: &Document, edit: &Edit) -> Result<Document, String> {
         .schematic
         .as_mut()
         .ok_or("Schematic scene is unavailable")?;
-    apply(s, edit, 0)?;
+    apply(s, &mut next.size, edit, 0)?;
+    refresh_parameters(s);
     if s != doc.schematic.as_ref().unwrap() && s.source.is_some() {
         s.source_modified = true;
     }
@@ -79,11 +103,186 @@ pub fn preview(doc: &Document, edit: &Edit) -> Result<Document, String> {
     Ok(next)
 }
 
-fn apply(s: &mut Schematic, edit: &Edit, depth: usize) -> Result<(), String> {
+fn apply(s: &mut Schematic, size: &mut Point, edit: &Edit, depth: usize) -> Result<(), String> {
     if depth > 16 {
         return Err("Edit nesting exceeds limit".into());
     }
     match edit {
+        Edit::SheetFont(font) => {
+            let index = if let Some(i) = s.fonts.iter().position(|f| f == font) {
+                i
+            } else {
+                s.fonts.push(font.clone());
+                s.fonts.len() - 1
+            };
+            s.sheet.system_font = index;
+        }
+        Edit::Font { id, font } => {
+            let index = if let Some(i) = s.fonts.iter().position(|f| f == font) {
+                i
+            } else {
+                s.fonts.push(font.clone());
+                s.fonts.len() - 1
+            };
+            let p = s
+                .primitives
+                .iter_mut()
+                .chain(&mut s.parameter_objects)
+                .find(|p| p.id == *id)
+                .ok_or("Missing object")?;
+            match &mut p.kind {
+                K::Text { font, .. }
+                | K::TextFrame { font, .. }
+                | K::Port { font, .. }
+                | K::PowerPort { font, .. }
+                | K::Pin { font, .. } => *font = index,
+                _ => return Err("Object has no font".into()),
+            }
+        }
+        Edit::SheetProperties {
+            sheet,
+            size: new_size,
+        } => {
+            s.sheet = *sheet.clone();
+            *size = *new_size;
+        }
+        Edit::ComponentDetails {
+            id,
+            description,
+            settings,
+        } => {
+            let c = s
+                .components
+                .iter_mut()
+                .find(|c| c.id == *id)
+                .ok_or("Component no longer exists")?;
+            if c.settings.rotation != settings.rotation {
+                return Err("Use Transform to rotate component geometry".into());
+            }
+            c.description = description.clone();
+            c.settings = settings.clone();
+        }
+        Edit::PrimitiveProperties { id, value } => {
+            let p = s
+                .primitives
+                .iter_mut()
+                .chain(&mut s.parameter_objects)
+                .find(|p| p.id == *id)
+                .ok_or("Object no longer exists")?;
+            if value.id != *id
+                || value.component != p.component
+                || value.source_index != p.source_index
+                || std::mem::discriminant(&value.kind) != std::mem::discriminant(&p.kind)
+                || value.text_role != p.text_role
+                || value.presentation.record_type != p.presentation.record_type
+            {
+                return Err("Object identity cannot change through Properties".into());
+            }
+            let old = p.clone();
+            if !old
+                .presentation
+                .name
+                .eq_ignore_ascii_case(&value.presentation.name)
+            {
+                let values = if let Some(owner) = p.component {
+                    &s.components
+                        .iter()
+                        .find(|c| c.id == owner)
+                        .ok_or("Missing component")?
+                        .parameters
+                } else {
+                    &s.sheet.parameters
+                };
+                if values
+                    .keys()
+                    .any(|k| k.eq_ignore_ascii_case(&value.presentation.name))
+                {
+                    return Err("A parameter with this name already exists".into());
+                }
+            }
+            if (!old.presentation.name.is_empty() && value.presentation.name.trim().is_empty())
+                || (p.text_role == Some(TextRole::Designator)
+                    && value
+                        .presentation
+                        .raw_text
+                        .as_ref()
+                        .is_some_and(|s| s.trim().is_empty()))
+            {
+                return Err("Parameter name and designator cannot be empty".into());
+            }
+            *p = *value.clone();
+            if let Some(text) = &p.presentation.raw_text {
+                if let Some(owner) = p.component {
+                    let c = s
+                        .components
+                        .iter_mut()
+                        .find(|c| c.id == owner)
+                        .ok_or("Missing component")?;
+                    if p.text_role == Some(TextRole::Designator) {
+                        c.designator = text.clone();
+                    } else if !p.presentation.name.is_empty() {
+                        if old.presentation.name != p.presentation.name {
+                            c.parameters.remove(&old.presentation.name);
+                        }
+                        c.parameters
+                            .insert(p.presentation.name.clone(), text.clone());
+                    }
+                } else if !p.presentation.name.is_empty() {
+                    if old.presentation.name != p.presentation.name {
+                        s.sheet.parameters.remove(&old.presentation.name);
+                    }
+                    s.sheet
+                        .parameters
+                        .insert(p.presentation.name.clone(), text.clone());
+                }
+            }
+        }
+        Edit::ParameterValue {
+            component,
+            name,
+            value,
+        } => {
+            if name.trim().is_empty() {
+                return Err("Parameter name cannot be empty".into());
+            }
+            let values = if let Some(id) = component {
+                &mut s
+                    .components
+                    .iter_mut()
+                    .find(|c| c.id == *id)
+                    .ok_or("Missing component")?
+                    .parameters
+            } else {
+                &mut s.sheet.parameters
+            };
+            let key = values
+                .keys()
+                .find(|k| k.eq_ignore_ascii_case(name))
+                .cloned()
+                .unwrap_or_else(|| name.clone());
+            if let Some(value) = value {
+                values.insert(key, value.clone());
+            } else {
+                values.remove(&key);
+                let retain = |p: &SchPrimitive| {
+                    p.component != *component || !p.presentation.name.eq_ignore_ascii_case(name)
+                };
+                s.primitives.retain(retain);
+                s.parameter_objects.retain(retain);
+            }
+            for p in s
+                .primitives
+                .iter_mut()
+                .chain(&mut s.parameter_objects)
+                .filter(|p| {
+                    p.component == *component && p.presentation.name.eq_ignore_ascii_case(name)
+                })
+            {
+                if let Some(value) = value {
+                    p.presentation.raw_text = Some(value.clone());
+                }
+            }
+        }
         Edit::Insert(f) => {
             let mut map = vec![];
             for font in &f.fonts {
@@ -107,13 +306,14 @@ fn apply(s: &mut Schematic, edit: &Edit, depth: usize) -> Result<(), String> {
             s.primitives.extend(primitives);
         }
         Edit::Delete(id) => {
-            let found = s.components.iter().any(|c| c.id == *id)
-                || s.primitives.iter().any(|p| p.id == *id);
+            let found = s.components.iter().any(|c| c.id == *id) || s.primitive(*id).is_some();
             if !found {
                 return Err("Selected object no longer exists".into());
             }
             s.components.retain(|c| c.id != *id);
             s.primitives
+                .retain(|p| p.id != *id && p.component != Some(*id));
+            s.parameter_objects
                 .retain(|p| p.id != *id && p.component != Some(*id));
         }
         Edit::Transform {
@@ -126,10 +326,11 @@ fn apply(s: &mut Schematic, edit: &Edit, depth: usize) -> Result<(), String> {
             for c in &mut s.components {
                 if c.id == *id {
                     c.position = transform_point(c.position, *pivot, *quarter_turns, *delta)?;
+                    c.settings.rotation = (c.settings.rotation + quarter_turns) % 4;
                     found = true;
                 }
             }
-            for p in &mut s.primitives {
+            for p in s.primitives.iter_mut().chain(&mut s.parameter_objects) {
                 if p.id == *id || p.component == Some(*id) {
                     transform_primitive(p, *pivot, *quarter_turns, *delta)?;
                     found = true;
@@ -152,13 +353,24 @@ fn apply(s: &mut Schematic, edit: &Edit, depth: usize) -> Result<(), String> {
                 .iter_mut()
                 .find(|c| c.id == *id)
                 .ok_or("Component no longer exists")?;
-            if c.designator == *designator && c.comment == *comment {
+            let raw_comment = c
+                .parameters
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("Comment"))
+                .map_or(c.comment.as_str(), |(_, v)| v.as_str());
+            if c.designator == *designator && raw_comment == comment {
                 return Ok(());
             }
             c.designator = designator.clone();
             c.comment = comment.clone();
-            c.parameters.insert("Comment".into(), comment.clone());
-            for p in &mut s.primitives {
+            let key = c
+                .parameters
+                .keys()
+                .find(|k| k.eq_ignore_ascii_case("Comment"))
+                .cloned()
+                .unwrap_or_else(|| "Comment".into());
+            c.parameters.insert(key, comment.clone());
+            for p in s.primitives.iter_mut().chain(&mut s.parameter_objects) {
                 if p.component != Some(*id) {
                     continue;
                 }
@@ -179,8 +391,14 @@ fn apply(s: &mut Schematic, edit: &Edit, depth: usize) -> Result<(), String> {
                 });
                 if let K::Text { text, .. } = &mut p.kind {
                     match role {
-                        Some(TextRole::Designator) => *text = designator.clone(),
-                        Some(TextRole::Comment) => *text = comment.clone(),
+                        Some(TextRole::Designator) => {
+                            *text = designator.clone();
+                            p.presentation.raw_text = Some(designator.clone());
+                        }
+                        Some(TextRole::Comment) => {
+                            *text = comment.clone();
+                            p.presentation.raw_text = Some(comment.clone());
+                        }
                         _ => {}
                     }
                 }
@@ -202,6 +420,9 @@ fn apply(s: &mut Schematic, edit: &Edit, depth: usize) -> Result<(), String> {
                 K::Port { name, .. } => *name = text.clone(),
                 _ => return Err("Selected object has no editable text".into()),
             }
+            if p.presentation.raw_text.is_some() {
+                p.presentation.raw_text = Some(text.clone());
+            }
         }
         Edit::Width { id, width_nm } => {
             if !(1..=1_000_000_000).contains(width_nm) {
@@ -222,11 +443,44 @@ fn apply(s: &mut Schematic, edit: &Edit, depth: usize) -> Result<(), String> {
                 return Err("Too many edits".into());
             }
             for edit in edits {
-                apply(s, edit, depth + 1)?;
+                apply(s, size, edit, depth + 1)?;
             }
         }
     }
     Ok(())
+}
+
+fn refresh_parameters(s: &mut Schematic) {
+    use crate::schematic::parameter_text;
+    for c in &mut s.components {
+        if let Some(value) = c
+            .parameters
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case("Comment"))
+            .map(|(_, v)| v)
+        {
+            c.comment = parameter_text(value, &c.parameters, &s.sheet.parameters);
+        }
+    }
+    for p in s.primitives.iter_mut().chain(&mut s.parameter_objects) {
+        let Some(raw) = &p.presentation.raw_text else {
+            continue;
+        };
+        if let K::Text { text, .. } = &mut p.kind {
+            let c = p
+                .component
+                .and_then(|id| s.components.iter().find(|c| c.id == id));
+            *text = if p.text_role == Some(TextRole::Designator) {
+                c.map_or_else(|| raw.clone(), |c| c.designator.clone())
+            } else {
+                parameter_text(
+                    raw,
+                    c.map_or(&s.sheet.parameters, |c| &c.parameters),
+                    &s.sheet.parameters,
+                )
+            };
+        }
+    }
 }
 
 pub fn transform_point(p: Point, pivot: Point, turns: u32, delta: Point) -> Result<Point, String> {
@@ -343,25 +597,22 @@ pub fn anchor(s: &Schematic, id: Uuid) -> Option<Point> {
         .find(|c| c.id == id)
         .map(|c| c.position)
         .or_else(|| {
-            s.primitives
-                .iter()
-                .find(|p| p.id == id)
-                .and_then(|p| match &p.kind {
-                    K::Polyline { points, .. } => points.first().copied(),
-                    K::Bezier { points } => Some(points[0]),
-                    K::Rectangle { a, .. }
-                    | K::TextFrame { a, .. }
-                    | K::Image { a, .. }
-                    | K::Unsupported { a, .. } => Some(*a),
-                    K::Arc { centre, .. } => Some(*centre),
-                    K::Text { position, .. }
-                    | K::Pin { position, .. }
-                    | K::PowerPort { position, .. }
-                    | K::Port { position, .. }
-                    | K::Junction { position, .. }
-                    | K::NoErc { position }
-                    | K::Ieee { position, .. } => Some(*position),
-                })
+            s.primitive(id).and_then(|p| match &p.kind {
+                K::Polyline { points, .. } => points.first().copied(),
+                K::Bezier { points } => Some(points[0]),
+                K::Rectangle { a, .. }
+                | K::TextFrame { a, .. }
+                | K::Image { a, .. }
+                | K::Unsupported { a, .. } => Some(*a),
+                K::Arc { centre, .. } => Some(*centre),
+                K::Text { position, .. }
+                | K::Pin { position, .. }
+                | K::PowerPort { position, .. }
+                | K::Port { position, .. }
+                | K::Junction { position, .. }
+                | K::NoErc { position }
+                | K::Ieee { position, .. } => Some(*position),
+            })
         })
 }
 
@@ -378,6 +629,7 @@ pub fn extract(s: &Schematic, id: Uuid) -> Result<Fragment, String> {
         primitives: s
             .primitives
             .iter()
+            .chain(&s.parameter_objects)
             .filter(|p| p.id == id || p.component == Some(id))
             .cloned()
             .collect(),
@@ -452,6 +704,7 @@ impl Fragment {
         let mut f = self.clone();
         for c in &mut f.components {
             c.position = transform_point(c.position, pivot, turns, delta)?;
+            c.settings.rotation = (c.settings.rotation + turns) % 4;
         }
         for p in &mut f.primitives {
             transform_primitive(p, pivot, turns, delta)?;
@@ -462,6 +715,7 @@ impl Fragment {
 
 pub fn primitive(kind: K, component: Option<Uuid>) -> SchPrimitive {
     SchPrimitive {
+        presentation: Default::default(),
         id: Uuid::new_v4(),
         source_index: AUTHORED,
         component,
@@ -481,9 +735,13 @@ pub fn primitive(kind: K, component: Option<Uuid>) -> SchPrimitive {
 pub fn snap_point(s: &Schematic, raw: Point, step: i64, radius: i64) -> Point {
     let step = step.max(1) as i128;
     let round = |n: i64| (((n as i128 + step / 2).div_euclid(step)) * step) as i64;
-    let mut result = Point {
-        x: round(raw.x),
-        y: round(raw.y),
+    let mut result = if s.sheet.options.snap_enabled {
+        Point {
+            x: round(raw.x),
+            y: round(raw.y),
+        }
+    } else {
+        raw
     };
     let mut best = (radius.max(0) as f64).powi(2);
     let mut consider = |p: Point| {
@@ -495,7 +753,11 @@ pub fn snap_point(s: &Schematic, raw: Point, step: i64, radius: i64) -> Point {
             result = p;
         }
     };
-    for p in &s.primitives {
+    for p in s
+        .primitives
+        .iter()
+        .filter(|p| !p.presentation.hidden && s.sheet.options.electrical_snap)
+    {
         match &p.kind {
             K::Pin {
                 position,
@@ -578,6 +840,7 @@ pub fn place(
 ) -> Result<Fragment, String> {
     let mut f = Fragment::default();
     let text = |position, text: String, role, component| {
+        let raw_text = text.clone();
         let mut p = primitive(
             K::Text {
                 position,
@@ -589,6 +852,15 @@ pub fn place(
             component,
         );
         p.text_role = role;
+        p.presentation.raw_text = Some(raw_text);
+        p.presentation.name = match role {
+            Some(TextRole::Designator) => "Designator",
+            Some(TextRole::Comment) => "Comment",
+            _ => "",
+        }
+        .into();
+        p.presentation.auto_position = component.is_some();
+        p.presentation.allow_sync = true;
         p
     };
     match kind {
@@ -598,6 +870,7 @@ pub fn place(
             }
             let id = Uuid::new_v4();
             f.components.push(Component {
+                settings: Default::default(),
                 id,
                 source_index: AUTHORED,
                 position: Point::default(),

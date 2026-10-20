@@ -89,6 +89,8 @@ pub struct View {
     pub sch_select_wires: bool,
     pub sch_select_text: bool,
     pub sch_select_graphics: bool,
+    pub sch_filters: [bool; 12],
+    pub sch_selection: Vec<Uuid>,
     /// Ephemeral display strings supplied by the shell, never document geometry.
     #[serde(skip)]
     pub source_display_path: String,
@@ -152,6 +154,8 @@ impl Default for View {
             sch_select_wires: true,
             sch_select_text: true,
             sch_select_graphics: true,
+            sch_filters: [true; 12],
+            sch_selection: vec![],
             source_display_path: String::new(),
             display_date: String::new(),
             sch_tool_active: false,

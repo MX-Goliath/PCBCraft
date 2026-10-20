@@ -15,7 +15,6 @@ pub(super) struct Editor {
     pub kind: Option<Placement>,
     pub value: String,
     pub designator: String,
-    pub properties: Option<PropertyDraft>,
     pointer: Option<Point>,
 }
 
@@ -42,17 +41,6 @@ enum Tool {
     },
 }
 
-#[derive(Clone)]
-pub(super) struct PropertyDraft {
-    pub id: Uuid,
-    pub revision: u64,
-    pub designator: String,
-    pub value: String,
-    pub x: String,
-    pub y: String,
-    pub width: String,
-}
-
 impl Editor {
     pub fn active(&self) -> bool {
         !matches!(self.tool, Tool::Select)
@@ -62,13 +50,6 @@ impl Editor {
         self.kind = None;
         view.sch_preview = None;
         view.sch_tool_active = false;
-    }
-    pub fn caption(&self) -> &'static str {
-        match self.tool {
-            Tool::Select => "Select",
-            Tool::Move { .. } => "Move",
-            _ => self.kind.map_or("Place", Placement::label),
-        }
     }
 }
 
@@ -83,7 +64,6 @@ impl OpenDocument {
                 edit: command,
             },
         )?;
-        self.sch_editor.properties = None;
         if let Some(id) = self.view.selected
             && self
                 .model
@@ -93,6 +73,11 @@ impl OpenDocument {
                 .is_none()
         {
             self.view.selected = None;
+        }
+        if let Some(s) = &self.model.schematic {
+            self.view
+                .sch_selection
+                .retain(|id| edit::anchor(s, *id).is_some());
         }
         Ok(result)
     }
@@ -226,6 +211,15 @@ impl PcbCraft {
         if self.documents[i].model.kind != DocumentKind::Schematic {
             return;
         }
+        if self.documents[i].view.sch_selection.len() > 1
+            && !matches!(action, SchAction::Select | SchAction::Paste)
+        {
+            self.message(
+                true,
+                "Editing multiple schematic objects is not supported yet",
+            );
+            return;
+        }
         let doc = &mut self.documents[i];
         let selected = doc.view.selected;
         let revision = doc.history.revision;
@@ -310,6 +304,7 @@ impl PcbCraft {
                             || *text == old)
                     {
                         *text = new_name.clone();
+                        p.presentation.raw_text = Some(new_name.clone());
                     }
                 }
             }
@@ -378,7 +373,7 @@ impl PcbCraft {
                 doc.sch_editor.cancel(&mut doc.view);
             } else {
                 doc.view.selected = None;
-                doc.sch_editor.properties = None;
+                doc.view.sch_selection.clear();
             }
             return true;
         }
@@ -432,7 +427,8 @@ impl PcbCraft {
             return;
         };
         let step = s.sheet.snap_nm;
-        let radius = (8.0 / doc.view.camera.pixels_per_mm * 1e6) as i64;
+        let radius = ((8.0 / doc.view.camera.pixels_per_mm * 1e6) as i64)
+            .min(s.sheet.options.snap_distance_nm);
         let snap = |p| edit::snap_point(s, p, step, radius);
         let point = input.point.map(snap);
         if point.is_some() {
@@ -443,6 +439,7 @@ impl PcbCraft {
         let mut finish = false;
         let mut error = None;
         if !doc.sch_editor.active()
+            && doc.view.sch_selection.len() <= 1
             && (input.drag_started || input.drag_stopped)
             && let (Some(id), Some(origin)) = (input.hit, input.press_origin)
         {

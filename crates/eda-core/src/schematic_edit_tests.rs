@@ -185,6 +185,21 @@ fn snapping_uses_electrical_pin_end_and_wire_interior_without_changing_model() {
         None,
     ));
     let original = s.clone();
+    let mut without_grid = s.clone();
+    without_grid.sheet.options.snap_enabled = false;
+    let nearby = Point {
+        x: 5_100_000,
+        y: 10_100_000,
+    };
+    assert_eq!(
+        snap_point(&without_grid, nearby, 2_540_000, 200_000),
+        Point::mm(5, 10)
+    );
+    without_grid.sheet.options.electrical_snap = false;
+    assert_eq!(
+        snap_point(&without_grid, nearby, 2_540_000, 200_000),
+        nearby
+    );
     assert_eq!(
         snap_point(
             &s,

@@ -208,3 +208,31 @@ Ctrl+Z восстановил исходную позицию и снял dirty 
 Удаление группы проверено на уровне команды Delete; удаление пользовательских
 объектов через Windows UI для проверки не выполнялось.
 Границы и непроверенные состояния: schematic-editing.md и features.json.
+
+## Schematic Properties, 20 октября 2026 — промежуточная итерация
+
+PASS: fmt check, clippy workspace/all-targets с -D warnings, 31 workspace
+tests, Windows debug build, cargo check workspace/all-targets для
+x86_64-unknown-linux-gnu. Linux GUI в этом окружении не запускался.
+
+Новые регрессии проверяют ширину 316 px в течение нескольких кадров для
+Document/Component/Parameter/Pin при длинных шрифтах, моделях и значениях;
+копирование сохраняет согласованные отображаемый и исходный Designator.
+IO/commands: скрытые параметры и пустые значения, исходный Comment-expression,
+пересчёт зависимого текста, отдельный шрифт, модели, case-insensitive изменение,
+удаление параметра, atomic rejection, Undo/Redo, JSON и неизменность native archive.
+Snapping grid/electrical включаются независимо.
+
+Windows real GUI: Document Options, Component R9, отдельный Parameter,
+таблица моделей/избранных Power/Resistance/ссылок, переключение контекстов.
+Comment R9 ="R_USDD" заменён на 47k; по Tab подпись обновилась на листе.
+После возврата фокуса canvas Ctrl+Z восстановил expression, подпись и clean marker.
+Открыты собственные reference fixtures для наблюдения дополнительных состояний.
+Нативный пользовательский документ в Altium не менялся/не сохранялся;
+SHA256 ReferenceB.SchDoc остался
+redacted-source-sha256.
+
+Проверки выше **не означают точного визуального совпадения во всех состояниях**.
+Оставшиеся расхождения и ненаблюдённые контексты перечислены в
+interface/schematic-properties.md и features.json. Components/IntLib не начаты:
+условие пользователя о завершении Properties ещё не выполнено.
