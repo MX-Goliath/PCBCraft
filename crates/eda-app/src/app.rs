@@ -650,6 +650,10 @@ impl PcbCraft {
                             self.settings.properties = true;
                             self.settings.messages = false;
                             ctx.memory_mut(|m| *m = egui::Memory::default());
+                            theme::apply(ctx);
+                            for doc in &mut self.documents {
+                                doc.view.camera.fitted = false;
+                            }
                             ui.close();
                         }
                         ui.separator();
@@ -1020,8 +1024,36 @@ impl PcbCraft {
                                 });
                             });
                     }
+                    if self.documents[index].model.kind == DocumentKind::Schematic {
+                        egui::TopBottomPanel::bottom("schematic_editor")
+                            .exact_height(24.0)
+                            .frame(egui::Frame::NONE.fill(Color32::from_gray(54)))
+                            .show_inside(ui, |ui| {
+                                ui.horizontal_centered(|ui| {
+                                    ui.selectable_label(true, "Editor")
+                                        .on_hover_text("Schematic editor");
+                                    ui.label(
+                                        self.documents[index]
+                                            .model
+                                            .name
+                                            .trim_end_matches(".SchDoc"),
+                                    );
+                                });
+                            });
+                    }
                     let canvas = ui.available_rect_before_wrap();
+                    if self.documents[index].model.kind == DocumentKind::Schematic {
+                        ui.painter()
+                            .rect_filled(canvas, 0.0, Color32::from_gray(195));
+                        ui.add_space(26.0);
+                    }
                     let doc = &mut self.documents[index];
+                    doc.view.source_display_path = doc
+                        .source_path
+                        .as_ref()
+                        .or(doc.path.as_ref())
+                        .map_or_else(|| doc.model.name.clone(), |p| p.display().to_string());
+                    doc.view.display_date = chrono::Local::now().format("%m.%d.%Y").to_string();
                     let output = eda_render::canvas(ui, &doc.model, &mut doc.view);
                     self.cursor_mm = output.cursor_mm;
                     self.active_bar(ctx, canvas);

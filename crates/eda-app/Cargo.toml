@@ -19,5 +19,7 @@ wgpu.workspace = true
 serde.workspace = true
 uuid.workspace = true
 rfd = "0.15.4"
+fontdb = "0.24.0"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

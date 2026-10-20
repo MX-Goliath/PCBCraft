@@ -652,7 +652,10 @@ fn is_visible(records: &[SourceRecord], index: usize, show_template: bool) -> bo
         if record.record_type == 1 {
             return (f.n("OWNERPARTID") <= 0
                 || f.n("OWNERPARTID") == record.fields.n("CURRENTPARTID").max(1))
-                && f.n("OWNERPARTDISPLAYMODE") == record.fields.n("DISPLAYMODE");
+                && (([34, 41].contains(&records[index].record_type)
+                    && records.get(owner(f)).is_some_and(|r| r.record_type == 1)
+                    && !f.contains_key("OWNERPARTDISPLAYMODE"))
+                    || f.n("OWNERPARTDISPLAYMODE") == record.fields.n("DISPLAYMODE"));
         }
         let next = owner(&record.fields);
         if next >= i {
@@ -807,7 +810,12 @@ fn build_document(
         } else {
             [4, 4]
         },
-        margin_nm: 5_000_000,
+        margin_nm: if custom && f.contains_key("CUSTOMMARGINWIDTH") {
+            f.coord("CUSTOMMARGINWIDTH").clamp(0, 100_000_000)
+        } else {
+            5_080_000
+        },
+        system_font: f.n("SYSTEMFONT").max(1) as usize - 1,
         zone_origin_lower_right: f.n("REFERENCEZONESTYLE") == 1,
         grid_nm: f.coord("VISIBLEGRIDSIZE").max(254_000),
         snap_nm: f.coord("SNAPGRIDSIZE").max(254_000),
@@ -868,6 +876,9 @@ fn build_document(
                     _ => 254_000,
                 },
                 line_style: f.n("LINESTYLE") as u32,
+                start_shape: f.n("STARTLINESHAPE") as u32,
+                end_shape: f.n("ENDLINESHAPE") as u32,
+                line_shape_size: f.n("LINESHAPESIZE") as u32,
                 kind,
             });
         }
@@ -910,6 +921,11 @@ fn primitive_kind(
 ) -> Result<Option<SchPrimitiveKind>, String> {
     use SchPrimitiveKind as K;
     let f = &r.fields;
+    // Pin-owned parameters (for example Net Name) are metadata for the pin,
+    // not free-standing strings on the sheet. Pin name/number are drawn by Pin.
+    if r.record_type == 41 && records.get(owner(f)).is_some_and(|r| r.record_type == 2) {
+        return Ok(None);
+    }
     let a = f.point("LOCATION");
     let b = f.point("CORNER");
     let orientation = f.n("ORIENTATION") as u32;
@@ -1056,7 +1072,12 @@ fn primitive_kind(
                 number: f.text("DESIGNATOR"),
                 show_name: flags & 8 != 0,
                 show_number: flags & 16 != 0,
-                font: f.n("NAME_CUSTOMFONTID").max(1) as usize - 1,
+                font: f.get("NAME_CUSTOMFONTID").map_or(default_font, |_| {
+                    f.n("NAME_CUSTOMFONTID").max(1) as usize - 1
+                }),
+                number_font: Some(f.get("DESIGNATOR_CUSTOMFONTID").map_or(default_font, |_| {
+                    f.n("DESIGNATOR_CUSTOMFONTID").max(1) as usize - 1
+                })),
                 electrical: f.n("ELECTRICAL") as u32,
                 outer_symbol: f.n("SYMBOL_OUTEREDGE") as u32,
                 inner_symbol: f.n("SYMBOL_INNEREDGE") as u32,
@@ -1129,7 +1150,7 @@ fn primitive_kind(
         22 => K::NoErc { position: a },
         3 => {
             let symbol = f.n("SYMBOL") as u32;
-            if ![0, 1, 3].contains(&symbol) {
+            if ![0, 1, 3, 11].contains(&symbol) {
                 *unsupported.entry(3).or_default() += 1;
             }
             K::Ieee {

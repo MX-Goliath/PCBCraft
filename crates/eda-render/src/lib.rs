@@ -38,7 +38,7 @@ impl Camera {
         let height = doc.size.y as f64 / 1e6;
         self.centre_mm = [width / 2.0, height / 2.0];
         let padding = if doc.kind == DocumentKind::Schematic {
-            40.0
+            0.0
         } else {
             120.0
         };
@@ -89,6 +89,11 @@ pub struct View {
     pub sch_select_wires: bool,
     pub sch_select_text: bool,
     pub sch_select_graphics: bool,
+    /// Ephemeral display strings supplied by the shell, never document geometry.
+    #[serde(skip)]
+    pub source_display_path: String,
+    #[serde(skip)]
+    pub display_date: String,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -139,6 +144,8 @@ impl Default for View {
             sch_select_wires: true,
             sch_select_text: true,
             sch_select_graphics: true,
+            source_display_path: String::new(),
+            display_date: String::new(),
         }
     }
 }
@@ -240,6 +247,20 @@ pub fn canvas(ui: &mut egui::Ui, doc: &Document, view: &mut View) -> CanvasOutpu
         if scroll != 0.0 {
             view.camera
                 .zoom_at(pointer, rect, (scroll as f64 * 0.003).exp());
+        }
+        if doc.kind == DocumentKind::Schematic && !ui.ctx().wants_keyboard_input() {
+            let factor = ui.input(|i| {
+                if i.key_pressed(egui::Key::PageUp) {
+                    1.5
+                } else if i.key_pressed(egui::Key::PageDown) {
+                    1.0 / 1.5
+                } else {
+                    1.0
+                }
+            });
+            if factor != 1.0 {
+                view.camera.zoom_at(pointer, rect, factor);
+            }
         }
     }
     if response.double_clicked() {

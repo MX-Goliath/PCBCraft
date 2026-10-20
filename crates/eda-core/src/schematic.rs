@@ -45,6 +45,8 @@ pub struct Sheet {
     pub zones: [u32; 2],
     #[serde(default)]
     pub zone_origin_lower_right: bool,
+    #[serde(default)]
+    pub system_font: usize,
     pub margin_nm: i64,
     pub grid_nm: i64,
     pub snap_nm: i64,
@@ -88,6 +90,12 @@ pub struct SchPrimitive {
     pub fill: Option<u32>,
     pub width_nm: i64,
     pub line_style: u32,
+    #[serde(default)]
+    pub start_shape: u32,
+    #[serde(default)]
+    pub end_shape: u32,
+    #[serde(default)]
+    pub line_shape_size: u32,
     pub kind: SchPrimitiveKind,
 }
 
@@ -145,6 +153,8 @@ pub enum SchPrimitiveKind {
         show_number: bool,
         font: usize,
         electrical: u32,
+        #[serde(default)]
+        number_font: Option<usize>,
         outer_symbol: u32,
         inner_symbol: u32,
     },

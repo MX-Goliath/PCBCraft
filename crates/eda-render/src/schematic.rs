@@ -17,7 +17,9 @@ fn direction(orientation: u32) -> Vec2 {
 }
 fn font_family(font: &SchFont) -> FontFamily {
     let name = font.name.to_ascii_lowercase();
-    let face = if name.contains("gost") {
+    let face = if name == "altium gost type a" {
+        "sch-altium-gost"
+    } else if name.contains("gost") {
         "sch-gost"
     } else if name.contains("times") || name.contains("serif") {
         "sch-serif"
@@ -49,6 +51,47 @@ impl Scene<'_> {
     }
     fn nm(&self, n: i64) -> f32 {
         (n as f64 / 1e6 * self.camera.pixels_per_mm) as f32
+    }
+    fn line(&self, a: Pos2, b: Pos2, stroke: Stroke) {
+        // GDI-style cosmetic strokes: an integral number of physical pixels.
+        // Keep topology/world coordinates intact when a view is zoomed.
+        let ppp = self.painter.ctx().pixels_per_point();
+        // Keep a visible one-point minimum at sheet fit.
+        // A one-physical-pixel mesh can disappear when the desktop uses 150% DPI.
+        let pixels = (stroke.width.max(1.0) * ppp).round().max(1.0);
+        let width = pixels / ppp;
+        if (a.x - b.x).abs() < 0.001 || (a.y - b.y).abs() < 0.001 {
+            let phase = if pixels as u32 % 2 == 1 { 0.5 } else { 0.0 };
+            let snap = |v: f32| ((v * ppp).round() + phase) / ppp;
+            let (a, b) = if (a.x - b.x).abs() < 0.001 {
+                (Pos2::new(snap(a.x), a.y), Pos2::new(snap(a.x), b.y))
+            } else {
+                (Pos2::new(a.x, snap(a.y)), Pos2::new(b.x, snap(a.y)))
+            };
+            self.painter
+                .line_segment([a, b], Stroke::new(width, stroke.color));
+        } else {
+            self.painter
+                .line_segment([a, b], Stroke::new(width, stroke.color));
+        }
+    }
+    fn line_end(&self, tip: Pos2, previous: Pos2, shape: u32, size: u32, stroke: Stroke) {
+        if shape != 1 || tip == previous {
+            return;
+        }
+        let d = (tip - previous).normalized();
+        let side = Vec2::new(-d.y, d.x);
+        let length = self.nm(1_016_000 * (size.min(4) as i64 + 1));
+        self.poly(
+            vec![
+                tip - d * length + side * length * 0.4,
+                tip,
+                tip - d * length - side * length * 0.4,
+            ],
+            false,
+            None,
+            stroke,
+        );
     }
     fn text(
         &self,
@@ -155,14 +198,12 @@ impl Scene<'_> {
                     self.painter.add(Shape::mesh(mesh));
                 }
             }
-            self.painter.add(egui::epaint::PathShape {
-                points,
-                closed: true,
-                fill: Color32::TRANSPARENT,
-                stroke: stroke.into(),
-            });
-        } else {
-            self.painter.add(Shape::line(points, stroke));
+        }
+        for pair in points.windows(2) {
+            self.line(pair[0], pair[1], stroke);
+        }
+        if closed && points.len() > 2 {
+            self.line(*points.last().unwrap(), points[0], stroke);
         }
         bounds
     }
@@ -174,6 +215,22 @@ impl Scene<'_> {
         let bounds = match &p.kind {
             K::Polyline { points, closed, .. } => {
                 let points: Vec<_> = points.iter().map(|p| self.screen(*p)).collect();
+                if !closed && points.len() >= 2 {
+                    self.line_end(
+                        points[0],
+                        points[1],
+                        p.start_shape,
+                        p.line_shape_size,
+                        stroke,
+                    );
+                    self.line_end(
+                        points[points.len() - 1],
+                        points[points.len() - 2],
+                        p.end_shape,
+                        p.line_shape_size,
+                        stroke,
+                    );
+                }
                 if let Some(pos) = pointer {
                     hit = points
                         .windows(2)
@@ -207,15 +264,29 @@ impl Scene<'_> {
             }
             K::Rectangle { a, b, radius } => {
                 let rect = Rect::from_two_pos(self.screen(*a), self.screen(*b));
-                self.painter.rect(
-                    rect,
-                    self.nm(radius.x.min(radius.y))
-                        .min(rect.height() / 2.0)
-                        .clamp(0.0, 255.0) as u8,
-                    fill.unwrap_or(Color32::TRANSPARENT),
-                    stroke,
-                    StrokeKind::Middle,
-                );
+                if radius.x == 0 && radius.y == 0 {
+                    self.poly(
+                        vec![
+                            rect.left_top(),
+                            rect.right_top(),
+                            rect.right_bottom(),
+                            rect.left_bottom(),
+                        ],
+                        true,
+                        fill,
+                        stroke,
+                    );
+                } else {
+                    self.painter.rect(
+                        rect,
+                        self.nm(radius.x.min(radius.y))
+                            .min(rect.height() / 2.0)
+                            .clamp(0.0, 255.0) as u8,
+                        fill.unwrap_or(Color32::TRANSPARENT),
+                        stroke,
+                        StrokeKind::Middle,
+                    );
+                }
                 if let Some(pos) = pointer {
                     hit = rect.expand(3.0).contains(pos);
                 }
@@ -433,6 +504,7 @@ impl Scene<'_> {
                 show_name,
                 show_number,
                 font,
+                number_font,
                 outer_symbol,
                 inner_symbol,
                 ..
@@ -441,8 +513,8 @@ impl Scene<'_> {
                 let d = direction(*orientation);
                 let b = a + d * self.nm(*length_nm);
                 let perpendicular = Vec2::new(d.y, -d.x);
-                let margin = self.nm(762_000).max(2.0);
-                self.painter.line_segment([a, b], stroke);
+                let margin = self.nm(1_778_000);
+                self.line(a, b, stroke);
                 if *outer_symbol == 1 {
                     self.painter
                         .circle(a, self.nm(508_000).max(1.0), Color32::WHITE, stroke);
@@ -477,9 +549,9 @@ impl Scene<'_> {
                 }
                 if *show_number && !number.is_empty() {
                     bounds = bounds.union(self.label(
-                        a + (b - a) * 0.5 + perpendicular * margin,
+                        a + (b - a) * 0.5 + perpendicular * self.nm(762_000),
                         number,
-                        *font,
+                        number_font.unwrap_or(*font),
                         orientation % 2,
                         1,
                         c,
@@ -501,7 +573,8 @@ impl Scene<'_> {
                 let across = Vec2::new(-d.y, d.x);
                 let length = self.nm(2_540_000);
                 let b = a + d * length;
-                self.painter.line_segment([a, b], stroke);
+                let stem_end = if *style == 1 { b - d * length * 0.5 } else { b };
+                self.line(a, stem_end, stroke);
                 match style {
                     4..=6 => {
                         for (n, scale) in [1.0, 0.65, 0.25].into_iter().enumerate() {
@@ -522,7 +595,7 @@ impl Scene<'_> {
                                 b,
                                 b - d * length * 0.5 - across * length * 0.4,
                             ],
-                            false,
+                            *style == 1,
                             None,
                             stroke,
                         );
@@ -537,7 +610,11 @@ impl Scene<'_> {
                 let mut bounds = Rect::from_two_pos(a, b).expand(length * 0.5);
                 if *show_name {
                     bounds = bounds.union(self.label(
-                        b + d * length * 0.5,
+                        b + d * if orientation % 2 == 0 {
+                            length * 0.5
+                        } else {
+                            0.0
+                        },
                         text,
                         *font,
                         0,
@@ -595,14 +672,33 @@ impl Scene<'_> {
             } => {
                 let c0 = self.screen(*position);
                 let radius = self.nm(*radius_nm).max(1.2);
-                self.painter.circle_filled(c0, radius, c);
+                // Native junctions adopt the adjoining wire's display colour.
+                // This is a paint rule, not a compiled electrical netlist.
+                let wire_color = self
+                    .schematic
+                    .and_then(|s| {
+                        s.primitives.iter().find_map(|p| match &p.kind {
+                            K::Polyline {
+                                points, electrical, ..
+                            } if electrical == "Wire"
+                                && points
+                                    .windows(2)
+                                    .any(|pair| position.on_segment(pair[0], pair[1])) =>
+                            {
+                                Some(color(p.color))
+                            }
+                            _ => None,
+                        })
+                    })
+                    .unwrap_or(c);
+                self.painter.circle_filled(c0, radius, wire_color);
                 let bounds = Rect::from_center_size(c0, Vec2::splat(radius * 2.0));
                 hit = pointer.is_some_and(|p| bounds.expand(3.0).contains(p));
                 bounds
             }
             K::NoErc { position } => {
                 let c0 = self.screen(*position);
-                let radius = self.nm(1_270_000);
+                let radius = self.nm(635_000);
                 self.painter
                     .line_segment([c0 - Vec2::splat(radius), c0 + Vec2::splat(radius)], stroke);
                 self.painter.line_segment(
@@ -628,8 +724,7 @@ impl Scene<'_> {
                 let d = direction(*orientation);
                 let perpendicular = Vec2::new(-d.y, d.x) * if *mirrored { -1.0 } else { 1.0 };
                 if *symbol == 1 {
-                    self.painter
-                        .circle(a, radius * 0.25, Color32::WHITE, stroke);
+                    self.painter.circle(a, radius * 0.5, Color32::WHITE, stroke);
                 } else if *symbol == 3 {
                     self.poly(
                         vec![
@@ -638,6 +733,17 @@ impl Scene<'_> {
                             a - d * radius - perpendicular * radius,
                         ],
                         false,
+                        None,
+                        stroke,
+                    );
+                } else if *symbol == 11 {
+                    self.poly(
+                        vec![
+                            a,
+                            a - perpendicular * radius * 1.5,
+                            a + d * radius * 1.5 - perpendicular * radius * 0.75,
+                        ],
+                        true,
                         None,
                         stroke,
                     );
@@ -669,6 +775,26 @@ impl Scene<'_> {
             }
         };
         (bounds, hit)
+    }
+}
+
+fn elide_path(path: &str) -> String {
+    let path = path.strip_prefix("\\\\?\\").unwrap_or(path);
+    let normalized = path.replace('\\', "/");
+    let parts: Vec<_> = normalized.split('/').collect();
+    if parts.len() > 3 {
+        let separator = if path.contains('\\') { "\\" } else { "/" };
+        format!(
+            "{}{}{}{}...{}{}",
+            parts[0],
+            separator,
+            parts[1],
+            separator,
+            separator,
+            parts.last().unwrap()
+        )
+    } else {
+        path.to_owned()
     }
 }
 
@@ -726,23 +852,28 @@ pub(super) fn paint(
     painter.rect_filled(board, 0.0, background);
     if view.grid {
         let mut step = view.grid_nm as f64 / 1e6;
-        while step * view.camera.pixels_per_mm < 14.0 {
-            step *= 5.0;
+        while step * view.camera.pixels_per_mm < 5.0 {
+            step *= 10.0;
         }
         let count_x = (doc.size.x as f64 / 1e6 / step).ceil() as usize;
         let count_y = (doc.size.y as f64 / 1e6 / step).ceil() as usize;
-        let stroke = Stroke::new(0.4, Color32::from_gray(205));
         for x in 1..count_x.min(1000) {
+            let major = (x as f64 * step / 10.0).fract().abs() < 0.001;
+            let stroke = Stroke::new(0.4, Color32::from_gray(if major { 220 } else { 246 }));
             let x = board.left() + (x as f64 * step * view.camera.pixels_per_mm) as f32;
-            painter.line_segment(
-                [Pos2::new(x, board.top()), Pos2::new(x, board.bottom())],
+            scene.line(
+                Pos2::new(x, board.top()),
+                Pos2::new(x, board.bottom()),
                 stroke,
             );
         }
         for y in 1..count_y.min(1000) {
+            let major = (y as f64 * step / 10.0).fract().abs() < 0.001;
+            let stroke = Stroke::new(0.4, Color32::from_gray(if major { 220 } else { 246 }));
             let y = board.bottom() - (y as f64 * step * view.camera.pixels_per_mm) as f32;
-            painter.line_segment(
-                [Pos2::new(board.left(), y), Pos2::new(board.right(), y)],
+            scene.line(
+                Pos2::new(board.left(), y),
+                Pos2::new(board.right(), y),
                 stroke,
             );
         }
@@ -750,38 +881,72 @@ pub(super) fn paint(
     if sheet.is_none_or(|s| s.border) {
         let margin = scene.nm(sheet.map_or(5_000_000, |s| s.margin_nm));
         let border = board.shrink(margin);
-        painter.rect_stroke(
-            border,
-            0.0,
+        scene.poly(
+            vec![
+                border.left_top(),
+                border.right_top(),
+                border.right_bottom(),
+                border.left_bottom(),
+            ],
+            true,
+            None,
             Stroke::new(0.75, Color32::BLACK),
-            StrokeKind::Inside,
         );
         let zones = sheet.map_or([4, 4], |s| s.zones);
+        let system_font = sheet.map_or(0, |s| s.system_font);
         let lower_right = sheet.is_some_and(|s| s.zone_origin_lower_right);
         for x in 0..zones[0] {
             let centre = board.left() + (x as f32 + 0.5) * board.width() / zones[0] as f32;
             for y in [board.top() + margin * 0.5, board.bottom() - margin * 0.5] {
-                painter.text(
+                scene.text(
                     Pos2::new(centre, y),
-                    Align2::CENTER_CENTER,
-                    (if lower_right { zones[0] - x } else { x + 1 }).to_string(),
-                    FontId::proportional(8.0),
+                    &(if lower_right { zones[0] - x } else { x + 1 }).to_string(),
+                    system_font,
+                    0,
+                    4,
                     Color32::BLACK,
                 );
+            }
+            if x > 0 {
+                let x = board.left() + x as f32 * board.width() / zones[0] as f32;
+                for (a, b) in [
+                    (board.top(), border.top()),
+                    (border.bottom(), board.bottom()),
+                ] {
+                    scene.line(
+                        Pos2::new(x, a),
+                        Pos2::new(x, b),
+                        Stroke::new(0.75, Color32::BLACK),
+                    );
+                }
             }
         }
         for y in 0..zones[1] {
             let centre = board.bottom() - (y as f32 + 0.5) * board.height() / zones[1] as f32;
             for x in [board.left() + margin * 0.5, board.right() - margin * 0.5] {
-                painter.text(
+                scene.text(
                     Pos2::new(x, centre),
-                    Align2::CENTER_CENTER,
-                    char::from_u32('A' as u32 + if lower_right { y } else { zones[1] - y - 1 })
+                    &char::from_u32('A' as u32 + if lower_right { y } else { zones[1] - y - 1 })
                         .unwrap_or('?')
                         .to_string(),
-                    FontId::proportional(8.0),
+                    system_font,
+                    0,
+                    4,
                     Color32::BLACK,
                 );
+            }
+            if y > 0 {
+                let y = board.bottom() - y as f32 * board.height() / zones[1] as f32;
+                for (a, b) in [
+                    (board.left(), border.left()),
+                    (border.right(), board.right()),
+                ] {
+                    scene.line(
+                        Pos2::new(a, y),
+                        Pos2::new(b, y),
+                        Stroke::new(0.75, Color32::BLACK),
+                    );
+                }
             }
         }
         if sheet.is_some_and(|s| s.title_block) {
@@ -789,32 +954,72 @@ pub(super) fn paint(
                 border.right_bottom() - Vec2::new(scene.nm(88_900_000), scene.nm(20_320_000)),
                 border.right_bottom(),
             );
-            painter.rect_stroke(
-                title,
-                0.0,
+            scene.poly(
+                vec![
+                    title.left_top(),
+                    title.right_top(),
+                    title.right_bottom(),
+                    title.left_bottom(),
+                ],
+                true,
+                None,
                 Stroke::new(0.75, Color32::BLACK),
-                StrokeKind::Inside,
             );
             let params = &sheet.unwrap().parameters;
-            for (i, (label, value)) in [
-                ("Title", params.get("Title").map_or("", String::as_str)),
-                ("Document", doc.name.as_str()),
-                (
-                    "Revision",
-                    params.get("Revision").map_or("", String::as_str),
-                ),
-            ]
-            .iter()
-            .enumerate()
-            {
-                painter.text(
-                    title.left_top() + Vec2::new(4.0, 3.0 + i as f32 * title.height() / 3.0),
-                    Align2::LEFT_TOP,
-                    format!("{label}: {value}"),
-                    FontId::proportional((scene.nm(1_778_000)).clamp(5.0, 16.0)),
-                    Color32::BLACK,
-                );
+            let value = |name: &str| {
+                params
+                    .iter()
+                    .find(|(key, _)| key.eq_ignore_ascii_case(name))
+                    .map(|(_, v)| v.as_str())
+                    .filter(|v| *v != "*")
+                    .unwrap_or("")
+            };
+            // The standard title block uses native 350 x 80 mil-grid units.
+            let pos = |x: f32, y: f32| {
+                title.left_top()
+                    + Vec2::new(
+                        scene.nm((x * 254_000.0) as i64),
+                        scene.nm((y * 254_000.0) as i64),
+                    )
+            };
+            let line = |a, b| scene.line(a, b, Stroke::new(0.75, Color32::BLACK));
+            line(pos(0.0, 30.0), pos(350.0, 30.0));
+            line(pos(0.0, 60.0), pos(350.0, 60.0));
+            for x in [50.0, 250.0] {
+                line(pos(x, 30.0), pos(x, 60.0));
             }
+            let text = |x, y, s: &str| {
+                scene.text(pos(x, y), s, system_font, 0, 6, Color32::BLACK);
+            };
+            text(5.0, 0.0, "Title");
+            text(55.0, 0.0, value("Title"));
+            text(5.0, 30.0, "Size");
+            text(55.0, 30.0, "Number");
+            text(255.0, 30.0, "Revision");
+            let format = if sheet.unwrap().style == "Standard 0" {
+                "A4"
+            } else {
+                sheet.unwrap().style.as_str()
+            };
+            text(10.0, 45.0, format);
+            text(55.0, 45.0, value("DocumentNumber"));
+            text(255.0, 45.0, value("Revision"));
+            text(5.0, 60.0, "Date:");
+            text(50.0, 60.0, &view.display_date);
+            text(5.0, 70.0, "File:");
+            let source = if view.source_display_path.is_empty() {
+                doc.name.as_str()
+            } else {
+                &view.source_display_path
+            };
+            let short_path = elide_path(source);
+            text(50.0, 70.0, &short_path);
+            text(
+                205.0,
+                60.0,
+                &format!("Sheet {} of {}", value("SheetNumber"), value("SheetTotal")),
+            );
+            text(205.0, 70.0, &format!("Drawn By: {}", value("DrawnBy")));
         }
     }
     let mut hit = None;
@@ -889,6 +1094,18 @@ pub(super) fn paint(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn title_path_hides_middle_directories_and_windows_device_prefix() {
+        assert_eq!(
+            elide_path(r"\\?\C:\Users\example\Design\Circuit.SchDoc"),
+            r"C:\Users\...\Circuit.SchDoc"
+        );
+        assert_eq!(
+            elide_path("/home/example/design/Circuit.SchDoc"),
+            "/home/.../Circuit.SchDoc"
+        );
+        assert_eq!(elide_path("Circuit.SchDoc"), "Circuit.SchDoc");
+    }
     #[test]
     fn wire_hit_testing_does_not_select_its_whole_bounding_rectangle() {
         assert!(distance_segment(Pos2::new(5.0, 0.2), Pos2::ZERO, Pos2::new(10.0, 0.0)) < 1.0);

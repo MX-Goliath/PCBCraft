@@ -8,6 +8,74 @@ use std::io::{Cursor, Write};
 
 const ASCII: &[u8] = include_bytes!("../../../fixtures/schematic/minimal.SchDoc");
 
+#[test]
+fn alternate_display_mode_keeps_shared_designator_and_comment_visible() {
+    let mut text = std::str::from_utf8(ASCII)
+        .unwrap()
+        .replace("DISPLAYMODECOUNT=2", "DISPLAYMODECOUNT=2|DISPLAYMODE=1");
+    text.push_str("\n|RECORD=41|OWNERINDEX=3|OWNERPARTID=-1|OWNERPARTDISPLAYMODE=1|NAME=Net Name|TEXT=Pin metadata\n");
+    let doc = import_schematic(text.as_bytes(), "alternate.SchDoc").unwrap();
+    let s = doc.schematic.unwrap();
+    assert!(
+        s.primitives
+            .iter()
+            .any(|p| matches!(&p.kind,K::Text{text,..} if text=="R1"))
+    );
+    assert!(
+        s.primitives
+            .iter()
+            .any(|p| matches!(&p.kind,K::Text{text,..} if text=="100k"))
+    );
+    assert!(s.primitives.iter().any(|p| p.source_index == 7));
+    assert!(!s.primitives.iter().any(|p| p.source_index == 2));
+    assert!(
+        !s.primitives
+            .iter()
+            .any(|p| matches!(&p.kind,K::Text{text,..} if text=="Pin metadata"))
+    );
+}
+
+#[test]
+fn schematic_styles_keep_arrowheads_independent_pin_fonts_and_sheet_metrics() {
+    let mut text = String::from_utf8(ASCII.to_vec())
+        .unwrap()
+        .replace("FONTIDCOUNT=1", "FONTIDCOUNT=2|SIZE2=14|FONTNAME2=Arial")
+        .replace("SYSTEMFONT=1", "SYSTEMFONT=2");
+    text.push_str("\n|RECORD=6|OWNERPARTID=-1|LOCATIONCOUNT=2|X1=10|Y1=20|X2=30|Y2=40|STARTLINESHAPE=1|ENDLINESHAPE=1|LINESHAPESIZE=2\n");
+    text.push_str("|RECORD=2|OWNERPARTID=-1|LOCATION.X=20|LOCATION.Y=20|PINLENGTH=20|PINCONGLOMERATE=24|NAME=A|DESIGNATOR=1|NAME_CUSTOMFONTID=1|DESIGNATOR_CUSTOMFONTID=2\n");
+    text.push_str("|RECORD=2|OWNERPARTID=-1|LOCATION.X=20|LOCATION.Y=30|PINLENGTH=20|PINCONGLOMERATE=24|NAME=B|DESIGNATOR=2\n");
+    text.push_str(
+        "|RECORD=3|OWNERPARTID=-1|LOCATION.X=10|LOCATION.Y=10|SYMBOL=11|SCALEFACTOR=10\n",
+    );
+    let doc = import_schematic(text.as_bytes(), "styles.SchDoc").unwrap();
+    let s = doc.schematic.as_ref().unwrap();
+    assert_eq!(s.sheet.margin_nm, 5_080_000);
+    assert_eq!(s.sheet.system_font, 1);
+    let arrow = s.primitives.iter().find(|p| p.end_shape == 1).unwrap();
+    assert_eq!(
+        (arrow.start_shape, arrow.end_shape, arrow.line_shape_size),
+        (1, 1, 2)
+    );
+    assert!(
+        matches!(&arrow.kind,K::Polyline{points,..} if points == &vec![Point{x:2_540_000,y:5_080_000},Point{x:7_620_000,y:10_160_000}])
+    );
+    assert!(
+        s.primitives
+            .iter()
+            .any(|p| matches!(&p.kind,K::Pin{name,font:0,number_font:Some(1),..} if name=="A"))
+    );
+    assert!(
+        s.primitives
+            .iter()
+            .any(|p| matches!(&p.kind,K::Pin{name,font:1,number_font:Some(1),..} if name=="B"))
+    );
+    assert!(!s.warnings.iter().any(|w| w.starts_with("Record type 3:")));
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("styles.json");
+    crate::save(&path, &doc).unwrap();
+    assert_eq!(crate::load(&path).unwrap(), doc);
+}
+
 fn compound(text: &[u8], unknown_stream: bool) -> Vec<u8> {
     let mut file = cfb::CompoundFile::create(Cursor::new(Vec::new())).unwrap();
     let mut data = vec![];

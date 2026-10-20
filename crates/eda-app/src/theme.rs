@@ -376,51 +376,82 @@ fn install_fonts(ctx: &egui::Context) {
         egui::FontFamily::Name("ui-bold".into()),
         vec!["ui-bold".into(), "ui".into()],
     );
-    // Document fonts are separate from UI typography. Read installed/user fonts;
-    // proprietary Windows/Altium faces are never bundled with the application.
-    for (family, faces) in [
-        (
-            "sch-serif",
-            ["times.ttf", "timesbd.ttf", "timesi.ttf", "timesbi.ttf"],
-        ),
-        (
-            "sch-sans",
-            ["arial.ttf", "arialbd.ttf", "ariali.ttf", "arialbi.ttf"],
-        ),
-        (
-            "sch-mono",
-            ["cour.ttf", "courbd.ttf", "couri.ttf", "courbi.ttf"],
-        ),
+    // Match family names, not filenames or a shared "GOST" substring. In
+    // particular GOST Type AU is not Altium GOST Type A. Missing document
+    // faces use Arial/Liberation, independently of UI fonts on both platforms.
+    let mut system = fontdb::Database::new();
+    system.load_system_fonts();
+    let mut user = fontdb::Database::new();
+    if let Some(dir) = std::env::var_os("PCBCRAFT_SCHEMATIC_FONT_DIR") {
+        user.load_fonts_dir(dir);
+    }
+    for (i, bytes) in [
+        include_bytes!("../../../assets/fonts/liberation/LiberationSans-Regular.ttf").as_slice(),
+        include_bytes!("../../../assets/fonts/liberation/LiberationSans-Bold.ttf").as_slice(),
+        include_bytes!("../../../assets/fonts/liberation/LiberationSans-Italic.ttf").as_slice(),
+        include_bytes!("../../../assets/fonts/liberation/LiberationSans-BoldItalic.ttf").as_slice(),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        fonts.font_data.insert(
+            format!("sch-fallback-{i}"),
+            std::sync::Arc::new(egui::FontData::from_static(bytes)),
+        );
+    }
+    for (family, names) in [
+        ("sch-serif", &["Times New Roman", "Liberation Serif"][..]),
+        ("sch-sans", &["Arial", "Liberation Sans"][..]),
+        ("sch-mono", &["Courier New", "Liberation Mono"][..]),
         (
             "sch-gost",
-            ["GOST_AU.ttf", "GOST_AU.ttf", "GOST_AU.ttf", "GOST_AU.ttf"],
+            &["GOST Type AU", "Arial", "Liberation Sans"][..],
+        ),
+        (
+            "sch-altium-gost",
+            &["Altium GOST Type A", "Arial", "Liberation Sans"][..],
         ),
     ] {
-        for (i, face) in faces.iter().enumerate() {
+        for i in 0..4 {
             let key = format!(
                 "{family}{}{}",
                 if i % 2 == 1 { "-bold" } else { "" },
                 if i >= 2 { "-italic" } else { "" }
             );
-            let user = std::env::var_os("PCBCRAFT_SCHEMATIC_FONT_DIR")
-                .map(|d| std::path::PathBuf::from(d).join(face));
-            #[cfg(windows)]
-            let system = std::env::var_os("WINDIR")
-                .map(|d| std::path::PathBuf::from(d).join("Fonts").join(face));
-            #[cfg(not(windows))]
-            let system: Option<std::path::PathBuf> = None;
-            let data = user
-                .and_then(|p| std::fs::read(p).ok())
-                .or_else(|| system.and_then(|p| std::fs::read(p).ok()));
+            let data = names.iter().find_map(|name| {
+                let families = [fontdb::Family::Name(name)];
+                let query = fontdb::Query {
+                    families: &families,
+                    weight: if i % 2 == 1 {
+                        fontdb::Weight::BOLD
+                    } else {
+                        fontdb::Weight::NORMAL
+                    },
+                    style: if i >= 2 {
+                        fontdb::Style::Italic
+                    } else {
+                        fontdb::Style::Normal
+                    },
+                    ..Default::default()
+                };
+                [&user, &system].into_iter().find_map(|db| {
+                    db.query(&query).and_then(|id| {
+                        db.with_face_data(id, |bytes, index| {
+                            let mut data = egui::FontData::from_owned(bytes.to_vec());
+                            data.index = index;
+                            data
+                        })
+                    })
+                })
+            });
             let mut fallbacks = vec![];
             if let Some(data) = data {
-                fonts.font_data.insert(
-                    key.clone(),
-                    std::sync::Arc::new(egui::FontData::from_owned(data)),
-                );
+                fonts
+                    .font_data
+                    .insert(key.clone(), std::sync::Arc::new(data));
                 fallbacks.push(key.clone());
             }
-            fallbacks.push(if i % 2 == 1 { "ui-bold" } else { "ui" }.into());
+            fallbacks.push(format!("sch-fallback-{i}"));
             fonts
                 .families
                 .insert(egui::FontFamily::Name(key.into()), fallbacks);
