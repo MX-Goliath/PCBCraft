@@ -859,6 +859,14 @@ fn build_document(
                 }
             }
             primitives.push(SchPrimitive {
+                text_role: match r.record_type {
+                    34 => Some(eda_core::schematic::TextRole::Designator),
+                    41 if f.text("NAME").eq_ignore_ascii_case("Comment") => {
+                        Some(eda_core::schematic::TextRole::Comment)
+                    }
+                    25 => Some(eda_core::schematic::TextRole::NetLabel),
+                    _ => None,
+                },
                 id: uuid(id, r.index),
                 source_index: r.index,
                 component,
@@ -894,6 +902,7 @@ fn build_document(
     doc.id = id;
     doc.size = size;
     doc.schematic = Some(Schematic {
+        source_modified: false,
         sheet,
         fonts,
         components,

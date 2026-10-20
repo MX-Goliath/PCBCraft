@@ -17,6 +17,7 @@ egui.workspace = true
 eframe.workspace = true
 wgpu.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 uuid.workspace = true
 rfd = "0.15.4"
 fontdb = "0.24.0"

@@ -79,7 +79,8 @@
 - [x] Собственный Save As сохраняет сцену и native-оригинал; защита от записи JSON поверх Altium.
 - [x] Собственный минимальный fixture и headless инспектор; чтение нескольких реальных проектов.
 - [ ] Довести полную визуальную передачу шаблонов, port/IEEE styles и текста.
-- [ ] Native-запись, редактирование, электрическая связность и ERC.
+- [x] Базовое редактирование сцены через команды/историю — см. итерацию ниже.
+- [ ] Полное редактирование, native-запись, электрическая связность и ERC.
 
 ### Визуальная сверка ReferenceB — 20 октября 2026
 
@@ -99,6 +100,30 @@
 Это частичная реализация §5 и §9–10 исходного плана; исходные критерии
 редактирования/native roundtrip ещё не выполнены. PCB импорт отложен по
 запросу пользователя. Границы совместимости: docs/altium-import.md.
+
+### Базовое редактирование schematic — 20 октября 2026
+
+- [x] Типизированные команды eda-core: Insert/Delete/Transform/Properties/Text/Width/Batch;
+      проверка UUID/ревизии, атомарная валидация, Undo/Redo.
+- [x] Новая сцена схемы, R/C, wire, net label, text, GND, junction, graphic line;
+      preview, подтверждение и Esc без записи незавершённого действия.
+- [x] Одиночный выбор, Move мышью/командой, поворот группы компонента;
+      Copy/Cut/Paste/Duplicate с заменой UUID/владельцев/шрифтов.
+- [x] Properties: Designator/Comment, X/Y в mm/mil, текст, ширина линии/провода.
+- [x] Привязка к сетке, электрическим окончаниям выводов, GND/junctions и проводам.
+- [x] Собственный JSON сохраняет правки; source_modified помечает исторический
+      native-архив. Исходные records/байты не меняются.
+- [x] Windows GUI: размещение R1, 10k→47k, Move/drag/rotate/Undo/Redo, Ctrl+C/V,
+      провод между выводами, сохранение/перезапуск/открытие; 27 тестов,
+      fmt/clippy без предупреждений, Linux GNU all-targets compilation.
+- [ ] Групповой выбор, вершины проводов, stretching, автоматические junctions,
+      библиотеки/annotation/иерархия/compiler/ERC и native writer.
+- [ ] 10 pm native roundtrip, durable journal, operation ID/idempotence,
+      восстановление после сбоя и проверка Linux GUI.
+
+Наблюдены Place/Drawing Tools открытого Altium; порядок меню сохранён,
+неподдержанные команды отключены. Part…/Active Bar/Properties ещё частичны.
+Контракт и управление: docs/schematic-editing.md, ADR 0003; расхождения — features.json.
 
 Типизированные команды и единицы, идентичность, транзакции, preview/cancel,
 ревизии, миграции формата и восстановление. Примитивы, spatial index,

@@ -1,0 +1,697 @@
+{
+  "schema_version": 1,
+  "id": "a3d74581-e436-47ee-ad91-5729556e679c",
+  "name": "Schematic2.pcbcraft.json",
+  "kind": "Schematic",
+  "size": {
+    "x": 297000000,
+    "y": 210000000
+  },
+  "pads": [],
+  "tracks": [],
+  "schematic": {
+    "source_modified": false,
+    "sheet": {
+      "background": 16317695,
+      "border": true,
+      "title_block": true,
+      "zones": [
+        4,
+        4
+      ],
+      "zone_origin_lower_right": true,
+      "system_font": 0,
+      "margin_nm": 5080000,
+      "grid_nm": 2540000,
+      "snap_nm": 2540000,
+      "grid_visible": true,
+      "style": "A4",
+      "parameters": {}
+    },
+    "fonts": [
+      {
+        "name": "Arial",
+        "height_nm": 2540000,
+        "bold": false,
+        "italic": false,
+        "underline": false
+      }
+    ],
+    "components": [
+      {
+        "id": "64fb2b3d-7750-4ec2-b90b-247eb9ebde5d",
+        "source_index": 4294967295,
+        "position": {
+          "x": 114300000,
+          "y": 127000000
+        },
+        "designator": "R1",
+        "comment": "47k",
+        "library_reference": "Resistor",
+        "description": "PCBCraft basic symbol",
+        "part": 1,
+        "display_mode": 0,
+        "parameters": {
+          "Comment": "47k"
+        }
+      },
+      {
+        "id": "3098b846-33a8-4a3c-9117-9e56cc46f29d",
+        "source_index": 4294967295,
+        "position": {
+          "x": 162560000,
+          "y": 127000000
+        },
+        "designator": "R2",
+        "comment": "47k",
+        "library_reference": "Resistor",
+        "description": "PCBCraft basic symbol",
+        "part": 1,
+        "display_mode": 0,
+        "parameters": {
+          "Comment": "47k"
+        }
+      },
+      {
+        "id": "9981f7dc-e672-4237-ac2a-79b243235722",
+        "source_index": 4294967295,
+        "position": {
+          "x": 208280000,
+          "y": 127000000
+        },
+        "designator": "C1",
+        "comment": "100nF",
+        "library_reference": "Capacitor",
+        "description": "PCBCraft basic symbol",
+        "part": 1,
+        "display_mode": 0,
+        "parameters": {}
+      }
+    ],
+    "primitives": [
+      {
+        "text_role": null,
+        "id": "74809b8d-9779-4360-b5db-774e89826895",
+        "source_index": 4294967295,
+        "component": "64fb2b3d-7750-4ec2-b90b-247eb9ebde5d",
+        "color": 8388608,
+        "fill": null,
+        "width_nm": 254000,
+        "line_style": 0,
+        "start_shape": 0,
+        "end_shape": 0,
+        "line_shape_size": 0,
+        "kind": {
+          "type": "Pin",
+          "position": {
+            "x": 114300000,
+            "y": 121920000
+          },
+          "length_nm": 5080000,
+          "orientation": 3,
+          "name": "",
+          "number": "1",
+          "show_name": false,
+          "show_number": false,
+          "font": 0,
+          "electrical": 4,
+          "number_font": 0,
+          "outer_symbol": 0,
+          "inner_symbol": 0
+        }
+      },
+      {
+        "text_role": null,
+        "id": "b106ca18-7c84-44f0-a001-eccbe4d8a02e",
+        "source_index": 4294967295,
+        "component": "64fb2b3d-7750-4ec2-b90b-247eb9ebde5d",
+        "color": 8388608,
+        "fill": null,
+        "width_nm": 254000,
+        "line_style": 0,
+        "start_shape": 0,
+        "end_shape": 0,
+        "line_shape_size": 0,
+        "kind": {
+          "type": "Pin",
+          "position": {
+            "x": 114300000,
+            "y": 132080000
+          },
+          "length_nm": 5080000,
+          "orientation": 1,
+          "name": "",
+          "number": "2",
+          "show_name": false,
+          "show_number": false,
+          "font": 0,
+          "electrical": 4,
+          "number_font": 0,
+          "outer_symbol": 0,
+          "inner_symbol": 0
+        }
+      },
+      {
+        "text_role": null,
+        "id": "da08511e-ee42-47a7-b235-825d5ac0bbac",
+        "source_index": 4294967295,
+        "component": "64fb2b3d-7750-4ec2-b90b-247eb9ebde5d",
+        "color": 8388608,
+        "fill": null,
+        "width_nm": 254000,
+        "line_style": 0,
+        "start_shape": 0,
+        "end_shape": 0,
+        "line_shape_size": 0,
+        "kind": {
+          "type": "Rectangle",
+          "a": {
+            "x": 115570000,
+            "y": 121920000
+          },
+          "b": {
+            "x": 113030000,
+            "y": 132080000
+          },
+          "radius": {
+            "x": 0,
+            "y": 0
+          }
+        }
+      },
+      {
+        "text_role": "Designator",
+        "id": "73f63b67-4eba-4012-98b1-8c286cb18ec0",
+        "source_index": 4294967295,
+        "component": "64fb2b3d-7750-4ec2-b90b-247eb9ebde5d",
+        "color": 8388608,
+        "fill": null,
+        "width_nm": 254000,
+        "line_style": 0,
+        "start_shape": 0,
+        "end_shape": 0,
+        "line_shape_size": 0,
+        "kind": {
+          "type": "Text",
+          "position": {
+            "x": 111252000,
+            "y": 121920000
+          },
+          "text": "R1",
+          "font": 0,
+          "orientation": 1,
+          "justification": 0
+        }
+      },
+      {
+        "text_role": "Comment",
+        "id": "969064ad-87c1-4a73-944d-3bdf53343f3a",
+        "source_index": 4294967295,
+        "component": "64fb2b3d-7750-4ec2-b90b-247eb9ebde5d",
+        "color": 8388608,
+        "fill": null,
+        "width_nm": 254000,
+        "line_style": 0,
+        "start_shape": 0,
+        "end_shape": 0,
+        "line_shape_size": 0,
+        "kind": {
+          "type": "Text",
+          "position": {
+            "x": 119380000,
+            "y": 121920000
+          },
+          "text": "47k",
+          "font": 0,
+          "orientation": 1,
+          "justification": 0
+        }
+      },
+      {
+        "text_role": null,
+        "id": "2debfa46-45ed-466a-99f3-a50aa87b9380",
+        "source_index": 4294967295,
+        "component": "3098b846-33a8-4a3c-9117-9e56cc46f29d",
+        "color": 8388608,
+        "fill": null,
+        "width_nm": 254000,
+        "line_style": 0,
+        "start_shape": 0,
+        "end_shape": 0,
+        "line_shape_size": 0,
+        "kind": {
+          "type": "Pin",
+          "position": {
+            "x": 162560000,
+            "y": 121920000
+          },
+          "length_nm": 5080000,
+          "orientation": 3,
+          "name": "",
+          "number": "1",
+          "show_name": false,
+          "show_number": false,
+          "font": 0,
+          "electrical": 4,
+          "number_font": 0,
+          "outer_symbol": 0,
+          "inner_symbol": 0
+        }
+      },
+      {
+        "text_role": null,
+        "id": "9132e4d8-a07e-4116-8bc8-3d905dfd24cc",
+        "source_index": 4294967295,
+        "component": "3098b846-33a8-4a3c-9117-9e56cc46f29d",
+        "color": 8388608,
+        "fill": null,
+        "width_nm": 254000,
+        "line_style": 0,
+        "start_shape": 0,
+        "end_shape": 0,
+        "line_shape_size": 0,
+        "kind": {
+          "type": "Pin",
+          "position": {
+            "x": 162560000,
+            "y": 132080000
+          },
+          "length_nm": 5080000,
+          "orientation": 1,
+          "name": "",
+          "number": "2",
+          "show_name": false,
+          "show_number": false,
+          "font": 0,
+          "electrical": 4,
+          "number_font": 0,
+          "outer_symbol": 0,
+          "inner_symbol": 0
+        }
+      },
+      {
+        "text_role": null,
+        "id": "e1000021-215c-4b19-8796-7132d2c8ce24",
+        "source_index": 4294967295,
+        "component": "3098b846-33a8-4a3c-9117-9e56cc46f29d",
+        "color": 8388608,
+        "fill": null,
+        "width_nm": 254000,
+        "line_style": 0,
+        "start_shape": 0,
+        "end_shape": 0,
+        "line_shape_size": 0,
+        "kind": {
+          "type": "Rectangle",
+          "a": {
+            "x": 163830000,
+            "y": 121920000
+          },
+          "b": {
+            "x": 161290000,
+            "y": 132080000
+          },
+          "radius": {
+            "x": 0,
+            "y": 0
+          }
+        }
+      },
+      {
+        "text_role": "Designator",
+        "id": "952db44a-8782-45c9-be0d-2bef55c584f7",
+        "source_index": 4294967295,
+        "component": "3098b846-33a8-4a3c-9117-9e56cc46f29d",
+        "color": 8388608,
+        "fill": null,
+        "width_nm": 254000,
+        "line_style": 0,
+        "start_shape": 0,
+        "end_shape": 0,
+        "line_shape_size": 0,
+        "kind": {
+          "type": "Text",
+          "position": {
+            "x": 159512000,
+            "y": 121920000
+          },
+          "text": "R2",
+          "font": 0,
+          "orientation": 1,
+          "justification": 0
+        }
+      },
+      {
+        "text_role": "Comment",
+        "id": "3d9db9bd-cae5-4cc0-a5ed-a51658b130b2",
+        "source_index": 4294967295,
+        "component": "3098b846-33a8-4a3c-9117-9e56cc46f29d",
+        "color": 8388608,
+        "fill": null,
+        "width_nm": 254000,
+        "line_style": 0,
+        "start_shape": 0,
+        "end_shape": 0,
+        "line_shape_size": 0,
+        "kind": {
+          "type": "Text",
+          "position": {
+            "x": 167640000,
+            "y": 121920000
+          },
+          "text": "47k",
+          "font": 0,
+          "orientation": 1,
+          "justification": 0
+        }
+      },
+      {
+        "text_role": null,
+        "id": "424df36b-e72e-4cb2-93c6-f19d8fdb2fa1",
+        "source_index": 4294967295,
+        "component": null,
+        "color": 8388608,
+        "fill": null,
+        "width_nm": 254000,
+        "line_style": 0,
+        "start_shape": 0,
+        "end_shape": 0,
+        "line_shape_size": 0,
+        "kind": {
+          "type": "Polyline",
+          "points": [
+            {
+              "x": 114300000,
+              "y": 137160000
+            },
+            {
+              "x": 162560000,
+              "y": 137160000
+            }
+          ],
+          "closed": false,
+          "electrical": "Wire"
+        }
+      },
+      {
+        "text_role": null,
+        "id": "d4ea3a8c-31d1-458a-a712-9bfd26a1b5e2",
+        "source_index": 4294967295,
+        "component": "9981f7dc-e672-4237-ac2a-79b243235722",
+        "color": 8388608,
+        "fill": null,
+        "width_nm": 254000,
+        "line_style": 0,
+        "start_shape": 0,
+        "end_shape": 0,
+        "line_shape_size": 0,
+        "kind": {
+          "type": "Pin",
+          "position": {
+            "x": 203200000,
+            "y": 127000000
+          },
+          "length_nm": 5080000,
+          "orientation": 2,
+          "name": "",
+          "number": "1",
+          "show_name": false,
+          "show_number": false,
+          "font": 0,
+          "electrical": 4,
+          "number_font": 0,
+          "outer_symbol": 0,
+          "inner_symbol": 0
+        }
+      },
+      {
+        "text_role": null,
+        "id": "62d53a90-637f-4519-ab3d-4b99fb7ed1c1",
+        "source_index": 4294967295,
+        "component": "9981f7dc-e672-4237-ac2a-79b243235722",
+        "color": 8388608,
+        "fill": null,
+        "width_nm": 254000,
+        "line_style": 0,
+        "start_shape": 0,
+        "end_shape": 0,
+        "line_shape_size": 0,
+        "kind": {
+          "type": "Pin",
+          "position": {
+            "x": 213360000,
+            "y": 127000000
+          },
+          "length_nm": 5080000,
+          "orientation": 0,
+          "name": "",
+          "number": "2",
+          "show_name": false,
+          "show_number": false,
+          "font": 0,
+          "electrical": 4,
+          "number_font": 0,
+          "outer_symbol": 0,
+          "inner_symbol": 0
+        }
+      },
+      {
+        "text_role": null,
+        "id": "75fd40a6-23a8-4094-bb5b-ea0946e13f21",
+        "source_index": 4294967295,
+        "component": "9981f7dc-e672-4237-ac2a-79b243235722",
+        "color": 8388608,
+        "fill": null,
+        "width_nm": 254000,
+        "line_style": 0,
+        "start_shape": 0,
+        "end_shape": 0,
+        "line_shape_size": 0,
+        "kind": {
+          "type": "Polyline",
+          "points": [
+            {
+              "x": 203200000,
+              "y": 127000000
+            },
+            {
+              "x": 207518000,
+              "y": 127000000
+            }
+          ],
+          "closed": false,
+          "electrical": "Graphic"
+        }
+      },
+      {
+        "text_role": null,
+        "id": "8af2fcf4-22c6-4aca-99c2-4ae80f2afd9f",
+        "source_index": 4294967295,
+        "component": "9981f7dc-e672-4237-ac2a-79b243235722",
+        "color": 8388608,
+        "fill": null,
+        "width_nm": 254000,
+        "line_style": 0,
+        "start_shape": 0,
+        "end_shape": 0,
+        "line_shape_size": 0,
+        "kind": {
+          "type": "Polyline",
+          "points": [
+            {
+              "x": 209042000,
+              "y": 127000000
+            },
+            {
+              "x": 213360000,
+              "y": 127000000
+            }
+          ],
+          "closed": false,
+          "electrical": "Graphic"
+        }
+      },
+      {
+        "text_role": null,
+        "id": "cbd7442e-2c64-4594-9fc4-0716bb6360d3",
+        "source_index": 4294967295,
+        "component": "9981f7dc-e672-4237-ac2a-79b243235722",
+        "color": 8388608,
+        "fill": null,
+        "width_nm": 254000,
+        "line_style": 0,
+        "start_shape": 0,
+        "end_shape": 0,
+        "line_shape_size": 0,
+        "kind": {
+          "type": "Polyline",
+          "points": [
+            {
+              "x": 207518000,
+              "y": 124460000
+            },
+            {
+              "x": 207518000,
+              "y": 129540000
+            }
+          ],
+          "closed": false,
+          "electrical": "Graphic"
+        }
+      },
+      {
+        "text_role": null,
+        "id": "9016b73e-b715-4048-a31d-126ed12cc1d5",
+        "source_index": 4294967295,
+        "component": "9981f7dc-e672-4237-ac2a-79b243235722",
+        "color": 8388608,
+        "fill": null,
+        "width_nm": 254000,
+        "line_style": 0,
+        "start_shape": 0,
+        "end_shape": 0,
+        "line_shape_size": 0,
+        "kind": {
+          "type": "Polyline",
+          "points": [
+            {
+              "x": 209042000,
+              "y": 124460000
+            },
+            {
+              "x": 209042000,
+              "y": 129540000
+            }
+          ],
+          "closed": false,
+          "electrical": "Graphic"
+        }
+      },
+      {
+        "text_role": "Designator",
+        "id": "7e636158-fd88-467b-add5-f8ff43b6c9b2",
+        "source_index": 4294967295,
+        "component": "9981f7dc-e672-4237-ac2a-79b243235722",
+        "color": 8388608,
+        "fill": null,
+        "width_nm": 254000,
+        "line_style": 0,
+        "start_shape": 0,
+        "end_shape": 0,
+        "line_shape_size": 0,
+        "kind": {
+          "type": "Text",
+          "position": {
+            "x": 203200000,
+            "y": 130048000
+          },
+          "text": "C1",
+          "font": 0,
+          "orientation": 0,
+          "justification": 0
+        }
+      },
+      {
+        "text_role": "Comment",
+        "id": "1af6dab7-aab8-467a-9381-fd4ced766f26",
+        "source_index": 4294967295,
+        "component": "9981f7dc-e672-4237-ac2a-79b243235722",
+        "color": 8388608,
+        "fill": null,
+        "width_nm": 254000,
+        "line_style": 0,
+        "start_shape": 0,
+        "end_shape": 0,
+        "line_shape_size": 0,
+        "kind": {
+          "type": "Text",
+          "position": {
+            "x": 203200000,
+            "y": 121920000
+          },
+          "text": "100nF",
+          "font": 0,
+          "orientation": 0,
+          "justification": 0
+        }
+      },
+      {
+        "text_role": null,
+        "id": "fb33e514-c0d4-4cd6-874e-2d2b7a7e12ac",
+        "source_index": 4294967295,
+        "component": null,
+        "color": 128,
+        "fill": null,
+        "width_nm": 254000,
+        "line_style": 0,
+        "start_shape": 0,
+        "end_shape": 0,
+        "line_shape_size": 0,
+        "kind": {
+          "type": "PowerPort",
+          "position": {
+            "x": 114300000,
+            "y": 116840000
+          },
+          "orientation": 3,
+          "style": 2,
+          "text": "GND",
+          "show_name": true,
+          "font": 0
+        }
+      },
+      {
+        "text_role": "NetLabel",
+        "id": "003a1eb8-db3e-49ab-8952-9384aafd19c0",
+        "source_index": 4294967295,
+        "component": null,
+        "color": 8388608,
+        "fill": null,
+        "width_nm": 254000,
+        "line_style": 0,
+        "start_shape": 0,
+        "end_shape": 0,
+        "line_shape_size": 0,
+        "kind": {
+          "type": "Text",
+          "position": {
+            "x": 138541987,
+            "y": 137160000
+          },
+          "text": "Net1",
+          "font": 0,
+          "orientation": 0,
+          "justification": 0
+        }
+      },
+      {
+        "text_role": null,
+        "id": "654ba87b-60ff-499f-a8bc-55694327af82",
+        "source_index": 4294967295,
+        "component": null,
+        "color": 8388608,
+        "fill": null,
+        "width_nm": 254000,
+        "line_style": 0,
+        "start_shape": 0,
+        "end_shape": 0,
+        "line_shape_size": 0,
+        "kind": {
+          "type": "Text",
+          "position": {
+            "x": 101600000,
+            "y": 157480000
+          },
+          "text": "Редактор схем PCBCraft",
+          "font": 0,
+          "orientation": 0,
+          "justification": 0
+        }
+      }
+    ],
+    "records": [],
+    "images": {},
+    "source": null,
+    "warnings": []
+  }
+}

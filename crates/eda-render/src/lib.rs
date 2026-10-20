@@ -94,6 +94,14 @@ pub struct View {
     pub source_display_path: String,
     #[serde(skip)]
     pub display_date: String,
+    #[serde(skip)]
+    pub sch_tool_active: bool,
+    #[serde(skip)]
+    pub sch_preview: Option<eda_core::schematic::Schematic>,
+    #[serde(skip)]
+    sch_press_origin: Option<Pos2>,
+    #[serde(skip)]
+    sch_primary_down: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -146,6 +154,10 @@ impl Default for View {
             sch_select_graphics: true,
             source_display_path: String::new(),
             display_date: String::new(),
+            sch_tool_active: false,
+            sch_preview: None,
+            sch_press_origin: None,
+            sch_primary_down: false,
         }
     }
 }
@@ -225,6 +237,19 @@ impl View {
 
 pub struct CanvasOutput {
     pub cursor_mm: Option<[f64; 2]>,
+    pub schematic_input: Option<SchematicInput>,
+}
+
+#[derive(Default)]
+pub struct SchematicInput {
+    pub point: Option<Point>,
+    pub press_origin: Option<Point>,
+    pub hit: Option<Uuid>,
+    pub clicked: bool,
+    pub secondary_clicked: bool,
+    pub drag_started: bool,
+    pub dragging: bool,
+    pub drag_stopped: bool,
 }
 
 pub fn canvas(ui: &mut egui::Ui, doc: &Document, view: &mut View) -> CanvasOutput {
@@ -263,7 +288,7 @@ pub fn canvas(ui: &mut egui::Ui, doc: &Document, view: &mut View) -> CanvasOutpu
             }
         }
     }
-    if response.double_clicked() {
+    if response.double_clicked() && !view.sch_tool_active {
         view.camera.fit(doc, rect);
     }
     if doc.kind == DocumentKind::Schematic {
@@ -413,7 +438,10 @@ pub fn canvas(ui: &mut egui::Ui, doc: &Document, view: &mut View) -> CanvasOutpu
         }
         [snapped.x as f64 / 1e6, snapped.y as f64 / 1e6]
     });
-    CanvasOutput { cursor_mm }
+    CanvasOutput {
+        cursor_mm,
+        schematic_input: None,
+    }
 }
 
 pub fn layer_index(layer: Layer) -> usize {

@@ -1023,6 +1023,50 @@ pub(super) fn paint(
         }
     }
     let mut hit = None;
+    // Retain the press location through release: egui clears pointer.press_origin
+    // before a fast press/move/release sequence has necessarily been painted.
+    let mut release = None;
+    let pointer_buttons = ui.input(|i| {
+        i.events
+            .iter()
+            .filter_map(|event| {
+                if let egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    ..
+                } = event
+                {
+                    Some((*pos, *pressed))
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>()
+    });
+    for (pos, pressed) in pointer_buttons {
+        if pressed {
+            // Floating toolbars own a different layer and must not start canvas drags.
+            view.sch_primary_down =
+                rect.contains(pos) && ui.ctx().layer_id_at(pos) == Some(response.layer_id);
+            if view.sch_primary_down {
+                view.sch_press_origin = Some(pos);
+            }
+        } else if view.sch_primary_down {
+            release = Some(pos);
+            view.sch_primary_down = false;
+        }
+    }
+    // A busy frame can receive the entire gesture before egui has started a drag.
+    let drag_stopped = response.drag_stopped_by(egui::PointerButton::Primary)
+        || release
+            .zip(view.sch_press_origin)
+            .is_some_and(|(end, start)| end.distance(start) > 6.0);
+    let hit_pointer = if response.drag_started_by(egui::PointerButton::Primary) || drag_stopped {
+        view.sch_press_origin
+    } else {
+        response.hover_pos()
+    };
     let mut selected_bounds = Rect::NOTHING;
     let mut component_bounds = HashMap::<Uuid, Rect>::new();
     if let Some(schematic) = &doc.schematic {
@@ -1032,7 +1076,7 @@ pub(super) fn paint(
             ..scene
         };
         for primitive in &schematic.primitives {
-            let (bounds, is_hit) = scene.primitive(primitive, response.hover_pos());
+            let (bounds, is_hit) = scene.primitive(primitive, hit_pointer);
             if let Some(id) = primitive.component {
                 component_bounds
                     .entry(id)
@@ -1063,7 +1107,7 @@ pub(super) fn paint(
         }
         if hit.is_none()
             && view.sch_select_components
-            && let Some(pointer) = response.hover_pos()
+            && let Some(pointer) = hit_pointer
         {
             hit = component_bounds
                 .iter()
@@ -1080,7 +1124,17 @@ pub(super) fn paint(
             StrokeKind::Outside,
         );
     }
-    if response.clicked() {
+    if let Some(preview) = &view.sch_preview {
+        let scene = Scene {
+            schematic: Some(preview),
+            painter: painter.with_clip_rect(rect),
+            ..scene
+        };
+        for p in &preview.primitives {
+            scene.primitive(p, None);
+        }
+    }
+    if response.clicked() && !view.sch_tool_active {
         view.selected = hit;
     }
     if response.hovered() {
@@ -1088,12 +1142,132 @@ pub(super) fn paint(
     }
     CanvasOutput {
         cursor_mm: response.hover_pos().map(|p| view.camera.world_mm(p, rect)),
+        schematic_input: Some(SchematicInput {
+            point: release
+                .or_else(|| {
+                    response
+                        .hover_pos()
+                        .or_else(|| response.interact_pointer_pos())
+                })
+                .map(|p| {
+                    let mm = view.camera.world_mm(p, rect);
+                    Point {
+                        x: (mm[0] * 1e6).round() as i64,
+                        y: (mm[1] * 1e6).round() as i64,
+                    }
+                }),
+            press_origin: view
+                .sch_press_origin
+                .filter(|p| rect.contains(*p))
+                .map(|p| {
+                    let mm = view.camera.world_mm(p, rect);
+                    Point {
+                        x: (mm[0] * 1e6).round() as i64,
+                        y: (mm[1] * 1e6).round() as i64,
+                    }
+                }),
+            hit,
+            clicked: response.clicked(),
+            secondary_clicked: response.secondary_clicked(),
+            drag_started: response.drag_started_by(egui::PointerButton::Primary),
+            dragging: response.dragged_by(egui::PointerButton::Primary),
+            drag_stopped,
+        }),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn drag_release_keeps_original_hit_location_after_pointer_origin_is_cleared() {
+        let ctx = egui::Context::default();
+        let mut doc = Document::new(DocumentKind::Schematic, "Drag");
+        let s = doc.schematic.as_mut().unwrap();
+        s.sheet.border = false;
+        s.sheet.title_block = false;
+        let p = eda_core::schematic_edit::primitive(
+            K::Polyline {
+                points: vec![Point::mm(40, 50), Point::mm(60, 50)],
+                closed: false,
+                electrical: "Wire".into(),
+            },
+            None,
+        );
+        let id = p.id;
+        s.primitives.push(p);
+        let mut view = View {
+            grid: false,
+            ..Default::default()
+        };
+        view.camera.fitted = true;
+        view.camera.centre_mm = [50.0, 50.0];
+        view.camera.pixels_per_mm = 3.0;
+        let mut frame = |events| {
+            let mut result = None;
+            let mut origin = Pos2::ZERO;
+            let _ = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 600.0))),
+                    events,
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        origin = view
+                            .camera
+                            .screen(Point::mm(50, 50), ui.available_rect_before_wrap());
+                        result = canvas(ui, &doc, &mut view).schematic_input;
+                    });
+                },
+            );
+            (origin, result.unwrap())
+        };
+        let (origin, _) = frame(vec![]);
+        frame(vec![
+            egui::Event::PointerMoved(origin),
+            egui::Event::PointerButton {
+                pos: origin,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            },
+        ]);
+        let end = origin + Vec2::new(100.0, 40.0);
+        let (_, started) = frame(vec![egui::Event::PointerMoved(end)]);
+        assert!(started.drag_started);
+        assert_eq!(started.hit, Some(id));
+        let (_, stopped) = frame(vec![egui::Event::PointerButton {
+            pos: end,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: egui::Modifiers::NONE,
+        }]);
+        assert!(stopped.drag_stopped);
+        assert_eq!(stopped.hit, Some(id));
+        assert_eq!(stopped.press_origin, Some(Point::mm(50, 50)));
+        assert_ne!(stopped.point, stopped.press_origin);
+        let (_, coalesced) = frame(vec![
+            egui::Event::PointerMoved(origin),
+            egui::Event::PointerButton {
+                pos: origin,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            },
+            egui::Event::PointerMoved(end),
+            egui::Event::PointerButton {
+                pos: end,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            },
+        ]);
+        assert!(coalesced.drag_stopped);
+        assert_eq!(coalesced.hit, Some(id));
+        assert_eq!(coalesced.press_origin, Some(Point::mm(50, 50)));
+        assert_eq!(doc.schematic.as_ref().unwrap().primitives[0].id, id);
+    }
     #[test]
     fn title_path_hides_middle_directories_and_windows_device_prefix() {
         assert_eq!(

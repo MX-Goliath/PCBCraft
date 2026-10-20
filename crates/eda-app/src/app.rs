@@ -9,8 +9,23 @@ use uuid::Uuid;
 mod chrome;
 #[path = "properties.rs"]
 mod properties;
+#[path = "schematic_editor.rs"]
+mod schematic_editor;
 #[path = "schematic_properties.rs"]
 mod schematic_properties;
+use eda_core::schematic_edit::Placement;
+
+#[derive(Clone, Copy)]
+enum SchAction {
+    Select,
+    Move,
+    Rotate,
+    Delete,
+    Copy,
+    Cut,
+    Paste,
+    Duplicate,
+}
 
 struct OpenDocument {
     session_id: Uuid,
@@ -20,6 +35,7 @@ struct OpenDocument {
     saved: Option<Document>,
     history: History,
     view: View,
+    sch_editor: schematic_editor::Editor,
 }
 
 impl OpenDocument {
@@ -33,6 +49,7 @@ impl OpenDocument {
             saved,
             history: History::default(),
             view: View::default(),
+            sch_editor: Default::default(),
         }
     }
     fn dirty(&self) -> bool {
@@ -70,6 +87,8 @@ impl Default for Settings {
 
 #[derive(Clone, Copy)]
 enum Command {
+    SchPlace(Placement),
+    SchEdit(SchAction),
     NewBoard,
     NewSchematic,
     Open,
@@ -125,6 +144,7 @@ pub struct PcbCraft {
     cursor_mm: Option<[f64; 2]>,
     pad_edit: Option<PadEdit>,
     property_ui: properties::PropertiesUi,
+    sch_clipboard: Option<(eda_core::schematic_edit::Fragment, eda_geom::Point)>,
 }
 
 impl PcbCraft {
@@ -153,6 +173,7 @@ impl PcbCraft {
             cursor_mm: None,
             pad_edit: None,
             property_ui: properties::PropertiesUi::default(),
+            sch_clipboard: None,
         };
         let mut opened = false;
         if let Some(path) = std::env::args_os().nth(1) {
@@ -381,6 +402,8 @@ impl PcbCraft {
 
     fn run(&mut self, command: Command, ctx: &egui::Context) {
         match command {
+            Command::SchPlace(kind) => self.start_schematic_tool(kind),
+            Command::SchEdit(action) => self.schematic_action(action, ctx),
             Command::NewBoard | Command::NewSchematic => {
                 let board = matches!(command, Command::NewBoard);
                 let n = self.documents.len() + 1;
@@ -443,6 +466,8 @@ impl PcbCraft {
             Command::Undo | Command::Redo => {
                 if let Some(i) = self.active {
                     let doc = &mut self.documents[i];
+                    doc.sch_editor.cancel(&mut doc.view);
+                    doc.sch_editor.properties = None;
                     if matches!(command, Command::Undo) {
                         doc.history.undo(&mut doc.model);
                     } else {
@@ -582,6 +607,37 @@ impl PcbCraft {
                         ui.menu_button("Edit", |ui| {
                             self.action(ui, "Undo", "Ctrl+Z", Command::Undo, undo);
                             self.action(ui, "Redo", "Ctrl+Y", Command::Redo, redo);
+                            let schematic = self.active.is_some_and(|i| {
+                                self.documents[i].model.kind == DocumentKind::Schematic
+                            });
+                            if schematic {
+                                let selected = self
+                                    .active
+                                    .is_some_and(|i| self.documents[i].view.selected.is_some());
+                                ui.separator();
+                                for (label, shortcut, action, enabled) in [
+                                    ("Cut", "Ctrl+X", SchAction::Cut, selected),
+                                    ("Copy", "Ctrl+C", SchAction::Copy, selected),
+                                    (
+                                        "Paste",
+                                        "Ctrl+V",
+                                        SchAction::Paste,
+                                        self.sch_clipboard.is_some(),
+                                    ),
+                                    ("Duplicate", "Ctrl+D", SchAction::Duplicate, selected),
+                                    ("Delete", "Del", SchAction::Delete, selected),
+                                    ("Move", "M", SchAction::Move, selected),
+                                    ("Rotate 90°", "Space", SchAction::Rotate, selected),
+                                ] {
+                                    self.action(
+                                        ui,
+                                        label,
+                                        shortcut,
+                                        Command::SchEdit(action),
+                                        enabled,
+                                    );
+                                }
+                            }
                             ui.separator();
                             self.action(ui, "Preferences…", "", Command::Preferences, true);
                         });
@@ -637,6 +693,10 @@ impl PcbCraft {
                             "Reports",
                         ] {
                             ui.menu_button(label, |ui| {
+                                if label == "Place" && schematic {
+                                    self.schematic_place_menu(ui);
+                                    return;
+                                }
                                 ui.add_enabled(
                                     false,
                                     egui::Label::new("Not available in this version"),
@@ -1056,6 +1116,9 @@ impl PcbCraft {
                     doc.view.display_date = chrono::Local::now().format("%m.%d.%Y").to_string();
                     let output = eda_render::canvas(ui, &doc.model, &mut doc.view);
                     self.cursor_mm = output.cursor_mm;
+                    if let Some(input) = output.schematic_input {
+                        self.schematic_input(index, input, ctx);
+                    }
                     self.active_bar(ctx, canvas);
                 } else {
                     self.home(ui);
@@ -1167,8 +1230,8 @@ impl PcbCraft {
                     ui.label("Independent EDA application written in Rust.");
                     ui.label("egui / eframe · wgpu");
                     ui.separator();
-                    ui.label("Current milestone: Altium project and schematic viewing.");
-                    ui.label("Schematic editing, native writing, PCB import and ERC/DRC are not implemented.");
+                    ui.label("Current milestone: Altium schematic import and basic scene editing.");
+                    ui.label("Save edits as .pcbcraft.json. Native writing, PCB import and ERC/DRC are not implemented.");
                 });
         }
         if let Some(pending) = self.pending {
@@ -1239,6 +1302,9 @@ impl PcbCraft {
 
     fn shortcuts(&mut self, ctx: &egui::Context) {
         if self.pending.is_some() || ctx.wants_keyboard_input() {
+            return;
+        }
+        if self.schematic_shortcuts(ctx) {
             return;
         }
         ctx.input_mut(|input| {

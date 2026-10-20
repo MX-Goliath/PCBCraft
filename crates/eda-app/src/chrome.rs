@@ -97,6 +97,9 @@ impl PcbCraft {
     }
 
     pub(super) fn active_bar(&mut self, ctx: &egui::Context, canvas: egui::Rect) {
+        let schematic = self
+            .active
+            .is_some_and(|i| self.documents[i].model.kind == DocumentKind::Schematic);
         egui::Area::new(egui::Id::new("active_bar"))
             .fixed_pos(egui::pos2(canvas.center().x - 237.0, canvas.top() + 7.0))
             .show(ctx, |ui| {
@@ -107,22 +110,93 @@ impl PcbCraft {
                     .show(ui, |ui| {
                         ui.spacing_mut().item_spacing.x = 11.5;
                         ui.horizontal(|ui| {
-                            for (icon, tip, command) in [
-                                (Icon::Component, "Place Component", None),
-                                (Icon::Grid, "Grids", Some(Command::ToggleGrid)),
-                                (Icon::Fit, "Fit Document", Some(Command::Fit)),
-                                (Icon::Select, "Select", None),
-                                (Icon::Chart, "Measure", None),
-                                (Icon::Chip, "Component", None),
-                                (Icon::Track, "Interactive Routing", None),
-                                (Icon::Polygon, "Polygon Pour", None),
-                                (Icon::Pad, "Place Pad", None),
-                                (Icon::Via, "Place Via", None),
-                                (Icon::Dimension, "Dimension", None),
-                                (Icon::Text, "Place Text", None),
-                                (Icon::Line, "Place Line", None),
-                            ] {
-                                let enabled = command.is_some() || matches!(icon, Icon::Select);
+                            let tools = if schematic {
+                                [
+                                    (
+                                        Icon::Select,
+                                        "Select / Cancel",
+                                        Some(Command::SchEdit(SchAction::Select)),
+                                    ),
+                                    (Icon::Grid, "Grids", Some(Command::ToggleGrid)),
+                                    (Icon::Fit, "Fit Document", Some(Command::Fit)),
+                                    (
+                                        Icon::Component,
+                                        "Place Resistor",
+                                        Some(Command::SchPlace(Placement::Resistor)),
+                                    ),
+                                    (
+                                        Icon::Chip,
+                                        "Place Capacitor",
+                                        Some(Command::SchPlace(Placement::Capacitor)),
+                                    ),
+                                    (
+                                        Icon::Track,
+                                        "Place Wire (W)",
+                                        Some(Command::SchPlace(Placement::Wire)),
+                                    ),
+                                    (
+                                        Icon::Pad,
+                                        "Place Junction (J)",
+                                        Some(Command::SchPlace(Placement::Junction)),
+                                    ),
+                                    (
+                                        Icon::Filter,
+                                        "Place Power Port",
+                                        Some(Command::SchPlace(Placement::Ground)),
+                                    ),
+                                    (
+                                        Icon::Text,
+                                        "Place Net Label (L)",
+                                        Some(Command::SchPlace(Placement::NetLabel)),
+                                    ),
+                                    (
+                                        Icon::Text,
+                                        "Place Text String (T)",
+                                        Some(Command::SchPlace(Placement::Text)),
+                                    ),
+                                    (
+                                        Icon::Line,
+                                        "Place Line",
+                                        Some(Command::SchPlace(Placement::Line)),
+                                    ),
+                                    (
+                                        Icon::Component,
+                                        "Move selected (M)",
+                                        Some(Command::SchEdit(SchAction::Move)),
+                                    ),
+                                    (
+                                        Icon::Redo,
+                                        "Rotate selected (Space)",
+                                        Some(Command::SchEdit(SchAction::Rotate)),
+                                    ),
+                                ]
+                            } else {
+                                [
+                                    (Icon::Component, "Place Component", None),
+                                    (Icon::Grid, "Grids", Some(Command::ToggleGrid)),
+                                    (Icon::Fit, "Fit Document", Some(Command::Fit)),
+                                    (Icon::Select, "Select", None),
+                                    (Icon::Chart, "Measure", None),
+                                    (Icon::Chip, "Component", None),
+                                    (Icon::Track, "Interactive Routing", None),
+                                    (Icon::Polygon, "Polygon Pour", None),
+                                    (Icon::Pad, "Place Pad", None),
+                                    (Icon::Via, "Place Via", None),
+                                    (Icon::Dimension, "Dimension", None),
+                                    (Icon::Text, "Place Text", None),
+                                    (Icon::Line, "Place Line", None),
+                                ]
+                            };
+                            for (icon, tip, command) in tools {
+                                let needs_selection = matches!(
+                                    command,
+                                    Some(Command::SchEdit(SchAction::Move | SchAction::Rotate))
+                                );
+                                let enabled = (command.is_some() || matches!(icon, Icon::Select))
+                                    && (!needs_selection
+                                        || self.active.is_some_and(|i| {
+                                            self.documents[i].view.selected.is_some()
+                                        }));
                                 if icon_button(
                                     ui,
                                     icon,

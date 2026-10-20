@@ -881,6 +881,7 @@ dependencies = [
  "fontdb",
  "rfd",
  "serde",
+ "serde_json",
  "tracing",
  "tracing-subscriber",
  "uuid",

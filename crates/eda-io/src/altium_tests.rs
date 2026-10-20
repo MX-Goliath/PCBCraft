@@ -9,6 +9,85 @@ use std::io::{Cursor, Write};
 const ASCII: &[u8] = include_bytes!("../../../fixtures/schematic/minimal.SchDoc");
 
 #[test]
+fn edited_import_roundtrips_scene_without_changing_native_archive_or_source_records() {
+    use eda_core::{
+        History,
+        schematic_edit::{Edit, Request, transform_point},
+    };
+    let mut doc = import_schematic(&compound(ASCII, true), "minimal.SchDoc").unwrap();
+    let original = doc.clone();
+    let s = doc.schematic.as_ref().unwrap();
+    let id = s.components[0].id;
+    let pivot = s.components[0].position;
+    let delta = Point::mm(10, -5);
+    let mut history = History::default();
+    let document = doc.id;
+    history
+        .schematic_edit(
+            &mut doc,
+            Request {
+                document,
+                expected_revision: 0,
+                edit: Edit::Batch(vec![
+                    Edit::Transform {
+                        id,
+                        pivot,
+                        quarter_turns: 1,
+                        delta,
+                    },
+                    Edit::ComponentProperties {
+                        id,
+                        designator: "R42".into(),
+                        comment: "47k".into(),
+                    },
+                ]),
+            },
+        )
+        .unwrap();
+    let s = doc.schematic.as_ref().unwrap();
+    let before = original.schematic.as_ref().unwrap();
+    assert!(s.source_modified);
+    assert_eq!(s.source, before.source);
+    assert_eq!(s.records, before.records);
+    assert_eq!(
+        s.components[0].position,
+        transform_point(pivot, pivot, 1, delta).unwrap()
+    );
+    for p in before.primitives.iter().filter(|p| p.component == Some(id)) {
+        if let K::Pin {
+            position,
+            orientation,
+            ..
+        } = p.kind
+        {
+            let next = s.primitives.iter().find(|v| v.id == p.id).unwrap();
+            assert!(
+                matches!(next.kind, K::Pin {position: actual, orientation: angle, ..}
+                if actual == transform_point(position, pivot, 1, delta).unwrap() && angle == (orientation + 1) % 4)
+            );
+        }
+    }
+    assert!(
+        s.primitives
+            .iter()
+            .any(|p| matches!(&p.kind, K::Text{text,..} if text == "R42"))
+    );
+    assert!(
+        s.primitives
+            .iter()
+            .any(|p| matches!(&p.kind, K::Text{text,..} if text == "47k"))
+    );
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("edited.pcbcraft.json");
+    crate::save(&path, &doc).unwrap();
+    assert_eq!(crate::load(&path).unwrap(), doc);
+    history.undo(&mut doc);
+    assert_eq!(doc, original);
+    history.redo(&mut doc);
+    assert_eq!(crate::load(&path).unwrap(), doc);
+}
+
+#[test]
 fn alternate_display_mode_keeps_shared_designator_and_comment_visible() {
     let mut text = std::str::from_utf8(ASCII)
         .unwrap()

@@ -7,6 +7,9 @@ use uuid::Uuid;
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Schematic {
+    /// The native archive is historical once the editable scene has changed.
+    #[serde(default)]
+    pub source_modified: bool,
     pub sheet: Sheet,
     pub fonts: Vec<SchFont>,
     pub components: Vec<Component>,
@@ -83,6 +86,8 @@ pub struct Component {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SchPrimitive {
+    #[serde(default)]
+    pub text_role: Option<TextRole>,
     pub id: Uuid,
     pub source_index: u32,
     pub component: Option<Uuid>,
@@ -97,6 +102,13 @@ pub struct SchPrimitive {
     #[serde(default)]
     pub line_shape_size: u32,
     pub kind: SchPrimitiveKind,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TextRole {
+    Designator,
+    Comment,
+    NetLabel,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -197,6 +209,38 @@ pub enum SchPrimitiveKind {
 }
 
 impl Schematic {
+    pub fn blank() -> Self {
+        Self {
+            source_modified: false,
+            sheet: Sheet {
+                background: 0xf8fcff,
+                border: true,
+                title_block: true,
+                zones: [4, 4],
+                zone_origin_lower_right: true,
+                system_font: 0,
+                margin_nm: 5_080_000,
+                grid_nm: 2_540_000,
+                snap_nm: 2_540_000,
+                grid_visible: true,
+                style: "A4".into(),
+                parameters: BTreeMap::new(),
+            },
+            fonts: vec![SchFont {
+                name: "Arial".into(),
+                height_nm: 2_540_000,
+                bold: false,
+                italic: false,
+                underline: false,
+            }],
+            components: vec![],
+            primitives: vec![],
+            records: vec![],
+            images: BTreeMap::new(),
+            source: None,
+            warnings: vec![],
+        }
+    }
     pub fn validate(&self) -> Result<(), String> {
         if self.records.len() > 500_000
             || self.primitives.len() > 500_000

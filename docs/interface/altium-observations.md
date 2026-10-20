@@ -34,7 +34,7 @@ Save Project As, Save Project Group As, Import, Export, Import Wizard,
 Run Script, Fabrication Outputs, Assembly Outputs, Print (Ctrl+P),
 Smart PDF, Recent Documents/Projects/Project Groups, Exit (Alt+F4).
 
-PCBCraft использует Ctrl+F4 для Close (Ctrl+W сохранён как alias), собственный формат и только доступное
+PCBCraft использует Ctrl+F4 для Close (Ctrl+W — alias только в PCB, в SCH это Wire), собственный формат и только доступное
 подмножество команд. Родные PCB/SCH расширения Altium не заявлены как поддержанные.
 
 Повторная сверка: оба окна развёрнуты, полученные изображения 1707 × 1027.
@@ -63,3 +63,16 @@ Page Options, Margin and Zones. Видимая сетка 1 mm, snap grid 2.5 mm
 Числа сопоставлены с записями файла. Они не означают проверки всех вариантов
 настроек редактора. Собственный minimal.SchDoc открыт в эталоне и показал
 основные объекты; пользовательский исходник не сохранялся поверх оригинала.
+
+## Schematic: меню Place, 20 октября 2026
+
+Наблюдение открытого Altium 24.4.1 без изменения схемы: Bus, Bus Entry,
+Part…, Power Port, Wire (Ctrl+W), Net Label, Port, Off Sheet Connector,
+Sheet Symbol, Sheet Entry, Device Sheet Symbol, Reuse Block…, Harness,
+Directives, Text String, Text Frame, Note, Drawing Tools, Comment….
+Drawing Tools: Arc, Full Circle, Elliptical Arc, Ellipse, Line, Rectangle,
+Round Rectangle, Polygon, Bezier, Graphic….
+
+В PCBCraft сохранён этот порядок; неподдержанные функции отключены.
+Part… пока имеет собственные R/C, отдельный Junction — добавление PCBCraft.
+Это наблюдение подписей/порядка, а не проверка всех команд и их shortcut sequences.

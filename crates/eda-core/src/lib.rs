@@ -1,5 +1,6 @@
 //! GUI-independent document model and history.
 pub mod schematic;
+pub mod schematic_edit;
 use eda_geom::Point;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -99,7 +100,7 @@ impl Document {
             },
             pads: vec![],
             tracks: vec![],
-            schematic: None,
+            schematic: (kind == DocumentKind::Schematic).then(schematic::Schematic::blank),
         }
     }
 

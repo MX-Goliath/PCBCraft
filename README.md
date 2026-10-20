@@ -1,7 +1,7 @@
 # PCBCraft
 
 Самостоятельная EDA на Rust с интерфейсом, исследуемым по Altium Designer.
-Текущий этап: просмотр проектов и схем Altium, собственные документы и PCB canvas.
+Текущий этап: импорт проектов и схем Altium, базовое редактирование схем и PCB canvas.
 
 ## Запуск
 
@@ -11,6 +11,7 @@ Rust 1.90.0, Windows (обычно MSVC + Windows SDK) или Linux.
 cargo run -p eda-app
 cargo run -p eda-app -- fixtures/controller.pcbcraft.json
 cargo run -p eda-app -- fixtures/schematic/minimal.PrjPcb
+cargo run -p eda-app -- fixtures/schematic/editing-demo.pcbcraft.json
 ```
 
 В текущем рабочем каталоге также подготовлен локальный GNU toolchain
@@ -59,7 +60,11 @@ Windows-скрипт `scripts/dev.ps1` для Linux не нужен. CI наст
 файлов проекта, символы, выводы, провода, текст, параметры, встроенные изображения,
 выбор компонентов/объектов и Properties. Файлы схем загружаются по выбору из дерева.
 Подробные границы совместимости: [импорт Altium](docs/altium-import.md).
-Редактирование схем, native-запись, PCB import, полный docking, routing, ERC/DRC, библиотеки и выпуск
+Базовое редактирование схем: размещение R/C, проводов, меток, GND, текста,
+линий и junctions; перемещение, поворот, копирование, удаление, Properties,
+Undo/Redo и сохранение в собственный JSON. Управление и границы:
+[редактор схем](docs/schematic-editing.md).
+Native-запись, PCB import, полный docking, routing, ERC/DRC, библиотеки и выпуск
 производственных файлов запланированы. Неактивные инженерные меню
 не выполняют операции. Altium не нужен для запуска PCBCraft.
 
