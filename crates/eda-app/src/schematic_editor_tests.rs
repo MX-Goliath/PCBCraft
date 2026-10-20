@@ -33,6 +33,264 @@ fn pointer(point: Point, clicked: bool) -> SchematicInput {
         ..Default::default()
     }
 }
+fn focused_context() -> egui::Context {
+    let ctx = egui::Context::default();
+    let _ = ctx.run(
+        egui::RawInput {
+            focused: true,
+            ..Default::default()
+        },
+        |_| {},
+    );
+    ctx
+}
+
+fn connected_app() -> (PcbCraft, Uuid, Uuid) {
+    let mut app = app();
+    let f = edit::place(Placement::Resistor, Point::mm(40, 40), 0, "R1", "10k", 0).unwrap();
+    let id = f.components[0].id;
+    let s = app.documents[0].model.schematic.as_mut().unwrap();
+    s.sheet.options.snap_enabled = false;
+    s.components = f.components;
+    s.primitives = f.primitives;
+    let p = edit::primitive(
+        K::Polyline {
+            points: vec![
+                Point::mm(10, 40),
+                Point {
+                    x: 29_840_000,
+                    y: 40_000_000,
+                },
+            ],
+            electrical: "Wire".into(),
+            closed: false,
+        },
+        None,
+    );
+    let wire = p.id;
+    s.primitives.push(p);
+    (app, id, wire)
+}
+#[test]
+fn connected_canvas_drag_previews_wires_and_commits_once() {
+    let (mut app, id, wire) = connected_app();
+    let ctx = focused_context();
+    let before = app.documents[0].model.clone();
+    app.schematic_input(
+        0,
+        SchematicInput {
+            hit: Some(id),
+            press_origin: Some(Point::mm(40, 40)),
+            drag_started: true,
+            ..pointer(Point::mm(50, 50), false)
+        },
+        &ctx,
+    );
+    assert_eq!(app.documents[0].model, before);
+    let shown = app.documents[0].view.sch_preview.as_ref().unwrap();
+    assert!(shown.primitives.iter().any(|p|p.id==wire && matches!(&p.kind,K::Polyline{points,..} if points.last()==Some(&Point {x:39_840_000,y:50_000_000}))));
+    app.schematic_input(
+        0,
+        SchematicInput {
+            drag_stopped: true,
+            ..pointer(Point::mm(50, 50), false)
+        },
+        &ctx,
+    );
+    let placed = app.documents[0].model.clone();
+    assert_eq!(
+        placed,
+        edit::preview(
+            &before,
+            &Edit::Drag {
+                ids: vec![id],
+                pivot: Point::mm(40, 40),
+                quarter_turns: 0,
+                delta: Point::mm(10, 10)
+            }
+        )
+        .unwrap()
+    );
+    assert_eq!(app.documents[0].history.revision, 1);
+    assert!(!app.documents[0].sch_editor.active());
+    app.run(Command::Undo, &ctx);
+    assert_eq!(app.documents[0].model, before);
+    app.run(Command::Redo, &ctx);
+    assert_eq!(app.documents[0].model, placed);
+}
+#[test]
+fn connected_drag_cancels_outside_on_escape_focus_tab_or_stale_revision() {
+    for cancel in 0..5 {
+        let (mut app, id, _) = connected_app();
+        let ctx = focused_context();
+        app.schematic_input(
+            0,
+            SchematicInput {
+                hit: Some(id),
+                press_origin: Some(Point::mm(40, 40)),
+                drag_started: true,
+                ..pointer(Point::mm(50, 50), false)
+            },
+            &ctx,
+        );
+        let mut before = app.documents[0].model.clone();
+        match cancel {
+            0 => app.schematic_input(
+                0,
+                SchematicInput {
+                    drag_stopped: true,
+                    ..Default::default()
+                },
+                &ctx,
+            ),
+            1 => {
+                let _ = ctx.run(
+                    egui::RawInput {
+                        focused: true,
+                        events: vec![egui::Event::Key {
+                            key: Key::Escape,
+                            physical_key: None,
+                            pressed: true,
+                            repeat: false,
+                            modifiers: egui::Modifiers::NONE,
+                        }],
+                        ..Default::default()
+                    },
+                    |ctx| {
+                        app.schematic_shortcuts(ctx);
+                        app.schematic_input(
+                            0,
+                            SchematicInput {
+                                hit: Some(id),
+                                press_origin: Some(Point::mm(40, 40)),
+                                drag_stopped: true,
+                                ..pointer(Point::mm(50, 50), false)
+                            },
+                            ctx,
+                        );
+                    },
+                );
+            }
+            2 => {
+                let _ = ctx.run(
+                    egui::RawInput {
+                        focused: false,
+                        ..Default::default()
+                    },
+                    |ctx| {
+                        app.schematic_input(
+                            0,
+                            SchematicInput {
+                                drag_stopped: true,
+                                ..pointer(Point::mm(50, 50), false)
+                            },
+                            ctx,
+                        )
+                    },
+                );
+            }
+            3 => {
+                app.add_document(Document::new(DocumentKind::Schematic, "Other"), None);
+                app.finish_schematic_interaction();
+            }
+            _ => {
+                app.documents[0]
+                    .edit_schematic(
+                        Edit::ComponentProperties {
+                            id,
+                            designator: "R1".into(),
+                            comment: "47k".into(),
+                        },
+                        0,
+                    )
+                    .unwrap();
+                before = app.documents[0].model.clone();
+                app.schematic_input(
+                    0,
+                    SchematicInput {
+                        drag_stopped: true,
+                        ..pointer(Point::mm(50, 50), false)
+                    },
+                    &ctx,
+                );
+                assert!(app.log.last().unwrap().0);
+            }
+        }
+        assert_eq!(app.documents[0].model, before, "case {cancel}");
+        assert!(!app.documents[0].sch_editor.active(), "case {cancel}");
+    }
+}
+#[test]
+fn m_d_and_m_m_pick_objects_with_distinct_connection_semantics() {
+    for connected in [false, true] {
+        let (mut app, id, wire) = connected_app();
+        let ctx = focused_context();
+        for key in [Key::M, if connected { Key::D } else { Key::M }] {
+            let _ = ctx.run(
+                egui::RawInput {
+                    focused: true,
+                    events: vec![egui::Event::Key {
+                        key,
+                        physical_key: None,
+                        pressed: true,
+                        repeat: false,
+                        modifiers: egui::Modifiers::NONE,
+                    }],
+                    ..Default::default()
+                },
+                |ctx| {
+                    app.schematic_shortcuts(ctx);
+                },
+            );
+            let _ = ctx.run(
+                egui::RawInput {
+                    focused: true,
+                    events: vec![egui::Event::Key {
+                        key,
+                        physical_key: None,
+                        pressed: false,
+                        repeat: false,
+                        modifiers: egui::Modifiers::NONE,
+                    }],
+                    ..Default::default()
+                },
+                |_| {},
+            );
+        }
+        assert!(matches!(
+            app.documents[0].sch_editor.tool,
+            Tool::Pick { .. }
+        ));
+        let original = app.documents[0]
+            .model
+            .schematic
+            .as_ref()
+            .unwrap()
+            .primitive(wire)
+            .unwrap()
+            .clone();
+        app.schematic_input(
+            0,
+            SchematicInput {
+                hit: Some(id),
+                ..pointer(Point::mm(40, 40), true)
+            },
+            &ctx,
+        );
+        app.schematic_input(0, pointer(Point::mm(50, 50), true), &ctx);
+        assert_eq!(app.documents[0].history.revision, 1);
+        assert_eq!(
+            app.documents[0]
+                .model
+                .schematic
+                .as_ref()
+                .unwrap()
+                .primitive(wire)
+                == Some(&original),
+            !connected
+        );
+    }
+}
 
 #[test]
 fn library_placement_preview_repeat_rotation_cancel_and_stale_revision() {
@@ -260,7 +518,7 @@ fn properties_keeps_dock_width_with_long_parameter_names_and_font_families() {
 #[test]
 fn duplicate_designator_keeps_display_and_property_value_in_sync() {
     let mut app = app();
-    let ctx = egui::Context::default();
+    let ctx = focused_context();
     let f = edit::place(Placement::Resistor, Point::mm(20, 20), 0, "R1", "10k", 0).unwrap();
     app.documents[0].view.selected = Some(f.components[0].id);
     app.documents[0].edit_schematic(Edit::Insert(f), 0).unwrap();
@@ -370,7 +628,7 @@ fn cancelled_placement_and_wire_do_not_commit_and_finished_wire_is_one_transacti
 #[test]
 fn fast_drag_release_commits_group_once_and_stale_move_does_not_overwrite() {
     let mut app = app();
-    let ctx = egui::Context::default();
+    let ctx = focused_context();
     app.start_schematic_tool(Placement::Capacitor);
     app.schematic_input(0, pointer(Point::mm(20, 20), true), &ctx);
     app.schematic_action(SchAction::Select, &ctx);

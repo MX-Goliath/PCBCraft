@@ -21,6 +21,7 @@ use eda_core::schematic_edit::Placement;
 enum SchAction {
     Select,
     Move,
+    Drag,
     Rotate,
     Delete,
     Copy,
@@ -685,7 +686,6 @@ impl PcbCraft {
                                     ),
                                     ("Duplicate", "Ctrl+D", SchAction::Duplicate, selected),
                                     ("Delete", "Del", SchAction::Delete, selected),
-                                    ("Move", "M", SchAction::Move, selected),
                                     ("Rotate 90°", "Space", SchAction::Rotate, selected),
                                 ] {
                                     self.action(
@@ -696,6 +696,7 @@ impl PcbCraft {
                                         enabled,
                                     );
                                 }
+                                ui.menu_button("Move", |ui| self.move_menu_entries(ui));
                             }
                             ui.separator();
                             self.action(ui, "Preferences…", "", Command::Preferences, true);
@@ -1453,7 +1454,9 @@ impl eframe::App for PcbCraft {
         }
         self.library_dialog(ctx);
         self.workspace(ctx);
+        self.finish_schematic_interaction();
         self.finish_library_drag(ctx);
+        self.schematic_move_menu(ctx);
         self.dialogs(ctx);
         self.resize_edges(ctx);
         if let Some(command) = self.command.take() {

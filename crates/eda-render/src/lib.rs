@@ -176,6 +176,10 @@ impl Default for View {
 }
 
 impl View {
+    pub fn cancel_schematic_gesture(&mut self) {
+        self.sch_press_origin = None;
+        self.sch_primary_down = false;
+    }
     /// Candidate search reads the actual visible geometry; it never edits document coordinates.
     pub fn snap_point(&self, doc: &Document, raw: Point) -> Point {
         if self.snap.mode == SnapMode::Off {

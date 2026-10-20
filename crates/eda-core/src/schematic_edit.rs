@@ -8,6 +8,9 @@ use crate::schematic::{
 use crate::{Document, DocumentKind, History, Point};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+#[path = "schematic_drag.rs"]
+mod drag;
+pub use drag::connected_transform;
 
 pub const AUTHORED: u32 = u32::MAX;
 
@@ -48,6 +51,13 @@ pub enum Edit {
     Delete(Uuid),
     Transform {
         id: Uuid,
+        pivot: Point,
+        quarter_turns: u32,
+        delta: Point,
+    },
+    /// Move objects while retaining their existing electrical wire attachments.
+    Drag {
+        ids: Vec<Uuid>,
         pivot: Point,
         quarter_turns: u32,
         delta: Point,
@@ -315,6 +325,38 @@ fn apply(s: &mut Schematic, size: &mut Point, edit: &Edit, depth: usize) -> Resu
                 .retain(|p| p.id != *id && p.component != Some(*id));
             s.parameter_objects
                 .retain(|p| p.id != *id && p.component != Some(*id));
+        }
+        Edit::Drag {
+            ids,
+            pivot,
+            quarter_turns,
+            delta,
+        } => {
+            let patch = connected_transform(s, ids, *pivot, *quarter_turns, *delta)?;
+            for component in patch.components {
+                let id = component.id;
+                *s.components
+                    .iter_mut()
+                    .find(|c| c.id == id)
+                    .ok_or("Missing drag component")? = component;
+            }
+            for primitive in patch.primitives {
+                if matches!(&primitive.kind, K::Polyline { points, electrical, .. } if electrical == "Wire" && points.len() < 2)
+                {
+                    s.primitives.retain(|p| p.id != primitive.id);
+                    continue;
+                }
+                if let Some(old) = s
+                    .primitives
+                    .iter_mut()
+                    .chain(&mut s.parameter_objects)
+                    .find(|p| p.id == primitive.id)
+                {
+                    *old = primitive;
+                } else {
+                    s.primitives.push(primitive);
+                }
+            }
         }
         Edit::Transform {
             id,

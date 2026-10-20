@@ -1168,6 +1168,12 @@ pub(super) fn paint(
     };
     let mut selected_bounds = Rect::NOTHING;
     let mut component_bounds = HashMap::<Uuid, Rect>::new();
+    let preview_ids: std::collections::HashSet<_> = view
+        .sch_preview
+        .as_ref()
+        .into_iter()
+        .flat_map(|s| s.primitives.iter().map(|p| p.id))
+        .collect();
     if let Some(schematic) = &doc.schematic {
         // Clip source primitives to the actual sheet; imported templates can extend beyond it.
         let scene = Scene {
@@ -1178,7 +1184,7 @@ pub(super) fn paint(
             .primitives
             .iter()
             .chain(&schematic.parameter_objects)
-            .filter(|p| !p.presentation.hidden)
+            .filter(|p| !p.presentation.hidden && !preview_ids.contains(&p.id))
         {
             let (bounds, is_hit) = scene.primitive(primitive, hit_pointer);
             if let Some(id) = primitive.component {
@@ -1301,6 +1307,7 @@ pub(super) fn paint(
                     }
                 }),
             point: release
+                .filter(|p| rect.contains(*p) && ui.rect_contains_pointer(rect))
                 .or_else(|| {
                     response
                         .hover_pos()

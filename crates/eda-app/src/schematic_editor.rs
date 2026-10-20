@@ -12,6 +12,7 @@ mod tests;
 #[derive(Default)]
 pub(super) struct Editor {
     tool: Tool,
+    move_popup: Option<egui::Pos2>,
     pub kind: Option<Placement>,
     pub value: String,
     pub designator: String,
@@ -22,6 +23,9 @@ pub(super) struct Editor {
 enum Tool {
     #[default]
     Select,
+    Pick {
+        connected: bool,
+    },
     Library {
         drag: bool,
         symbol: Box<eda_core::library::Symbol>,
@@ -41,7 +45,8 @@ enum Tool {
     },
     Move {
         fragment: Fragment,
-        id: Option<Uuid>,
+        ids: Vec<Uuid>,
+        connected: bool,
         anchor: Point,
         turns: u32,
         revision: u64,
@@ -55,9 +60,11 @@ impl Editor {
     }
     pub fn cancel(&mut self, view: &mut View) {
         self.tool = Tool::Select;
+        self.move_popup = None;
         self.kind = None;
         view.sch_preview = None;
         view.sch_tool_active = false;
+        view.cancel_schematic_gesture();
     }
 }
 
@@ -103,6 +110,89 @@ fn next_designator(s: &Schematic, prefix: &str) -> String {
 }
 
 impl PcbCraft {
+    pub(super) fn finish_schematic_interaction(&mut self) {
+        for (i, doc) in self.documents.iter_mut().enumerate() {
+            if self.active != Some(i)
+                && (matches!(doc.sch_editor.tool, Tool::Move { .. } | Tool::Pick { .. })
+                    || doc.sch_editor.move_popup.is_some())
+            {
+                doc.sch_editor.cancel(&mut doc.view);
+            }
+        }
+    }
+    pub(super) fn move_menu_entries(&mut self, ui: &mut egui::Ui) {
+        let can_drag = self.active.is_some_and(|i| {
+            let doc = &self.documents[i];
+            doc.view.sch_selection.iter().copied().chain(doc.view.selected).all(|id| !doc.model.schematic.as_ref().unwrap().primitive(id).is_some_and(|p| matches!(&p.kind, K::Polyline { electrical, .. } if electrical == "Wire")))
+        });
+        self.action(
+            ui,
+            "Drag",
+            "M, D",
+            Command::SchEdit(SchAction::Drag),
+            can_drag,
+        );
+        self.action(ui, "Move", "M, M", Command::SchEdit(SchAction::Move), true);
+        let selected = self
+            .active
+            .is_some_and(|i| self.documents[i].view.selected.is_some());
+        self.action(
+            ui,
+            "Move Selection",
+            "",
+            Command::SchEdit(SchAction::Move),
+            selected,
+        );
+        ui.add_enabled(false, egui::Button::new("Move Selection By X, Y…"));
+        self.action(
+            ui,
+            "Drag Selection",
+            "",
+            Command::SchEdit(SchAction::Drag),
+            selected && can_drag,
+        );
+        ui.add_enabled(false, egui::Button::new("Move To Front"));
+        self.action(
+            ui,
+            "Rotate Selection",
+            "Space",
+            Command::SchEdit(SchAction::Rotate),
+            selected
+                && self
+                    .active
+                    .is_some_and(|i| self.documents[i].view.sch_selection.len() <= 1),
+        );
+    }
+    pub(super) fn schematic_move_menu(&mut self, ctx: &egui::Context) {
+        let Some(i) = self.active else {
+            return;
+        };
+        let Some(at) = self.documents[i].sch_editor.move_popup else {
+            return;
+        };
+        let shown = egui::Area::new(egui::Id::new("schematic_move_popup"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(at)
+            .show(ctx, |ui| {
+                egui::Frame::popup(ui.style()).show(ui, |ui| {
+                    ui.set_min_width(250.0);
+                    ui.with_layout(egui::Layout::top_down_justified(egui::Align::Min), |ui| {
+                        self.move_menu_entries(ui)
+                    });
+                });
+            });
+        if self.command.is_some()
+            || ctx.input(|input| {
+                input.pointer.any_pressed()
+                    && input
+                        .pointer
+                        .latest_pos()
+                        .is_some_and(|p| !shown.response.rect.contains(p))
+            })
+        {
+            self.documents[i].sch_editor.move_popup = None;
+        }
+    }
     pub(super) fn start_library_tool(
         &mut self,
         symbol: eda_core::library::Symbol,
@@ -283,7 +373,10 @@ impl PcbCraft {
             return;
         }
         if self.documents[i].view.sch_selection.len() > 1
-            && !matches!(action, SchAction::Select | SchAction::Paste)
+            && !matches!(
+                action,
+                SchAction::Select | SchAction::Paste | SchAction::Move | SchAction::Drag
+            )
         {
             self.message(
                 true,
@@ -318,13 +411,33 @@ impl PcbCraft {
                         )?;
                     }
                 }
-                SchAction::Move => {
-                    let id = selected.ok_or("Select an object to move")?;
+                SchAction::Move | SchAction::Drag => {
+                    let connected = matches!(action, SchAction::Drag);
+                    doc.sch_editor.cancel(&mut doc.view);
+                    let Some(id) = selected else {
+                        doc.sch_editor.tool = Tool::Pick { connected };
+                        doc.view.sch_tool_active = true;
+                        return Ok(());
+                    };
                     let s = doc.model.schematic.as_ref().unwrap();
+                    let ids = if doc.view.sch_selection.len() > 1 {
+                        doc.view.sch_selection.clone()
+                    } else {
+                        vec![id]
+                    };
+                    let anchor = edit::anchor(s, id).ok_or("Nothing selected")?;
                     doc.sch_editor.tool = Tool::Move {
-                        fragment: edit::extract(s, id)?,
-                        id: Some(id),
-                        anchor: edit::anchor(s, id).unwrap(),
+                        fragment: edit::connected_transform(s, &ids, anchor, 0, Point::default())
+                            .or_else(|e| {
+                            if connected {
+                                Err(e)
+                            } else {
+                                edit::extract(s, id)
+                            }
+                        })?,
+                        ids,
+                        connected,
+                        anchor,
                         turns: 0,
                         revision,
                         drag: false,
@@ -382,7 +495,8 @@ impl PcbCraft {
             doc.sch_editor.kind = None;
             doc.sch_editor.tool = Tool::Move {
                 fragment,
-                id: None,
+                ids: vec![],
+                connected: false,
                 anchor: *anchor,
                 turns: 0,
                 revision: doc.history.revision,
@@ -398,6 +512,19 @@ impl PcbCraft {
         };
         if self.documents[i].model.kind != DocumentKind::Schematic {
             return false;
+        }
+        if self.documents[i].sch_editor.move_popup.is_some() {
+            for (key, action) in [(Key::D, SchAction::Drag), (Key::M, SchAction::Move)] {
+                if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, key)) {
+                    self.documents[i].sch_editor.move_popup = None;
+                    self.schematic_action(action, ctx);
+                    return true;
+                }
+            }
+        } else if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::M)) {
+            self.documents[i].sch_editor.move_popup =
+                Some(ctx.pointer_latest_pos().unwrap_or(egui::pos2(400.0, 200.0)));
+            return true;
         }
         let clipboard_event = ctx.input_mut(|input| {
             let index = input.events.iter().position(|e| {
@@ -440,7 +567,7 @@ impl PcbCraft {
         }
         if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Escape)) {
             let doc = &mut self.documents[i];
-            if doc.sch_editor.active() {
+            if doc.sch_editor.active() || doc.sch_editor.move_popup.is_some() {
                 doc.sch_editor.cancel(&mut doc.view);
             } else {
                 doc.view.selected = None;
@@ -455,6 +582,7 @@ impl PcbCraft {
                 | Tool::Library { turns, .. } => *turns = (*turns + 1) % 4,
                 Tool::Path { vertical_first, .. } => *vertical_first = !*vertical_first,
                 Tool::Select => self.schematic_action(SchAction::Rotate, ctx),
+                Tool::Pick { .. } => {}
             }
             return true;
         }
@@ -464,7 +592,6 @@ impl PcbCraft {
             (egui::Modifiers::CTRL, Key::V, SchAction::Paste),
             (egui::Modifiers::CTRL, Key::D, SchAction::Duplicate),
             (egui::Modifiers::NONE, Key::Delete, SchAction::Delete),
-            (egui::Modifiers::NONE, Key::M, SchAction::Move),
         ] {
             if ctx.input_mut(|i| i.consume_key(mods, key)) {
                 self.schematic_action(action, ctx);
@@ -511,17 +638,46 @@ impl PcbCraft {
         let mut preview = None;
         let mut finish = false;
         let mut error = None;
+        if let Tool::Pick { connected } = doc.sch_editor.tool {
+            if input.secondary_clicked {
+                doc.sch_editor.cancel(&mut doc.view);
+            } else if input.clicked
+                && let (Some(id), Some(at)) = (input.hit, point)
+            {
+                doc.view.selected = Some(id);
+                doc.view.sch_selection.clear();
+                if let Ok(fragment) = edit::extract(s, id) {
+                    doc.sch_editor.tool = Tool::Move {
+                        fragment,
+                        ids: vec![id],
+                        connected,
+                        anchor: at,
+                        turns: 0,
+                        revision: doc.history.revision,
+                        drag: false,
+                    };
+                }
+            }
+            return;
+        }
         if !doc.sch_editor.active()
-            && doc.view.sch_selection.len() <= 1
+            && !ctx.input(|i| !i.focused || i.key_down(Key::Escape))
             && (input.drag_started || input.drag_stopped)
             && let (Some(id), Some(origin)) = (input.hit, input.press_origin)
         {
             match edit::extract(s, id) {
                 Ok(fragment) => {
+                    let ids = if doc.view.sch_selection.contains(&id) {
+                        doc.view.sch_selection.clone()
+                    } else {
+                        vec![id]
+                    };
+                    let connected = !ids.iter().any(|id| s.primitive(*id).is_some_and(|p| matches!(&p.kind, K::Polyline { electrical, .. } if electrical == "Wire")));
                     doc.view.selected = Some(id);
                     doc.sch_editor.tool = Tool::Move {
                         fragment,
-                        id: Some(id),
+                        ids,
+                        connected,
                         anchor: snap(origin),
                         turns: 0,
                         revision: doc.history.revision,
@@ -534,7 +690,7 @@ impl PcbCraft {
         }
         let kind = doc.sch_editor.kind;
         match &mut doc.sch_editor.tool {
-            Tool::Select => {}
+            Tool::Select | Tool::Pick { .. } => {}
             Tool::Library {
                 drag,
                 symbol,
@@ -662,28 +818,53 @@ impl PcbCraft {
             }
             Tool::Move {
                 fragment,
-                id,
+                ids,
+                connected,
                 anchor,
                 turns,
                 revision,
                 drag,
             } => {
-                if let Some(at) = point.or(doc.sch_editor.pointer) {
+                let at = if *drag {
+                    input.drop_point.map(snap).or(point)
+                } else {
+                    point.or(doc.sch_editor.pointer)
+                };
+                let cancelled = ctx.input(|i| !i.focused || i.key_down(Key::Escape));
+                if let Some(at) = at.filter(|_| !cancelled) {
                     let delta = Point {
                         x: at.x - anchor.x,
                         y: at.y - anchor.y,
                     };
-                    match fragment.transformed(*anchor, *turns, delta) {
+                    let transformed = if *connected {
+                        edit::connected_transform(s, ids, *anchor, *turns, delta)
+                    } else if ids.len() > 1 {
+                        transform_selection(s, ids, *anchor, *turns, delta)
+                    } else {
+                        fragment.transformed(*anchor, *turns, delta)
+                    };
+                    match transformed {
                         Ok(f) => {
                             if (input.clicked && !*drag) || (input.drag_stopped && *drag) {
                                 command = Some((
-                                    if let Some(id) = id {
-                                        Edit::Transform {
-                                            id: *id,
+                                    if *connected {
+                                        Edit::Drag {
+                                            ids: ids.clone(),
                                             pivot: *anchor,
                                             quarter_turns: *turns,
                                             delta,
                                         }
+                                    } else if !ids.is_empty() {
+                                        Edit::Batch(
+                                            ids.iter()
+                                                .map(|id| Edit::Transform {
+                                                    id: *id,
+                                                    pivot: *anchor,
+                                                    quarter_turns: *turns,
+                                                    delta,
+                                                })
+                                                .collect(),
+                                        )
                                     } else {
                                         Edit::Insert(f.clone())
                                     },
@@ -704,6 +885,7 @@ impl PcbCraft {
                 if input.secondary_clicked {
                     finish = true;
                 }
+                finish |= cancelled || (*drag && input.drag_stopped);
             }
         }
         if let Some((command, revision)) = command {
@@ -762,6 +944,34 @@ impl PcbCraft {
             ctx.request_repaint();
         }
     }
+}
+
+fn transform_selection(
+    s: &Schematic,
+    ids: &[Uuid],
+    pivot: Point,
+    turns: u32,
+    delta: Point,
+) -> Result<Fragment, String> {
+    let mut result = Fragment {
+        fonts: s.fonts.clone(),
+        images: s.images.clone(),
+        ..Default::default()
+    };
+    for id in ids {
+        let f = edit::extract(s, *id)?.transformed(pivot, turns, delta)?;
+        for c in f.components {
+            if !result.components.iter().any(|p| p.id == c.id) {
+                result.components.push(c);
+            }
+        }
+        for p in f.primitives {
+            if !result.primitives.iter().any(|old| old.id == p.id) {
+                result.primitives.push(p);
+            }
+        }
+    }
+    Ok(result)
 }
 
 pub(super) fn extend_path(
