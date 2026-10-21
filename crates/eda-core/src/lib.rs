@@ -200,47 +200,8 @@ impl Document {
     }
 }
 
-/// Snapshot history for the initial small documents; revision never moves backwards.
-#[derive(Default)]
-pub struct History {
-    undo: Vec<Document>,
-    redo: Vec<Document>,
-    pub revision: u64,
-}
-
-impl History {
-    pub fn can_undo(&self) -> bool {
-        !self.undo.is_empty()
-    }
-    pub fn can_redo(&self) -> bool {
-        !self.redo.is_empty()
-    }
-    pub fn commit(&mut self, current: &mut Document, next: Document) -> Result<bool, String> {
-        if current.id != next.id || current.kind != next.kind {
-            return Err("An edit cannot replace document identity or kind".into());
-        }
-        next.validate()?;
-        if *current == next {
-            return Ok(false);
-        }
-        self.undo.push(std::mem::replace(current, next));
-        self.redo.clear();
-        self.revision += 1;
-        Ok(true)
-    }
-    pub fn undo(&mut self, doc: &mut Document) {
-        if let Some(previous) = self.undo.pop() {
-            self.redo.push(std::mem::replace(doc, previous));
-            self.revision += 1;
-        }
-    }
-    pub fn redo(&mut self, doc: &mut Document) {
-        if let Some(next) = self.redo.pop() {
-            self.undo.push(std::mem::replace(doc, next));
-            self.revision += 1;
-        }
-    }
-}
+mod history;
+pub use history::History;
 
 #[cfg(test)]
 mod tests {

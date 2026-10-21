@@ -309,6 +309,7 @@ pub fn layer_id(name: &str) -> Result<u16> {
             } else if let Some(n) = s
                 .strip_prefix("MID-LAYER")
                 .or_else(|| s.strip_prefix("MIDLAYER"))
+                .or_else(|| s.strip_prefix("MID"))
             {
                 let n = n.parse::<u16>().map_err(|_| invalid())?;
                 if !(1..=30).contains(&n) {
@@ -1348,6 +1349,70 @@ mod tests {
         assert_eq!(layer_id("Mechanical32").unwrap(), 98);
         assert!(layer_id("Mechanical33").is_err());
         assert!(layer_id("MID-LAYER31").is_err());
+    }
+    #[test]
+    fn internal_signal_layer_aliases_respect_native_range() {
+        for n in 1..=30 {
+            for name in [
+                format!("MID{n}"),
+                format!("mid{n}"),
+                format!("Mid-Layer {n}"),
+                format!("MidLayer{n}"),
+            ] {
+                assert_eq!(layer_id(&name).unwrap(), n + 1, "{name}");
+            }
+        }
+        for name in ["MID0", "MID31", "MID65535", "MID", "MID-1", "MID1.5"] {
+            assert!(layer_id(name).is_err(), "{name}");
+        }
+    }
+    #[test]
+    fn binary_polygons_import_short_internal_layer_names() {
+        let mut file = cfb::CompoundFile::create(Cursor::new(Vec::new())).unwrap();
+        file.create_storage("/Board6").unwrap();
+        let outline = b"|VX0=0mm|VY0=0mm|VX1=20mm|VY1=0mm|VX2=20mm|VY2=20mm|VX3=0mm|VY3=20mm\0";
+        let mut board_data = (outline.len() as u32).to_le_bytes().to_vec();
+        board_data.extend_from_slice(outline);
+        file.create_stream("/Board6/Data")
+            .unwrap()
+            .write_all(&board_data)
+            .unwrap();
+        file.create_storage("/Polygons6").unwrap();
+        let mut data = Vec::new();
+        for (index, layer) in ["MID1", "MID2", "MID30"].into_iter().enumerate() {
+            let record = format!(
+                "|ID={index}|LAYER={layer}|POURINDEX={index}|VX0=0mm|VY0=0mm|VX1=10mm|VY1=0mm|VX2=10mm|VY2=10mm|VX3=0mm|VY3=10mm\0"
+            );
+            data.extend_from_slice(&(record.len() as u32).to_le_bytes());
+            data.extend_from_slice(record.as_bytes());
+        }
+        file.create_stream("/Polygons6/Data")
+            .unwrap()
+            .write_all(&data)
+            .unwrap();
+        file.create_stream("/Polygons6/Header")
+            .unwrap()
+            .write_all(&3u32.to_le_bytes())
+            .unwrap();
+        let bytes = file.into_inner().into_inner();
+        let doc = import_pcb(&bytes, "internal-layers.PcbDoc").unwrap();
+        let board = doc.pcb.unwrap();
+        assert_eq!(board.polygons.len(), 3);
+        assert_eq!(
+            board
+                .polygon_pours
+                .iter()
+                .map(|p| p.layer)
+                .collect::<Vec<_>>(),
+            [2, 3, 31]
+        );
+        assert_eq!(board.polygons[0].get("LAYER").unwrap(), "MID1");
+        assert_eq!(
+            STANDARD
+                .decode(&board.source.unwrap().bytes_base64)
+                .unwrap(),
+            bytes
+        );
     }
     #[test]
     fn nonintegral_and_negative_indices_are_rejected() {

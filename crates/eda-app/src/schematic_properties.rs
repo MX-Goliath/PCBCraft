@@ -36,6 +36,20 @@ struct Draft {
     font: SchFont,
     sheet_font: SchFont,
 }
+impl Panel {
+    pub(super) fn close_document(&mut self, session: Uuid) {
+        if self
+            .draft
+            .as_ref()
+            .is_some_and(|draft| draft.session == session)
+        {
+            self.draft = None;
+            self.parameter = None;
+            self.selected_parameter = None;
+            self.font_dialog = false;
+        }
+    }
+}
 fn font_index(p: &SchPrimitive) -> Option<usize> {
     match p.kind {
         K::Text { font, .. }

@@ -4,6 +4,7 @@ use eda_geom::Point;
 use egui::{Color32, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+mod image_cache;
 pub mod pcb;
 mod schematic;
 

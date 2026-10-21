@@ -17,7 +17,7 @@ pub const AUTHORED: u32 = u32::MAX;
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Fragment {
     pub fonts: Vec<SchFont>,
-    pub images: std::collections::BTreeMap<String, String>,
+    pub images: std::sync::Arc<std::collections::BTreeMap<String, String>>,
     pub components: Vec<Component>,
     pub primitives: Vec<SchPrimitive>,
 }
@@ -113,27 +113,68 @@ pub fn preview(doc: &Document, edit: &Edit) -> Result<Document, String> {
     Ok(next)
 }
 
+fn intern_edited_font(s: &mut Schematic, value: &SchFont) -> usize {
+    if let Some(index) = s.fonts.iter().position(|font| font == value) {
+        return index;
+    }
+    let mut used = std::collections::BTreeSet::from([s.sheet.system_font]);
+    for p in s.primitives.iter().chain(&s.parameter_objects) {
+        match &p.kind {
+            K::Text { font, .. }
+            | K::TextFrame { font, .. }
+            | K::PowerPort { font, .. }
+            | K::Port { font, .. } => {
+                used.insert(*font);
+            }
+            K::Pin {
+                font, number_font, ..
+            } => {
+                used.insert(*font);
+                used.extend(number_font);
+            }
+            _ => {}
+        }
+    }
+    // Old definitions remain in independent undo snapshots. Reusing an unused
+    // slot in the live scene avoids accumulating every intermediate font size.
+    if let Some(index) = (0..s.fonts.len()).find(|index| !used.contains(index)) {
+        s.fonts[index] = value.clone();
+        index
+    } else {
+        s.fonts.push(value.clone());
+        s.fonts.len() - 1
+    }
+}
+
+fn image_name(filename: &str) -> String {
+    filename.replace('\\', "/").to_lowercase()
+}
+
+fn referenced_images<'a>(
+    primitives: impl Iterator<Item = &'a SchPrimitive>,
+) -> std::collections::BTreeSet<String> {
+    primitives
+        .filter_map(|p| {
+            if let K::Image { filename, .. } = &p.kind {
+                Some(image_name(filename))
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
 fn apply(s: &mut Schematic, size: &mut Point, edit: &Edit, depth: usize) -> Result<(), String> {
     if depth > 16 {
         return Err("Edit nesting exceeds limit".into());
     }
     match edit {
         Edit::SheetFont(font) => {
-            let index = if let Some(i) = s.fonts.iter().position(|f| f == font) {
-                i
-            } else {
-                s.fonts.push(font.clone());
-                s.fonts.len() - 1
-            };
+            let index = intern_edited_font(s, font);
             s.sheet.system_font = index;
         }
         Edit::Font { id, font } => {
-            let index = if let Some(i) = s.fonts.iter().position(|f| f == font) {
-                i
-            } else {
-                s.fonts.push(font.clone());
-                s.fonts.len() - 1
-            };
+            let index = intern_edited_font(s, font);
             let p = s
                 .primitives
                 .iter_mut()
@@ -306,11 +347,13 @@ fn apply(s: &mut Schematic, size: &mut Point, edit: &Edit, depth: usize) -> Resu
             for p in &mut primitives {
                 remap_fonts(&mut p.kind, &map)?;
             }
-            for (key, data) in &f.images {
+            for (key, data) in f.images.iter() {
                 if s.images.get(key).is_some_and(|old| old != data) {
                     return Err("Clipboard image name conflicts with an existing resource".into());
                 }
-                s.images.insert(key.clone(), data.clone());
+                if !s.images.contains_key(key) {
+                    std::sync::Arc::make_mut(&mut s.images).insert(key.clone(), data.clone());
+                }
             }
             s.components.extend(f.components.clone());
             s.primitives.extend(primitives);
@@ -320,11 +363,25 @@ fn apply(s: &mut Schematic, size: &mut Point, edit: &Edit, depth: usize) -> Resu
             if !found {
                 return Err("Selected object no longer exists".into());
             }
+            let removed_images = referenced_images(
+                s.primitives
+                    .iter()
+                    .chain(&s.parameter_objects)
+                    .filter(|p| p.id == *id || p.component == Some(*id)),
+            );
             s.components.retain(|c| c.id != *id);
             s.primitives
                 .retain(|p| p.id != *id && p.component != Some(*id));
             s.parameter_objects
                 .retain(|p| p.id != *id && p.component != Some(*id));
+            let remaining = referenced_images(s.primitives.iter().chain(&s.parameter_objects));
+            if removed_images
+                .iter()
+                .any(|key| !remaining.contains(key) && s.images.contains_key(key))
+            {
+                std::sync::Arc::make_mut(&mut s.images)
+                    .retain(|key, _| !removed_images.contains(key) || remaining.contains(key));
+            }
         }
         Edit::Drag {
             ids,
@@ -661,7 +718,7 @@ pub fn anchor(s: &Schematic, id: Uuid) -> Option<Point> {
 pub fn extract(s: &Schematic, id: Uuid) -> Result<Fragment, String> {
     let mut f = Fragment {
         fonts: s.fonts.clone(),
-        images: s.images.clone(),
+        images: Default::default(),
         components: s
             .components
             .iter()
@@ -695,6 +752,22 @@ pub fn extract(s: &Schematic, id: Uuid) -> Result<Fragment, String> {
     }
     if f.components.is_empty() && f.primitives.is_empty() {
         return Err("Nothing selected".into());
+    }
+    let needed = referenced_images(f.primitives.iter());
+    if !needed.is_empty() {
+        f.images = if needed.len() == s.images.len()
+            && needed.iter().all(|key| s.images.contains_key(key))
+        {
+            s.images.clone()
+        } else {
+            std::sync::Arc::new(
+                s.images
+                    .iter()
+                    .filter(|(key, _)| needed.contains(*key))
+                    .map(|(key, value)| (key.clone(), value.clone()))
+                    .collect(),
+            )
+        };
     }
     Ok(f)
 }

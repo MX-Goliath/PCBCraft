@@ -910,6 +910,7 @@ dependencies = [
  "eda-geom",
  "geo",
  "serde",
+ "serde_json",
  "uuid",
 ]
 

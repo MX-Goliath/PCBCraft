@@ -28,7 +28,7 @@ pub struct BoardView {
     pub show_layer_dialog: bool,
     pub show_grid_dialog: bool,
     pub polygons_visible: bool,
-    cache: HashMap<Uuid, (u64, Vec<usize>)>,
+    cache: HashMap<Uuid, (u64, Vec<usize>, bool)>,
 }
 #[derive(Clone, Default)]
 pub struct Input {
@@ -72,6 +72,9 @@ pub fn layer_color(id: u16) -> Color32 {
     }
 }
 impl BoardView {
+    fn begin_frame(&mut self) {
+        self.cache.retain(|_, (_, _, used)| std::mem::take(used));
+    }
     pub fn initialize(&mut self, b: &Board) {
         if self.initialized {
             return;
@@ -186,12 +189,10 @@ pub fn canvas(ui: &mut egui::Ui, b: &Board, view: &mut View) -> CanvasOutput {
     navigate(ui, &response, &mut view.camera, b, rect);
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, 0.0, Color32::from_rgb(109, 106, 105));
+    // Release abandoned preview/deleted/hidden regions after one unused frame,
+    // including large meshes that would remain below the old entry-count cap.
+    view.pcb.begin_frame();
     let scene = view.pcb.preview.as_ref().unwrap_or(b);
-    // Placement previews use fresh IDs; do not retain abandoned triangulations forever.
-    if view.pcb.cache.len() > scene.items.len().saturating_add(256) {
-        let present: BTreeSet<_> = scene.items.iter().map(|i| i.id).collect();
-        view.pcb.cache.retain(|id, _| present.contains(id));
-    }
     let outline = scene.outline_points(256);
     if outline.len() >= 3 {
         polygon(
@@ -473,7 +474,7 @@ fn paint_item(
     item: &Item,
     active: u16,
     color: Color32,
-    cache: &mut HashMap<Uuid, (u64, Vec<usize>)>,
+    cache: &mut HashMap<Uuid, (u64, Vec<usize>, bool)>,
 ) {
     let scale = (camera.pixels_per_mm / 1e6) as f32;
     let screen = |v| camera.screen(v, rect);
@@ -610,7 +611,8 @@ fn paint_item(
                     }
                 }
                 let signature = h.finish();
-                let e = cache.entry(item.id).or_insert((signature, vec![]));
+                let e = cache.entry(item.id).or_insert((signature, vec![], true));
+                e.2 = true;
                 if e.0 != signature {
                     e.0 = signature;
                     e.1.clear();
@@ -678,4 +680,44 @@ fn polygon(
     }
     mesh.indices.extend(indices.iter().map(|v| *v as u32));
     p.add(egui::Shape::mesh(mesh));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn abandoned_region_previews_do_not_accumulate_cached_meshes() {
+        let ctx = egui::Context::default();
+        let mut view = BoardView::default();
+        let camera = Camera::default();
+        let rect = Rect::from_min_size(Pos2::ZERO, Vec2::splat(400.0));
+        for _ in 0..100 {
+            view.begin_frame();
+            let item = Item::new(
+                TOP,
+                None,
+                Shape::Region {
+                    contour: vec![Point::mm(0, 0), Point::mm(1, 0), Point::mm(1, 1)],
+                    holes: vec![],
+                    cutout: false,
+                },
+            );
+            let _ = ctx.run(Default::default(), |ctx| {
+                paint_item(
+                    &ctx.layer_painter(egui::LayerId::background()),
+                    &camera,
+                    rect,
+                    &item,
+                    TOP,
+                    Color32::RED,
+                    &mut view.cache,
+                );
+            });
+            assert!(view.cache.len() <= 2);
+            assert!(!view.cache[&item.id].1.is_empty());
+        }
+        view.begin_frame();
+        view.begin_frame();
+        assert!(view.cache.is_empty());
+    }
 }

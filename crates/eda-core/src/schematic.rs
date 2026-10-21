@@ -2,6 +2,7 @@
 use crate::Point;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::sync::Arc;
 use uuid::Uuid;
 
 /// Native standard sheet drawing areas, in nm; labels observed in AD 24.4.1.
@@ -39,10 +40,10 @@ pub struct Schematic {
     /// Hidden parameter objects have identity and editable presentation as well.
     #[serde(default)]
     pub parameter_objects: Vec<SchPrimitive>,
-    pub records: Vec<SourceRecord>,
+    pub records: Arc<Vec<SourceRecord>>,
     #[serde(default)]
-    pub images: BTreeMap<String, String>,
-    pub source: Option<NativeSource>,
+    pub images: Arc<BTreeMap<String, String>>,
+    pub source: Option<Arc<NativeSource>>,
     pub warnings: Vec<String>,
 }
 
@@ -383,8 +384,8 @@ impl Schematic {
             components: vec![],
             primitives: vec![],
             parameter_objects: vec![],
-            records: vec![],
-            images: BTreeMap::new(),
+            records: Arc::default(),
+            images: Arc::default(),
             source: None,
             warnings: vec![],
         }

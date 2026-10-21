@@ -7,5 +7,6 @@ license.workspace = true
 [dependencies]
 eda-geom.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 uuid.workspace = true
 geo = { version = "=0.31.0", default-features = false }

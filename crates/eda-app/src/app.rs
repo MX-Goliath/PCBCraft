@@ -445,6 +445,7 @@ impl PcbCraft {
     }
 
     fn remove_document(&mut self, id: Uuid) {
+        self.property_ui.schematic.close_document(id);
         let active_id = self
             .active
             .and_then(|i| self.documents.get(i))

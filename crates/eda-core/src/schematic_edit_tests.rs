@@ -1,5 +1,153 @@
 use super::*;
 
+#[test]
+fn repeated_font_edits_reuse_unused_slots_without_changing_other_text_or_pin_fonts() {
+    let mut doc = Document::new(DocumentKind::Schematic, "Fonts");
+    let s = doc.schematic.as_mut().unwrap();
+    let mut fixed = s.fonts[0].clone();
+    fixed.bold = true;
+    s.fonts.push(fixed.clone());
+    let mut number_font = s.fonts[0].clone();
+    number_font.italic = true;
+    s.fonts.push(number_font.clone());
+    let text = primitive(
+        K::Text {
+            position: Point::mm(1, 1),
+            text: "Value".into(),
+            font: 0,
+            orientation: 0,
+            justification: 0,
+        },
+        None,
+    );
+    let id = text.id;
+    s.primitives.push(text);
+    s.primitives.push(primitive(
+        K::Text {
+            position: Point::mm(2, 2),
+            text: "Fixed".into(),
+            font: 1,
+            orientation: 0,
+            justification: 0,
+        },
+        None,
+    ));
+    s.primitives.push(primitive(
+        K::Pin {
+            position: Point::mm(3, 3),
+            length_nm: 1_000_000,
+            orientation: 0,
+            name: "Pin".into(),
+            number: "1".into(),
+            show_name: true,
+            show_number: true,
+            font: 0,
+            electrical: 0,
+            number_font: Some(2),
+            outer_symbol: 0,
+            inner_symbol: 0,
+        },
+        None,
+    ));
+    let mut history = History::default();
+    for n in 0..300 {
+        let mut font = fixed.clone();
+        font.height_nm = 1_000_000 + n * 10_000;
+        commit(&mut history, &mut doc, Edit::Font { id, font }).unwrap();
+    }
+    let s = doc.schematic.as_ref().unwrap();
+    assert!(s.fonts.len() <= 5);
+    assert_eq!(s.fonts[1], fixed);
+    assert_eq!(s.fonts[2], number_font);
+    let last = doc.clone();
+    history.undo(&mut doc);
+    assert_ne!(doc, last);
+    history.redo(&mut doc);
+    assert_eq!(doc, last);
+}
+
+#[test]
+fn clipboard_keeps_only_referenced_images_and_delete_releases_unused_resources() {
+    use std::{collections::BTreeMap, sync::Arc};
+    let mut doc = Document::new(DocumentKind::Schematic, "Images");
+    let s = doc.schematic.as_mut().unwrap();
+    s.images = Arc::new(BTreeMap::from([
+        ("used.png".into(), "image".into()),
+        ("unrelated.png".into(), "other".into()),
+    ]));
+    let label = primitive(
+        K::Text {
+            position: Point::mm(1, 1),
+            text: "Label".into(),
+            font: 0,
+            orientation: 0,
+            justification: 0,
+        },
+        None,
+    );
+    let label_id = label.id;
+    s.primitives.push(label);
+    let image = primitive(
+        K::Image {
+            a: Point::mm(1, 1),
+            b: Point::mm(2, 2),
+            filename: "USED.PNG".into(),
+            keep_aspect: true,
+        },
+        None,
+    );
+    let first = image.id;
+    s.primitives.push(image.clone());
+    let mut second_image = image;
+    second_image.id = Uuid::new_v4();
+    let second = second_image.id;
+    s.primitives.push(second_image);
+    assert!(extract(s, label_id).unwrap().images.is_empty());
+    let copied = extract(s, first).unwrap();
+    assert_eq!(copied.images.len(), 1);
+    assert!(copied.images.contains_key("used.png"));
+    let mut history = History::default();
+    commit(&mut history, &mut doc, Edit::Delete(first)).unwrap();
+    assert!(
+        doc.schematic
+            .as_ref()
+            .unwrap()
+            .images
+            .contains_key("used.png")
+    );
+    commit(&mut history, &mut doc, Edit::Delete(second)).unwrap();
+    assert!(
+        !doc.schematic
+            .as_ref()
+            .unwrap()
+            .images
+            .contains_key("used.png")
+    );
+    history.undo(&mut doc);
+    assert!(
+        doc.schematic
+            .as_ref()
+            .unwrap()
+            .images
+            .contains_key("used.png")
+    );
+    history.redo(&mut doc);
+    assert!(
+        !doc.schematic
+            .as_ref()
+            .unwrap()
+            .images
+            .contains_key("used.png")
+    );
+    assert!(
+        doc.schematic
+            .as_ref()
+            .unwrap()
+            .images
+            .contains_key("unrelated.png")
+    );
+}
+
 fn commit(history: &mut History, doc: &mut Document, edit: Edit) -> Result<bool, String> {
     let document = doc.id;
     let expected_revision = history.revision;

@@ -1,8 +1,37 @@
 use super::*;
-use base64::{Engine, engine::general_purpose::STANDARD};
 use eda_core::schematic::{SchFont, SchPrimitive, SchPrimitiveKind as K, Schematic};
 use egui::{Align2, FontFamily, FontId, Painter, Shape, epaint::TextShape};
 use std::collections::HashMap;
+
+// Layout in a fixed font space: rasterizer rounding must not change glyph
+// advances, anchors or line breaks whenever the schematic camera zooms.
+const TEXT_LAYOUT_SIZE: f32 = 64.0;
+
+fn place_text(
+    mut shape: TextShape,
+    scale: f32,
+    position: Pos2,
+    pixels_per_point: f32,
+) -> TextShape {
+    shape.transform(egui::emath::TSTransform::from_scaling(scale));
+    shape.pos += position.to_vec2();
+    // epaint snaps TextShape.pos to physical pixels. Keep that origin snapped,
+    // but retain its fractional part in the rows so only this document text
+    // moves continuously (ordinary UI text keeps its normal pixel alignment).
+    let snapped = Pos2::new(
+        (shape.pos.x * pixels_per_point).round() / pixels_per_point,
+        (shape.pos.y * pixels_per_point).round() / pixels_per_point,
+    );
+    let residual = egui::emath::Rot2::from_angle(-shape.angle) * (shape.pos - snapped);
+    shape.pos = snapped;
+    let galley = std::sync::Arc::make_mut(&mut shape.galley);
+    galley.rect = galley.rect.translate(residual);
+    galley.mesh_bounds = galley.mesh_bounds.translate(residual);
+    for row in &mut galley.rows {
+        row.pos += residual;
+    }
+    shape
+}
 
 fn color(value: u32) -> Color32 {
     Color32::from_rgb(value as u8, (value >> 8) as u8, (value >> 16) as u8)
@@ -176,13 +205,16 @@ impl Scene<'_> {
             .schematic
             .and_then(|s| s.fonts.get(font))
             .unwrap_or(&fallback);
-        let size = (self.nm(font.height_nm) * 0.875).clamp(1.0, 512.0);
+        let size = self.nm(font.height_nm) * 0.875;
         if size < 2.2 {
             return Rect::NOTHING;
         }
-        let galley =
-            self.painter
-                .layout_no_wrap(text.to_owned(), FontId::new(size, font_family(font)), c);
+        let galley = self.painter.layout_no_wrap(
+            text.to_owned(),
+            FontId::new(TEXT_LAYOUT_SIZE, font_family(font)),
+            c,
+        );
+        let scale = size / TEXT_LAYOUT_SIZE;
         let justification = justification.min(8);
         let justification = if orientation % 4 >= 2 {
             8 - justification
@@ -211,10 +243,16 @@ impl Scene<'_> {
         };
         let offset = anchor.anchor_size(Pos2::ZERO, galley.size()).min.to_vec2();
         let rotated = egui::emath::Rot2::from_angle(angle) * offset;
-        let mut shape = TextShape::new(position + rotated, galley, c).with_angle(angle);
+        let mut shape = TextShape::new(rotated.to_pos2(), galley, c).with_angle(angle);
         if font.underline {
-            shape.underline = Stroke::new((size / 14.0).max(0.4), c);
+            shape.underline = Stroke::new(TEXT_LAYOUT_SIZE / 14.0, c);
         }
+        let shape = place_text(
+            shape,
+            scale,
+            position,
+            self.painter.ctx().pixels_per_point(),
+        );
         let bounds = shape.visual_bounding_rect();
         self.painter.add(shape);
         bounds
@@ -452,20 +490,27 @@ impl Scene<'_> {
                     .schematic
                     .and_then(|s| s.fonts.get(*font))
                     .unwrap_or(&fallback);
-                let size = (self.nm(font.height_nm) * 0.875).clamp(1.0, 512.0);
+                let size = self.nm(font.height_nm) * 0.875;
+                if size < 2.2 {
+                    return (rect, pointer.is_some_and(|p| rect.contains(p)));
+                }
+                let scale = size / TEXT_LAYOUT_SIZE;
                 let mut job = egui::text::LayoutJob::simple(
                     text.clone(),
-                    FontId::new(size, font_family(font)),
+                    FontId::new(TEXT_LAYOUT_SIZE, font_family(font)),
                     c,
                     if *word_wrap {
-                        rect.width().max(1.0)
+                        // Derive wrap width from document coordinates as well;
+                        // subtracting screen positions loses precision as we pan/zoom.
+                        (((b.x as f64 - a.x as f64).abs() / font.height_nm as f64)
+                            * (TEXT_LAYOUT_SIZE as f64 / 0.875)) as f32
                     } else {
                         f32::INFINITY
                     },
                 );
                 if font.underline {
                     for section in &mut job.sections {
-                        section.format.underline = Stroke::new((size / 14.0).max(0.4), c);
+                        section.format.underline = Stroke::new(TEXT_LAYOUT_SIZE / 14.0, c);
                     }
                 }
                 job.halign = match alignment {
@@ -479,9 +524,15 @@ impl Scene<'_> {
                     2 => rect.right(),
                     _ => rect.left(),
                 };
+                let shape = place_text(
+                    TextShape::new(Pos2::ZERO, galley, c),
+                    scale,
+                    Pos2::new(x, rect.top()),
+                    self.painter.ctx().pixels_per_point(),
+                );
                 self.painter
                     .with_clip_rect(rect.intersect(self.rect))
-                    .galley(Pos2::new(x, rect.top()), galley, c);
+                    .add(shape);
                 hit = pointer.is_some_and(|p| rect.contains(p));
                 rect
             }
@@ -494,49 +545,12 @@ impl Scene<'_> {
                 let mut rect = Rect::from_two_pos(self.screen(*a), self.screen(*b));
                 let normalized = filename.replace('\\', "/").to_lowercase();
                 let encoded = self.schematic.and_then(|s| s.images.get(&normalized));
-                use std::hash::{Hash, Hasher};
-                let mut fingerprint = std::collections::hash_map::DefaultHasher::new();
-                encoded.hash(&mut fingerprint);
-                let key = egui::Id::new((
-                    "sch_image",
+                let texture = crate::image_cache::texture(
+                    self.painter.ctx(),
                     self.document_id,
                     filename,
-                    fingerprint.finish(),
-                ));
-                let cached = self
-                    .painter
-                    .ctx()
-                    .data_mut(|data| data.get_temp::<Option<egui::TextureHandle>>(key));
-                let texture = if let Some(cached) = cached {
-                    cached
-                } else {
-                    let texture = encoded
-                        .and_then(|s| STANDARD.decode(s).ok())
-                        .and_then(|bytes| {
-                            let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes))
-                                .with_guessed_format()
-                                .ok()?;
-                            let mut limits = image::Limits::default();
-                            limits.max_image_width = Some(8192);
-                            limits.max_image_height = Some(8192);
-                            limits.max_alloc = Some(64 * 1024 * 1024);
-                            reader.limits(limits);
-                            let image = reader.decode().ok()?.into_rgba8();
-                            let pixels = egui::ColorImage::from_rgba_unmultiplied(
-                                [image.width() as usize, image.height() as usize],
-                                image.as_raw(),
-                            );
-                            Some(self.painter.ctx().load_texture(
-                                filename,
-                                pixels,
-                                egui::TextureOptions::LINEAR,
-                            ))
-                        });
-                    self.painter
-                        .ctx()
-                        .data_mut(|data| data.insert_temp(key, texture.clone()));
-                    texture
-                };
+                    encoded.map(String::as_str),
+                );
                 if let Some(texture) = texture {
                     if *keep_aspect {
                         let size = texture.size_vec2();
@@ -1343,6 +1357,148 @@ pub(super) fn paint(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn text_context(pixels_per_point: f32) -> egui::Context {
+        let ctx = egui::Context::default();
+        let mut fonts = egui::FontDefinitions::default();
+        fonts.families.insert(
+            FontFamily::Name("sch-sans".into()),
+            fonts.families[&FontFamily::Proportional].clone(),
+        );
+        ctx.set_fonts(fonts);
+        ctx.set_pixels_per_point(pixels_per_point);
+        ctx
+    }
+
+    fn rendered_text(
+        ctx: &egui::Context,
+        zoom: f64,
+        orientation: u32,
+        justification: u32,
+        frame: bool,
+    ) -> (Vec<[f64; 2]>, usize) {
+        let rect = Rect::from_min_size(Pos2::new(0.13, 0.17), Vec2::new(800.0, 600.0));
+        let camera = Camera {
+            centre_mm: [13.1, 21.7],
+            pixels_per_mm: zoom,
+            ..Default::default()
+        };
+        let mut schematic = Schematic::blank();
+        schematic.fonts = vec![SchFont {
+            name: "Arial".into(),
+            height_nm: 2_540_000,
+            bold: false,
+            italic: false,
+            underline: false,
+        }];
+        let output = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(rect),
+                ..Default::default()
+            },
+            |ctx| {
+                let scene = Scene {
+                    painter: ctx.layer_painter(egui::LayerId::background()),
+                    camera: &camera,
+                    rect,
+                    schematic: Some(&schematic),
+                    document_id: Uuid::nil(),
+                    library_preview: false,
+                };
+                if frame {
+                    let p = eda_core::schematic_edit::primitive(
+                        K::TextFrame {
+                            a: Point::mm(10, 25),
+                            b: Point::mm(29, 10),
+                            text: "R1 Resistance 47k capacitor C12 output signal".into(),
+                            font: 0,
+                            alignment: justification % 3,
+                            word_wrap: true,
+                            show_border: false,
+                        },
+                        None,
+                    );
+                    scene.primitive(&p, None);
+                } else {
+                    scene.text(
+                        scene.screen(Point::mm(10, 25)),
+                        "R1 Resistance 47k C12",
+                        0,
+                        orientation,
+                        justification,
+                        Color32::BLACK,
+                    );
+                }
+            },
+        );
+        let rows = output
+            .shapes
+            .iter()
+            .filter_map(|s| match &s.shape {
+                Shape::Text(text) => Some(text.galley.rows.len()),
+                _ => None,
+            })
+            .sum();
+        let points = ctx
+            .tessellate(output.shapes, output.pixels_per_point)
+            .into_iter()
+            .flat_map(|p| match p.primitive {
+                egui::epaint::Primitive::Mesh(mesh) => mesh
+                    .vertices
+                    .into_iter()
+                    .map(|v| camera.world_mm(v.pos, rect))
+                    .collect(),
+                _ => Vec::new(),
+            })
+            .collect();
+        (points, rows)
+    }
+
+    #[test]
+    fn schematic_text_glyphs_and_anchors_stay_fixed_in_document_during_zoom() {
+        for dpi in [1.0, 1.5, 2.0] {
+            let ctx = text_context(dpi);
+            for orientation in 0..4 {
+                for justification in 0..9 {
+                    let (reference, _) =
+                        rendered_text(&ctx, 6.0, orientation, justification, false);
+                    assert!(!reference.is_empty());
+                    for zoom in [5.81, 5.99, 6.01, 6.19, 7.3, 12.4] {
+                        let (actual, _) =
+                            rendered_text(&ctx, zoom, orientation, justification, false);
+                        assert_eq!(reference.len(), actual.len());
+                        for (a, b) in reference.iter().zip(actual) {
+                            assert!(
+                                (a[0] - b[0]).abs() < 0.0002 && (a[1] - b[1]).abs() < 0.0002,
+                                "Glyph moved in document: dpi={dpi} orientation={orientation} anchor={justification} zoom={zoom}: {a:?} -> {b:?}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn schematic_text_frame_wrap_and_glyphs_do_not_change_with_zoom() {
+        for dpi in [1.0, 1.5, 2.0] {
+            let ctx = text_context(dpi);
+            for alignment in 0..3 {
+                let (reference, rows) = rendered_text(&ctx, 6.0, 0, alignment, true);
+                assert!(rows > 1);
+                assert!(!reference.is_empty());
+                for zoom in [5.81, 5.99, 6.01, 6.19, 7.3, 12.4] {
+                    let (actual, actual_rows) = rendered_text(&ctx, zoom, 0, alignment, true);
+                    assert_eq!(rows, actual_rows);
+                    assert_eq!(reference.len(), actual.len());
+                    for (a, b) in reference.iter().zip(actual) {
+                        assert!((a[0] - b[0]).abs() < 0.0002 && (a[1] - b[1]).abs() < 0.0002);
+                    }
+                }
+            }
+        }
+    }
+
     #[test]
     fn drag_release_keeps_original_hit_location_after_pointer_origin_is_cleared() {
         let ctx = egui::Context::default();

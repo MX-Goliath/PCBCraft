@@ -908,13 +908,13 @@ fn build_document(
         components,
         primitives,
         parameter_objects,
-        records,
-        images,
-        source: Some(NativeSource {
+        records: records.into(),
+        images: images.into(),
+        source: Some(std::sync::Arc::new(NativeSource {
             format: "Altium SchDoc".into(),
             filename: name.into(),
             original_base64: STANDARD.encode(bytes),
-        }),
+        })),
         warnings,
     });
     doc.validate()?;

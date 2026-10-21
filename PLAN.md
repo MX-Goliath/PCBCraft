@@ -260,3 +260,23 @@ fmt, strict Clippy и Linux all-targets build. Linux GUI: Properties Apply,
 Подробности и ограничения: docs/pcb-update/VALIDATION.md и IMPLEMENTATION.md.
 Altium interoperability, Windows GUI, реальные платы, DRC/shove/ECO/fabrication
 и полное визуальное соответствие остаются непроверенными либо нереализованными.
+
+### Текст схемы при масштабировании — 21.10.2026
+
+По сообщению пользователя устранены скачки метрик/привязок текста при zoom:
+фиксированная раскладка glyphs, масштабирование камерой и сохранение subpixel
+позиции; текстовые блоки сохраняют переносы строк. Добавлены две регрессии
+с реальной тесселяцией, до исправления падающие; 113 тестов, fmt, Clippy и build
+проходят. Linux GUI и совпадение canvas после zoom in/out проверены.
+Подробности и границы: docs/verification.md и docs/features.json.
+
+### Рост памяти при редактировании — 21.10.2026
+
+Воспроизведён рост до 2,49 ГБ RSS после 200 visibility-правок native-схемы TI.
+Убрано дублирование source/records/images между снимками, ограничены Undo/Redo
+(128 шагов / 64 МиБ оценки editable snapshots на документ), очищаются устаревшие
+текстуры и PCB triangulations. Переиспользуются font slots, clipboard не держит
+посторонние изображения, удаление освобождает неиспользуемые image resources.
+Восемь memory-проб завершились без неограниченного роста; visibility 600 итераций
+держится около 31 МБ RSS в модельной пробе, GUI 200 переключений — около 159 МБ.
+122 теста, fmt, strict Clippy и build all-targets проходят. Подробнее: docs/memory.md.
