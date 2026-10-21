@@ -4,6 +4,7 @@ use eda_geom::Point;
 use egui::{Color32, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+pub mod pcb;
 mod schematic;
 
 /// Read-only preview of a library fragment, fitted to its visible geometry.
@@ -85,6 +86,8 @@ impl Camera {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct View {
+    #[serde(skip)]
+    pub pcb: pcb::BoardView,
     pub camera: Camera,
     pub grid: bool,
     pub grid_nm: i64,
@@ -150,6 +153,7 @@ impl Default for SnapOptions {
 impl Default for View {
     fn default() -> Self {
         Self {
+            pcb: pcb::BoardView::default(),
             camera: Camera::default(),
             grid: true,
             grid_nm: 1_000_000,
@@ -272,6 +276,9 @@ pub struct SchematicInput {
 }
 
 pub fn canvas(ui: &mut egui::Ui, doc: &Document, view: &mut View) -> CanvasOutput {
+    if let Some(board) = &doc.pcb {
+        return pcb::canvas(ui, board, view);
+    }
     let (rect, response) = ui.allocate_exact_size(ui.available_size(), Sense::click_and_drag());
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, 0.0, Color32::from_rgb(109, 106, 105));

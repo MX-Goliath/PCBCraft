@@ -248,3 +248,15 @@ multi-board, harness, сервер Workspace. Для каждой подсист
 - Возобновление: проверить GUI на ReferenceB, углы/поворот/группы и save/reopen;
   завершить сегментное перетаскивание wires, autojunction/слияние и cleanup.
   Полное совпадение всех сценариев редактирования Altium пока не заявляется.
+
+### Интеграция PCB v2 — 21.10.2026
+
+По запросу пользователя интегрирован накопительный PCB-пакет на базе bd76173:
+модель/команды PCB, импорт PCB6/ASCII, ручная трассировка, editable polygons,
+Properties и экспериментальное native-сохранение с backup и проверкой re-import.
+Исправлены ошибки компиляции/Clippy, обновлён lockfile. Пройдены 109 Rust-тестов,
+fmt, strict Clippy и Linux all-targets build. Linux GUI: Properties Apply,
+перезаливка, маршрут/Undo/Redo, Save с backup и повторное открытие.
+Подробности и ограничения: docs/pcb-update/VALIDATION.md и IMPLEMENTATION.md.
+Altium interoperability, Windows GUI, реальные платы, DRC/shove/ECO/fabrication
+и полное визуальное соответствие остаются непроверенными либо нереализованными.

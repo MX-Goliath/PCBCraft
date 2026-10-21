@@ -1,0 +1,11 @@
+{
+  "altium_oracle_tested": false,
+  "real_pcbdoc_files_tested": 0,
+  "ti_archives_downloaded": 0,
+  "synthetic_fixture": "fixtures/pcb-update/editor-v2.PcbDoc",
+  "primary_sources": [
+    "https://docs.rs/geo/0.31.0/geo/",
+    "https://github.com/tscircuit/altiumts/tree/d9faf03f0ba0165066c82d0352c0d12adcc60409/lib/serialization",
+    "https://www.altium.com/documentation/altium-designer/pcb/defining-polygons-copper-regions"
+  ]
+}

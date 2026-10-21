@@ -70,8 +70,13 @@ Undo/Redo и сохранение в собственный JSON. Управле
 предпросмотр и размещение библиотечных символов. Откройте библиотеку через
 Ctrl+O или меню Components → Install Library…. Space — поворот, Esc — завершение.
 [Поддержка и ограничения библиотек](docs/interface/components-libraries.md).
-Native-запись, PCB import, полный docking, routing, ERC/DRC, редактор библиотек и выпуск
-производственных файлов запланированы. Неактивные инженерные меню
+Импорт PCB и экспериментальное редактирование `.PcbDoc`: компоненты, pads/vias/tracks,
+ручная трассировка, полигоны с перезаливкой и native Save для поддержанного подмножества
+ASCII/PCB6. Пример: `cargo run --locked -p eda-app -- fixtures/pcb-update/editor-v2.PcbDoc`.
+Управление, ограничения и результаты проверок: [PCB](docs/pcb-update/IMPLEMENTATION.md),
+[валидация интеграции](docs/pcb-update/VALIDATION.md).
+Native-запись схем, полный docking, обход препятствий/shove, ERC/DRC, редактор библиотек
+и выпуск производственных файлов запланированы. Неактивные инженерные меню
 не выполняют операции. Altium не нужен для запуска PCBCraft.
 
 Save / Save As импортированной схемы создаёт собственный `.pcbcraft.json`,

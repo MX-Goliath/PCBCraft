@@ -1,0 +1,36 @@
+{
+  "prepared_date": "2026-10-21",
+  "native_reference_files_downloaded": 0,
+  "native_reference_files_tested": 0,
+  "references": [
+    {
+      "id": "TIPD167",
+      "publisher": "Texas Instruments",
+      "landing_page": "https://www.ti.com/tool/TIPD167",
+      "page_evidence": "TI explicitly lists Altium schematics and PCB layout in the design description.",
+      "listed_archives": ["TIDC524A.ZIP", "TIDC525.ZIP"],
+      "status": "candidate_only",
+      "archive_downloaded": false,
+      "archive_contents_verified": false,
+      "pcbdoc_paths": [],
+      "sha256": null,
+      "import_result": "not_run",
+      "visual_comparison": "not_run"
+    },
+    {
+      "id": "TIDA-00691",
+      "publisher": "Texas Instruments",
+      "landing_page": "https://www.ti.com/tool/TIDA-00691",
+      "page_evidence": "TI lists a CAD/CAE ZIP, Gerber ZIP and PCB layout document. The CAD ZIP's native PCB format has NOT been established.",
+      "listed_archives": ["TIDRJE2.ZIP", "TIDCBK6.ZIP"],
+      "status": "candidate_only_native_format_unverified",
+      "archive_downloaded": false,
+      "archive_contents_verified": false,
+      "pcbdoc_paths": [],
+      "sha256": null,
+      "import_result": "not_run",
+      "visual_comparison": "not_run"
+    }
+  ],
+  "redistribution": "No TI files are bundled. Download and use reference resources under the publisher's terms."
+}

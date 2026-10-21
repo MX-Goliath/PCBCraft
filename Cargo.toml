@@ -9,7 +9,7 @@ rust-version = "1.90"
 license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
-serde = { version = "1.0", features = ["derive"] }
+serde = { version = "1.0", features = ["derive", "rc"] }
 serde_json = "1.0"
 uuid = { version = "1.18", features = ["v4", "v5", "serde"] }
 egui = { version = "=0.32.3", features = ["serde"] }

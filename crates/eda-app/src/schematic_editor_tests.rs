@@ -22,6 +22,7 @@ fn app() -> PcbCraft {
         pad_edit: None,
         property_ui: Default::default(),
         sch_clipboard: None,
+        pcb_clipboard: None,
         components_ui: Default::default(),
     }
 }

@@ -1,5 +1,9 @@
 //! GUI-independent document model and history.
 pub mod library;
+pub mod pcb;
+pub mod pcb_polygon;
+pub mod pcb_route;
+pub mod pcb_tools;
 pub mod schematic;
 pub mod schematic_edit;
 use eda_geom::Point;
@@ -86,6 +90,8 @@ pub struct Document {
     pub tracks: Vec<Track>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub schematic: Option<schematic::Schematic>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pcb: Option<pcb::Board>,
 }
 
 impl Document {
@@ -102,6 +108,7 @@ impl Document {
             pads: vec![],
             tracks: vec![],
             schematic: (kind == DocumentKind::Schematic).then(schematic::Schematic::blank),
+            pcb: None,
         }
     }
 
@@ -152,6 +159,15 @@ impl Document {
         }
         if !self.size.valid() || self.size.x <= 0 || self.size.y <= 0 {
             return Err("Invalid document dimensions".into());
+        }
+        if let Some(board) = &self.pcb {
+            if self.kind != DocumentKind::Board || self.schematic.is_some() {
+                return Err("PCB data requires a board document without schematic data".into());
+            }
+            if !self.pads.is_empty() || !self.tracks.is_empty() {
+                return Err("A PCB scene cannot coexist with legacy pad/track arrays".into());
+            }
+            board.validate()?;
         }
         let mut ids = std::collections::HashSet::new();
         if let Some(schematic) = &self.schematic {

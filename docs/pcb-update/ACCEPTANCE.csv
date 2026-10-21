@@ -1,0 +1,18 @@
+id,scenario,implementation,verification
+POLY-01,"Create nonconvex polygon, edit vertices, Undo/Redo",source_implemented,rust_regressions_passed; see VALIDATION.md for GUI subset
+POLY-02,Add/remove hole; native cutout region; JSON reload,source_implemented,rust_regressions_passed; see VALIDATION.md for GUI subset
+POLY-03,"Clearance, thermal/direct/none; priority; islands; repour",source_implemented_subset,rust_regressions_passed; see VALIDATION.md for GUI subset
+POLY-04,Shelve/restore; move/copy/delete definition and generated geometry,source_implemented,rust_regressions_passed; see VALIDATION.md for GUI subset
+ITEM-01,Edit pad geometry/net/drill and via span,source_implemented_subset,rust_regressions_passed; see VALIDATION.md for GUI subset
+ITEM-02,Move/rotate/copy/delete/flip component; update visible fields,source_implemented_subset,rust_regressions_passed; see VALIDATION.md for GUI subset
+ITEM-03,Drag track endpoints and connected component neighbours,source_implemented,rust_regressions_passed; see VALIDATION.md for GUI subset
+ROUTE-01,"45/90/free mode, live preview, pad/via/track target",source_implemented,rust_regressions_passed; see VALIDATION.md for GUI subset
+ROUTE-02,"Via transition, backtrack, route transaction, undo",source_implemented,rust_regressions_passed; see VALIDATION.md for GUI subset
+IO-01,Unchanged file byte-exact source restoration,source_implemented,rust_regressions_passed; see VALIDATION.md for GUI subset
+IO-02,"Edited binary/ASCII native serialization, own-reader round-trip",source_implemented_subset,rust_regressions_passed; see VALIDATION.md for GUI subset
+IO-03,Backup/atomic replace/refusal leaves target intact,source_implemented,rust_regressions_passed; see VALIDATION.md for GUI subset
+IO-04,Altium opens and edits saved files with identical semantics,unverified,not_run
+REF-01,TI real project corpus,candidates_only,not_downloaded
+GUI-01,Linux and Windows real-window test,unverified,linux_representative_scenario_passed; windows_not_run
+UI-01,Full Altium 24.4.1 visual and behavioural parity,not_complete,not_run
+DRC-01,DRC/push-shove/obstacle avoidance,excluded_by_scope,not_applicable

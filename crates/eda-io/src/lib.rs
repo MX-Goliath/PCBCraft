@@ -1,5 +1,6 @@
 use eda_core::Document;
 pub mod altium;
+pub mod altium_pcb;
 #[cfg(test)]
 mod altium_tests;
 #[cfg(test)]
@@ -7,26 +8,41 @@ mod library_tests;
 use std::{io::Write, path::Path};
 
 pub fn load(path: &Path) -> Result<Document, String> {
+    if path
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("PcbDoc"))
+    {
+        return altium_pcb::load_pcb(path);
+    }
     // Own JSON is independent of native import; preserve source archives on Save As.
     let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
     if file.metadata().map_err(|e| e.to_string())?.len() > 256 * 1024 * 1024 {
         return Err("Document exceeds the 256 MiB limit".into());
     }
-    let doc: Document =
+    let mut doc: Document =
         serde_json::from_reader(file).map_err(|e| format!("Invalid PCBCraft document: {e}"))?;
+    if let Some(board) = &mut doc.pcb {
+        altium_pcb::upgrade_polygons(board, doc.id)?;
+    }
     doc.validate()?;
     Ok(doc)
 }
 
 pub fn save(path: &Path, doc: &Document) -> Result<(), String> {
+    if path
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("PcbDoc"))
+    {
+        return altium_pcb::writer::save(path, doc, altium_pcb::writer::Format::Preserve);
+    }
     if path.extension().is_some_and(|e| {
         [
-            "SchDoc", "PrjPcb", "PcbDoc", "SchLib", "SchDot", "IntLib", "PcbLib", "DbLib",
+            "SchDoc", "PrjPcb", "SchLib", "SchDot", "IntLib", "PcbLib", "DbLib",
         ]
         .iter()
         .any(|suffix| e.eq_ignore_ascii_case(suffix))
     }) {
-        return Err("Native Altium writing is not implemented. Choose a .pcbcraft.json destination; the original cannot be overwritten.".into());
+        return Err("Native writing for this Altium document type is not implemented. Choose a .pcbcraft.json destination; the original cannot be overwritten.".into());
     }
     doc.validate()?;
     let parent = path

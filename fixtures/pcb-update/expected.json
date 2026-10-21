@@ -1,0 +1,22 @@
+{
+  "fixture": "synthetic.PcbDoc",
+  "origin": "Authored synthetic ASCII input; not exported or validated by Altium",
+  "expected_items": 9,
+  "expected_counts": {
+    "Pad": 2,
+    "Track": 2,
+    "Via": 1,
+    "Arc": 1,
+    "Text": 1,
+    "Fill": 1,
+    "Region": 1
+  },
+  "expected_nets": 2,
+  "expected_components": 1,
+  "expected_outline_vertices": 4,
+  "expected_outline_max_nm": {
+    "x": 60000000,
+    "y": 40000000
+  },
+  "rust_import_test_executed": true
+}

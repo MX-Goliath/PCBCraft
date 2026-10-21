@@ -9,6 +9,8 @@ use uuid::Uuid;
 mod chrome;
 #[path = "components.rs"]
 mod components;
+#[path = "pcb_editor.rs"]
+mod pcb_editor;
 #[path = "properties.rs"]
 mod properties;
 #[path = "schematic_editor.rs"]
@@ -39,6 +41,7 @@ struct OpenDocument {
     history: History,
     view: View,
     sch_editor: schematic_editor::Editor,
+    pcb_editor: pcb_editor::Editor,
 }
 
 impl OpenDocument {
@@ -53,10 +56,11 @@ impl OpenDocument {
             history: History::default(),
             view: View::default(),
             sch_editor: Default::default(),
+            pcb_editor: Default::default(),
         }
     }
     fn dirty(&self) -> bool {
-        self.saved.as_ref() != Some(&self.model)
+        self.saved.as_ref() != Some(&self.model) || self.pcb_editor.has_pending()
     }
 }
 
@@ -100,6 +104,7 @@ enum Command {
     ToggleComponents,
     SchPlace(Placement),
     SchEdit(SchAction),
+    Pcb(pcb_editor::Action),
     NewBoard,
     NewSchematic,
     Open,
@@ -157,6 +162,7 @@ pub struct PcbCraft {
     property_ui: properties::PropertiesUi,
     sch_clipboard: Option<(eda_core::schematic_edit::Fragment, eda_geom::Point)>,
     components_ui: components::Panel,
+    pcb_clipboard: Option<pcb_editor::Clipboard>,
 }
 
 impl PcbCraft {
@@ -186,6 +192,7 @@ impl PcbCraft {
             pad_edit: None,
             property_ui: properties::PropertiesUi::default(),
             sch_clipboard: None,
+            pcb_clipboard: None,
             components_ui: Default::default(),
         };
         for path in app.settings.libraries.clone() {
@@ -217,7 +224,8 @@ impl PcbCraft {
         }
     }
 
-    fn add_document(&mut self, doc: Document, path: Option<PathBuf>) {
+    fn add_document(&mut self, mut doc: Document, path: Option<PathBuf>) {
+        eda_core::pcb::Board::ensure_document(&mut doc);
         let mut opened = OpenDocument::new(doc, path);
         opened.view.grid = self.settings.show_grid;
         opened.view.grid_nm = self.settings.grid_nm;
@@ -260,15 +268,10 @@ impl PcbCraft {
             self.import_library(path, true);
             return;
         }
-        if extension == "pcbdoc" {
-            self.message(
-                true,
-                "PCB import is deferred; open a SchDoc or PrjPcb project",
-            );
-            return;
-        }
-        let native = extension == "schdoc";
-        let loaded = if native {
+        let native = matches!(extension.as_str(), "schdoc" | "pcbdoc");
+        let loaded = if extension == "pcbdoc" {
+            eda_io::altium_pcb::load_pcb(&path)
+        } else if extension == "schdoc" {
             eda_io::altium::load_schematic(&path)
         } else {
             eda_io::load(&path)
@@ -281,9 +284,11 @@ impl PcbCraft {
                     .schematic
                     .as_ref()
                     .map(|s| s.warnings.clone())
+                    .or_else(|| doc.pcb.as_ref().map(|b| b.warnings.clone()))
                     .unwrap_or_default();
                 if native {
-                    self.add_document(doc, None);
+                    let native_path = (extension == "pcbdoc").then(|| path.clone());
+                    self.add_document(doc, native_path);
                     let opened = self.documents.last_mut().unwrap();
                     opened.source_path = Some(path);
                     opened.saved = Some(opened.model.clone());
@@ -304,6 +309,12 @@ impl PcbCraft {
                 .documents
                 .iter()
                 .find(|d| d.kind == "schdoc" && d.exists)
+                .or_else(|| {
+                    project
+                        .documents
+                        .iter()
+                        .find(|d| d.kind == "pcbdoc" && d.exists)
+                })
                 .map(|d| d.path.clone())
             {
                 self.open_path(first);
@@ -316,6 +327,12 @@ impl PcbCraft {
                     .documents
                     .iter()
                     .find(|d| d.kind == "schdoc" && d.exists)
+                    .or_else(|| {
+                        project
+                            .documents
+                            .iter()
+                            .find(|d| d.kind == "pcbdoc" && d.exists)
+                    })
                     .map(|d| d.path.clone());
                 for warning in &project.warnings {
                     self.message(false, warning.clone());
@@ -351,24 +368,48 @@ impl PcbCraft {
     }
 
     fn save_index(&mut self, index: usize, save_as: bool) -> bool {
+        if let Some(doc) = self.documents.get_mut(index)
+            && doc.model.pcb.is_some()
+            && let Err(error) = pcb_editor::prepare_save(doc)
+        {
+            self.message(true, error);
+            return false;
+        }
         let Some(doc) = self.documents.get(index) else {
             return false;
         };
         let path = if save_as || doc.path.is_none() {
-            self.file_dialog
-                .clone()
-                .add_filter("PCBCraft document", &["json"])
-                .set_file_name(
-                    if doc.model.name.to_ascii_lowercase().ends_with(".schdoc") {
-                        format!(
-                            "{}.pcbcraft.json",
-                            &doc.model.name[..doc.model.name.len() - 7]
-                        )
-                    } else {
-                        doc.model.name.clone()
-                    },
+            let is_pcb = doc.model.kind == DocumentKind::Board;
+            let mut dialog = self.file_dialog.clone();
+            if is_pcb {
+                dialog = dialog.add_filter("Altium PCB document", &["PcbDoc"]);
+            }
+            dialog = dialog.add_filter("PCBCraft document", &["json"]);
+            let filename = if let Some(path) = &doc.path {
+                path.file_name().map_or_else(
+                    || doc.model.name.clone(),
+                    |n| n.to_string_lossy().into_owned(),
                 )
-                .save_file()
+            } else if is_pcb {
+                let name = &doc.model.name;
+                if name.to_ascii_lowercase().ends_with(".pcbdoc") {
+                    name.clone()
+                } else {
+                    format!(
+                        "{}.PcbDoc",
+                        name.trim_end_matches(".pcbcraft.json")
+                            .trim_end_matches(".json")
+                    )
+                }
+            } else if doc.model.name.to_ascii_lowercase().ends_with(".schdoc") {
+                format!(
+                    "{}.pcbcraft.json",
+                    &doc.model.name[..doc.model.name.len() - 7]
+                )
+            } else {
+                doc.model.name.clone()
+            };
+            dialog.set_file_name(filename).save_file()
         } else {
             doc.path.clone()
         };
@@ -431,6 +472,7 @@ impl PcbCraft {
         match command {
             Command::SchPlace(kind) => self.start_schematic_tool(kind),
             Command::SchEdit(action) => self.schematic_action(action, ctx),
+            Command::Pcb(action) => self.pcb_action(action),
             Command::NewBoard | Command::NewSchematic => {
                 let board = matches!(command, Command::NewBoard);
                 let n = self.documents.len() + 1;
@@ -457,10 +499,11 @@ impl PcbCraft {
                     .clone()
                     .add_filter(
                         "Design documents and libraries",
-                        &["SchDoc", "PrjPcb", "SchLib", "IntLib", "json"],
+                        &["SchDoc", "PcbDoc", "PrjPcb", "SchLib", "IntLib", "json"],
                     )
                     .add_filter("Altium libraries", &["SchLib", "IntLib"])
                     .add_filter("Altium schematic", &["SchDoc"])
+                    .add_filter("Altium PCB", &["PcbDoc"])
                     .add_filter("Altium project", &["PrjPcb"])
                     .pick_file()
                 {
@@ -498,6 +541,8 @@ impl PcbCraft {
                 if let Some(i) = self.active {
                     let doc = &mut self.documents[i];
                     doc.sch_editor.cancel(&mut doc.view);
+                    doc.pcb_editor.cancel(&mut doc.view);
+                    doc.view.pcb.selected.clear();
                     if matches!(command, Command::Undo) {
                         doc.history.undo(&mut doc.model);
                     } else {
@@ -699,12 +744,24 @@ impl PcbCraft {
                                 ui.menu_button("Move", |ui| self.move_menu_entries(ui));
                             }
                             ui.separator();
+                            if !schematic {
+                                self.pcb_edit_menu(ui);
+                            }
                             self.action(ui, "Preferences…", "", Command::Preferences, true);
                         });
                     }
                     ui.menu_button("View", |ui| {
                         self.action(ui, "Components", "", Command::ToggleComponents, true);
-                        self.action(ui, "Fit Document", "Home", Command::Fit, has_doc);
+                        let pcb_active = self
+                            .active
+                            .is_some_and(|i| self.documents[i].model.pcb.is_some());
+                        self.action(
+                            ui,
+                            "Fit Document",
+                            if pcb_active { "Ctrl+PgDn" } else { "Home" },
+                            Command::Fit,
+                            has_doc,
+                        );
                         self.action(ui, "Home Page", "", Command::Home, true);
                         ui.separator();
                         if ui
@@ -730,16 +787,41 @@ impl PcbCraft {
                             ui.close();
                         }
                         ui.separator();
-                        self.action(ui, "Toggle Grid", "G", Command::ToggleGrid, has_doc);
+                        self.action(
+                            ui,
+                            "Toggle Grid",
+                            if pcb_active { "" } else { "G" },
+                            Command::ToggleGrid,
+                            has_doc,
+                        );
+                        if pcb_active {
+                            self.action(
+                                ui,
+                                "Snap Grid…",
+                                "G",
+                                Command::Pcb(pcb_editor::Action::Grid),
+                                true,
+                            );
+                        }
                         self.action(ui, "Toggle Units", "Q", Command::ToggleUnits, true);
                         if let Some(index) = self.active {
-                            ui.menu_button("Layers", |ui| {
-                                for layer in Layer::ALL {
-                                    let visible = &mut self.documents[index].view.visible
-                                        [eda_render::layer_index(layer)];
-                                    ui.checkbox(visible, layer.label());
-                                }
-                            });
+                            if self.documents[index].model.pcb.is_some() {
+                                self.action(
+                                    ui,
+                                    "Layers and Colors…",
+                                    "L",
+                                    Command::Pcb(pcb_editor::Action::Layers),
+                                    true,
+                                );
+                            } else {
+                                ui.menu_button("Layers", |ui| {
+                                    for layer in Layer::ALL {
+                                        let visible = &mut self.documents[index].view.visible
+                                            [eda_render::layer_index(layer)];
+                                        ui.checkbox(visible, layer.label());
+                                    }
+                                });
+                            }
                         }
                     });
                     ui.menu_button("Project", |ui| {
@@ -760,6 +842,9 @@ impl PcbCraft {
                             ui.menu_button(label, |ui| {
                                 if label == "Place" && schematic {
                                     self.schematic_place_menu(ui);
+                                    return;
+                                }
+                                if !schematic && self.pcb_menu(ui, label) {
                                     return;
                                 }
                                 ui.add_enabled(
@@ -820,132 +905,191 @@ impl PcbCraft {
         let schematic = self
             .active
             .is_some_and(|i| self.documents[i].model.kind == DocumentKind::Schematic);
-        egui::SidePanel::left(if schematic {"projects_schematic_v3"}else{"projects_altium_v2"})
-            .default_width(330.0)
-            .width_range(190.0..=500.0)
-            .resizable(true)
-            .show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label("Projects");
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if theme::icon_button(ui, theme::Icon::Close, false, true)
-                            .on_hover_text("Hide Projects")
-                            .clicked()
-                        {
-                            self.command = Some(Command::ToggleProjects);
-                        }
-                        theme::icon_button(ui, theme::Icon::Pin, false, false);
-                    });
-                });
-                ui.separator();
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 9.0;
-                    ui.add_space(7.0);
-                    for (icon, label, command) in [
-                        (theme::Icon::Save, "Save document", Some(Command::Save)),
-                        (theme::Icon::SaveAll, "Save All", Some(Command::SaveAll)),
-                        (theme::Icon::Open, "Open document", Some(Command::Open)),
-                        (theme::Icon::Folder, "Open project", Some(Command::OpenProject)),
-                        (
-                            theme::Icon::Settings,
-                            "Preferences",
-                            Some(Command::Preferences),
-                        ),
-                    ] {
-                        if theme::icon_button(ui, icon, false, command.is_some())
-                            .on_hover_text(label)
-                            .clicked()
-                        {
-                            self.command = command;
-                        }
+        egui::SidePanel::left(if schematic {
+            "projects_schematic_v3"
+        } else {
+            "projects_altium_v2"
+        })
+        .default_width(330.0)
+        .width_range(190.0..=500.0)
+        .resizable(true)
+        .show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                ui.label("Projects");
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if theme::icon_button(ui, theme::Icon::Close, false, true)
+                        .on_hover_text("Hide Projects")
+                        .clicked()
+                    {
+                        self.command = Some(Command::ToggleProjects);
                     }
-                });
-                ui.add_space(8.0);
-                ui.horizontal(|ui| {
-                    ui.add_space(10.0);
-                    theme::search_field(ui, &mut self.search, ui.available_width() - 8.0);
-                });
-                ui.add_space(13.0);
-                egui::TopBottomPanel::bottom("project_panel_tabs")
-                    .exact_height(21.0)
-                    .show_inside(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            ui.selectable_label(true, "Projects")
-                                .on_hover_text("Projects panel");
-                            ui.add_enabled(false, egui::Button::new("Navigator").frame(false));
-                        });
-                    });
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    egui::CollapsingHeader::new(RichText::new("Project Group 1").strong())
-                        .default_open(true)
-                        .show(ui, |ui| {
-                            for project in &self.projects {
-                                egui::CollapsingHeader::new(RichText::new(&project.name).strong()).id_salt(&project.path).default_open(true).show(ui,|ui|{
-                                    egui::CollapsingHeader::new("Source Documents").id_salt((&project.path,"sources")).default_open(true).show(ui,|ui|{
-                                        for entry in &project.documents {
-                                            let filename=entry.path.file_name().unwrap_or_default().to_string_lossy();
-                                            if !filename.to_lowercase().contains(&self.search.to_lowercase()){continue;}
-                                            let selected=self.active.is_some_and(|i|self.documents[i].source_path.as_ref()==Some(&entry.path));
-                                            let label=format!("{} {}{}",if entry.kind=="schdoc"{"SCH"}else if entry.kind=="pcbdoc"{"PCB"}else{"LIB"},filename,if entry.exists{""}else{" (missing)"});
-                                            let response=ui.add_enabled(entry.exists&&matches!(entry.kind.as_str(),"schdoc"|"schlib"|"intlib"),egui::Button::new(label).frame(selected).selected(selected));
-                                            if response.clicked(){open_path=Some(entry.path.clone());}
-                                            response.on_disabled_hover_text(if !entry.exists{"Referenced file was not found"}else{"This document type is deferred; schematic import is available"});
-                                        }
-                                    });
-                                });
-                            }
-                            let folder_header = |ui: &mut egui::Ui, label: &str| {
-                                let (rect, _) = ui.allocate_exact_size(
-                                    egui::vec2(18.0, 18.0),
-                                    egui::Sense::hover(),
-                                );
-                                theme::draw_icon(ui.painter(), rect, theme::Icon::Folder, true);
-                                ui.label(label);
-                            };
-                            egui::collapsing_header::CollapsingState::load_with_default_open(
-                                ui.ctx(),
-                                ui.make_persistent_id("free_documents"),
-                                true,
-                            )
-                            .show_header(ui, |ui| folder_header(ui, "Free Documents"))
-                            .body(|ui| {
-                                egui::collapsing_header::CollapsingState::load_with_default_open(
-                                    ui.ctx(),
-                                    ui.make_persistent_id("source_documents"),
-                                    true,
-                                )
-                                .show_header(ui, |ui| folder_header(ui, "Source Documents"))
-                                .body(|ui| {
-                                    let query = self.search.to_lowercase();
-                                    for (index, doc) in self.documents.iter().enumerate() {
-                                        if doc.source_path.as_ref().is_some_and(|path|self.projects.iter().any(|p|p.documents.iter().any(|d|&d.path==path))){continue;}
-                                        if !doc.model.name.to_lowercase().contains(&query) {
-                                            continue;
-                                        }
-                                        ui.horizontal(|ui| {
-                                            theme::logo(ui);
-                                            let title = format!(
-                                                "{}{}",
-                                                doc.model.name,
-                                                if doc.dirty() { " *" } else { "" }
-                                            );
-                                            if ui
-                                                .selectable_label(self.active == Some(index), title)
-                                                .clicked()
-                                            {
-                                                self.active = Some(index);
-                                                self.pad_edit = None;
-                                            }
-                                        });
-                                    }
-                                    if self.documents.is_empty() {
-                                        ui.label(RichText::new("No documents open").color(MUTED));
-                                    }
-                                });
-                            });
-                        });
+                    theme::icon_button(ui, theme::Icon::Pin, false, false);
                 });
             });
+            ui.separator();
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 9.0;
+                ui.add_space(7.0);
+                for (icon, label, command) in [
+                    (theme::Icon::Save, "Save document", Some(Command::Save)),
+                    (theme::Icon::SaveAll, "Save All", Some(Command::SaveAll)),
+                    (theme::Icon::Open, "Open document", Some(Command::Open)),
+                    (
+                        theme::Icon::Folder,
+                        "Open project",
+                        Some(Command::OpenProject),
+                    ),
+                    (
+                        theme::Icon::Settings,
+                        "Preferences",
+                        Some(Command::Preferences),
+                    ),
+                ] {
+                    if theme::icon_button(ui, icon, false, command.is_some())
+                        .on_hover_text(label)
+                        .clicked()
+                    {
+                        self.command = command;
+                    }
+                }
+            });
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                ui.add_space(10.0);
+                theme::search_field(ui, &mut self.search, ui.available_width() - 8.0);
+            });
+            ui.add_space(13.0);
+            egui::TopBottomPanel::bottom("project_panel_tabs")
+                .exact_height(21.0)
+                .show_inside(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.selectable_label(true, "Projects")
+                            .on_hover_text("Projects panel");
+                        ui.add_enabled(false, egui::Button::new("Navigator").frame(false));
+                    });
+                });
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                egui::CollapsingHeader::new(RichText::new("Project Group 1").strong())
+                    .default_open(true)
+                    .show(ui, |ui| {
+                        for project in &self.projects {
+                            egui::CollapsingHeader::new(RichText::new(&project.name).strong())
+                                .id_salt(&project.path)
+                                .default_open(true)
+                                .show(ui, |ui| {
+                                    egui::CollapsingHeader::new("Source Documents")
+                                        .id_salt((&project.path, "sources"))
+                                        .default_open(true)
+                                        .show(ui, |ui| {
+                                            for entry in &project.documents {
+                                                let filename = entry
+                                                    .path
+                                                    .file_name()
+                                                    .unwrap_or_default()
+                                                    .to_string_lossy();
+                                                if !filename
+                                                    .to_lowercase()
+                                                    .contains(&self.search.to_lowercase())
+                                                {
+                                                    continue;
+                                                }
+                                                let selected = self.active.is_some_and(|i| {
+                                                    self.documents[i].source_path.as_ref()
+                                                        == Some(&entry.path)
+                                                });
+                                                let label = format!(
+                                                    "{} {}{}",
+                                                    if entry.kind == "schdoc" {
+                                                        "SCH"
+                                                    } else if entry.kind == "pcbdoc" {
+                                                        "PCB"
+                                                    } else {
+                                                        "LIB"
+                                                    },
+                                                    filename,
+                                                    if entry.exists { "" } else { " (missing)" }
+                                                );
+                                                let response = ui.add_enabled(
+                                                    entry.exists
+                                                        && matches!(
+                                                            entry.kind.as_str(),
+                                                            "schdoc"
+                                                                | "pcbdoc"
+                                                                | "schlib"
+                                                                | "intlib"
+                                                        ),
+                                                    egui::Button::new(label)
+                                                        .frame(selected)
+                                                        .selected(selected),
+                                                );
+                                                if response.clicked() {
+                                                    open_path = Some(entry.path.clone());
+                                                }
+                                                response.on_disabled_hover_text(if !entry.exists {
+                                                    "Referenced file was not found"
+                                                } else {
+                                                    "This document type is not supported"
+                                                });
+                                            }
+                                        });
+                                });
+                        }
+                        let folder_header = |ui: &mut egui::Ui, label: &str| {
+                            let (rect, _) = ui
+                                .allocate_exact_size(egui::vec2(18.0, 18.0), egui::Sense::hover());
+                            theme::draw_icon(ui.painter(), rect, theme::Icon::Folder, true);
+                            ui.label(label);
+                        };
+                        egui::collapsing_header::CollapsingState::load_with_default_open(
+                            ui.ctx(),
+                            ui.make_persistent_id("free_documents"),
+                            true,
+                        )
+                        .show_header(ui, |ui| folder_header(ui, "Free Documents"))
+                        .body(|ui| {
+                            egui::collapsing_header::CollapsingState::load_with_default_open(
+                                ui.ctx(),
+                                ui.make_persistent_id("source_documents"),
+                                true,
+                            )
+                            .show_header(ui, |ui| folder_header(ui, "Source Documents"))
+                            .body(|ui| {
+                                let query = self.search.to_lowercase();
+                                for (index, doc) in self.documents.iter().enumerate() {
+                                    if doc.source_path.as_ref().is_some_and(|path| {
+                                        self.projects
+                                            .iter()
+                                            .any(|p| p.documents.iter().any(|d| &d.path == path))
+                                    }) {
+                                        continue;
+                                    }
+                                    if !doc.model.name.to_lowercase().contains(&query) {
+                                        continue;
+                                    }
+                                    ui.horizontal(|ui| {
+                                        theme::logo(ui);
+                                        let title = format!(
+                                            "{}{}",
+                                            doc.model.name,
+                                            if doc.dirty() { " *" } else { "" }
+                                        );
+                                        if ui
+                                            .selectable_label(self.active == Some(index), title)
+                                            .clicked()
+                                        {
+                                            self.active = Some(index);
+                                            self.pad_edit = None;
+                                        }
+                                    });
+                                }
+                                if self.documents.is_empty() {
+                                    ui.label(RichText::new("No documents open").color(MUTED));
+                                }
+                            });
+                        });
+                    });
+            });
+        });
         if let Some(path) = open_path {
             self.open_path(path);
         }
@@ -1158,28 +1302,7 @@ impl PcbCraft {
                 }
                 if let Some(index) = self.active {
                     if self.documents[index].model.kind == DocumentKind::Board {
-                        egui::TopBottomPanel::bottom("layers")
-                            .exact_height(22.0)
-                            .show_inside(ui, |ui| {
-                                ui.horizontal_centered(|ui| {
-                                    ui.label(RichText::new("Layers").small().color(MUTED));
-                                    ui.separator();
-                                    for layer in Layer::ALL {
-                                        let active =
-                                            self.documents[index].view.active_layer == layer;
-                                        if ui
-                                            .selectable_label(
-                                                active,
-                                                RichText::new(format!("■  {}", layer.label()))
-                                                    .color(layer_color(layer)),
-                                            )
-                                            .clicked()
-                                        {
-                                            self.documents[index].view.active_layer = layer;
-                                        }
-                                    }
-                                });
-                            });
+                        self.pcb_layer_bar(ui, index);
                     }
                     if self.documents[index].model.kind == DocumentKind::Schematic {
                         egui::TopBottomPanel::bottom("schematic_editor")
@@ -1212,11 +1335,17 @@ impl PcbCraft {
                         .map_or_else(|| doc.model.name.clone(), |p| p.display().to_string());
                     doc.view.display_date = chrono::Local::now().format("%m.%d.%Y").to_string();
                     let output = eda_render::canvas(ui, &doc.model, &mut doc.view);
+                    let pcb_input = doc.view.pcb.input.take();
                     self.cursor_mm = output.cursor_mm;
                     if let Some(input) = output.schematic_input {
                         self.schematic_input(index, input, ctx);
                     }
-                    self.active_bar(ctx, canvas);
+                    if let Some(input) = pcb_input {
+                        self.pcb_input(index, input, ctx);
+                    }
+                    if self.documents[index].model.kind == DocumentKind::Schematic {
+                        self.active_bar(ctx, canvas);
+                    }
                 } else {
                     self.home(ui);
                     self.cursor_mm = None;
@@ -1327,8 +1456,8 @@ impl PcbCraft {
                     ui.label("Independent EDA application written in Rust.");
                     ui.label("egui / eframe · wgpu");
                     ui.separator();
-                    ui.label("Current milestone: Altium schematic import and basic scene editing.");
-                    ui.label("Save edits as .pcbcraft.json. Native writing, PCB import and ERC/DRC are not implemented.");
+                    ui.label("Altium schematic/PCB import and experimental PCB editing.");
+                    ui.label("Native .PcbDoc Save and polygon repour are supported for the documented subset; DRC/3D and exact Altium parity are not verified or implemented.");
                 });
         }
         if let Some(pending) = self.pending {
@@ -1401,6 +1530,9 @@ impl PcbCraft {
         if self.pending.is_some() || ctx.wants_keyboard_input() {
             return;
         }
+        if self.pcb_shortcuts(ctx) {
+            return;
+        }
         if self.schematic_shortcuts(ctx) {
             return;
         }
@@ -1457,6 +1589,7 @@ impl eframe::App for PcbCraft {
         self.finish_schematic_interaction();
         self.finish_library_drag(ctx);
         self.schematic_move_menu(ctx);
+        self.pcb_dialogs(ctx);
         self.dialogs(ctx);
         self.resize_edges(ctx);
         if let Some(command) = self.command.take() {
