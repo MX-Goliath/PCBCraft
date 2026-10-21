@@ -280,3 +280,115 @@ Altium interoperability, Windows GUI, реальные платы, DRC/shove/ECO
 Восемь memory-проб завершились без неограниченного роста; visibility 600 итераций
 держится около 31 МБ RSS в модельной пробе, GUI 200 переключений — около 159 МБ.
 122 теста, fmt, strict Clippy и build all-targets проходят. Подробнее: docs/memory.md.
+
+### Возобновление редактирования схем — 21.10.2026
+
+- [x] Сверен native Drag провода в AD 24.4.1 на отдельной копии ReferenceB:
+      закреплённые подключения, изгибы и растяжение Т-ответвлений. Изменение
+      отменено, пользовательский проект не редактировался.
+- [x] `Edit::DragWire`: сегменты/вершины, общая геометрия preview/commit,
+      сохранение UUID/стиля, проверка ревизии и атомарный Undo/Redo.
+- [x] Маркеры ручек провода; прямой mouse drag и M,D, отмена вне canvas,
+      по Esc/потере фокуса/смене вкладки. M,M сохраняет разрывающее перемещение.
+- [x] Автоматические точки Т-соединений/выводов по локальной геометрии,
+      включая preview. Пересечения середин без узла не соединяются;
+      ручные Junction сохраняются, кэш ограничен жизнью View.
+- [x] Backspace/Delete возвращает последнюю вершину прокладки;
+      щелчок по существующему соединению завершает провод одной транзакцией
+      и оставляет инструмент готовым к следующему проводу.
+- [x] Windows GUI: connected Drag R1, Drag сегмента с Т-ответвлением,
+      Undo/Redo, JSON Save/reopen собственной схемы. 131 workspace tests,
+      fmt, strict Clippy; Linux GNU all-targets check без выпуска Linux-билда.
+- [ ] Полная сверка на ReferenceB, все угловые режимы, wire-group drag, удаление
+      сегментов, overlap cleanup, предупреждение о смене цепи, compiler/ERC
+      и новая Linux GUI-проверка. Границы: docs/schematic-editing.md/features.json.
+
+
+### Групповые операции и сегменты Wire — 21.10.2026
+
+- [x] Наблюдены зелёные маркеры Wire и красные маркеры повторного выбора
+      сегмента в AD 24.4.1 на копии ReferenceB. Native Delete и все preferences
+      отдельно не воспроизводились; использована официальная документация.
+- [x] Смешанные группы компонентов/wires/сегментов: Move, connected Drag,
+      поворот, Copy/Cut/Paste/Duplicate/Delete; один шаг истории, проверка
+      ревизии и принадлежности примитивов; свободные обозначения внутри группы.
+- [x] Выбор сегментов между изгибами/электрическими узлами, в том числе через
+      Shift. Удаление сохраняет остальные части; изменённая топология отменяет
+      устаревший выбор. Автоматические junctions обновляются.
+- [x] Локальное объединение перекрытий с сохранением стиля, Т-узлов и обычных
+      неподключённых пересечений. Preview и commit используют одну команду.
+- [x] 145 workspace tests, fmt --check, strict Clippy, Windows debug build;
+      Linux GNU all-targets check без выпуска Linux-билда. Реальное окно:
+      выбор/Drag сегмента, Duplicate с перекрытием, Undo/Redo, JSON Save/reopen
+      собственной QA-схемы. Смешанные группы и Shift проверены egui-событиями.
+- [ ] Рамочное выделение, групповые Properties, все угловые режимы и locked
+      semantics, глобальный cleanup/preferences, net-change warning, compiler/ERC,
+      native SchDoc writer, полная Altium-сверка и новая Linux GUI-проверка.
+      Предыдущий список незавершённого выше относится к прошлой итерации.
+
+
+### Исправление открытия PCB из ReferenceB — 21.10.2026
+
+- [x] Воспроизведено `Invalid PCB Pad geometry` на проектном
+      `ReferenceBBoard.PcbDoc`: NPTH Pad 0 с нулевой медью и drill ~0,45 мм.
+- [x] Поддержан этот объект в модели без выдуманной меди: проверка геометрии,
+      bounds/picking, отображение контура и физический вырез при repour.
+- [x] Бинарный regression fixture, JSON и native round-trip после перемещения,
+      сохранение неизвестного хвоста и архива; невалидные нулевые Pad отклоняются.
+- [x] Windows GUI: открытие PcbDoc двойным щелчком из проекта, 15389 примитивов,
+      69 компонентов. Пользовательский файл не изменялся, прежнее окно с
+      несохранёнными правками сохранено открытым.
+- [x] 148 workspace tests, fmt --check, strict Clippy, Windows build,
+      Linux GNU all-targets check. Подробности: docs/pcb-update/VALIDATION.md.
+
+
+### Отображение PCB по открытому Altium — 21.10.2026
+
+- [x] Сверены текущая плата, палитра Top/Bottom и Object Visibility в AD 24.4.1;
+      настройки файла отделены от глобальной палитры приложения.
+- [x] Modern layer identities и V9 names, layer visibility/opacity/snap grid,
+      NAMEON/COMMENTON, font kind/bold/italic, зеркальность и стабильный zoom текста.
+- [x] Импорт 2D-проекций ComponentBodies, штриховка вырезов/корпусов; парные legacy
+      Regions/Bodies сохранены без повторного рисования (57 + 62 пары).
+- [x] Направление обхода contour arcs, швы без огромных miter-треугольников;
+      индивидуальные радиусы Pad для renderer/pour/picking; проход сверления.
+- [x] 159 tests, fmt --check, strict Clippy, Windows build, Linux GNU all-targets
+      check. Исходный файл не изменялся; новые Linux-артефакты не собирались.
+- [ ] Полное визуальное совпадение: stroke fonts/embedded glyphs, text styles,
+      via-span/adaptive labels, точный raster/hatch и PCB Properties/tools/layer bar.
+      Наблюдения, реализация и границы: docs/pcb-update/VISUAL_PARITY.md.
+
+
+### PCB Properties — 21.10.2026
+
+- [x] Наблюдение AD 24.4.1 Board General/Parameters, Component, Track, Pad,
+      Via, Text, Polygon; контекстная компоновка вместо общего Apply-редактора.
+- [x] Поддержанные поля через команды/History, координаты относительно origin,
+      исправленный Comment из Texts6, dirty/Save/Close и независимые drafts.
+- [x] Фильтры и реализованные привязки подключены к PCB canvas; Shift+E.
+- [x] 316 px layout regression всех контекстов, mm/mils Enter/Escape, stale/
+      invalid drafts, Undo/Redo/Save; Windows via 0.7 → 0.8 → Undo/Redo/Undo.
+- [x] 169 workspace tests, fmt --check, strict Clippy, Windows debug build,
+      Linux GNU all-targets check без Linux сборки артефакта.
+- [ ] Полная pixel parity, 3D padstack/Full Stack/templates, masks/rules,
+      component area/opacity, advanced text и mixed Properties.
+      Статусы и ограничения: docs/pcb-update/PROPERTIES.md.
+
+
+### PCB Properties: padstack, 3D и маски — 21.10.2026
+
+- [x] На отдельной копии в AD 24.4.1 сверены режимы Pad Stack и строки
+      Copper/Hole/Paste/Solder, Slot/offset и Top/Bottom tenting.
+- [x] Типизированный послойный stack в eda-core, общая геометрия picking/render/
+      pour, Round/Square/Slot, offset, Flip; PCB6 read/write и сохранение opaque tails.
+- [x] Интерактивная 3D-геометрия в eda-render: поверхности/отверстия/barrel/маски,
+      вращение/zoom/reset без изменения документа; unified stack editor в Properties.
+- [x] Маски Manual/Rule, приоритет и ограниченный scope evaluator, tenting/percentage/
+      hole edge; редактор существующих mask rules через History и запись Rules6.
+- [x] PCBCraft-запись копии реальной платы с изменёнными масками открыта в Altium;
+      подтверждён Top Tented при сохранённом Bottom untented. Исходный файл не менялся.
+- [x] 188 tests, fmt --check, strict Clippy, Windows build, Linux GNU all-targets check;
+      отдельный Linux build не выпускался. Детали: docs/pcb-update/PROPERTIES.md.
+- [ ] Полная pixel/material parity, templates/custom apertures/thermal relief,
+      modern native independent masks, plane stack и перестройка native references
+      после repour. Native Save при неподдержанном remap сохраняет отказ.

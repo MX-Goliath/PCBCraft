@@ -60,7 +60,13 @@ impl OpenDocument {
         }
     }
     fn dirty(&self) -> bool {
-        self.saved.as_ref() != Some(&self.model) || self.pcb_editor.has_pending()
+        self.saved.as_ref() != Some(&self.model)
+            || self.pcb_editor.has_pending()
+            || self
+                .model
+                .pcb
+                .as_ref()
+                .is_some_and(|b| self.pcb_editor.properties_dirty(b, self.history.revision))
     }
 }
 
@@ -544,6 +550,11 @@ impl PcbCraft {
                     doc.sch_editor.cancel(&mut doc.view);
                     doc.pcb_editor.cancel(&mut doc.view);
                     doc.view.pcb.selected.clear();
+                    if !doc.view.sch_segments.is_empty() {
+                        doc.view.selected = None;
+                        doc.view.sch_segments.clear();
+                    }
+                    doc.view.sch_selection.clear();
                     if matches!(command, Command::Undo) {
                         doc.history.undo(&mut doc.model);
                     } else {
@@ -716,10 +727,9 @@ impl PcbCraft {
                                 self.documents[i].model.kind == DocumentKind::Schematic
                             });
                             if schematic {
-                                let selected = self.active.is_some_and(|i| {
-                                    self.documents[i].view.selected.is_some()
-                                        && self.documents[i].view.sch_selection.len() <= 1
-                                });
+                                let selected = self
+                                    .active
+                                    .is_some_and(|i| self.documents[i].view.selected.is_some());
                                 ui.separator();
                                 for (label, shortcut, action, enabled) in [
                                     ("Cut", "Ctrl+X", SchAction::Cut, selected),
@@ -1148,7 +1158,7 @@ impl PcbCraft {
         egui::SidePanel::right(if schematic {
             "right_dock_schematic_v3"
         } else {
-            "right_dock_altium_v2"
+            "right_dock_pcb_v4"
         })
         .default_width(316.0)
         .width_range(230.0..=500.0)
@@ -1202,18 +1212,25 @@ impl PcbCraft {
                             self.settings.right_messages = true;
                             self.settings.right_components = false;
                         }
-                        if ui
-                            .selectable_label(!messages && !components, "Properties")
-                            .clicked()
-                        {
-                            self.settings.properties = true;
-                            self.settings.right_messages = false;
-                            self.settings.right_components = false;
-                        }
-                        if self.settings.components
-                            && ui.selectable_label(components, "Components").clicked()
-                        {
-                            self.settings.right_components = true;
+                        for name in if schematic {
+                            ["Properties", "Components"]
+                        } else {
+                            ["Components", "Properties"]
+                        } {
+                            if name == "Properties" {
+                                if ui
+                                    .selectable_label(!messages && !components, name)
+                                    .clicked()
+                                {
+                                    self.settings.properties = true;
+                                    self.settings.right_messages = false;
+                                    self.settings.right_components = false;
+                                }
+                            } else if self.settings.components
+                                && ui.selectable_label(components, name).clicked()
+                            {
+                                self.settings.right_components = true;
+                            }
                         }
                     });
                 });

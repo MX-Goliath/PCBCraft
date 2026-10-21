@@ -13,6 +13,19 @@ pub const KEEP_OUT: u16 = 56;
 pub const MULTI_LAYER: u16 = 74;
 pub const MAX_ITEMS: usize = 500_000;
 const MAX_COORD: i64 = 100_000_000_000;
+#[path = "pcb_snap.rs"]
+mod snapping;
+pub use snapping::{SnapLayerMode, SnapOptions};
+#[path = "pcb_stack.rs"]
+mod stack;
+pub use stack::{DrillShape, PadGeometry, PadStack, StackMode, StackSurface, cutout_surface};
+#[path = "pcb_mask.rs"]
+mod mask;
+pub use mask::{MaskKind, MaskMode, MaskSettings, MaskSide, ResolvedMask};
+#[cfg(test)]
+#[path = "pcb_stack_tests.rs"]
+mod stack_tests;
+
 pub type Fields = BTreeMap<String, String>;
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PcbLayer {
@@ -39,8 +52,31 @@ pub fn layer_name(id: u16) -> String {
         57..=72 => format!("Mechanical {}", id - 56),
         73 => "Drill Drawing".into(),
         74 => "Multi-Layer".into(),
-        83..=98 => format!("Mechanical {}", id - 66),
+        83..=1090 => format!("Mechanical {}", id - 66),
         _ => format!("Layer {id}"),
+    }
+}
+/// Stable model IDs retain the legacy gap while covering modern mechanical layers.
+pub fn mechanical_layer(number: u16) -> Option<u16> {
+    match number {
+        1..=16 => Some(56 + number),
+        17..=1024 => Some(66 + number),
+        _ => None,
+    }
+}
+/// Modern Altium layer identities override the one-byte legacy fallback.
+pub fn native_layer(id: u32) -> Option<u16> {
+    match id {
+        0x01000001 => Some(TOP),
+        0x0100ffff => Some(BOTTOM),
+        0x01020001..=0x01020400 => mechanical_layer((id & 0xffff) as u16),
+        0x01000002..=0x0100001f => Some((id & 0xffff) as u16),
+        0x01030006..=0x0103000b => Some(33 + (id & 0xffff) as u16 - 6),
+        0x0103000c => Some(55),
+        0x0103000d => Some(KEEP_OUT),
+        0x0103000e => Some(73),
+        0x0103000f => Some(MULTI_LAYER),
+        _ => None,
     }
 }
 pub fn copper_layer(id: u16) -> bool {
@@ -173,8 +209,31 @@ pub struct Item {
     pub source: Option<SourceRecord>,
     #[serde(default)]
     pub properties: Fields,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pad_stack: Option<Box<PadStack>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub masks: Option<Box<MaskSettings>>,
 }
 impl Item {
+    /// Altium percentages refer to half of the shortest pad side.
+    pub fn pad_corner_percent(&self, layer: u16) -> u8 {
+        self.properties
+            .get(&format!("PCBCRAFT_PAD_RADIUS_{}", layer.clamp(1, 32)))
+            .and_then(|v| v.parse::<u8>().ok())
+            .unwrap_or(25)
+            .min(100)
+    }
+    /// A mechanical through-hole with no copper land on any modelled layer.
+    pub fn is_drill_only(&self) -> bool {
+        self.layer == MULTI_LAYER
+            && matches!(&self.shape,Shape::Pad{size,hole,plated:false,bottom_size,middle_size,..}
+            if *size==Point::default()&&*hole>0&&[bottom_size,middle_size].iter().all(|s|s.is_none_or(|p|p==Point::default())))
+            && self
+                .pad_stack
+                .as_ref()
+                .is_none_or(|s| s.layers.values().all(|g| g.size == Point::default()))
+    }
+
     pub fn new(layer: u16, net: Option<u32>, shape: Shape) -> Self {
         Self {
             id: Uuid::new_v4(),
@@ -187,6 +246,8 @@ impl Item {
             shape,
             source: None,
             properties: Fields::new(),
+            pad_stack: None,
+            masks: None,
         }
     }
     pub fn kind(&self) -> &'static str {
@@ -210,8 +271,36 @@ impl Item {
             Shape::Region { contour, .. } => contour.first().copied().unwrap_or_default(),
         }
     }
+    /// Move the primitive as a whole, preserving its dimensions and topology.
+    /// A draft may use this before committing a validated Replace command.
+    pub fn with_anchor(&self, anchor: Point) -> Result<Self, String> {
+        if !valid_point(anchor) {
+            return Err("Location is outside document coordinate limits".into());
+        }
+        let old = self.anchor();
+        let mut next = self.clone();
+        transform_item(
+            &mut next,
+            old,
+            Point {
+                x: anchor.x - old.x,
+                y: anchor.y - old.y,
+            },
+            0.0,
+        )?;
+        Ok(next)
+    }
     /// Conservative world bounds, used for view fitting and spatial rejection only.
     pub fn bounds(&self) -> Bounds {
+        if let Some(stack) = &self.pad_stack {
+            let mut bounds = Bounds::points(&self.drill_outline());
+            for layer in stack.layers.keys().copied().chain([TOP, BOTTOM]) {
+                bounds.union(Bounds::points(&self.pad_outline(layer)));
+            }
+            if !bounds.empty {
+                return bounds;
+            }
+        }
         match &self.shape {
             Shape::Track { start, end, width } => {
                 Bounds::points(&[*start, *end]).expanded(*width / 2)
@@ -229,8 +318,15 @@ impl Item {
                 position,
                 size,
                 rotation,
+                hole,
                 ..
-            } => Bounds::points(&rectangle(*position, *size, *rotation)),
+            } => {
+                let mut bounds = Bounds::points(&rectangle(*position, *size, *rotation));
+                if *hole > 0 {
+                    bounds.union(Bounds::points(&[*position]).expanded((*hole + 1) / 2));
+                }
+                bounds
+            }
             Shape::Fill {
                 start,
                 end,
@@ -251,13 +347,38 @@ impl Item {
                 text,
                 height,
                 rotation,
+                mirrored,
                 ..
             } => {
-                let size = Point {
-                    x: (text.chars().count() as f64 * *height as f64 * 0.75) as i64,
-                    y: *height,
+                let cache_valid = self.properties.get("PCBCRAFT_TEXT_CACHE_VALUE") == Some(text)
+                    && self.properties.get("PCBCRAFT_TEXT_CACHE_SOURCE_HEIGHT")
+                        == Some(&height.to_string());
+                let metric = |key: &str, fallback: i64| {
+                    if cache_valid {
+                        self.properties
+                            .get(key)
+                            .and_then(|v| v.parse::<i64>().ok())
+                            .filter(|v| *v > 0 && *v <= MAX_COORD)
+                            .unwrap_or(fallback)
+                    } else {
+                        fallback
+                    }
                 };
-                Bounds::points(&rectangle(*position, size, *rotation)).expanded(*height)
+                let w = metric(
+                    "PCBCRAFT_TEXT_CACHE_WIDTH",
+                    text.chars().count() as i64 * *height * 2,
+                );
+                let h = metric("PCBCRAFT_TEXT_CACHE_HEIGHT", *height * 2);
+                let (s, c) = rotation.to_radians().sin_cos();
+                let corners = [(0, 0), (w, 0), (w, h), (0, h)].map(|(x, y)| {
+                    let x = (if *mirrored { -x } else { x }) as f64;
+                    let y = y as f64;
+                    Point {
+                        x: position.x + (x * c - y * s).round() as i64,
+                        y: position.y + (x * s + y * c).round() as i64,
+                    }
+                });
+                Bounds::points(&corners).expanded(*height / 2)
             }
             Shape::Region { contour, .. } => Bounds::points(contour),
         }
@@ -439,6 +560,8 @@ impl Board {
             p.validate()?;
         }
         for i in &self.items {
+            i.validate_stack()?;
+            i.validate_masks()?;
             if !ids.insert(i.id) {
                 return Err("Duplicate PCB item identifier".into());
             }
@@ -475,14 +598,16 @@ impl Board {
                     ..
                 } => {
                     valid_point(*position)
-                        && positive(size.x)
-                        && positive(size.y)
+                        && ((positive(size.x) && positive(size.y)) || i.is_drill_only())
                         && rotation.is_finite()
                         && *hole >= 0
                         && *hole <= MAX_COORD
-                        && [bottom_size, middle_size]
-                            .into_iter()
-                            .all(|s| s.is_none_or(|p| positive(p.x) && positive(p.y)))
+                        && [bottom_size, middle_size].into_iter().all(|s| {
+                            s.is_none_or(|p| {
+                                (positive(p.x) && positive(p.y))
+                                    || (i.is_drill_only() && p == Point::default())
+                            })
+                        })
                 }
                 Shape::Via {
                     position,
@@ -539,12 +664,36 @@ impl Board {
         net.and_then(|id| self.nets.iter().find(|n| n.index == id))
             .map_or("No Net", |n| n.name.as_str())
     }
+    /// Native component strings can exist in Texts6 while their display is disabled.
+    pub fn text_visible(&self, item: &Item) -> bool {
+        if !matches!(item.shape, Shape::Text { .. }) {
+            return true;
+        }
+        let Some(component) = item
+            .component
+            .and_then(|index| self.components.iter().find(|c| c.index == index))
+        else {
+            return true;
+        };
+        ![("DESIGNATOR", "NAMEON"), ("COMMENT", "COMMENTON")]
+            .into_iter()
+            .any(|(role, setting)| {
+                item.properties.get(role).is_some_and(|v| v == "TRUE")
+                    && component
+                        .properties
+                        .get(setting)
+                        .is_some_and(|v| v.eq_ignore_ascii_case("FALSE"))
+            })
+    }
     pub fn bounds(&self) -> Bounds {
         let mut b = Bounds::empty();
         for p in self.outline_points(48) {
             b.include(p);
         }
         for item in &self.items {
+            if !self.text_visible(item) {
+                continue;
+            }
             b.union(item.bounds());
         }
         for p in &self.polygon_pours {
@@ -567,13 +716,7 @@ impl Board {
         let mut p = Vec::new();
         for v in &self.outline {
             if let Some(a) = &v.arc {
-                p.extend(arc_points(
-                    a.centre,
-                    a.radius,
-                    a.start_angle,
-                    a.end_angle,
-                    steps,
-                ));
+                p.extend(contour_arc_points(v.position, a, steps));
             } else {
                 p.push(v.position);
             }
@@ -629,6 +772,7 @@ impl Board {
     }
     pub fn edited(&self, action: Edit) -> Result<Self, String> {
         let mut next = self.clone();
+        let mut copper_changed = true;
         match action {
             Edit::Insert(items) => {
                 if next.items.len().saturating_add(items.len()) > MAX_ITEMS {
@@ -636,7 +780,10 @@ impl Board {
                 }
                 next.items.extend(items);
             }
-            Edit::Replace(item) => {
+            Edit::Replace(mut item) => {
+                if let Some(old) = self.item(item.id) {
+                    item.reconcile_legacy_stack(old);
+                }
                 if let Some(old) = self.item(item.id)
                     && old
                         .polygon
@@ -665,6 +812,12 @@ impl Board {
                         );
                     }
                 }
+                // Mask overrides do not invalidate copper pours. Preserve conservative
+                // invalidation for native primitive properties interpreted by pouring.
+                copper_changed = !old.same_copper_geometry(&item, self)
+                    || old.layer != item.layer
+                    || old.net != item.net
+                    || old.properties != item.properties;
                 *old = item;
             }
             Edit::Delete(selection) => {
@@ -721,7 +874,7 @@ impl Board {
                 }
             }
         }
-        next.pours_stale |= !next.polygon_pours.is_empty();
+        next.pours_stale |= copper_changed && !next.polygon_pours.is_empty();
         next.validate()?;
         Ok(next)
     }
@@ -930,6 +1083,22 @@ pub fn arc_points(centre: Point, radius: i64, start: f64, end: f64, steps: usize
         })
         .collect()
 }
+/// Native contour angles describe an arc's extent; its vertex selects traversal.
+/// Clockwise rings often store their starting vertex at the arc's end angle.
+pub fn contour_arc_points(position: Point, arc: &ContourArc, steps: usize) -> Vec<Point> {
+    let mut points = arc_points(
+        arc.centre,
+        arc.radius,
+        arc.start_angle,
+        arc.end_angle,
+        steps,
+    );
+    if distance_sq(position, *points.last().unwrap()) < distance_sq(position, points[0]) {
+        points.reverse();
+    }
+    points[0] = position;
+    points
+}
 pub fn arc_sweep(start: f64, end: f64) -> f64 {
     let d = (end - start).rem_euclid(360.0);
     if d.abs() < 1e-9 { 360.0 } else { d }
@@ -1021,6 +1190,11 @@ pub(crate) fn transform_item(
 }
 /// Distance to visible material, with correctly rotated pad hit-testing.
 pub fn hit_distance(item: &Item, p: Point) -> f64 {
+    if item.is_drill_only()
+        && let Shape::Pad { position, hole, .. } = &item.shape
+    {
+        return (distance_sq(p, *position).sqrt() - *hole as f64 / 2.0).max(0.0);
+    }
     match &item.shape {
         Shape::Track { start, end, width } => {
             (segment_distance(p, *start, *end) - *width as f64 / 2.0).max(0.0)
@@ -1073,7 +1247,17 @@ pub fn hit_distance(item: &Item, p: Point) -> f64 {
                 }
                 _ => polygon_distance(
                     p,
-                    &crate::pcb_polygon::pad_outline(*position, *size, *rotation, *shape),
+                    &crate::pcb_polygon::pad_outline_radius(
+                        *position,
+                        *size,
+                        *rotation,
+                        *shape,
+                        item.pad_corner_percent(if item.layer == MULTI_LAYER {
+                            TOP
+                        } else {
+                            item.layer
+                        }),
+                    ),
                 ),
             }
         }
@@ -1153,6 +1337,125 @@ pub fn route_points(start: Point, end: Point, diagonal_first: bool) -> Vec<Point
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn clockwise_contour_arcs_start_at_their_vertex_without_a_diagonal_backtrack() {
+        let arc = ContourArc {
+            centre: Point::default(),
+            radius: 1_000_000,
+            start_angle: 0.0,
+            end_angle: 90.0,
+        };
+        let start = Point::mm(0, 1);
+        let pts = contour_arc_points(start, &arc, 32);
+        assert_eq!(pts[0], start);
+        assert_eq!(pts.last(), Some(&Point::mm(1, 0)));
+        assert!(pts.windows(2).all(|p| p[1].x >= p[0].x && p[1].y <= p[0].y));
+        assert!(
+            pts.windows(2)
+                .all(|p| distance_sq(p[0], p[1]).sqrt() < 250_000.0)
+        );
+        let b = Board {
+            outline: vec![ContourVertex {
+                position: start,
+                arc: Some(arc.clone()),
+            }],
+            ..Default::default()
+        };
+        assert_eq!(b.outline_points(32), pts);
+        let reversed = contour_arc_points(Point::mm(1, 0), &arc, 32);
+        assert_eq!(reversed[0], Point::mm(1, 0));
+        assert_eq!(reversed.last(), Some(&start));
+    }
+    #[test]
+    fn hidden_component_strings_do_not_change_fit_and_manual_text_remains_visible() {
+        let mut b = Board::default();
+        b.components.push(Component {
+            id: Uuid::new_v4(),
+            index: 0,
+            designator: "R1".into(),
+            comment: "".into(),
+            footprint: "R".into(),
+            position: Point::default(),
+            rotation: 0.0,
+            layer: TOP,
+            locked: false,
+            properties: Fields::from([
+                ("NAMEON".into(), "FALSE".into()),
+                ("COMMENTON".into(), "FALSE".into()),
+            ]),
+        });
+        let mut text = Item::new(
+            TOP,
+            None,
+            Shape::Text {
+                position: Point::mm(1000, 1000),
+                text: "R1".into(),
+                height: 1_000_000,
+                stroke: 100_000,
+                rotation: 0.0,
+                mirrored: false,
+                font: "".into(),
+            },
+        );
+        text.component = Some(0);
+        text.properties.insert("DESIGNATOR".into(), "TRUE".into());
+        assert!(!b.text_visible(&text));
+        b.items.push(text.clone());
+        assert!(b.bounds().max.x < 100_000_000);
+        text.properties.clear();
+        assert!(b.text_visible(&text));
+        b.items.push(text);
+        assert!(b.bounds().max.x > 1_000_000_000);
+        b.components[0]
+            .properties
+            .insert("NAMEON".into(), "TRUE".into());
+        assert!(b.text_visible(&b.items[0]));
+    }
+    #[test]
+    fn native_pad_radius_percent_uses_half_the_shortest_side_in_geometry_and_picking() {
+        let size = Point::mm(2, 1);
+        let mut pad = Item::new(
+            TOP,
+            None,
+            Shape::Pad {
+                position: Point::default(),
+                size,
+                rotation: 0.0,
+                shape: PadShape::RoundedRectangle,
+                hole: 0,
+                plated: true,
+                name: "1".into(),
+                bottom_size: None,
+                middle_size: None,
+            },
+        );
+        pad.properties
+            .insert("PCBCRAFT_PAD_RADIUS_1".into(), "20".into());
+        let ring = crate::pcb_polygon::pad_outline_radius(
+            Point::default(),
+            size,
+            0.0,
+            PadShape::RoundedRectangle,
+            pad.pad_corner_percent(TOP),
+        );
+        assert_eq!(
+            ring[0],
+            Point {
+                x: 1_000_000,
+                y: 400_000
+            }
+        );
+        pad.properties
+            .insert("PCBCRAFT_PAD_RADIUS_1".into(), "10".into());
+        let corner = Point {
+            x: 970_000,
+            y: 470_000,
+        };
+        assert_eq!(hit_distance(&pad, corner), 0.0);
+        pad.properties
+            .insert("PCBCRAFT_PAD_RADIUS_1".into(), "80".into());
+        assert!(hit_distance(&pad, corner) > 100_000.0);
+    }
     fn p(x: i64, y: i64) -> Point {
         Point { x, y }
     }
@@ -1188,6 +1491,76 @@ mod tests {
         b.items.push(i);
         assert!(b.edited(Edit::Delete(vec![id])).is_err());
         assert_eq!(b.items.len(), 1);
+    }
+    #[test]
+    fn drill_only_pads_keep_zero_copper_but_have_physical_bounds_and_picking() {
+        let hole = Item::new(
+            MULTI_LAYER,
+            None,
+            Shape::Pad {
+                position: Point::mm(1, 2),
+                size: Point::default(),
+                rotation: 270.0,
+                shape: PadShape::Round,
+                hole: 450_000,
+                plated: false,
+                name: "0".into(),
+                bottom_size: None,
+                middle_size: None,
+            },
+        );
+        let mut b = Board {
+            items: vec![hole.clone()],
+            ..Default::default()
+        };
+        b.validate().unwrap();
+        assert!(hole.is_drill_only());
+        assert_eq!(
+            hole.bounds().min,
+            Point {
+                x: 775_000,
+                y: 1_775_000
+            }
+        );
+        assert_eq!(
+            hit_distance(
+                &hole,
+                Point {
+                    x: 1_200_000,
+                    y: 2_000_000
+                }
+            ),
+            0.0
+        );
+        assert_eq!(
+            hit_distance(
+                &hole,
+                Point {
+                    x: 1_300_000,
+                    y: 2_000_000
+                }
+            ),
+            75_000.0
+        );
+        assert!(!crate::pcb_polygon::on_layer(&b, &hole, TOP));
+        assert!(!crate::pcb_polygon::on_layer(&b, &hole, BOTTOM));
+        for bad in 0..5 {
+            b.items[0] = hole.clone();
+            if bad == 0 {
+                b.items[0].layer = TOP;
+            } else if let Shape::Pad {
+                size, hole, plated, ..
+            } = &mut b.items[0].shape
+            {
+                match bad {
+                    1 => *hole = 0,
+                    2 => *plated = true,
+                    3 => size.x = 1,
+                    _ => size.y = -1,
+                }
+            }
+            assert!(b.validate().is_err(), "case {bad}");
+        }
     }
     #[test]
     fn rotated_pad_hit() {

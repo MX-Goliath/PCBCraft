@@ -1,0 +1,240 @@
+use super::*;
+
+fn add(s: &mut Schematic, points: &[(i64, i64)]) -> Uuid {
+    let mut p = primitive(
+        K::Polyline {
+            points: points.iter().map(|(x, y)| Point::mm(*x, *y)).collect(),
+            electrical: "Wire".into(),
+            closed: false,
+        },
+        None,
+    );
+    p.color = 0x123456;
+    p.width_nm = 203_200;
+    let id = p.id;
+    s.primitives.push(p);
+    id
+}
+fn doc() -> Document {
+    Document::new(DocumentKind::Schematic, "Wire editing")
+}
+fn path(d: &Document, id: Uuid) -> &[Point] {
+    wire(d.schematic.as_ref().unwrap().primitive(id).unwrap()).unwrap()
+}
+fn drag(id: Uuid, handle: WireHandle, delta: Point) -> Edit {
+    Edit::DragWire { id, handle, delta }
+}
+
+#[test]
+fn segment_drag_anchors_endpoints_and_preserves_style_history_and_serialization() {
+    let mut d = doc();
+    let id = add(d.schematic.as_mut().unwrap(), &[(10, 20), (30, 20)]);
+    let before = d.clone();
+    let command = drag(id, WireHandle::Segment(0), Point::mm(7, 5));
+    let shown = preview(&d, &command).unwrap();
+    assert_eq!(
+        path(&shown, id),
+        &[
+            Point::mm(10, 20),
+            Point::mm(10, 25),
+            Point::mm(30, 25),
+            Point::mm(30, 20)
+        ]
+    );
+    assert_eq!(
+        shown
+            .schematic
+            .as_ref()
+            .unwrap()
+            .primitive(id)
+            .unwrap()
+            .color,
+        0x123456
+    );
+    assert_eq!(
+        shown
+            .schematic
+            .as_ref()
+            .unwrap()
+            .primitive(id)
+            .unwrap()
+            .width_nm,
+        203_200
+    );
+    assert_eq!(d, before);
+    let mut h = History::default();
+    h.schematic_edit(
+        &mut d,
+        Request {
+            document: before.id,
+            expected_revision: 0,
+            edit: command,
+        },
+    )
+    .unwrap();
+    assert_eq!(d, shown);
+    assert_eq!(h.revision, 1);
+    let reopened: Document = serde_json::from_str(&serde_json::to_string(&d).unwrap()).unwrap();
+    assert_eq!(reopened, d);
+    h.undo(&mut d);
+    assert_eq!(d, before);
+    h.redo(&mut d);
+    assert_eq!(d, shown);
+    assert_eq!(
+        preview(&d, &drag(id, WireHandle::Segment(1), Point::mm(4, 0))).unwrap(),
+        d
+    );
+}
+
+#[test]
+fn middle_segment_stretches_t_branch_dot_but_leaves_crossing_and_other_bends_fixed() {
+    let mut d = doc();
+    let s = d.schematic.as_mut().unwrap();
+    let trunk = add(s, &[(0, 0), (10, 0), (10, 20), (30, 20)]);
+    let branch = add(s, &[(10, 10), (20, 10)]);
+    let crossing = add(s, &[(5, 15), (25, 15)]);
+    let dot = primitive(
+        K::Junction {
+            position: Point::mm(10, 10),
+            radius_nm: 254_000,
+        },
+        None,
+    );
+    let dot_id = dot.id;
+    s.primitives.push(dot);
+    let shown = preview(&d, &drag(trunk, WireHandle::Segment(1), Point::mm(5, 9))).unwrap();
+    assert_eq!(
+        path(&shown, trunk),
+        &[
+            Point::mm(0, 0),
+            Point::mm(15, 0),
+            Point::mm(15, 20),
+            Point::mm(30, 20)
+        ]
+    );
+    assert_eq!(
+        path(&shown, branch),
+        &[Point::mm(15, 10), Point::mm(20, 10)]
+    );
+    assert_eq!(path(&shown, crossing), path(&d, crossing));
+    assert!(
+        matches!(shown.schematic.as_ref().unwrap().primitive(dot_id).unwrap().kind,K::Junction { position, .. } if position==Point::mm(15,10))
+    );
+}
+
+#[test]
+fn vertex_drag_preserves_other_vertices_and_fixed_component_hotspot() {
+    let mut d = doc();
+    let s = d.schematic.as_mut().unwrap();
+    let id = add(s, &[(0, 0), (10, 0), (10, 10), (20, 10)]);
+    let pin = primitive(
+        K::PowerPort {
+            position: Point::mm(10, 0),
+            style: 2,
+            text: "GND".into(),
+            orientation: 0,
+            show_name: true,
+            font: 0,
+        },
+        None,
+    );
+    let pin_id = pin.id;
+    s.primitives.push(pin);
+    let shown = preview(&d, &drag(id, WireHandle::Vertex(1), Point::mm(2, 3))).unwrap();
+    let raw = wire_drag(
+        d.schematic.as_ref().unwrap(),
+        id,
+        WireHandle::Vertex(1),
+        Point::mm(2, 3),
+    )
+    .unwrap();
+    let after = shown.schematic.as_ref().unwrap();
+    // Optimization may split/absorb paths, but must preserve their exact union.
+    for p in &raw.primitives {
+        if let Some(path) = wire(p) {
+            assert_wire_coverage(after, path);
+        }
+    }
+    let mut expected = d.schematic.as_ref().unwrap().clone();
+    expected.primitives = raw.primitives.clone();
+    for p in after.primitives.iter().filter_map(wire) {
+        assert_wire_coverage(&expected, p);
+        assert!(p.windows(2).all(|e| e[0].x == e[1].x || e[0].y == e[1].y));
+    }
+    assert_eq!(
+        after.primitive(pin_id),
+        d.schematic.as_ref().unwrap().primitive(pin_id)
+    );
+    assert_wire_coverage(
+        after,
+        &[Point::mm(10, 0), Point::mm(10, 3), Point::mm(12, 3)],
+    );
+}
+
+#[test]
+fn wire_handle_selection_invalid_stale_and_noop_do_not_change_scene() {
+    let mut d = doc();
+    let id = add(d.schematic.as_mut().unwrap(), &[(0, 0), (10, 0), (10, 20)]);
+    let s = d.schematic.as_ref().unwrap();
+    assert_eq!(
+        wire_handle_at(s, id, Point::mm(10, 0), 1_000_000),
+        Some(WireHandle::Vertex(1))
+    );
+    assert_eq!(
+        wire_handle_at(s, id, Point::mm(5, 0), 1_000_000),
+        Some(WireHandle::Segment(0))
+    );
+    assert_eq!(wire_handle_at(s, id, Point::mm(5, 7), 1_000_000), None);
+    assert_eq!(
+        preview(&d, &drag(id, WireHandle::Vertex(1), Point::default())).unwrap(),
+        d
+    );
+    for (handle, delta) in [
+        (WireHandle::Segment(usize::MAX), Point::mm(1, 1)),
+        (WireHandle::Vertex(40), Point::mm(1, 1)),
+        (WireHandle::Vertex(0), Point::mm(100_001, 0)),
+    ] {
+        assert!(preview(&d, &drag(id, handle, delta)).is_err());
+    }
+    let mut history = History::default();
+    let before = d.clone();
+    assert!(
+        history
+            .schematic_edit(
+                &mut d,
+                Request {
+                    document: before.id,
+                    expected_revision: 1,
+                    edit: drag(id, WireHandle::Vertex(0), Point::mm(1, 1))
+                }
+            )
+            .is_err()
+    );
+    assert_eq!(d, before);
+}
+
+#[test]
+fn derived_junctions_cover_t_pin_and_overlap_without_connecting_bare_x_crossings() {
+    let mut d = doc();
+    let s = d.schematic.as_mut().unwrap();
+    add(s, &[(0, 10), (30, 10)]);
+    let branch = add(s, &[(10, 10), (10, 20)]);
+    add(s, &[(20, 0), (20, 20)]);
+    add(s, &[(0, 10), (15, 10)]); // Overlap does not introduce an extra branch at 15.
+    let dot = primitive(
+        K::Junction {
+            position: Point::mm(20, 10),
+            radius_nm: 254_000,
+        },
+        None,
+    );
+    s.primitives.push(dot);
+    assert_eq!(
+        junctions(s.primitives.iter()),
+        vec![(Point::mm(10, 10), 0x123456)]
+    );
+    s.primitives.retain(|p| p.id != branch);
+    assert!(junctions(s.primitives.iter()).is_empty());
+    assert!(connection_at(s, Point::mm(7, 10)));
+    assert!(!connection_at(s, Point::mm(7, 11)));
+}

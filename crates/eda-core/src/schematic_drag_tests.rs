@@ -149,19 +149,34 @@ fn drag_preserves_t_branch_label_and_unconnected_crossing() {
         .primitives
         .extend(f.primitives);
     let shown = preview(&doc, &command(vec![id], 0, Point::mm(5, 10))).unwrap();
-    assert_eq!(path(&shown, branch), path(&doc, branch));
+    assert_wire_coverage(shown.schematic.as_ref().unwrap(), &path(&doc, branch));
+    assert_eq!(path(&shown, branch).last(), path(&doc, branch).last());
     assert_eq!(path(&shown, crossing), path(&doc, crossing));
     assert_eq!(
         shown.schematic.as_ref().unwrap().primitive(label.id),
         Some(&label)
     );
-    let p = path(&shown, trunk);
+    let raw = connected_transform(
+        doc.schematic.as_ref().unwrap(),
+        &[id],
+        Point::mm(40, 40),
+        0,
+        Point::mm(5, 10),
+    )
+    .unwrap();
+    let p = wire(raw.primitives.iter().find(|p| p.id == trunk).unwrap()).unwrap();
     assert!(p.contains(&at));
+    assert_wire_coverage(shown.schematic.as_ref().unwrap(), p);
     assert!(
-        p.windows(2)
-            .any(|e| Point::mm(10, 40).on_segment(e[0], e[1]))
+        shown
+            .schematic
+            .as_ref()
+            .unwrap()
+            .primitives
+            .iter()
+            .filter_map(wire)
+            .all(|p| p.windows(2).all(|e| e[0].x == e[1].x || e[0].y == e[1].y))
     );
-    assert!(p.windows(2).all(|e| e[0].x == e[1].x || e[0].y == e[1].y));
 }
 #[test]
 fn shared_terminal_keeps_stationary_pins_and_adds_one_stem() {
@@ -202,7 +217,27 @@ fn shared_terminal_keeps_stationary_pins_and_adds_one_stem() {
         .collect();
     assert_eq!(fresh.len(), 1);
     let stem = wire(fresh[0]).unwrap();
-    assert_eq!(stem.first(), Some(&left));
+    assert_wire_coverage(
+        shown.schematic.as_ref().unwrap(),
+        &[
+            left,
+            Point {
+                x: left.x,
+                y: left.y + 10_000_000,
+            },
+            Point {
+                x: left.x + 5_000_000,
+                y: left.y + 10_000_000,
+            },
+        ],
+    );
+    assert!(stem.first().unwrap().on_segment(
+        left,
+        Point {
+            x: left.x,
+            y: 60_000_000
+        }
+    ));
     assert_eq!(
         stem.last(),
         Some(&Point {

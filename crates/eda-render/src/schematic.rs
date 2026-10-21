@@ -2,12 +2,13 @@ use super::*;
 use eda_core::schematic::{SchFont, SchPrimitive, SchPrimitiveKind as K, Schematic};
 use egui::{Align2, FontFamily, FontId, Painter, Shape, epaint::TextShape};
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 
 // Layout in a fixed font space: rasterizer rounding must not change glyph
 // advances, anchors or line breaks whenever the schematic camera zooms.
 const TEXT_LAYOUT_SIZE: f32 = 64.0;
 
-fn place_text(
+pub(super) fn place_text(
     mut shape: TextShape,
     scale: f32,
     position: Pos2,
@@ -35,6 +36,61 @@ fn place_text(
 
 fn color(value: u32) -> Color32 {
     Color32::from_rgb(value as u8, (value >> 8) as u8, (value >> 16) as u8)
+}
+
+pub(super) type JunctionCache = Option<(u64, Vec<(Point, u32)>)>;
+fn auto_junctions(cache: &mut JunctionCache, primitives: Vec<&SchPrimitive>) -> Vec<(Point, u32)> {
+    let mut hash = std::collections::hash_map::DefaultHasher::new();
+    for p in &primitives {
+        p.id.hash(&mut hash);
+        p.color.hash(&mut hash);
+        p.presentation.hidden.hash(&mut hash);
+        p.component.hash(&mut hash);
+        std::mem::discriminant(&p.kind).hash(&mut hash);
+        match &p.kind {
+            K::Polyline {
+                points,
+                electrical,
+                closed,
+            } => {
+                electrical.hash(&mut hash);
+                closed.hash(&mut hash);
+                for p in points {
+                    p.x.hash(&mut hash);
+                    p.y.hash(&mut hash);
+                }
+            }
+            K::Pin {
+                position,
+                length_nm,
+                orientation,
+                ..
+            } => {
+                position.x.hash(&mut hash);
+                position.y.hash(&mut hash);
+                length_nm.hash(&mut hash);
+                orientation.hash(&mut hash);
+            }
+            K::Junction { position, .. }
+            | K::PowerPort { position, .. }
+            | K::Port { position, .. }
+            | K::Text { position, .. } => {
+                position.x.hash(&mut hash);
+                position.y.hash(&mut hash);
+                (p.text_role == Some(eda_core::schematic::TextRole::NetLabel)).hash(&mut hash);
+            }
+            _ => {}
+        }
+    }
+    let signature = hash.finish();
+    if let Some((old, dots)) = cache
+        && *old == signature
+    {
+        return dots.clone();
+    }
+    let dots = eda_core::schematic_edit::junctions(primitives.into_iter());
+    *cache = Some((signature, dots.clone()));
+    dots
 }
 fn direction(orientation: u32) -> Vec2 {
     match orientation % 4 {
@@ -1207,12 +1263,15 @@ pub(super) fn paint(
                     .and_modify(|r| *r = r.union(bounds))
                     .or_insert(bounds);
             }
-            if (view.selected.is_some()
-                && (view.selected == Some(primitive.id) || view.selected == primitive.component))
-                || view.sch_selection.contains(&primitive.id)
-                || primitive
-                    .component
-                    .is_some_and(|id| view.sch_selection.contains(&id))
+            if !matches!(&primitive.kind,K::Polyline{electrical,..} if electrical=="Wire")
+                && !view.sch_segments.iter().any(|span| span.id == primitive.id)
+                && ((view.selected.is_some()
+                    && (view.selected == Some(primitive.id)
+                        || view.selected == primitive.component))
+                    || view.sch_selection.contains(&primitive.id)
+                    || primitive
+                        .component
+                        .is_some_and(|id| view.sch_selection.contains(&id)))
             {
                 selected_bounds = selected_bounds.union(bounds);
             }
@@ -1273,6 +1332,54 @@ pub(super) fn paint(
             StrokeKind::Outside,
         );
     }
+    if !view.sch_tool_active
+        && let Some(s) = &doc.schematic
+    {
+        for primitive in &s.primitives {
+            if primitive.component.is_some()
+                || view.sch_segments.iter().any(|span| span.id == primitive.id)
+                || !(view.sch_selection.contains(&primitive.id)
+                    || view.selected == Some(primitive.id))
+            {
+                continue;
+            }
+            if let K::Polyline {
+                points,
+                electrical,
+                closed: false,
+            } = &primitive.kind
+                && electrical == "Wire"
+            {
+                for p in points
+                    .iter()
+                    .copied()
+                    .chain(points.windows(2).map(|e| Point {
+                        x: e[0].x + (e[1].x - e[0].x) / 2,
+                        y: e[0].y + (e[1].y - e[0].y) / 2,
+                    }))
+                {
+                    painter.rect_filled(
+                        Rect::from_center_size(scene.screen(p), Vec2::splat(5.0)),
+                        0.0,
+                        Color32::from_rgb(0, 160, 0),
+                    );
+                }
+            }
+        }
+    }
+    if !view.sch_tool_active {
+        for span in &view.sch_segments {
+            let a = scene.screen(span.a);
+            let b = scene.screen(span.b);
+            for at in [a, b] {
+                painter.rect_filled(
+                    Rect::from_center_size(at, Vec2::splat(5.0)),
+                    0.0,
+                    Color32::RED,
+                );
+            }
+        }
+    }
     if let Some(preview) = &view.sch_preview {
         let scene = Scene {
             schematic: Some(preview),
@@ -1283,25 +1390,35 @@ pub(super) fn paint(
             scene.primitive(p, None);
         }
     }
-    if response.clicked() && !view.sch_tool_active {
-        if ui.input(|i| i.modifiers.shift) {
-            if view.sch_selection.is_empty()
-                && let Some(id) = view.selected
-            {
-                view.sch_selection.push(id);
-            }
-            if let Some(id) = hit {
-                if view.sch_selection.contains(&id) {
-                    view.sch_selection.retain(|v| *v != id);
-                } else {
-                    view.sch_selection.push(id);
-                }
-            }
-            view.selected = view.sch_selection.first().copied();
-        } else {
-            view.selected = hit;
-            view.sch_selection = hit.into_iter().collect();
+    if let Some(s) = &doc.schematic {
+        let primitives = s
+            .primitives
+            .iter()
+            .filter(|p| !preview_ids.contains(&p.id))
+            .chain(view.sch_preview.iter().flat_map(|s| &s.primitives))
+            .collect();
+        for (at, ink) in auto_junctions(&mut view.sch_junction_cache, primitives) {
+            painter.with_clip_rect(board.intersect(rect)).circle_filled(
+                scene.screen(at),
+                scene.nm(508_000).max(1.4),
+                color(ink),
+            );
         }
+    }
+    if response.clicked() && !view.sch_tool_active {
+        let span = hit.and_then(|id| {
+            let mm = view.camera.world_mm(hit_pointer?, rect);
+            eda_core::schematic_edit::wire_segment_at(
+                doc.schematic.as_ref()?,
+                id,
+                Point {
+                    x: (mm[0] * 1e6).round() as i64,
+                    y: (mm[1] * 1e6).round() as i64,
+                },
+                (6.0 / view.camera.pixels_per_mm * 1e6) as i64,
+            )
+        });
+        select_hit(view, hit, span, ui.input(|i| i.modifiers.shift));
     }
     if response.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
@@ -1327,6 +1444,7 @@ pub(super) fn paint(
                         .hover_pos()
                         .or_else(|| response.interact_pointer_pos())
                 })
+                .filter(|p| rect.contains(*p) && ui.rect_contains_pointer(rect))
                 .map(|p| {
                     let mm = view.camera.world_mm(p, rect);
                     Point {
@@ -1345,6 +1463,20 @@ pub(super) fn paint(
                     }
                 }),
             hit,
+            wire_handle: hit.and_then(|id| {
+                let pointer = hit_pointer?;
+                let mm = view.camera.world_mm(pointer, rect);
+                let at = Point {
+                    x: (mm[0] * 1e6).round() as i64,
+                    y: (mm[1] * 1e6).round() as i64,
+                };
+                eda_core::schematic_edit::wire_handle_at(
+                    doc.schematic.as_ref()?,
+                    id,
+                    at,
+                    (6.0 / view.camera.pixels_per_mm * 1e6) as i64,
+                )
+            }),
             clicked: response.clicked(),
             secondary_clicked: response.secondary_clicked(),
             drag_started: response.drag_started_by(egui::PointerButton::Primary),
@@ -1357,6 +1489,47 @@ pub(super) fn paint(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn auto_junction_cache_replaces_geometry_and_expires_with_view() {
+        use eda_core::schematic_edit::{Placement, place, primitive};
+        let mut view = View::default();
+        let wire = |points| {
+            primitive(
+                K::Polyline {
+                    points,
+                    electrical: "Wire".into(),
+                    closed: false,
+                },
+                None,
+            )
+        };
+        let mut primitives = vec![
+            wire(vec![Point::mm(0, 10), Point::mm(20, 10)]),
+            wire(vec![Point::mm(10, 10), Point::mm(10, 20)]),
+        ];
+        assert_eq!(
+            auto_junctions(&mut view.sch_junction_cache, primitives.iter().collect()).len(),
+            1
+        );
+        primitives.pop();
+        assert!(
+            auto_junctions(&mut view.sch_junction_cache, primitives.iter().collect()).is_empty()
+        );
+        let mut power = place(Placement::Ground, Point::mm(10, 10), 0, "", "", 0)
+            .unwrap()
+            .primitives;
+        primitives.append(&mut power);
+        assert_eq!(
+            auto_junctions(&mut view.sch_junction_cache, primitives.iter().collect()).len(),
+            1
+        );
+        primitives[1].presentation.hidden = true;
+        assert!(
+            auto_junctions(&mut view.sch_junction_cache, primitives.iter().collect()).is_empty()
+        );
+        assert!(view.sch_junction_cache.as_ref().unwrap().1.is_empty());
+    }
 
     fn text_context(pixels_per_point: f32) -> egui::Context {
         let ctx = egui::Context::default();
@@ -1608,5 +1781,71 @@ mod tests {
             Pos2::new(9.0, 9.0),
             &[Pos2::ZERO, Pos2::new(10.0, 0.0), Pos2::new(0.0, 10.0)]
         ));
+    }
+}
+
+fn select_hit(
+    view: &mut View,
+    hit: Option<Uuid>,
+    span: Option<eda_core::schematic_edit::WireSegment>,
+    additive: bool,
+) {
+    if view.sch_selection.is_empty() && view.sch_segments.is_empty() {
+        view.sch_selection.extend(view.selected);
+    }
+    let repeated = hit.is_some_and(|id| {
+        view.sch_selection.contains(&id) || view.sch_segments.iter().any(|s| s.id == id)
+    });
+    if !additive {
+        view.sch_selection.clear();
+        view.sch_segments.clear();
+    }
+    if let Some(id) = hit {
+        if let Some(span) = span.filter(|_| repeated) {
+            view.sch_selection.retain(|old| *old != id);
+            if let Some(index) = view.sch_segments.iter().position(|old| *old == span) {
+                view.sch_segments.remove(index);
+            } else {
+                view.sch_segments.push(span);
+            }
+        } else if additive && view.sch_selection.contains(&id) {
+            view.sch_selection.retain(|old| *old != id);
+        } else {
+            view.sch_selection.push(id);
+        }
+    }
+    view.selected = view
+        .sch_selection
+        .first()
+        .copied()
+        .or_else(|| view.sch_segments.first().map(|s| s.id));
+}
+
+#[cfg(test)]
+mod selection_tests {
+    use super::*;
+    #[test]
+    fn repeated_wire_click_selects_span_and_shift_keeps_mixed_group() {
+        let part = Uuid::new_v4();
+        let wire = Uuid::new_v4();
+        let span = eda_core::schematic_edit::WireSegment {
+            id: wire,
+            a: Point::mm(0, 0),
+            b: Point::mm(10, 0),
+        };
+        let mut v = View::default();
+        select_hit(&mut v, Some(part), None, false);
+        select_hit(&mut v, Some(wire), Some(span), true);
+        assert_eq!(v.sch_selection, vec![part, wire]);
+        assert!(v.sch_segments.is_empty());
+        select_hit(&mut v, Some(wire), Some(span), true);
+        assert_eq!(v.sch_selection, vec![part]);
+        assert_eq!(v.sch_segments, vec![span]);
+        select_hit(&mut v, Some(wire), Some(span), true);
+        assert!(v.sch_segments.is_empty());
+        assert_eq!(v.sch_selection, vec![part]);
+        select_hit(&mut v, None, None, false);
+        assert!(v.selected.is_none());
+        assert!(v.sch_selection.is_empty());
     }
 }

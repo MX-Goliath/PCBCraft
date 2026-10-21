@@ -249,6 +249,7 @@ impl PcbCraft {
             .view
             .sch_selection
             .len()
+            .saturating_add(doc.view.sch_segments.len())
             .max(usize::from(doc.view.selected.is_some()));
         let context = if count > 1 {
             "Objects"
@@ -535,10 +536,15 @@ fn section(ui: &mut egui::Ui, title: &str, query: &str, body: impl FnOnce(&mut e
     super::properties::section(ui, title, body);
     ui.add_space(6.0);
 }
-fn row(ui: &mut egui::Ui, label: &str, body: impl FnOnce(&mut egui::Ui)) {
+pub(super) fn row(ui: &mut egui::Ui, label: &str, body: impl FnOnce(&mut egui::Ui)) {
     row_height(ui, label, 22.0, body);
 }
-fn row_height(ui: &mut egui::Ui, label: &str, height: f32, body: impl FnOnce(&mut egui::Ui)) {
+pub(super) fn row_height(
+    ui: &mut egui::Ui,
+    label: &str,
+    height: f32,
+    body: impl FnOnce(&mut egui::Ui),
+) {
     ui.horizontal_top(|ui| {
         ui.allocate_ui_with_layout(
             egui::vec2(107.0, height),
@@ -586,7 +592,7 @@ fn text_row(ui: &mut egui::Ui, label: &str, value: &mut String) -> bool {
     row(ui, label, |ui| changed = text(ui, value));
     changed
 }
-fn readonly(ui: &mut egui::Ui, value: &str) {
+pub(super) fn readonly(ui: &mut egui::Ui, value: &str) {
     let mut v = value.to_owned();
     ui.add_sized(
         [ui.available_width(), 22.0],
@@ -662,7 +668,7 @@ fn color(ui: &mut egui::Ui, value: &mut u32) -> bool {
     }
     changed
 }
-fn small_icon(ui: &mut egui::Ui, kind: &str, value: &mut bool) -> bool {
+pub(super) fn small_icon(ui: &mut egui::Ui, kind: &str, value: &mut bool) -> bool {
     let (r, response) = ui.allocate_exact_size(egui::vec2(22.0, 22.0), Sense::click());
     if response.hovered() {
         ui.painter().rect_filled(r, 1.0, Color32::from_gray(84));

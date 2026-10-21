@@ -4,8 +4,10 @@
 
 Integrated October 21, 2026. Linux Rust compilation, 109 workspace tests, strict
 Clippy, all-targets build and representative GUI checks pass; details and exact
-limits are recorded in [VALIDATION.md](VALIDATION.md). Altium interoperability and
-Windows execution remain unverified. No DRC, obstacle avoidance or push-and-shove
+limits are recorded in [VALIDATION.md](VALIDATION.md). Altium interoperability
+remains unverified. Windows real-board opening and the visual work are recorded
+in [VISUAL_PARITY.md](VISUAL_PARITY.md); full visual parity remains unfinished.
+No DRC, obstacle avoidance or push-and-shove
 was added. A feature implementation is not a claim of full acceptance or parity.
 
 ## Layers
@@ -22,8 +24,8 @@ was added. A feature implementation is not a claim of full acceptance or parity.
 * `eda-core::pcb_tools`: component transforms/flip, shared endpoints and contour
   handles; connected drag stretches endpoints without preserving route angles.
 * `eda-render::pcb`: layer painter/picking, draft route/outline, selection handles,
-  bounded triangulation cache. UI typography, mirrored glyphs and Altium stroke
-  fonts are not faithfully implemented.
+  bounded triangulation cache. Mirrored/rotated glyph geometry and native view
+  preferences are supported; exact Altium stroke fonts and UI parity remain partial.
 * `eda-app::pcb_editor` and `pcb_properties_v2`: menus, actions, modal tools,
   draft Apply/Revert properties, clipboard and native Save integration.
 * `eda-io::altium_pcb::writer`: edited native record serializer and safe file replace.
@@ -61,9 +63,10 @@ owned geometry and swaps mapped top/bottom layers. A local group can be created
 from selected standalone primitives; this is not a PcbLib/IntLib footprint browser,
 ECO engine or component-library lifecycle implementation.
 
-Pads support common rectangle, circle/obround, octagon and fixed-25%-radius rounded
-rectangle rendering, rotation, drilling, plating and top/middle/bottom sizes.
-Full-stack arbitrary shapes, drill offsets/slots and exact custom corner radii are
+Pads support common rectangle, circle/obround, octagon and rounded rectangles
+with imported per-layer corner percentages, rotation, drilling, plating and
+top/middle/bottom sizes. Radius uses half of the shortest side.
+Full-stack arbitrary shapes, drill offsets/slots and individual corner masks are
 not editable/rendered completely. Existing custom radius bytes are retained when
 moving an otherwise unchanged native rounded pad.
 
@@ -135,3 +138,13 @@ missing compiler or refused native edit as a passed test.
 * TI TIPD167 and TIDA-00691 are reference candidates only. No TI archives or real
   `.PcbDoc` boards were downloaded/tested in this environment. Included fixtures
   are synthetic and must not be presented as TI designs.
+
+
+### Padstack and mask continuation (2026-10-21)
+
+The prior display/properties limitations are superseded for the implemented
+Simple/TMB/Full pad/via stack, Slot/Square drills, per-layer offsets/radii,
+portable 3D preview with software depth testing and bounded mask-rule editing. See PROPERTIES.md for
+observed native states, supported binary fields, 188 checks and explicit gaps.
+Native mask-only real-board copy interoperability was observed in AD 24.4.1;
+copper repour requiring unsupported reference remaps still refuses native Save.

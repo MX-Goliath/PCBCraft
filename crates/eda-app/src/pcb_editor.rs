@@ -124,7 +124,7 @@ pub(super) struct Editor {
     last_point: Option<Point>,
     component_draft: Option<ComponentDraft>,
     polygon_draft: Option<PolygonDraft>,
-    new_net_name: String,
+    properties_panel: properties_v2::Panel,
     last_error: Option<String>,
 }
 impl Default for Editor {
@@ -164,7 +164,7 @@ impl Default for Editor {
             last_point: None,
             component_draft: None,
             polygon_draft: None,
-            new_net_name: String::new(),
+            properties_panel: Default::default(),
             last_error: None,
         }
     }
@@ -186,6 +186,23 @@ impl Editor {
         self.cancel(view);
         self.tool = tool;
         view.pcb.tool_active = tool != Tool::Select;
+    }
+    pub(super) fn properties_dirty(&self, board: &Board, revision: u64) -> bool {
+        self.draft.as_ref().is_some_and(|d| {
+            d.revision == revision && board.item(d.id).is_some_and(|old| old != &d.item)
+        }) || self.component_draft.as_ref().is_some_and(|d| {
+            d.revision == revision
+                && board
+                    .components
+                    .iter()
+                    .any(|old| old.id == d.value.id && old != &d.value)
+        }) || self.polygon_draft.as_ref().is_some_and(|d| {
+            d.revision == revision
+                && board
+                    .polygon_pours
+                    .iter()
+                    .any(|old| old.id == d.value.id && old != &d.value)
+        })
     }
     pub(super) fn has_pending(&self) -> bool {
         self.route_session.is_some()
@@ -456,6 +473,7 @@ fn finish_route(doc: &mut OpenDocument, ed: &mut Editor) -> Result<(), String> {
 pub(super) fn prepare_save(doc: &mut OpenDocument) -> Result<(), String> {
     let mut ed = std::mem::take(&mut doc.pcb_editor);
     let result = (|| -> Result<(), String> {
+        properties_v2::flush_pending(doc, &mut ed, true)?;
         finish_route(doc, &mut ed)?;
         if ed.has_pending() {
             return Err("Finish or cancel the current PCB gesture before saving".into());
@@ -1384,6 +1402,15 @@ impl PcbCraft {
                     return;
                 }
             }
+            if input.consume_key(shift, Key::E) {
+                doc.view.pcb.snap.mode = match doc.view.pcb.snap.mode {
+                    pcb::SnapLayerMode::All => pcb::SnapLayerMode::Current,
+                    pcb::SnapLayerMode::Current => pcb::SnapLayerMode::Off,
+                    pcb::SnapLayerMode::Off => pcb::SnapLayerMode::All,
+                };
+                handled = true;
+                return;
+            }
             if input.consume_key(shift, Key::S) {
                 doc.view.pcb.single_layer = (doc.view.pcb.single_layer + 1) % 3;
                 handled = true;
@@ -1779,54 +1806,6 @@ impl PcbCraft {
     }
 }
 
-fn dimension_ui(ui: &mut egui::Ui, label: &str, nm: &mut i64, units: Units) {
-    ui.horizontal(|ui| {
-        ui.label(label);
-        let scale = if units == Units::Mils { 25400.0 } else { 1e6 };
-        let mut value = *nm as f64 / scale;
-        if ui
-            .add(
-                egui::DragValue::new(&mut value)
-                    .speed(0.01)
-                    .max_decimals(6)
-                    .suffix(format!(" {}", units.label())),
-            )
-            .changed()
-            && value.is_finite()
-        {
-            *nm = (value * scale).round() as i64;
-        }
-    });
-}
-fn point_ui(ui: &mut egui::Ui, label: &str, p: &mut Point, units: Units) {
-    dimension_ui(ui, &format!("{label} X"), &mut p.x, units);
-    dimension_ui(ui, &format!("{label} Y"), &mut p.y, units);
-}
-fn angle_ui(ui: &mut egui::Ui, label: &str, n: &mut f64) {
-    ui.horizontal(|ui| {
-        ui.label(label);
-        ui.add(egui::DragValue::new(n).speed(1.0).suffix("°"));
-    });
-}
-fn net_ui(ui: &mut egui::Ui, board: &Board, net: &mut Option<u32>) {
-    egui::ComboBox::from_id_salt("pcb_net")
-        .selected_text(board.net_name(*net))
-        .show_ui(ui, |ui| {
-            ui.selectable_value(net, None, "No Net");
-            for n in &board.nets {
-                ui.selectable_value(net, Some(n.index), &n.name);
-            }
-        });
-}
-fn layer_ui(ui: &mut egui::Ui, board: &Board, layer: &mut u16) {
-    egui::ComboBox::from_id_salt("pcb_layer")
-        .selected_text(pcb::layer_name(*layer))
-        .show_ui(ui, |ui| {
-            for l in &board.layers {
-                ui.selectable_value(layer, l.id, &l.name);
-            }
-        });
-}
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -12,8 +12,17 @@ use std::{
     sync::Arc,
 };
 use uuid::Uuid;
+#[cfg(test)]
+#[path = "altium_pcb_display_tests.rs"]
+mod display_tests;
+#[cfg(test)]
+#[path = "altium_pcb_stack_tests.rs"]
+mod stack_tests;
 #[path = "altium_pcb_write.rs"]
 pub mod writer;
+
+#[path = "altium_pcb_stack.rs"]
+mod stack_io;
 
 const LIMIT: usize = 128 * 1024 * 1024;
 const MAX_BLOCK: usize = 16 * 1024 * 1024;
@@ -50,7 +59,7 @@ pub fn import_pcb(bytes: &[u8], name: &str) -> Result<Document> {
     }));
     warn(
         &mut board,
-        "Compatibility is limited to the documented legacy PCB6 fields; modern V7 layer overrides, stack regions, native design rules and full Altium interactions are not implemented",
+        "Compatibility is limited to the documented PCB6 fields and supported modern layer identities; stack regions, native design rules and full Altium interactions are not implemented",
     );
     board.validate()?;
     let bounds = board.bounds();
@@ -302,8 +311,7 @@ pub fn layer_id(name: &str) -> Result<u16> {
             if let Some(n) = s.strip_prefix("MECHANICAL") {
                 let n = n.parse::<u16>().map_err(|_| invalid())?;
                 match n {
-                    1..=16 => 56 + n,
-                    17..=32 => 66 + n,
+                    1..=1024 => mechanical_layer(n).unwrap(),
                     _ => return Err(invalid()),
                 }
             } else if let Some(n) = s
@@ -435,6 +443,8 @@ fn binary(bytes: &[u8], ns: Uuid) -> Result<Board> {
         "Texts6",
         "Regions6",
         "ShapeBasedRegions6",
+        "ComponentBodies6",
+        "ShapeBasedComponentBodies6",
         "WideStrings6",
     ];
     let mut streams = BTreeMap::new();
@@ -516,6 +526,8 @@ fn binary(bytes: &[u8], ns: Uuid) -> Result<Board> {
         ("Texts6", 5),
         ("Regions6", 11),
         ("ShapeBasedRegions6", 11),
+        ("ComponentBodies6", 12),
+        ("ShapeBasedComponentBodies6", 12),
     ] {
         let Some(data) = streams.get(&format!("/{family}/Data")) else {
             continue;
@@ -537,8 +549,16 @@ fn binary(bytes: &[u8], ns: Uuid) -> Result<Board> {
                 if family == "Texts6" {
                     let text = reader.block()?;
                     text_item(payload, text, &wide, &board)?
-                } else if matches!(family, "Regions6" | "ShapeBasedRegions6") {
-                    region_item(payload, family == "ShapeBasedRegions6", &mut board)?
+                } else if matches!(tag, 11 | 12) {
+                    let mut item =
+                        region_item(payload, family.starts_with("ShapeBased"), &mut board)?;
+                    if tag == 12 {
+                        item.properties
+                            .insert("PCBCRAFT_BODY_PROJECTION".into(), "TRUE".into());
+                        item.net = None;
+                        item.polygon = None;
+                    }
+                    item
                 } else {
                     primitive(family, payload)?
                 }
@@ -556,17 +576,49 @@ fn binary(bytes: &[u8], ns: Uuid) -> Result<Board> {
         }
         check_count(&streams, family, n)?;
     }
-    if streams
-        .get("/Regions6/Data")
-        .is_some_and(|data| !data.is_empty())
-        && streams
-            .get("/ShapeBasedRegions6/Data")
-            .is_some_and(|data| !data.is_empty())
-    {
-        warn(
-            &mut board,
-            "Both legacy and shape-based region streams are present; overlapping definitions are not deduplicated and need visual verification",
-        );
+    let modern: Vec<_> = board
+        .items
+        .iter()
+        .filter(|i| {
+            i.source
+                .as_ref()
+                .is_some_and(|s| s.stream.starts_with("ShapeBased"))
+        })
+        .cloned()
+        .collect();
+    for item in &mut board.items {
+        if item
+            .source
+            .as_ref()
+            .is_some_and(|s| matches!(s.stream.as_str(), "Regions6" | "ComponentBodies6"))
+            && modern.iter().any(|m| {
+                m.layer == item.layer
+                    && m.source
+                        .as_ref()
+                        .zip(item.source.as_ref())
+                        .is_some_and(|(a, b)| {
+                            a.index == b.index && a.stream == format!("ShapeBased{}", b.stream)
+                        })
+                    && m.properties == item.properties
+                    && m.properties.get("PCBCRAFT_BODY_PROJECTION")
+                        == item.properties.get("PCBCRAFT_BODY_PROJECTION")
+                    && m.net == item.net
+                    && m.component == item.component
+                    && m.polygon == item.polygon
+                    && region_equivalent(
+                        &m.shape,
+                        &item.shape,
+                        item.properties
+                            .get("ARCRESOLUTION")
+                            .and_then(|v| dimension(v).ok())
+                            .unwrap_or(2)
+                            .clamp(2, 12_700),
+                    )
+            })
+        {
+            item.properties
+                .insert("PCBCRAFT_LEGACY_REGION_DUPLICATE".into(), "TRUE".into());
+        }
     }
     if !board.rules.is_empty() {
         warn(
@@ -581,6 +633,40 @@ fn binary(bytes: &[u8], ns: Uuid) -> Result<Board> {
         );
     }
     Ok(board)
+}
+fn region_equivalent(a: &Shape, b: &Shape, tolerance: i64) -> bool {
+    let (
+        Shape::Region {
+            contour: a,
+            holes: ah,
+            cutout: ac,
+        },
+        Shape::Region {
+            contour: b,
+            holes: bh,
+            cutout: bc,
+        },
+    ) = (a, b)
+    else {
+        return false;
+    };
+    let same = |a: &[Point], b: &[Point]| {
+        (a.len() == b.len()
+            && a.iter()
+                .zip(b)
+                .all(|(a, b)| (a.x - b.x).abs() <= 2 && (a.y - b.y).abs() <= 2))
+            || (!a.is_empty()
+                && !b.is_empty()
+                && [(a, b), (b, a)].into_iter().all(|(a, b)| {
+                    a.iter().all(|p| {
+                        b.iter()
+                            .zip(b.iter().cycle().skip(1))
+                            .take(b.len())
+                            .any(|(a, b)| segment_distance(*p, *a, *b) <= tolerance as f64)
+                    })
+                }))
+    };
+    ac == bc && same(a, b) && ah.len() == bh.len() && ah.iter().zip(bh).all(|(a, b)| same(a, b))
 }
 fn common(p: &[u8], shape: Shape) -> Result<Item> {
     if p.len() < 13 {
@@ -622,7 +708,20 @@ fn primitive(family: &str, p: &[u8]) -> Result<Item> {
         _ => return Err("Unsupported primitive family".into()),
     };
     let mut i = common(p, shape)?;
+    let modern_offset = match family {
+        "Tracks6" => Some(41),
+        "Arcs6" => Some(56),
+        "Fills6" => Some(42),
+        _ => None,
+    };
+    if let Some(at) = modern_offset
+        && p.len() >= at + 4
+        && let Some(layer) = native_layer(u32_at(p, at)?)
+    {
+        i.layer = layer;
+    }
     if family == "Vias6" {
+        stack_io::read_via(&mut i, p)?;
         i.layer = MULTI_LAYER;
         i.component = None;
         i.polygon = None;
@@ -648,28 +747,6 @@ fn pad(blocks: &[&[u8]], board: &mut Board) -> Result<Item> {
     };
     if blocks[5].len() >= 596 && blocks[5][532] == 9 {
         shape = PadShape::RoundedRectangle;
-        if blocks[5][564] != 25 {
-            warn(
-                board,
-                "Rounded rectangle radius is approximated at 25%; the original stack is retained for native edits",
-            );
-        }
-    }
-    if p[62] == 2 {
-        warn(
-            board,
-            "Full-stack pads use top/middle/bottom approximations; arbitrary per-layer geometry is preserved only in the source archive",
-        );
-    }
-    if blocks[5].len() >= 596
-        && (blocks[5][262] != 0
-            || blocks[5][275..531].iter().any(|b| *b != 0)
-            || blocks[5][532..596].iter().any(|b| *b != 0))
-    {
-        warn(
-            board,
-            "Custom pad slots, hole offsets or corner radii are not fully rendered; do not use this view as a fabrication check",
-        );
     }
     let optional_size = |offset| -> Result<Option<Point>> {
         let s = point(p, offset)?;
@@ -689,6 +766,15 @@ fn pad(blocks: &[&[u8]], board: &mut Board) -> Result<Item> {
             middle_size: optional_size(29)?,
         },
     )?;
+    if blocks[5].len() >= 596 {
+        for layer in 1..=32 {
+            item.properties.insert(
+                format!("PCBCRAFT_PAD_RADIUS_{layer}"),
+                blocks[5][563 + layer].to_string(),
+            );
+        }
+    }
+    stack_io::read_pad(&mut item, p, blocks[5], board)?;
     item.polygon = None;
     Ok(item)
 }
@@ -705,13 +791,15 @@ fn text_item(p: &[u8], legacy: &[u8], wide: &BTreeMap<u32, String>, board: &Boar
         Some(value) => value,
         None => short_string(legacy)?,
     };
+    let designator = p.get(41) == Some(&1) || text.eq_ignore_ascii_case(".Designator");
+    let comment = p.get(40) == Some(&1) || text.eq_ignore_ascii_case(".Comment");
     if let Some(c) =
         index(u16_at(p, 7)?).and_then(|idx| board.components.iter().find(|c| c.index == idx))
     {
-        if p.get(41) == Some(&1) || text.eq_ignore_ascii_case(".Designator") {
+        if designator {
             text = c.designator.clone();
         }
-        if p.get(40) == Some(&1) || text.eq_ignore_ascii_case(".Comment") {
+        if comment && (text.is_empty() || text.eq_ignore_ascii_case(".Comment")) {
             text = c.comment.clone();
         }
     }
@@ -733,10 +821,45 @@ fn text_item(p: &[u8], legacy: &[u8], wide: &BTreeMap<u32, String>, board: &Boar
         },
     )?;
     item.net = None;
-    if p.get(41) == Some(&1) {
+    if p.len() >= 230
+        && let Some(layer) = native_layer(u32_at(p, 226)?)
+    {
+        item.layer = layer;
+    }
+    item.properties
+        .insert("PCBCRAFT_TEXT_FONT_ID".into(), u16_at(p, 25)?.to_string());
+    for (key, at) in [
+        ("PCBCRAFT_TEXT_TTF", if p.len() > 160 { 160 } else { 43 }),
+        ("PCBCRAFT_TEXT_BOLD", 44),
+        ("PCBCRAFT_TEXT_ITALIC", 45),
+        ("PCBCRAFT_TEXT_INVERTED", 110),
+    ] {
+        if let Some(value) = p.get(at) {
+            item.properties.insert(key.into(), value.to_string());
+        }
+    }
+    if p.len() >= 132 {
+        let width = coord(p, 124)?;
+        let height = coord(p, 128)?;
+        if width > 0 && height > 0 {
+            item.properties
+                .insert("PCBCRAFT_TEXT_CACHE_WIDTH".into(), width.to_string());
+            item.properties
+                .insert("PCBCRAFT_TEXT_CACHE_HEIGHT".into(), height.to_string());
+            if let Shape::Text { text, height, .. } = &item.shape {
+                item.properties
+                    .insert("PCBCRAFT_TEXT_CACHE_VALUE".into(), text.clone());
+                item.properties.insert(
+                    "PCBCRAFT_TEXT_CACHE_SOURCE_HEIGHT".into(),
+                    height.to_string(),
+                );
+            }
+        }
+    }
+    if designator {
         item.properties.insert("DESIGNATOR".into(), "TRUE".into());
     }
-    if p.get(40) == Some(&1) {
+    if comment {
         item.properties.insert("COMMENT".into(), "TRUE".into());
     }
     item.polygon = None;
@@ -786,11 +909,14 @@ fn region_item(p: &[u8], extended: bool, board: &mut Board) -> Result<Item> {
         if extended {
             let v = r.take(37)?;
             if v[0] != 0 {
-                contour.extend(arc_points(
-                    point(v, 9)?,
-                    coord(v, 17)?,
-                    f64_at(v, 21)?,
-                    f64_at(v, 29)?,
+                contour.extend(contour_arc_points(
+                    point(v, 1)?,
+                    &ContourArc {
+                        centre: point(v, 9)?,
+                        radius: coord(v, 17)?,
+                        start_angle: f64_at(v, 21)?,
+                        end_angle: f64_at(v, 29)?,
+                    },
                     128,
                 ));
             } else {
@@ -855,10 +981,32 @@ fn region_item(p: &[u8], extended: bool, board: &mut Board) -> Result<Item> {
                 .map_err(|_| "Invalid polygon cutout owner")?,
         );
     }
+    if let Some(layer) = f.get("V7_LAYER") {
+        i.layer = layer_id(layer)?;
+    }
     i.properties = f;
     Ok(i)
 }
 fn finish(b: &mut Board) -> Result<()> {
+    // Native component comments commonly live in the owned Texts6 record,
+    // while Components6 contains no SOURCECOMMENT at all.
+    for component in &mut b.components {
+        if let Some(text) = b.items.iter().find_map(|item| {
+            if item.component == Some(component.index)
+                && item
+                    .properties
+                    .get("COMMENT")
+                    .is_some_and(|v| v.eq_ignore_ascii_case("TRUE"))
+                && let Shape::Text { text, .. } = &item.shape
+            {
+                Some(text)
+            } else {
+                None
+            }
+        }) {
+            component.comment = text.clone();
+        }
+    }
     let mut missing_nets = BTreeSet::new();
     let known_nets: BTreeSet<_> = b.nets.iter().map(|n| n.index).collect();
     let known_components: BTreeSet<_> = b.components.iter().map(|c| c.index).collect();
@@ -912,11 +1060,27 @@ fn finish(b: &mut Board) -> Result<()> {
             used.insert(id);
         }
     }
+    let native_names: BTreeMap<_, _> = b
+        .properties
+        .iter()
+        .filter_map(|(key, value)| {
+            let prefix = key.strip_suffix("_LAYERID")?;
+            if !prefix.starts_with("V9_CACHE_LAYER") {
+                return None;
+            }
+            let id = native_layer(value.parse().ok()?)?;
+            let name = b.properties.get(&format!("{prefix}_NAME"))?;
+            Some((id, name.clone()))
+        })
+        .collect();
     b.layers = used
         .into_iter()
         .enumerate()
         .map(|(order, id)| {
-            let raw = b.properties.text(&format!("LAYER{id}NAME"));
+            let raw = native_names
+                .get(&id)
+                .cloned()
+                .unwrap_or_else(|| b.properties.text(&format!("LAYER{id}NAME")));
             PcbLayer {
                 id,
                 name: if raw.is_empty() { layer_name(id) } else { raw },
@@ -959,7 +1123,7 @@ fn finish(b: &mut Board) -> Result<()> {
     {
         warn(
             b,
-            "PCB text uses installed/default fonts; Altium stroke-font metrics, mirrored glyphs and special text styles are not pixel-identical",
+            "PCB text preserves native size, rotation and mirror; proprietary Altium stroke glyphs, embedded TrueType faces and special text styles are not fully reproduced",
         );
     }
     Ok(())
@@ -1347,7 +1511,8 @@ mod tests {
         assert_eq!(layer_id("Mechanical16").unwrap(), 72);
         assert_eq!(layer_id("Mechanical17").unwrap(), 83);
         assert_eq!(layer_id("Mechanical32").unwrap(), 98);
-        assert!(layer_id("Mechanical33").is_err());
+        assert_eq!(layer_id("Mechanical33").unwrap(), 99);
+        assert!(layer_id("Mechanical1025").is_err());
         assert!(layer_id("MID-LAYER31").is_err());
     }
     #[test]
@@ -1365,6 +1530,101 @@ mod tests {
         for name in ["MID0", "MID31", "MID65535", "MID", "MID-1", "MID1.5"] {
             assert!(layer_id(name).is_err(), "{name}");
         }
+    }
+    #[test]
+    fn binary_zero_copper_npth_imports_and_survives_json_and_native_move() {
+        let mut file = cfb::CompoundFile::create(Cursor::new(Vec::new())).unwrap();
+        file.create_storage("/Board6").unwrap();
+        let board = b"|VX0=0mm|VY0=0mm|VX1=20mm|VY1=0mm|VX2=20mm|VY2=20mm|VX3=0mm|VY3=20mm\0";
+        let mut data = (board.len() as u32).to_le_bytes().to_vec();
+        data.extend_from_slice(board);
+        file.create_stream("/Board6/Data")
+            .unwrap()
+            .write_all(&data)
+            .unwrap();
+        file.create_storage("/Pads6").unwrap();
+        // Observed PCB6 layout: zero top/middle/bottom land, 0.45 mm NPTH.
+        let mut pad = vec![0u8; 194];
+        pad[0] = MULTI_LAYER as u8;
+        pad[1] = 4;
+        pad[3..13].fill(255);
+        pad[13..17].copy_from_slice(&1_000_000i32.to_le_bytes());
+        pad[17..21].copy_from_slice(&2_000_000i32.to_le_bytes());
+        pad[45..49].copy_from_slice(&177_165i32.to_le_bytes());
+        pad[49..52].fill(1);
+        pad[52..60].copy_from_slice(&270f64.to_le_bytes());
+        pad[180..194].copy_from_slice(b"opaque-pad-end");
+        let mut data = vec![2];
+        for block in [b"\x010".as_slice(), &[], &[], &[], &pad, &[]] {
+            data.extend_from_slice(&(block.len() as u32).to_le_bytes());
+            data.extend_from_slice(block);
+        }
+        file.create_stream("/Pads6/Data")
+            .unwrap()
+            .write_all(&data)
+            .unwrap();
+        file.create_stream("/Pads6/Header")
+            .unwrap()
+            .write_all(&1u32.to_le_bytes())
+            .unwrap();
+        let bytes = file.into_inner().into_inner();
+        let mut doc = import_pcb(&bytes, "hole.PcbDoc").unwrap();
+        let b = doc.pcb.as_ref().unwrap();
+        assert_eq!(b.items.len(), 1);
+        assert!(b.items[0].is_drill_only());
+        assert!(
+            matches!(&b.items[0].shape,Shape::Pad{size,hole:449_999,plated:false,..}if *size==Point::default())
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("hole.pcbcraft.json");
+        crate::save(&path, &doc).unwrap();
+        assert_eq!(crate::load(&path).unwrap(), doc);
+        let id = b.items[0].id;
+        let old = b.items[0].anchor();
+        doc.pcb = Some(
+            b.edited(Edit::Transform {
+                selection: vec![id],
+                pivot: old,
+                translation: Point {
+                    x: 2_540_000,
+                    y: 5_080_000,
+                },
+                angle: 0.0,
+            })
+            .unwrap(),
+        );
+        let output = writer::serialize(&doc, writer::Format::Preserve).unwrap();
+        let moved = import_pcb(&output, "moved.PcbDoc").unwrap();
+        let item = &moved.pcb.as_ref().unwrap().items[0];
+        assert!(item.is_drill_only());
+        assert_eq!(
+            item.anchor(),
+            Point {
+                x: old.x + 2_540_000,
+                y: old.y + 5_080_000
+            }
+        );
+        let mut cfb = cfb::CompoundFile::open(Cursor::new(output)).unwrap();
+        let mut data = Vec::new();
+        cfb.open_stream("/Pads6/Data")
+            .unwrap()
+            .read_to_end(&mut data)
+            .unwrap();
+        assert!(data.windows(14).any(|s| s == b"opaque-pad-end"));
+        assert_eq!(
+            STANDARD
+                .decode(
+                    &doc.pcb
+                        .as_ref()
+                        .unwrap()
+                        .source
+                        .as_ref()
+                        .unwrap()
+                        .bytes_base64
+                )
+                .unwrap(),
+            bytes
+        );
     }
     #[test]
     fn binary_polygons_import_short_internal_layer_names() {

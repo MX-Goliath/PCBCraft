@@ -219,6 +219,33 @@ pub fn flip_component(board: &Board, id: Uuid) -> Result<Board, String> {
                 }
             }
         }
+        if let Some(stack) = &mut item.pad_stack {
+            let mode = stack.mode;
+            stack.layers = std::mem::take(&mut stack.layers)
+                .into_iter()
+                .map(|(layer, mut g)| {
+                    g.offset.y = -g.offset.y;
+                    let key = if mode == StackMode::Simple
+                        || mode == StackMode::TopMiddleBottom && layer == 2
+                    {
+                        layer
+                    } else {
+                        opposite_layer(board, layer)
+                    };
+                    (key, g)
+                })
+                .collect();
+            stack.drill_rotation = -stack.drill_rotation;
+        }
+        if let Some(g) = item.pad_geometry(TOP)
+            && item.pad_stack.is_some()
+        {
+            item.set_pad_geometry(TOP, g);
+        }
+        if let Some(m) = &mut item.masks {
+            m.paste.swap(0, 1);
+            m.solder.swap(0, 1);
+        }
     }
     let target = next.components.iter_mut().find(|x| x.id == id).unwrap();
     target.layer = opposite_layer(board, c.layer);

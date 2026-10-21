@@ -8,6 +8,10 @@ use std::{
     hash::{Hash, Hasher},
 };
 use uuid::Uuid;
+#[path = "pcb_display.rs"]
+mod display;
+#[path = "pcb_text.rs"]
+mod text;
 #[derive(Clone, Default)]
 pub struct BoardView {
     pub initialized: bool,
@@ -20,6 +24,9 @@ pub struct BoardView {
     pub component_selection: bool,
     pub select_locked: bool,
     pub filters: [bool; 8],
+    pub select_bodies: bool,
+    pub select_keepouts: bool,
+    pub snap: SnapOptions,
     pub preview: Option<Board>,
     pub tool_active: bool,
     pub selection_box: Option<(Point, Point)>,
@@ -29,6 +36,8 @@ pub struct BoardView {
     pub show_grid_dialog: bool,
     pub polygons_visible: bool,
     cache: HashMap<Uuid, (u64, Vec<usize>, bool)>,
+    display: display::Settings,
+    grid_initialized: bool,
 }
 #[derive(Clone, Default)]
 pub struct Input {
@@ -47,13 +56,13 @@ pub struct Input {
 }
 pub fn layer_color(id: u16) -> Color32 {
     match id {
-        TOP => Color32::from_rgb(255, 0, 0),
-        BOTTOM => Color32::from_rgb(0, 0, 255),
+        TOP => Color32::from_rgb(153, 0, 0),
+        BOTTOM => Color32::from_rgb(11, 83, 148),
         TOP_OVERLAY => Color32::from_rgb(255, 255, 0),
-        BOTTOM_OVERLAY => Color32::from_rgb(160, 120, 0),
+        BOTTOM_OVERLAY => Color32::from_rgb(128, 128, 0),
         35 | 36 => Color32::from_rgb(170, 170, 170),
         37 | 38 => Color32::from_rgb(128, 0, 128),
-        MULTI_LAYER => Color32::from_rgb(190, 190, 190),
+        MULTI_LAYER => Color32::from_rgb(204, 204, 204),
         KEEP_OUT => Color32::from_rgb(255, 0, 255),
         2..=31 => {
             const C: [[u8; 3]; 6] = [
@@ -68,6 +77,16 @@ pub fn layer_color(id: u16) -> Color32 {
             Color32::from_rgb(c[0], c[1], c[2])
         }
         39..=54 => Color32::from_rgb(150, 90, 30),
+        73 => Color32::from_rgb(255, 0, 0),
+        57..=72 | 83..=1090 => {
+            let n = if id <= 72 { id - 56 } else { id - 66 };
+            match (n - 1) % 4 {
+                0 => Color32::from_rgb(255, 0, 255),
+                1 => Color32::from_rgb(128, 0, 128),
+                2 => Color32::from_rgb(0, 128, 0),
+                _ => Color32::from_rgb(128, 128, 0),
+            }
+        }
         _ => Color32::from_rgb(175, 190, 175),
     }
 }
@@ -81,14 +100,23 @@ impl BoardView {
         }
         self.initialized = true;
         self.active_layer = TOP;
-        self.visible = b.layers.iter().map(|l| l.id).collect();
-        self.visible.insert(MULTI_LAYER);
+        self.display = display::Settings::from_board(b);
+        self.visible = self
+            .display
+            .visible
+            .clone()
+            .unwrap_or_else(|| b.layers.iter().map(|l| l.id).collect());
         self.component_selection = true;
         self.filters = [true; 8];
+        self.select_bodies = true;
+        self.select_keepouts = true;
         self.polygons_visible = true;
     }
     pub fn is_visible(&self, item: &Item) -> bool {
-        self.visible.contains(&item.layer)
+        item.properties
+            .get("PCBCRAFT_LEGACY_REGION_DUPLICATE")
+            .is_none_or(|v| v != "TRUE")
+            && self.visible.contains(&item.layer)
             && (self.single_layer != 2
                 || item.layer == self.active_layer
                 || item.layer == MULTI_LAYER)
@@ -105,6 +133,8 @@ impl BoardView {
             Shape::Region { .. } => 6,
         };
         self.filters[if i.polygon.is_some() { 7 } else { idx }]
+            && (self.select_bodies || !i.properties.contains_key("PCBCRAFT_BODY_PROJECTION"))
+            && (self.select_keepouts || !i.keepout)
             && (self.select_locked || !i.locked)
             && self.is_visible(i)
     }
@@ -185,6 +215,12 @@ fn navigate(ui: &egui::Ui, r: &Response, camera: &mut Camera, b: &Board, rect: R
 }
 pub fn canvas(ui: &mut egui::Ui, b: &Board, view: &mut View) -> CanvasOutput {
     view.pcb.initialize(b);
+    if !view.pcb.grid_initialized {
+        view.pcb.grid_initialized = true;
+        if let Some(grid) = view.pcb.display.snap_grid_nm {
+            view.grid_nm = grid;
+        }
+    }
     let (rect, response) = ui.allocate_exact_size(ui.available_size(), Sense::click_and_drag());
     navigate(ui, &response, &mut view.camera, b, rect);
     let painter = ui.painter_at(rect);
@@ -204,13 +240,19 @@ pub fn canvas(ui: &mut egui::Ui, b: &Board, view: &mut View) -> CanvasOutput {
             Color32::BLACK,
             None,
         );
-        painter.add(egui::Shape::closed_line(
-            outline
-                .iter()
-                .map(|p| view.camera.screen(*p, rect))
-                .collect(),
-            Stroke::new(1.0, Color32::from_gray(180)),
-        ));
+        // Native arc/line seams can backtrack by a few nanometres. A joined
+        // stroked path can produce an unbounded antialias miter at that seam.
+        for (a, z) in outline
+            .iter()
+            .zip(outline.iter().cycle().skip(1))
+            .take(outline.len())
+        {
+            let a = view.camera.screen(*a, rect);
+            let z = view.camera.screen(*z, rect);
+            if a.distance(z) > 0.001 {
+                painter.line_segment([a, z], Stroke::new(1.0, Color32::from_gray(180)));
+            }
+        }
     }
     if view.grid {
         let mut step = view.grid_nm.max(1) as f64 / 1e6;
@@ -225,6 +267,13 @@ pub fn canvas(ui: &mut egui::Ui, b: &Board, view: &mut View) -> CanvasOutput {
         let rows = ((max[1] - min[1]) / step).ceil() as usize + 2;
         for x in 0..cols.min(500) {
             for y in 0..rows.min(500) {
+                let at = Point {
+                    x: ((sx + x as f64 * step) * 1e6) as i64,
+                    y: ((sy + y as f64 * step) * 1e6) as i64,
+                };
+                if !point_in_polygon(at, &outline) {
+                    continue;
+                }
                 painter.circle_filled(
                     view.camera.screen(
                         Point {
@@ -249,9 +298,11 @@ pub fn canvas(ui: &mut egui::Ui, b: &Board, view: &mut View) -> CanvasOutput {
         .iter()
         .filter(|i| {
             view.pcb.is_visible(i)
+                && scene.text_visible(i)
                 && i.bounds().intersects(bounds)
                 && (view.pcb.single_layer == 0
                     || i.layer != MULTI_LAYER
+                    || i.is_drill_only()
                     || eda_core::pcb_polygon::on_layer(scene, i, view.pcb.active_layer))
         })
         .collect();
@@ -273,8 +324,9 @@ pub fn canvas(ui: &mut egui::Ui, b: &Board, view: &mut View) -> CanvasOutput {
             },
         )
     });
+    paint_masks(&painter, scene, view, rect, false);
     for item in &order {
-        let mut color = layer_color(item.layer);
+        let mut color = dim(layer_color(item.layer), view.pcb.display.alpha(item));
         if view.pcb.single_layer == 1
             && item.layer != view.pcb.active_layer
             && item.layer != MULTI_LAYER
@@ -356,23 +408,80 @@ pub fn canvas(ui: &mut egui::Ui, b: &Board, view: &mut View) -> CanvasOutput {
         painter.rect_filled(r, 0.0, dim(color, 25));
         painter.rect_stroke(r, 0.0, Stroke::new(1.0, color), StrokeKind::Inside);
     }
+    paint_masks(&painter, scene, view, rect, true);
     let pointer = response.hover_pos();
     let raw = pointer.map(|p| world(&view.camera, p, rect));
     let bypass = ui.input(|i| i.modifiers.ctrl && i.modifiers.shift);
-    let tolerance = (6.0 / view.camera.pixels_per_mm * 1e6).round() as i64;
     let point = raw.map(|p| {
         if bypass {
             p
         } else {
-            b.snap(
+            b.snap_with_options(
                 p,
-                view.grid_nm,
-                tolerance.min(1_000_000),
+                if view.grid { view.grid_nm } else { 0 },
                 view.pcb.active_layer,
                 &view.pcb.visible,
+                &view.pcb.snap,
             )
         }
     });
+    for item in &order {
+        let drill = item.drill_outline();
+        if drill.len() >= 3 {
+            painter.add(egui::Shape::convex_polygon(
+                drill
+                    .into_iter()
+                    .map(|p| view.camera.screen(p, rect))
+                    .collect(),
+                Color32::from_rgb(210, 210, 190),
+                Stroke::NONE,
+            ));
+        }
+        match &item.shape {
+            Shape::Pad {
+                position,
+                size,
+                name,
+                ..
+            } if (view.pcb.display.pad_numbers || view.pcb.display.pad_nets)
+                && (item.layer == view.pcb.active_layer || item.layer == MULTI_LAYER) =>
+            {
+                let height = (size.x.min(size.y) as f64 / 1e6 * view.camera.pixels_per_mm) as f32;
+                let net = if view.pcb.display.pad_nets {
+                    b.net_name(item.net)
+                } else {
+                    ""
+                };
+                let value = if view.pcb.display.pad_numbers {
+                    name.as_str()
+                } else {
+                    net
+                };
+                text::label(
+                    &painter,
+                    view.camera.screen(*position, rect),
+                    value,
+                    height * 0.7,
+                    height * 0.9,
+                    Color32::from_rgb(255, 255, 200),
+                );
+            }
+            Shape::Via {
+                position, diameter, ..
+            } if view.pcb.display.via_nets => {
+                let height = (*diameter as f64 / 1e6 * view.camera.pixels_per_mm) as f32;
+                text::label(
+                    &painter,
+                    view.camera.screen(*position, rect),
+                    b.net_name(item.net),
+                    height * 0.55,
+                    height * 0.9,
+                    Color32::from_rgb(255, 255, 200),
+                );
+            }
+            _ => {}
+        }
+    }
     let mut hits = Vec::new();
     if let Some(p) = raw {
         let tol = 6.0 / view.camera.pixels_per_mm * 1e6;
@@ -381,7 +490,14 @@ pub fn canvas(ui: &mut egui::Ui, b: &Board, view: &mut View) -> CanvasOutput {
             .rev()
             .filter(|i| view.pcb.selectable(i))
             .filter_map(|i| {
-                let d = hit_distance(i, p);
+                let d = i.hit_distance_on_layer(
+                    p,
+                    if i.layer == MULTI_LAYER {
+                        view.pcb.active_layer
+                    } else {
+                        i.layer
+                    },
+                );
                 (d <= tol).then_some((
                     i.id,
                     match i.shape {
@@ -464,9 +580,46 @@ pub fn canvas(ui: &mut egui::Ui, b: &Board, view: &mut View) -> CanvasOutput {
         schematic_input: None,
     }
 }
-fn pad_points(position: Point, size: Point, angle: f64, shape: PadShape) -> Vec<Point> {
-    eda_core::pcb_polygon::pad_outline(position, size, angle, shape)
+fn paint_masks(painter: &egui::Painter, board: &Board, view: &View, rect: Rect, active: bool) {
+    for (layer, kind, bottom) in [
+        (35, MaskKind::Paste, false),
+        (36, MaskKind::Paste, true),
+        (37, MaskKind::Solder, false),
+        (38, MaskKind::Solder, true),
+    ] {
+        if !view.pcb.visible.contains(&layer)
+            || (view.pcb.active_layer == layer) != active
+            || (view.pcb.single_layer == 2 && view.pcb.active_layer != layer)
+        {
+            continue;
+        }
+        for item in board
+            .items
+            .iter()
+            .filter(|i| matches!(i.shape, Shape::Pad { .. } | Shape::Via { .. }))
+        {
+            let mut appearance = item.clone();
+            appearance.layer = layer;
+            let alpha = view.pcb.display.alpha(&appearance);
+            if alpha == 0 {
+                continue;
+            }
+            if let Ok(outline) = item.mask_outline(board, kind, bottom)
+                && outline.len() >= 3
+            {
+                painter.add(egui::Shape::convex_polygon(
+                    outline
+                        .into_iter()
+                        .map(|p| view.camera.screen(p, rect))
+                        .collect(),
+                    dim(layer_color(layer), alpha),
+                    Stroke::NONE,
+                ));
+            }
+        }
+    }
 }
+
 fn paint_item(
     p: &egui::Painter,
     camera: &Camera,
@@ -511,58 +664,27 @@ fn paint_item(
                 stroke(*width),
             ));
         }
-        Shape::Via {
-            position,
-            diameter,
-            hole,
-            ..
-        } => {
-            p.circle_filled(
-                screen(*position),
-                (*diameter as f32 * scale / 2.0).max(0.5),
-                color,
-            );
-            p.circle_filled(
-                screen(*position),
-                *hole as f32 * scale / 2.0,
-                Color32::BLACK,
-            );
-        }
-        Shape::Pad {
-            position,
-            size,
-            rotation,
-            shape,
-            hole,
-            bottom_size,
-            middle_size,
-            ..
-        } => {
-            let sz = if item.layer == MULTI_LAYER {
-                if active == BOTTOM {
-                    bottom_size.unwrap_or(*size)
-                } else if active != TOP {
-                    middle_size.unwrap_or(*size)
-                } else {
-                    *size
-                }
+        Shape::Via { .. } | Shape::Pad { .. } => {
+            let layer = if item.layer == MULTI_LAYER {
+                active
             } else {
-                *size
+                item.layer
             };
-            p.add(egui::Shape::convex_polygon(
-                pad_points(*position, sz, *rotation, *shape)
-                    .into_iter()
-                    .map(screen)
-                    .collect(),
-                color,
-                Stroke::NONE,
-            ));
-            if *hole > 0 {
-                p.circle_filled(
-                    screen(*position),
-                    *hole as f32 * scale / 2.0,
+            let outline = item.pad_outline(layer);
+            if outline.len() >= 3 {
+                p.add(egui::Shape::convex_polygon(
+                    outline.into_iter().map(screen).collect(),
+                    color,
+                    Stroke::NONE,
+                ));
+            }
+            let drill = item.drill_outline();
+            if drill.len() >= 3 {
+                p.add(egui::Shape::convex_polygon(
+                    drill.into_iter().map(screen).collect(),
                     Color32::BLACK,
-                );
+                    Stroke::NONE,
+                ));
             }
         }
         Shape::Fill {
@@ -591,11 +713,21 @@ fn paint_item(
             holes,
             cutout,
         } => {
-            if *cutout || item.keepout {
-                p.add(egui::Shape::closed_line(
-                    contour.iter().copied().map(screen).collect(),
-                    Stroke::new(1.0, if *cutout { Color32::WHITE } else { color }),
-                ));
+            if *cutout || item.keepout || item.properties.contains_key("PCBCRAFT_BODY_PROJECTION") {
+                let outline: Vec<_> = contour.iter().copied().map(screen).collect();
+                let holes: Vec<Vec<_>> = holes
+                    .iter()
+                    .map(|h| h.iter().copied().map(screen).collect())
+                    .collect();
+                for segment in hatch_segments(
+                    &outline,
+                    &holes,
+                    p.clip_rect(),
+                    item.properties.contains_key("PCBCRAFT_BODY_PROJECTION"),
+                ) {
+                    p.line_segment(segment, Stroke::new(0.55, color));
+                }
+                p.add(egui::Shape::closed_line(outline, Stroke::new(0.7, color)));
             } else {
                 let mut h = std::collections::hash_map::DefaultHasher::new();
                 contour.len().hash(&mut h);
@@ -620,27 +752,67 @@ fn paint_item(
                 polygon(p, camera, rect, contour, holes, color, Some(&mut e.1));
             }
         }
-        Shape::Text {
-            position,
-            text,
-            height,
-            rotation,
-            ..
-        } => {
-            let size = (*height as f32 * scale).clamp(1.0, 512.0);
-            if size < 2.0 {
-                return;
-            }
-            let galley = p.layout_no_wrap(text.clone(), egui::FontId::monospace(size), color);
-            let mut shape = egui::epaint::TextShape::new(screen(*position), galley, color);
-            shape.angle = -(*rotation as f32).to_radians();
-            // Glyph mirroring needs a dedicated stroke/font renderer. It is not emulated by
-
-            // reversing the string (which would be incorrect for asymmetric glyphs).
-
-            p.add(shape);
+        Shape::Text { position, .. } => {
+            text::paint(p, item, screen(*position), camera.pixels_per_mm, color)
         }
     }
+}
+/// Screen-space hatch pattern clipped by even/odd intersections, including holes.
+fn hatch_segments(
+    contour: &[Pos2],
+    holes: &[Vec<Pos2>],
+    clip: Rect,
+    cross: bool,
+) -> Vec<[Pos2; 2]> {
+    if contour.len() < 3 {
+        return vec![];
+    }
+    let bounds = Rect::from_points(contour).intersect(clip);
+    if !bounds.is_positive() {
+        return vec![];
+    }
+    let mut out = Vec::new();
+    for sign in [1.0, -1.0].into_iter().take(if cross { 2 } else { 1 }) {
+        let u = |p: Pos2| p.x + sign * p.y;
+        let uv = [
+            bounds.left_top(),
+            bounds.right_top(),
+            bounds.right_bottom(),
+            bounds.left_bottom(),
+        ]
+        .map(u);
+        let low = uv.into_iter().fold(f32::INFINITY, f32::min);
+        let high = uv.into_iter().fold(f32::NEG_INFINITY, f32::max);
+        let step = 7.0;
+        let mut at = (low / step).floor() * step;
+        while at <= high {
+            let mut hits = Vec::new();
+            for ring in std::iter::once(contour).chain(holes.iter().map(Vec::as_slice)) {
+                for (a, b) in ring
+                    .iter()
+                    .zip(ring.iter().cycle().skip(1))
+                    .take(ring.len())
+                {
+                    let ua = u(*a);
+                    let ub = u(*b);
+                    if (ua <= at && at < ub) || (ub <= at && at < ua) {
+                        let p = a.lerp(*b, (at - ua) / (ub - ua));
+                        hits.push(p.x - sign * p.y);
+                    }
+                }
+            }
+            hits.sort_by(f32::total_cmp);
+            for pair in hits.chunks_exact(2) {
+                if pair[1] - pair[0] < 0.001 {
+                    continue;
+                }
+                let point = |v: f32| Pos2::new((at + v) * 0.5, sign * (at - v) * 0.5);
+                out.push([point(pair[0]), point(pair[1])]);
+            }
+            at += step;
+        }
+    }
+    out
 }
 fn polygon(
     p: &egui::Painter,
@@ -685,6 +857,142 @@ fn polygon(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn source_grid_applies_after_layer_bar_initialization_without_overriding_later_edits() {
+        let mut board = Board::default();
+        board
+            .properties
+            .insert("SNAPGRIDSIZE".into(), "10000.000000".into());
+        let mut view = View::default();
+        view.pcb.initialize(&board);
+        let ctx = egui::Context::default();
+        let draw = |view: &mut View| {
+            let _ = ctx.run(Default::default(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    canvas(ui, &board, view);
+                });
+            });
+        };
+        draw(&mut view);
+        assert_eq!(view.grid_nm, 25_400);
+        view.grid_nm = 500_000;
+        draw(&mut view);
+        assert_eq!(view.grid_nm, 500_000);
+    }
+    #[test]
+    fn native_arc_seams_never_create_unbounded_outline_triangles() {
+        let board = Board {
+            outline: vec![
+                ContourVertex {
+                    position: Point { x: 0, y: 2_000_000 },
+                    arc: None,
+                },
+                ContourVertex {
+                    position: Point {
+                        x: 1_000_000,
+                        y: 2_000_000,
+                    },
+                    arc: None,
+                },
+                ContourVertex {
+                    position: Point {
+                        x: 1_000_000,
+                        y: 2_000_076,
+                    },
+                    arc: Some(ContourArc {
+                        centre: Point {
+                            x: 1_000_000,
+                            y: 1_000_076,
+                        },
+                        radius: 1_000_000,
+                        start_angle: 0.0,
+                        end_angle: 90.0,
+                    }),
+                },
+                ContourVertex {
+                    position: Point {
+                        x: 2_000_000,
+                        y: 1_000_076,
+                    },
+                    arc: None,
+                },
+                ContourVertex {
+                    position: Point {
+                        x: 1_999_997,
+                        y: 1_000_079,
+                    },
+                    arc: None,
+                },
+                ContourVertex {
+                    position: Point { x: 2_000_000, y: 0 },
+                    arc: None,
+                },
+                ContourVertex {
+                    position: Point::default(),
+                    arc: None,
+                },
+            ],
+            ..Default::default()
+        };
+        let ctx = egui::Context::default();
+        for zoom in [6.73, 13.0, 15.31, 70.1] {
+            let mut view = View::default();
+            view.camera.fitted = true;
+            view.camera.pixels_per_mm = zoom;
+            view.camera.centre_mm = [1.0, 1.0];
+            let o = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::splat(500.0))),
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        canvas(ui, &board, &mut view);
+                    });
+                },
+            );
+            for p in ctx.tessellate(o.shapes, o.pixels_per_point) {
+                if let egui::epaint::Primitive::Mesh(m) = p.primitive {
+                    assert!(
+                        m.vertices.iter().all(|v| v.pos.is_finite()
+                            && v.pos.x.abs() < 1000.0
+                            && v.pos.y.abs() < 1000.0),
+                        "unbounded miter at zoom {zoom}"
+                    );
+                }
+            }
+        }
+    }
+    #[test]
+    fn hatching_respects_concave_contours_and_holes() {
+        let outline = vec![
+            Pos2::new(0.0, 0.0),
+            Pos2::new(100.0, 0.0),
+            Pos2::new(100.0, 40.0),
+            Pos2::new(40.0, 40.0),
+            Pos2::new(40.0, 100.0),
+            Pos2::new(0.0, 100.0),
+        ];
+        let hole = vec![
+            Pos2::new(10.0, 10.0),
+            Pos2::new(30.0, 10.0),
+            Pos2::new(30.0, 30.0),
+            Pos2::new(10.0, 30.0),
+        ];
+        let lines = hatch_segments(
+            &outline,
+            &[hole],
+            Rect::from_min_max(Pos2::ZERO, Pos2::new(100.0, 100.0)),
+            true,
+        );
+        assert!(!lines.is_empty());
+        for [a, b] in lines {
+            let mid = a.lerp(b, 0.5);
+            assert!(!(mid.x > 40.0 && mid.y > 40.0));
+            assert!(!(mid.x > 10.0 && mid.x < 30.0 && mid.y > 10.0 && mid.y < 30.0));
+            assert!(a.distance(b) > 0.0);
+        }
+    }
     #[test]
     fn abandoned_region_previews_do_not_accumulate_cached_meshes() {
         let ctx = egui::Context::default();

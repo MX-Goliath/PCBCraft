@@ -110,13 +110,7 @@ pub fn contour_points(contour: &[ContourVertex]) -> Vec<Point> {
     let mut points = Vec::new();
     for v in contour {
         if let Some(a) = &v.arc {
-            points.extend(arc_points(
-                a.centre,
-                a.radius,
-                a.start_angle,
-                a.end_angle,
-                256,
-            ));
+            points.extend(contour_arc_points(v.position, a, 256));
         } else {
             points.push(v.position);
         }
@@ -229,6 +223,15 @@ fn from_line(line: &LineString<f64>) -> Vec<Point> {
 }
 /// Pad outline is shared by the renderer, pour engine and hit testing.
 pub fn pad_outline(position: Point, size: Point, angle: f64, shape: PadShape) -> Vec<Point> {
+    pad_outline_radius(position, size, angle, shape, 25)
+}
+pub fn pad_outline_radius(
+    position: Point,
+    size: Point,
+    angle: f64,
+    shape: PadShape,
+    corner_percent: u8,
+) -> Vec<Point> {
     let w = size.x as f64;
     let h = size.y as f64;
     let mut p = Vec::new();
@@ -248,7 +251,12 @@ pub fn pad_outline(position: Point, size: Point, angle: f64, shape: PadShape) ->
             ]);
         }
         PadShape::Round | PadShape::RoundedRectangle => {
-            let r = w.min(h) / if shape == PadShape::Round { 2.0 } else { 4.0 };
+            let r = w.min(h)
+                * if shape == PadShape::Round {
+                    0.5
+                } else {
+                    corner_percent.min(100) as f64 / 200.0
+                };
             for (cx, cy, a) in [
                 (w / 2.0 - r, h / 2.0 - r, 0.0),
                 (-w / 2.0 + r, h / 2.0 - r, 90.0),
@@ -275,6 +283,9 @@ pub fn pad_outline(position: Point, size: Point, angle: f64, shape: PadShape) ->
 }
 /// True if an item has copper on the target layer. Blind vias obey the physical stack.
 pub fn on_layer(board: &Board, item: &Item, layer: u16) -> bool {
+    if item.is_drill_only() {
+        return false;
+    }
     if item.layer != MULTI_LAYER {
         return item.layer == layer;
     }
@@ -312,6 +323,13 @@ fn circle(c: Point, r: i64) -> MultiPolygon<f64> {
     geo::Point::new(c.x as f64 / 1e6, c.y as f64 / 1e6).buffer(r as f64 / 1e6)
 }
 fn copper(item: &Item, layer: u16) -> MultiPolygon<f64> {
+    // Drills are physical obstacles, never electrical lands/thermal anchors.
+    if item.is_drill_only()
+        && let Shape::Pad { position, hole, .. } = &item.shape
+    {
+        let _ = (position, hole);
+        return mp(ring_polygon(&item.drill_outline(), &[]));
+    }
     match &item.shape {
         Shape::Track { start, end, width } => segment_copper(*start, *end, *width),
         Shape::Arc {
@@ -330,30 +348,7 @@ fn copper(item: &Item, layer: u16) -> MultiPolygon<f64> {
                 .collect(),
         )
         .buffer(*width as f64 / 2e6),
-        Shape::Pad {
-            position,
-            size,
-            rotation,
-            shape,
-            bottom_size,
-            middle_size,
-            ..
-        } => {
-            let sz = if item.layer == MULTI_LAYER && layer == BOTTOM {
-                bottom_size.unwrap_or(*size)
-            } else if item.layer == MULTI_LAYER && layer != TOP {
-                middle_size.unwrap_or(*size)
-            } else {
-                *size
-            };
-            mp(ring_polygon(
-                &pad_outline(*position, sz, *rotation, *shape),
-                &[],
-            ))
-        }
-        Shape::Via {
-            position, diameter, ..
-        } => circle(*position, *diameter / 2),
+        Shape::Pad { .. } | Shape::Via { .. } => mp(ring_polygon(&item.pad_outline(layer), &[])),
         Shape::Fill {
             start,
             end,
@@ -466,7 +461,11 @@ pub fn repour(board: &Board) -> Result<Board, String> {
                     .properties
                     .get("ISBOARDCUTOUT")
                     .is_some_and(|v| v.eq_ignore_ascii_case("TRUE"));
-            if !board_cutout && !on_layer(board, item, p.layer) && item.layer != KEEP_OUT {
+            if !board_cutout
+                && !item.is_drill_only()
+                && !on_layer(board, item, p.layer)
+                && item.layer != KEEP_OUT
+            {
                 continue;
             }
             let geom = copper(item, p.layer);
@@ -475,7 +474,8 @@ pub fn repour(board: &Board) -> Result<Board, String> {
                 material = material.difference(&geom);
                 continue;
             }
-            let same = p.net.is_some() && item.net == p.net && !item.keepout;
+            let same =
+                p.net.is_some() && item.net == p.net && !item.keepout && !item.is_drill_only();
             if same {
                 anchors = anchors.union(&geom);
                 if matches!(item.shape, Shape::Pad { .. } | Shape::Via { .. }) {
@@ -575,6 +575,45 @@ mod tests {
             })
             .map(|i| copper(i, TOP).unsigned_area())
             .sum()
+    }
+    #[test]
+    fn drill_only_holes_clear_both_copper_layers_even_with_matching_net() {
+        for layer in [TOP, BOTTOM] {
+            let mut b = board();
+            b.polygon_pours[0].layer = layer;
+            b.polygon_pours[0].connection = Connection::Direct;
+            b.items.push(Item::new(
+                MULTI_LAYER,
+                Some(0),
+                Shape::Pad {
+                    position: Point::mm(10, 10),
+                    size: Point::default(),
+                    rotation: 0.0,
+                    shape: PadShape::Round,
+                    hole: 2_000_000,
+                    plated: false,
+                    name: "H".into(),
+                    bottom_size: None,
+                    middle_size: None,
+                },
+            ));
+            let poured = repour(&b).unwrap();
+            let area: f64 = poured
+                .items
+                .iter()
+                .filter(|i| i.polygon.is_some())
+                .map(|i| copper(i, layer).unsigned_area())
+                .sum();
+            assert!(area < 396.0 && area > 394.0, "area {area}");
+            assert!(
+                poured
+                    .items
+                    .iter()
+                    .filter(|i| i.polygon.is_some())
+                    .all(|i| hit_distance(i, Point::mm(10, 10)) > 1_000_000.0)
+            );
+            assert!(poured.items.iter().any(Item::is_drill_only));
+        }
     }
     #[test]
     fn empty_board_pours_and_repour_is_deterministic() {

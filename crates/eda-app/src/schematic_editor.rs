@@ -1,6 +1,6 @@
 use super::*;
 use eda_core::schematic::{SchPrimitiveKind as K, Schematic};
-use eda_core::schematic_edit::{self as edit, Edit, Fragment, Placement, Request};
+use eda_core::schematic_edit::{self as edit, Edit, Fragment, Placement, Request, Selection};
 use eda_geom::Point;
 
 const CLIPBOARD_PREFIX: &str = "PCBCraft schematic clipboard v1\n";
@@ -26,6 +26,13 @@ enum Tool {
     Pick {
         connected: bool,
     },
+    WireDrag {
+        id: Uuid,
+        handle: edit::WireHandle,
+        anchor: Point,
+        revision: u64,
+        drag: bool,
+    },
     Library {
         drag: bool,
         symbol: Box<eda_core::library::Symbol>,
@@ -45,7 +52,7 @@ enum Tool {
     },
     Move {
         fragment: Fragment,
-        ids: Vec<Uuid>,
+        selection: Selection,
         connected: bool,
         anchor: Point,
         turns: u32,
@@ -70,6 +77,34 @@ impl Editor {
 
 impl OpenDocument {
     pub(super) fn edit_schematic(&mut self, command: Edit, revision: u64) -> Result<bool, String> {
+        let partial_primary = self
+            .view
+            .selected
+            .is_some_and(|id| self.view.sch_segments.iter().any(|span| span.id == id));
+        let transformed_spans = if let Edit::TransformSelection {
+            selection,
+            pivot,
+            quarter_turns,
+            delta,
+            ..
+        } = &command
+        {
+            Some(
+                selection
+                    .segments
+                    .iter()
+                    .map(|span| {
+                        Ok(edit::WireSegment {
+                            id: span.id,
+                            a: edit::transform_point(span.a, *pivot, *quarter_turns, *delta)?,
+                            b: edit::transform_point(span.b, *pivot, *quarter_turns, *delta)?,
+                        })
+                    })
+                    .collect::<Result<Vec<_>, String>>()?,
+            )
+        } else {
+            None
+        };
         let document = self.model.id;
         let result = self.history.schematic_edit(
             &mut self.model,
@@ -90,9 +125,33 @@ impl OpenDocument {
             self.view.selected = None;
         }
         if let Some(s) = &self.model.schematic {
+            if partial_primary {
+                self.view.selected = None;
+            }
+            if let Some(spans) = transformed_spans {
+                self.view.sch_segments=spans.into_iter().filter_map(|mut span| {
+                    span.id=s.primitives.iter().find(|p|p.component.is_none()&&matches!(&p.kind,K::Polyline {points,electrical,..} if electrical=="Wire"&&points.windows(2).any(|e|span.a.on_segment(e[0],e[1])&&span.b.on_segment(e[0],e[1]))))?.id;
+                    Some(span)
+                }).collect();
+            }
             self.view
                 .sch_selection
                 .retain(|id| edit::anchor(s, *id).is_some());
+            self.view.sch_segments.retain(|span| {
+                edit::extract_selection(
+                    s,
+                    &Selection {
+                        ids: vec![],
+                        segments: vec![*span],
+                    },
+                )
+                .is_ok()
+            });
+            self.view.selected = self
+                .view
+                .selected
+                .or_else(|| self.view.sch_selection.first().copied())
+                .or_else(|| self.view.sch_segments.first().map(|span| span.id));
         }
         Ok(result)
     }
@@ -113,18 +172,20 @@ impl PcbCraft {
     pub(super) fn finish_schematic_interaction(&mut self) {
         for (i, doc) in self.documents.iter_mut().enumerate() {
             if self.active != Some(i)
-                && (matches!(doc.sch_editor.tool, Tool::Move { .. } | Tool::Pick { .. })
-                    || doc.sch_editor.move_popup.is_some())
+                && (matches!(
+                    doc.sch_editor.tool,
+                    Tool::Move { .. }
+                        | Tool::WireDrag { .. }
+                        | Tool::Pick { .. }
+                        | Tool::Path { .. }
+                ) || doc.sch_editor.move_popup.is_some())
             {
                 doc.sch_editor.cancel(&mut doc.view);
             }
         }
     }
     pub(super) fn move_menu_entries(&mut self, ui: &mut egui::Ui) {
-        let can_drag = self.active.is_some_and(|i| {
-            let doc = &self.documents[i];
-            doc.view.sch_selection.iter().copied().chain(doc.view.selected).all(|id| !doc.model.schematic.as_ref().unwrap().primitive(id).is_some_and(|p| matches!(&p.kind, K::Polyline { electrical, .. } if electrical == "Wire")))
-        });
+        let can_drag = self.active.is_some();
         self.action(
             ui,
             "Drag",
@@ -157,10 +218,7 @@ impl PcbCraft {
             "Rotate Selection",
             "Space",
             Command::SchEdit(SchAction::Rotate),
-            selected
-                && self
-                    .active
-                    .is_some_and(|i| self.documents[i].view.sch_selection.len() <= 1),
+            selected,
         );
     }
     pub(super) fn schematic_move_menu(&mut self, ctx: &egui::Context) {
@@ -218,6 +276,7 @@ impl PcbCraft {
         doc.view.sch_tool_active = true;
         doc.view.selected = None;
         doc.view.sch_selection.clear();
+        doc.view.sch_segments.clear();
     }
     pub(super) fn start_library_drag(
         &mut self,
@@ -372,40 +431,33 @@ impl PcbCraft {
         if self.documents[i].model.kind != DocumentKind::Schematic {
             return;
         }
-        if self.documents[i].view.sch_selection.len() > 1
-            && !matches!(
-                action,
-                SchAction::Select | SchAction::Paste | SchAction::Move | SchAction::Drag
-            )
-        {
-            self.message(
-                true,
-                "Editing multiple schematic objects is not supported yet",
-            );
-            return;
-        }
         let doc = &mut self.documents[i];
         let selected = doc.view.selected;
+        let selection = view_selection(&doc.view);
         let revision = doc.history.revision;
         let result = (|| -> Result<(), String> {
             match action {
                 SchAction::Select => doc.sch_editor.cancel(&mut doc.view),
                 SchAction::Delete => {
                     doc.sch_editor.cancel(&mut doc.view);
-                    if let Some(id) = selected {
-                        doc.edit_schematic(Edit::Delete(id), revision)?;
+                    if !selection.is_empty() {
+                        doc.edit_schematic(Edit::DeleteSelection(selection.clone()), revision)?;
                     }
                 }
                 SchAction::Rotate => {
-                    if let Some(id) = selected {
-                        let pivot = edit::anchor(doc.model.schematic.as_ref().unwrap(), id)
-                            .ok_or("Nothing selected")?;
+                    if !selection.is_empty() {
+                        let pivot = edit::selection_anchor(
+                            doc.model.schematic.as_ref().unwrap(),
+                            &selection,
+                        )
+                        .ok_or("Nothing selected")?;
                         doc.edit_schematic(
-                            Edit::Transform {
-                                id,
+                            Edit::TransformSelection {
+                                selection: selection.clone(),
                                 pivot,
                                 quarter_turns: 1,
                                 delta: Point::default(),
+                                connected: false,
                             },
                             revision,
                         )?;
@@ -420,22 +472,19 @@ impl PcbCraft {
                         return Ok(());
                     };
                     let s = doc.model.schematic.as_ref().unwrap();
-                    let ids = if doc.view.sch_selection.len() > 1 {
-                        doc.view.sch_selection.clone()
-                    } else {
-                        vec![id]
-                    };
-                    let anchor = edit::anchor(s, id).ok_or("Nothing selected")?;
+                    if connected
+                        && selection.ids.len() == 1
+                        && selection.segments.is_empty()
+                        && is_wire(s, id)
+                    {
+                        doc.sch_editor.tool = Tool::Pick { connected: true };
+                        doc.view.sch_tool_active = true;
+                        return Ok(());
+                    }
+                    let anchor = edit::selection_anchor(s, &selection).ok_or("Nothing selected")?;
                     doc.sch_editor.tool = Tool::Move {
-                        fragment: edit::connected_transform(s, &ids, anchor, 0, Point::default())
-                            .or_else(|e| {
-                            if connected {
-                                Err(e)
-                            } else {
-                                edit::extract(s, id)
-                            }
-                        })?,
-                        ids,
+                        fragment: edit::extract_selection(s, &selection)?,
+                        selection: selection.clone(),
                         connected,
                         anchor,
                         turns: 0,
@@ -446,12 +495,13 @@ impl PcbCraft {
                 }
                 SchAction::Copy | SchAction::Cut | SchAction::Duplicate => {
                     doc.sch_editor.cancel(&mut doc.view);
-                    let id = selected.ok_or("Select an object to copy")?;
                     let s = doc.model.schematic.as_ref().unwrap();
-                    self.sch_clipboard =
-                        Some((edit::extract(s, id)?, edit::anchor(s, id).unwrap()));
+                    self.sch_clipboard = Some((
+                        edit::extract_selection(s, &selection)?,
+                        edit::selection_anchor(s, &selection).ok_or("Select objects to copy")?,
+                    ));
                     if matches!(action, SchAction::Cut) {
-                        doc.edit_schematic(Edit::Delete(id), revision)?;
+                        doc.edit_schematic(Edit::DeleteSelection(selection.clone()), revision)?;
                     }
                 }
                 SchAction::Paste => {}
@@ -473,12 +523,22 @@ impl PcbCraft {
         {
             let doc = &mut self.documents[i];
             let mut fragment = fragment.fresh_copy();
+            let mut reserved: std::collections::BTreeSet<_> = doc
+                .model
+                .schematic
+                .as_ref()
+                .unwrap()
+                .components
+                .iter()
+                .map(|c| c.designator.to_ascii_uppercase())
+                .collect();
             for c in &mut fragment.components {
                 let prefix = c.designator.trim_end_matches(|c: char| c.is_ascii_digit());
-                let new_name = next_designator(
-                    doc.model.schematic.as_ref().unwrap(),
-                    if prefix.is_empty() { "U" } else { prefix },
-                );
+                let prefix = if prefix.is_empty() { "U" } else { prefix };
+                let new_name = (1..)
+                    .map(|n| format!("{prefix}{n}"))
+                    .find(|name| reserved.insert(name.to_ascii_uppercase()))
+                    .unwrap();
                 let old = c.designator.clone();
                 c.designator = new_name.clone();
                 for p in &mut fragment.primitives {
@@ -495,7 +555,7 @@ impl PcbCraft {
             doc.sch_editor.kind = None;
             doc.sch_editor.tool = Tool::Move {
                 fragment,
-                ids: vec![],
+                selection: Selection::default(),
                 connected: false,
                 anchor: *anchor,
                 turns: 0,
@@ -572,6 +632,18 @@ impl PcbCraft {
             } else {
                 doc.view.selected = None;
                 doc.view.sch_selection.clear();
+                doc.view.sch_segments.clear();
+            }
+            return true;
+        }
+        if matches!(self.documents[i].sch_editor.tool, Tool::Path { .. })
+            && ctx.input_mut(|i| {
+                i.consume_key(egui::Modifiers::NONE, Key::Backspace)
+                    || i.consume_key(egui::Modifiers::NONE, Key::Delete)
+            })
+        {
+            if let Tool::Path { points, .. } = &mut self.documents[i].sch_editor.tool {
+                points.pop();
             }
             return true;
         }
@@ -582,7 +654,7 @@ impl PcbCraft {
                 | Tool::Library { turns, .. } => *turns = (*turns + 1) % 4,
                 Tool::Path { vertical_first, .. } => *vertical_first = !*vertical_first,
                 Tool::Select => self.schematic_action(SchAction::Rotate, ctx),
-                Tool::Pick { .. } => {}
+                Tool::Pick { .. } | Tool::WireDrag { .. } => {}
             }
             return true;
         }
@@ -623,6 +695,15 @@ impl PcbCraft {
         ctx: &egui::Context,
     ) {
         let doc = &mut self.documents[index];
+        if ctx.input(|i| !i.focused || i.key_down(Key::Escape)) {
+            if matches!(
+                doc.sch_editor.tool,
+                Tool::Move { .. } | Tool::WireDrag { .. } | Tool::Pick { .. } | Tool::Path { .. }
+            ) {
+                doc.sch_editor.cancel(&mut doc.view);
+            }
+            return;
+        }
         let Some(s) = doc.model.schematic.as_ref() else {
             return;
         };
@@ -637,6 +718,7 @@ impl PcbCraft {
         let mut command = None;
         let mut preview = None;
         let mut finish = false;
+        let mut repeat_path = false;
         let mut error = None;
         if let Tool::Pick { connected } = doc.sch_editor.tool {
             if input.secondary_clicked {
@@ -646,15 +728,35 @@ impl PcbCraft {
             {
                 doc.view.selected = Some(id);
                 doc.view.sch_selection.clear();
+                doc.view.sch_segments.clear();
                 if let Ok(fragment) = edit::extract(s, id) {
-                    doc.sch_editor.tool = Tool::Move {
-                        fragment,
-                        ids: vec![id],
-                        connected,
-                        anchor: at,
-                        turns: 0,
-                        revision: doc.history.revision,
-                        drag: false,
+                    doc.sch_editor.tool = if connected && is_wire(s, id) {
+                        let handle = input.wire_handle.or_else(|| {
+                            edit::wire_handle_at(s, id, input.point.unwrap_or(at), radius)
+                        });
+                        let Some(handle) = handle else {
+                            return;
+                        };
+                        Tool::WireDrag {
+                            id,
+                            handle,
+                            anchor: at,
+                            revision: doc.history.revision,
+                            drag: false,
+                        }
+                    } else {
+                        Tool::Move {
+                            fragment,
+                            selection: Selection {
+                                ids: vec![id],
+                                segments: vec![],
+                            },
+                            connected,
+                            anchor: at,
+                            turns: 0,
+                            revision: doc.history.revision,
+                            drag: false,
+                        }
                     };
                 }
             }
@@ -665,23 +767,48 @@ impl PcbCraft {
             && (input.drag_started || input.drag_stopped)
             && let (Some(id), Some(origin)) = (input.hit, input.press_origin)
         {
-            match edit::extract(s, id) {
+            let selection = if doc.view.sch_selection.contains(&id)
+                || doc.view.sch_segments.iter().any(|span| span.id == id)
+            {
+                view_selection(&doc.view)
+            } else {
+                doc.view.sch_selection = vec![id];
+                doc.view.sch_segments.clear();
+                Selection {
+                    ids: vec![id],
+                    segments: vec![],
+                }
+            };
+            match edit::extract_selection(s, &selection) {
                 Ok(fragment) => {
-                    let ids = if doc.view.sch_selection.contains(&id) {
-                        doc.view.sch_selection.clone()
-                    } else {
-                        vec![id]
-                    };
-                    let connected = !ids.iter().any(|id| s.primitive(*id).is_some_and(|p| matches!(&p.kind, K::Polyline { electrical, .. } if electrical == "Wire")));
                     doc.view.selected = Some(id);
-                    doc.sch_editor.tool = Tool::Move {
-                        fragment,
-                        ids,
-                        connected,
-                        anchor: snap(origin),
-                        turns: 0,
-                        revision: doc.history.revision,
-                        drag: true,
+                    doc.sch_editor.tool = if selection.ids.len() == 1
+                        && selection.segments.is_empty()
+                        && is_wire(s, id)
+                    {
+                        let Some(handle) = input
+                            .wire_handle
+                            .or_else(|| edit::wire_handle_at(s, id, origin, radius))
+                        else {
+                            return;
+                        };
+                        Tool::WireDrag {
+                            id,
+                            handle,
+                            anchor: snap(origin),
+                            revision: doc.history.revision,
+                            drag: true,
+                        }
+                    } else {
+                        Tool::Move {
+                            fragment,
+                            selection,
+                            connected: true,
+                            anchor: snap(origin),
+                            turns: 0,
+                            revision: doc.history.revision,
+                            drag: true,
+                        }
                     };
                     doc.view.sch_tool_active = true;
                 }
@@ -691,6 +818,51 @@ impl PcbCraft {
         let kind = doc.sch_editor.kind;
         match &mut doc.sch_editor.tool {
             Tool::Select | Tool::Pick { .. } => {}
+            Tool::WireDrag {
+                id,
+                handle,
+                anchor,
+                revision,
+                drag,
+            } => {
+                let at = if *drag {
+                    input.drop_point.map(snap).or(point)
+                } else {
+                    point.or(doc.sch_editor.pointer)
+                };
+                if let Some(at) = at {
+                    let delta = Point {
+                        x: at.x - anchor.x,
+                        y: at.y - anchor.y,
+                    };
+                    let edit = Edit::DragWire {
+                        id: *id,
+                        handle: *handle,
+                        delta,
+                    };
+                    match edit::preview_fragment(&doc.model, &edit) {
+                        Ok(fragment) => {
+                            preview = Some(fragment);
+                            if (input.clicked && !*drag) || (input.drag_stopped && *drag) {
+                                command = Some((
+                                    Edit::DragWire {
+                                        id: *id,
+                                        handle: *handle,
+                                        delta,
+                                    },
+                                    *revision,
+                                ));
+                                finish = true;
+                            }
+                        }
+                        Err(e) => {
+                            error = Some(e);
+                            finish = true;
+                        }
+                    }
+                }
+                finish |= input.secondary_clicked || (*drag && input.drag_stopped);
+            }
             Tool::Library {
                 drag,
                 symbol,
@@ -774,7 +946,12 @@ impl PcbCraft {
                         *points = path.clone();
                     }
                 }
-                let end = input.secondary_clicked
+                repeat_path = kind == Some(Placement::Wire)
+                    && input.clicked
+                    && points.len() > 1
+                    && point.is_some_and(|at| edit::connection_at(s, at));
+                let end = repeat_path
+                    || input.secondary_clicked
                     || ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Enter));
                 if end {
                     // Finish at the last confirmed vertex; moving the pointer is only preview.
@@ -800,25 +977,34 @@ impl PcbCraft {
                             *revision,
                         ));
                     }
-                    finish = true;
+                    finish = !repeat_path;
                 }
                 if path.len() > 1 {
-                    preview = Some(Fragment {
+                    let fragment = Fragment {
                         primitives: vec![edit::primitive(
                             K::Polyline {
                                 points: path,
                                 closed: false,
-                                electrical: "Wire".into(),
+                                electrical: if kind == Some(Placement::Wire) {
+                                    "Wire"
+                                } else {
+                                    "Graphic"
+                                }
+                                .into(),
                             },
                             None,
                         )],
                         ..Default::default()
-                    });
+                    };
+                    match edit::preview_fragment(&doc.model, &Edit::Insert(fragment)) {
+                        Ok(f) => preview = Some(f),
+                        Err(e) => error = Some(e),
+                    }
                 }
             }
             Tool::Move {
                 fragment,
-                ids,
+                selection,
                 connected,
                 anchor,
                 turns,
@@ -836,40 +1022,25 @@ impl PcbCraft {
                         x: at.x - anchor.x,
                         y: at.y - anchor.y,
                     };
-                    let transformed = if *connected {
-                        edit::connected_transform(s, ids, *anchor, *turns, delta)
-                    } else if ids.len() > 1 {
-                        transform_selection(s, ids, *anchor, *turns, delta)
+                    let edit = if selection.is_empty() {
+                        fragment
+                            .transformed(*anchor, *turns, delta)
+                            .map(Edit::Insert)
                     } else {
-                        fragment.transformed(*anchor, *turns, delta)
+                        Ok(Edit::TransformSelection {
+                            selection: selection.clone(),
+                            pivot: *anchor,
+                            quarter_turns: *turns,
+                            delta,
+                            connected: *connected,
+                        })
                     };
-                    match transformed {
-                        Ok(f) => {
+                    match edit.and_then(|edit| {
+                        edit::preview_fragment(&doc.model, &edit).map(|f| (edit, f))
+                    }) {
+                        Ok((edit, f)) => {
                             if (input.clicked && !*drag) || (input.drag_stopped && *drag) {
-                                command = Some((
-                                    if *connected {
-                                        Edit::Drag {
-                                            ids: ids.clone(),
-                                            pivot: *anchor,
-                                            quarter_turns: *turns,
-                                            delta,
-                                        }
-                                    } else if !ids.is_empty() {
-                                        Edit::Batch(
-                                            ids.iter()
-                                                .map(|id| Edit::Transform {
-                                                    id: *id,
-                                                    pivot: *anchor,
-                                                    quarter_turns: *turns,
-                                                    delta,
-                                                })
-                                                .collect(),
-                                        )
-                                    } else {
-                                        Edit::Insert(f.clone())
-                                    },
-                                    *revision,
-                                ));
+                                command = Some((edit, *revision));
                                 finish = true;
                             }
                             preview = Some(f);
@@ -895,6 +1066,16 @@ impl PcbCraft {
             );
             match doc.edit_schematic(command, revision) {
                 Ok(_) => {
+                    if repeat_path {
+                        if let Tool::Path {
+                            points, revision, ..
+                        } = &mut doc.sch_editor.tool
+                        {
+                            points.clear();
+                            *revision = doc.history.revision;
+                        }
+                        preview = None;
+                    }
                     if is_place {
                         if let Tool::Place { revision, .. } | Tool::Library { revision, .. } =
                             &mut doc.sch_editor.tool
@@ -946,32 +1127,20 @@ impl PcbCraft {
     }
 }
 
-fn transform_selection(
-    s: &Schematic,
-    ids: &[Uuid],
-    pivot: Point,
-    turns: u32,
-    delta: Point,
-) -> Result<Fragment, String> {
-    let mut result = Fragment {
-        fonts: s.fonts.clone(),
-        images: s.images.clone(),
-        ..Default::default()
-    };
-    for id in ids {
-        let f = edit::extract(s, *id)?.transformed(pivot, turns, delta)?;
-        for c in f.components {
-            if !result.components.iter().any(|p| p.id == c.id) {
-                result.components.push(c);
-            }
-        }
-        for p in f.primitives {
-            if !result.primitives.iter().any(|old| old.id == p.id) {
-                result.primitives.push(p);
-            }
-        }
+fn view_selection(view: &View) -> Selection {
+    let mut ids = view.sch_selection.clone();
+    if ids.is_empty() && view.sch_segments.is_empty() {
+        ids.extend(view.selected);
     }
-    Ok(result)
+    ids.retain(|id| !view.sch_segments.iter().any(|span| span.id == *id));
+    Selection {
+        ids,
+        segments: view.sch_segments.clone(),
+    }
+}
+
+fn is_wire(s: &Schematic, id: Uuid) -> bool {
+    s.primitive(id).is_some_and(|p| p.component.is_none() && matches!(&p.kind, K::Polyline { electrical, closed: false, .. } if electrical == "Wire"))
 }
 
 pub(super) fn extend_path(

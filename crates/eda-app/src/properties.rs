@@ -82,7 +82,7 @@ fn unsupported(ui: &mut egui::Ui, text: &str) {
     .on_disabled_hover_text("Not supported in this version");
 }
 
-fn snap_checkbox(ui: &mut egui::Ui, label: &str, value: Option<&mut bool>) {
+pub(super) fn snap_checkbox(ui: &mut egui::Ui, label: &str, value: Option<&mut bool>) {
     let enabled = value.is_some();
     let checked = value.as_ref().is_some_and(|v| **v);
     let (rect, response) = ui.allocate_exact_size(

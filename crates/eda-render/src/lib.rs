@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 mod image_cache;
 pub mod pcb;
+pub mod pcb_stack;
 mod schematic;
 
 /// Read-only preview of a library fragment, fitted to its visible geometry.
@@ -104,6 +105,8 @@ pub struct View {
     pub sch_select_graphics: bool,
     pub sch_filters: [bool; 12],
     pub sch_selection: Vec<Uuid>,
+    #[serde(skip)]
+    pub sch_segments: Vec<eda_core::schematic_edit::WireSegment>,
     /// Ephemeral display strings supplied by the shell, never document geometry.
     #[serde(skip)]
     pub source_display_path: String,
@@ -113,6 +116,8 @@ pub struct View {
     pub sch_tool_active: bool,
     #[serde(skip)]
     pub sch_preview: Option<eda_core::schematic::Schematic>,
+    #[serde(skip)]
+    sch_junction_cache: schematic::JunctionCache,
     #[serde(skip)]
     sch_press_origin: Option<Pos2>,
     #[serde(skip)]
@@ -170,10 +175,12 @@ impl Default for View {
             sch_select_graphics: true,
             sch_filters: [true; 12],
             sch_selection: vec![],
+            sch_segments: vec![],
             source_display_path: String::new(),
             display_date: String::new(),
             sch_tool_active: false,
             sch_preview: None,
+            sch_junction_cache: None,
             sch_press_origin: None,
             sch_primary_down: false,
         }
@@ -269,6 +276,7 @@ pub struct SchematicInput {
     pub point: Option<Point>,
     pub press_origin: Option<Point>,
     pub hit: Option<Uuid>,
+    pub wire_handle: Option<eda_core::schematic_edit::WireHandle>,
     pub clicked: bool,
     pub secondary_clicked: bool,
     pub drag_started: bool,
@@ -315,7 +323,9 @@ pub fn canvas(ui: &mut egui::Ui, doc: &Document, view: &mut View) -> CanvasOutpu
             }
         }
     }
-    if response.double_clicked() && !view.sch_tool_active {
+    // Schematic repeated clicks refine wire selection; fitting here changes
+    // document coordinates before the second click can select a segment.
+    if response.double_clicked() && doc.kind != DocumentKind::Schematic && !view.sch_tool_active {
         view.camera.fit(doc, rect);
     }
     if doc.kind == DocumentKind::Schematic {

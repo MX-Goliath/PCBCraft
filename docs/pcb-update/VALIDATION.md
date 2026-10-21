@@ -68,3 +68,99 @@ Altium Designer, реальные пользовательские платы и
 ECO и выпуск производственных файлов не реализованы этим пакетом.
 Поддержанный поднабор writer и блокирующие ограничения описаны в
 [IMPLEMENTATION.md](IMPLEMENTATION.md). Полный этап PCB из PLAN.md не завершён.
+
+
+## Windows: открытие ReferenceB с NPTH без меди — 21.10.2026
+
+Воспроизведено `Invalid PCB Pad geometry` при открытии из проекта
+`ReferenceB.PrjPcb` документа `ReferenceBBoard.PcbDoc`. В Pads6 запись 121
+(индексация с нуля) содержит Multi-Layer Pad `0`, PLATED=false, нулевые размеры
+top/middle/bottom land и положительный drill 177165 native units
+(449999 нм, номинально 0,45 мм). Ошибка была в ограничении модели, а не в
+разрешении пути проекта или чтении размеров.
+
+Модель допускает этот ограниченный случай: неметаллизированное сквозное
+отверстие без меди. Нулевые SMD-площадки, площадки без отверстия, отрицательные
+размеры и нулевые металлизированные площадки по-прежнему отклоняются.
+Размеры меди остаются нулевыми; объект не удаляется и не заменяется via.
+Bounds и picking учитывают диаметр сверления. Renderer не создаёт вырожденный
+медный полигон и показывает контур отверстия; оно остаётся видимым при
+переключении слоёв. Полигонная заливка обходит отверстие на обоих слоях,
+не используя его как электрическую площадку даже при совпадении net.
+
+Проверено:
+
+- 148 workspace tests, fmt --check, Clippy --all-targets -D warnings,
+  Windows debug build и Linux GNU all-targets cargo check.
+- Независимо сформированный бинарный CFB с такой площадкой: импорт,
+  JSON Save/load, перемещение, native serialize/re-import и сохранение opaque
+  хвоста записи и оригинального source archive. Реальная плата не сохранялась.
+- Регрессии валидации/границ/picking и обход отверстия заливкой на Top/Bottom.
+- CLI реальной платы: 15389 примитивов, 69 компонентов, 20 цепей, 3 полигона;
+  ни один Pad не пропущен (123 записи).
+- Реальное окно Windows: открытие проекта, двойной щелчок по PcbDoc в Projects,
+  появление платы и вкладки без ошибки импорта. Старое окно с несохранёнными
+  правками оставлено открытым; исходный PcbDoc не изменён.
+
+Это проверка открытия и указанного типа отверстия. Точность всех слоёв,
+текста, padstack/slots, DRC и совместимость изменённой реальной платы с Altium
+здесь не подтверждались. Linux GUI и новые Linux-артефакты не запускались.
+
+
+## Windows: визуальная сверка PCB — 21.10.2026
+
+Подробности и незавершённое: [VISUAL_PARITY.md](VISUAL_PARITY.md). Полное
+совпадение с Altium не заявляется. Проверки этой итерации: 159 workspace tests,
+fmt --check, строгий Clippy, Windows debug build и реальное окно платы; Linux
+GNU all-targets check без Linux GUI/выпуска артефакта. Модель теперь содержит
+15513 записей, включая 124 записи 2D body projections. Оба представления каждого
+корпуса/Region сохранены для native IO, но не накладываются на экране повторно.
+
+Отдельные регрессии проверяют native layer overrides/fallback/tails, сохранность
+неизменённых 3D body streams, отказ от записи изменённой проекции без 3D transforms,
+скрытые component strings, native radius percentages, font flags, glyph geometry
+на трёх DPI, hatch clipping и clockwise arc seams без огромных GPU-треугольников.
+Реальная плата в native формате не перезаписывалась, совместимость изменённого
+реального PcbDoc с Altium пока не подтверждена.
+
+
+## Windows: PCB Properties — 21.10.2026
+
+[PROPERTIES.md](PROPERTIES.md) разделяет native observations, реализацию,
+проверки и остающиеся ограничения. Контекстные формы, origin-relative fields,
+Comment, supported snap switches и работа с History. 169 workspace tests,
+fmt --check, strict Clippy all-targets, Windows build, Linux GNU all-targets
+check. Реальное окно: Board/XP1/Track/Via, диаметр 0.7 → 0.8 mm и Undo/Redo/Undo.
+Исходная плата не записывалась. Linux GUI не запускался. Полное совпадение
+Properties/3D padstack/правил/всех состояний не заявляется.
+
+
+## Windows padstack / 3D / mask continuation — 2026-10-21
+
+- 188 workspace tests: 38 app, 70 core, 1 geom, 56 IO, 23 render. Expanded table
+  and 316 px layout, mask-only pour preservation, unchanged-mode geometry,
+  slots/offsets, per-layer selection, Flip and bounded rule priorities/scopes,
+  native stack/Rules6 preservation and refusal of unsupported lossy writes.
+  Meshes include finite triangles, real cutouts, blind-via span and fast drag.
+- Commands: `cargo fmt --all -- --check`,
+  `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`,
+  Windows `cargo build -p eda-app`, Linux
+  `cargo check --workspace --all-targets --target x86_64-unknown-linux-gnu`.
+  The repository dev.ps1 supplies the local GNU toolchain/linker.
+- Native research modified/saved only `.tools/pcb-padstack-reference.PcbDoc`;
+  its untented snapshot is `.tools/pcb-padstack-untented.PcbDoc`. User source
+  `ReferenceBBoard.PcbDoc` was never written. Both original user application windows
+  and the old schematic research state were preserved.
+- `.tools/pcb-padstack-roundtrip.PcbDoc`: generated by PCBCraft from the real
+  source with Pad 2 Top Tented and an existing SolderMaskExpansion rule changed
+  to 0.15 mm. AD 24.4.1 opened it without an error dialog. Visual inspection of
+  Pad 2 confirmed top tenting on, bottom off; rule fields were reimport-checked,
+  not exhaustively inspected in Altium. This is a bounded interoperability check.
+- A copper geometry edit + repour on the same real board was correctly refused
+  by native save: UniqueIDPrimitiveInformation remapping is not implemented.
+  No destination bytes were returned or source changed. This limitation remains.
+- Real Windows PCBCraft table/preview modes, rotation, Top Tented update and Undo/Redo/Undo were inspected; no edited QA board
+  was saved to the user path. Linux compilation only; no Linux GUI or artifact.
+
+The earlier Properties/display validation sections describe earlier milestones.
+Current gaps and superseding padstack implementation are in PROPERTIES.md.

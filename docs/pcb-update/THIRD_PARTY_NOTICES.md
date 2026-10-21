@@ -34,3 +34,27 @@ https://www.altium.com/documentation/altium-designer/pcb/defining-polygons-coppe
 
 These references do not imply that Altium opened the generated files. No third-party
 binaries, fonts or reference-board archives are included in this source update.
+
+
+## PCB display format observations — October 21, 2026
+
+Font-kind/charset/style/barcode field offsets were cross-checked with the original
+AltiumSharp reader; that reader is not bundled or executed by PCBCraft:
+https://github.com/issus/AltiumSharp/blob/master/src/OriginalCircuit.Altium/Serialization/Readers/PcbLibReader.cs
+
+Native rounded-pad percentage semantics were checked against official documentation:
+https://www.altium.com/documentation/altium-designer/pcb/pads-vias
+
+The current user's open Altium 24.4.1 instance supplied display observations. No
+proprietary font files or Altium executable code were copied into this project.
+
+
+## Padstack and mask format observations — October 21, 2026
+
+Pad extra-block arrays, hole shape/slot/offset and via diameter offsets were
+cross-checked with the same original AltiumSharp reader referenced above. Native
+AD 24.4.1 copy saves additionally verified Full Stack records (layer ID followed
+by shape byte, X/Y sizes and radius percentage) and the top solder tenting flag.
+These are format observations; no reader source or Altium executable code is
+bundled. The 3D mesh generation and bounded mask scope evaluator are PCBCraft
+implementations using the existing geo/earcutr/egui dependencies.

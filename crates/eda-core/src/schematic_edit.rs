@@ -11,6 +11,16 @@ use uuid::Uuid;
 #[path = "schematic_drag.rs"]
 mod drag;
 pub use drag::connected_transform;
+#[path = "schematic_wire.rs"]
+mod wire_edit;
+pub use wire_edit::{WireHandle, connection_at, junctions, wire_drag, wire_handle_at};
+#[path = "schematic_selection.rs"]
+mod selection;
+pub use selection::{
+    Selection, WireSegment, extract_selection, preview_fragment, selection_anchor, wire_segment_at,
+};
+#[path = "schematic_wire_cleanup.rs"]
+mod wire_cleanup;
 
 pub const AUTHORED: u32 = u32::MAX;
 
@@ -49,6 +59,14 @@ pub enum Edit {
     },
     Insert(Fragment),
     Delete(Uuid),
+    DeleteSelection(Selection),
+    TransformSelection {
+        selection: Selection,
+        pivot: Point,
+        quarter_turns: u32,
+        delta: Point,
+        connected: bool,
+    },
     Transform {
         id: Uuid,
         pivot: Point,
@@ -60,6 +78,12 @@ pub enum Edit {
         ids: Vec<Uuid>,
         pivot: Point,
         quarter_turns: u32,
+        delta: Point,
+    },
+    /// Edit one wire handle while preserving its anchored ends and attached branches.
+    DragWire {
+        id: Uuid,
+        handle: WireHandle,
         delta: Point,
     },
     ComponentProperties {
@@ -105,6 +129,7 @@ pub fn preview(doc: &Document, edit: &Edit) -> Result<Document, String> {
         .as_mut()
         .ok_or("Schematic scene is unavailable")?;
     apply(s, &mut next.size, edit, 0)?;
+    wire_cleanup::optimize(s, doc.schematic.as_ref().unwrap());
     refresh_parameters(s);
     if s != doc.schematic.as_ref().unwrap() && s.source.is_some() {
         s.source_modified = true;
@@ -164,11 +189,47 @@ fn referenced_images<'a>(
         .collect()
 }
 
+fn apply_drag_patch(s: &mut Schematic, patch: Fragment) -> Result<(), String> {
+    for component in patch.components {
+        let id = component.id;
+        *s.components
+            .iter_mut()
+            .find(|c| c.id == id)
+            .ok_or("Missing drag component")? = component;
+    }
+    for primitive in patch.primitives {
+        if matches!(&primitive.kind, K::Polyline { points, electrical, .. } if electrical == "Wire" && points.len() < 2)
+        {
+            s.primitives.retain(|p| p.id != primitive.id);
+        } else if let Some(old) = s
+            .primitives
+            .iter_mut()
+            .chain(&mut s.parameter_objects)
+            .find(|p| p.id == primitive.id)
+        {
+            *old = primitive;
+        } else {
+            s.primitives.push(primitive);
+        }
+    }
+    Ok(())
+}
+
 fn apply(s: &mut Schematic, size: &mut Point, edit: &Edit, depth: usize) -> Result<(), String> {
     if depth > 16 {
         return Err("Edit nesting exceeds limit".into());
     }
     match edit {
+        Edit::DeleteSelection(selection) => selection::delete(s, selection)?,
+        Edit::TransformSelection {
+            selection,
+            pivot,
+            quarter_turns,
+            delta,
+            connected,
+        } => {
+            selection::transform(s, selection, *pivot, *quarter_turns, *delta, *connected)?;
+        }
         Edit::SheetFont(font) => {
             let index = intern_edited_font(s, font);
             s.sheet.system_font = index;
@@ -390,30 +451,10 @@ fn apply(s: &mut Schematic, size: &mut Point, edit: &Edit, depth: usize) -> Resu
             delta,
         } => {
             let patch = connected_transform(s, ids, *pivot, *quarter_turns, *delta)?;
-            for component in patch.components {
-                let id = component.id;
-                *s.components
-                    .iter_mut()
-                    .find(|c| c.id == id)
-                    .ok_or("Missing drag component")? = component;
-            }
-            for primitive in patch.primitives {
-                if matches!(&primitive.kind, K::Polyline { points, electrical, .. } if electrical == "Wire" && points.len() < 2)
-                {
-                    s.primitives.retain(|p| p.id != primitive.id);
-                    continue;
-                }
-                if let Some(old) = s
-                    .primitives
-                    .iter_mut()
-                    .chain(&mut s.parameter_objects)
-                    .find(|p| p.id == primitive.id)
-                {
-                    *old = primitive;
-                } else {
-                    s.primitives.push(primitive);
-                }
-            }
+            apply_drag_patch(s, patch)?;
+        }
+        Edit::DragWire { id, handle, delta } => {
+            apply_drag_patch(s, wire_drag(s, *id, *handle, *delta)?)?;
         }
         Edit::Transform {
             id,
@@ -873,25 +914,10 @@ pub fn snap_point(s: &Schematic, raw: Point, step: i64, radius: i64) -> Point {
         .iter()
         .filter(|p| !p.presentation.hidden && s.sheet.options.electrical_snap)
     {
+        if let Some(at) = drag::pin_end(p) {
+            consider(at);
+        }
         match &p.kind {
-            K::Pin {
-                position,
-                length_nm,
-                orientation,
-                ..
-            } => {
-                let (x, y) = match orientation % 4 {
-                    0 => (*length_nm, 0),
-                    1 => (0, *length_nm),
-                    2 => (-*length_nm, 0),
-                    _ => (0, -*length_nm),
-                };
-                consider(Point {
-                    x: position.x.saturating_add(x),
-                    y: position.y.saturating_add(y),
-                });
-            }
-            K::PowerPort { position, .. } | K::Junction { position, .. } => consider(*position),
             K::Polyline {
                 points, electrical, ..
             } if electrical == "Wire" || electrical == "Bus" => {
@@ -1125,4 +1151,23 @@ pub fn place(
         }
     }
     f.transformed(Point::default(), turns, at)
+}
+
+#[cfg(test)]
+fn assert_wire_coverage(s: &Schematic, path: &[Point]) {
+    let edges: Vec<_> = s
+        .primitives
+        .iter()
+        .filter_map(drag::wire)
+        .flat_map(|p| p.windows(2).map(|e| [e[0], e[1]]))
+        .collect();
+    let cuts: Vec<_> = edges.iter().flatten().copied().collect();
+    for (a, b) in selection::split_edges(path, &cuts) {
+        assert!(
+            edges
+                .iter()
+                .any(|e| a.on_segment(e[0], e[1]) && b.on_segment(e[0], e[1])),
+            "uncovered span {a:?} -> {b:?}"
+        );
+    }
 }

@@ -18,7 +18,7 @@ struct Frame {
     blocks: Vec<Vec<u8>>,
     flags: Vec<u8>,
 }
-const FAMILIES: [(&str, u8, usize); 8] = [
+const FAMILIES: [(&str, u8, usize); 10] = [
     ("Tracks6", 4, 1),
     ("Arcs6", 1, 1),
     ("Vias6", 3, 1),
@@ -27,6 +27,8 @@ const FAMILIES: [(&str, u8, usize); 8] = [
     ("Texts6", 5, 2),
     ("Regions6", 11, 1),
     ("ShapeBasedRegions6", 11, 1),
+    ("ComponentBodies6", 12, 1),
+    ("ShapeBasedComponentBodies6", 12, 1),
 ];
 fn parse_frames(data: &[u8], tag: u8, count: usize) -> Result<Vec<Frame>> {
     let mut r = Bytes::new(data);
@@ -258,7 +260,7 @@ fn layer_token(id: u16) -> String {
         2..=31 => format!("MID-LAYER{}", id - 1),
         39..=54 => format!("INTERNALPLANE{}", id - 38),
         57..=72 => format!("MECHANICAL{}", id - 56),
-        83..=98 => format!("MECHANICAL{}", id - 66),
+        83..=1090 => format!("MECHANICAL{}", id - 66),
         _ => format!("LAYER{id}"),
     }
 }
@@ -338,6 +340,12 @@ fn pascal(s: &str, lossy: bool) -> Result<Vec<u8>> {
 fn family(item: &Item) -> &'static str {
     if matches!(item.shape, Shape::Region { .. }) {
         if let Some(source) = &item.source {
+            if source.stream == "ShapeBasedComponentBodies6" {
+                return "ShapeBasedComponentBodies6";
+            }
+            if source.stream == "ComponentBodies6" {
+                return "ComponentBodies6";
+            }
             if source.stream == "ShapeBasedRegions6" {
                 return "ShapeBasedRegions6";
             }
@@ -412,10 +420,19 @@ fn modified_frame(
     stream: &str,
     wide_index: u32,
 ) -> Result<Frame> {
+    if item.properties.contains_key("PCBCRAFT_BODY_PROJECTION")
+        && old.is_none_or(|o| {
+            o.shape != item.shape || o.properties != item.properties || o.layer != item.layer
+        })
+    {
+        return Err("Native saving of modified 3D body projections requires full 3D model transforms; keep this edit in PCBCraft JSON".into());
+    }
     let mut f = original.cloned().unwrap_or_else(|| new_frame(item));
     let offset = if f.tag == 2 { 4 } else { 0 };
     let geometry_changed = old.is_none_or(|o| {
         o.shape != item.shape
+            || o.pad_stack != item.pad_stack
+            || o.masks != item.masks
             || (matches!(item.shape, Shape::Region { .. })
                 && (o.polygon != item.polygon
                     || o.layer != item.layer
@@ -448,7 +465,11 @@ fn modified_frame(
             }
         }
     }
+    let legacy_layer = b[0];
     common_patch(b, item)?;
+    if old.is_some_and(|old| old.layer == item.layer) {
+        b[0] = legacy_layer;
+    }
     if !geometry_changed {
         return Ok(f);
     }
@@ -507,9 +528,6 @@ fn modified_frame(
             bottom_size,
             middle_size,
         } => {
-            if b.get(62)==Some(&2) && old.is_some_and(|o|matches!(&o.shape,Shape::Pad{size:s,shape:sh,bottom_size:bs,middle_size:ms,..} if s!=size||sh!=shape||bs!=bottom_size||ms!=middle_size)) {
-                return Err("Editing a full-stack pad's sizes needs a full padstack editor; native save was not performed".into());
-            }
             put_point(b, 13, *position)?;
             put_point(b, 21, *size)?;
             put_point(b, 29, middle_size.unwrap_or(*size))?;
@@ -686,6 +704,7 @@ fn modified_frame(
             f.blocks[0] = out;
         }
     }
+    stack_io::patch(item, old, &mut f.blocks)?;
     Ok(f)
 }
 fn read_streams(bytes: &[u8]) -> Result<BTreeMap<String, Vec<u8>>> {
@@ -1016,6 +1035,34 @@ fn encode_binary(
             wide_strings(&wide)?.len(),
         )?;
     }
+    if let Some(old) = old_board
+        && old.rules != board.rules
+    {
+        let raw = streams
+            .get("/Rules6/Data")
+            .ok_or("Original native rule stream is absent")?;
+        let mut reader = Bytes::new(raw);
+        let mut data = Vec::new();
+        let mut index = 0;
+        while reader.remaining() > 0 {
+            let prefix = reader.take(2)?.to_vec();
+            let block = reader.block()?;
+            let rule = board.rules.get(index).ok_or("Rule count changed")?;
+            let patched = if old.rules.get(index) == Some(rule) {
+                block.to_vec()
+            } else {
+                patch_fields(block, &map_changes(rule))?
+            };
+            data.extend(prefix);
+            data.extend_from_slice(&(patched.len() as u32).to_le_bytes());
+            data.extend(patched);
+            index += 1;
+        }
+        if index != board.rules.len() {
+            return Err("Rule count does not match native stream".into());
+        }
+        section(&mut c, &streams, "Rules6", &data, index)?;
+    }
     let old_boards = streams
         .get("/Board6/Data")
         .map(|b| property_blocks(b))
@@ -1333,6 +1380,7 @@ fn encode_ascii(
     let mut done_comps = BTreeSet::new();
     let mut done_polys = BTreeSet::new();
     let mut logical = 0u32;
+    let mut rule_ordinal = 0usize;
     let structural = old_board.is_some_and(|o| {
         o.items.len() != board.items.len()
             || o.items.iter().any(|i| {
@@ -1403,6 +1451,11 @@ fn encode_ascii(
                 done_comps.insert(id);
                 changes = map_changes(&component_changes(c));
                 changes.insert("DESIGNATOR".into(), string(&c.designator));
+            }
+            "RULE" => {
+                let rule = board.rules.get(rule_ordinal).ok_or("Rule count changed")?;
+                rule_ordinal += 1;
+                changes = map_changes(rule);
             }
             "POLYGON" => {
                 let id = unsigned_property(&f, "ID", poly_ordinal)?;
@@ -1853,9 +1906,14 @@ pub fn serialize(doc: &Document, format: Format) -> Result<Vec<u8>> {
             return Ok(original.unwrap());
         }
         if a.rules != b.rules {
-            return Err(
-                "Native design-rule editing is outside this writer's supported scope".into(),
-            );
+            if a.rules.len() != b.rules.len() {
+                return Err("Adding/removing native rules is not supported".into());
+            }
+            for (n, rule) in a.rules.iter().enumerate() {
+                if rule != &b.rules[n] {
+                    old.replace_mask_rule(n, rule.clone())?;
+                }
+            }
         }
         if b.polygons.len() > b.polygon_pours.len() {
             return Err("Native save refused: at least one source polygon has unsupported geometry. Keep edits in JSON until that polygon can be modelled and repoured safely".into());
@@ -1869,6 +1927,16 @@ pub fn serialize(doc: &Document, format: Format) -> Result<Vec<u8>> {
         return Err(
             "Creating native rule records is not supported; keep this document in JSON".into(),
         );
+    }
+    if !binary {
+        for item in &board.items {
+            let old = old_board.and_then(|b| b.item(item.id));
+            if (item.pad_stack.is_some() && old.is_none_or(|o| o.pad_stack != item.pad_stack))
+                || (item.masks.is_some() && old.is_none_or(|o| o.masks != item.masks))
+            {
+                return Err("Advanced padstack/mask edits require binary PcbDoc or PCBCraft JSON; ASCII save refused to avoid data loss".into());
+            }
+        }
     }
     let rebuilt;
     let board = if board.pours_stale {

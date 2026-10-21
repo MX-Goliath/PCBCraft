@@ -5,15 +5,15 @@ use std::collections::{BTreeMap, BTreeSet};
 #[path = "schematic_drag_tests.rs"]
 mod tests;
 
-type Node = (i64, i64);
-fn key(p: Point) -> Node {
+pub(super) type Node = (i64, i64);
+pub(super) fn key(p: Point) -> Node {
     (p.x, p.y)
 }
-fn point(p: Node) -> Point {
+pub(super) fn point(p: Node) -> Point {
     Point { x: p.0, y: p.1 }
 }
 
-fn pin_end(p: &SchPrimitive) -> Option<Point> {
+pub(super) fn pin_end(p: &SchPrimitive) -> Option<Point> {
     match p.kind {
         K::Pin {
             position,
@@ -39,7 +39,7 @@ fn pin_end(p: &SchPrimitive) -> Option<Point> {
         _ => None,
     }
 }
-fn wire(p: &SchPrimitive) -> Option<&[Point]> {
+pub(super) fn wire(p: &SchPrimitive) -> Option<&[Point]> {
     match &p.kind {
         K::Polyline {
             points,
@@ -49,7 +49,7 @@ fn wire(p: &SchPrimitive) -> Option<&[Point]> {
         _ => None,
     }
 }
-fn clean(path: &mut Vec<Point>) {
+pub(super) fn clean(path: &mut Vec<Point>) {
     path.dedup();
     let mut i = 1;
     while i + 1 < path.len() {
@@ -60,7 +60,7 @@ fn clean(path: &mut Vec<Point>) {
         }
     }
 }
-fn reroute(
+pub(super) fn reroute(
     path: &[Point],
     start: Point,
     end: Point,
@@ -149,9 +149,6 @@ pub fn connected_transform(
             }
         }
     }
-    if selected.primitives.iter().any(|p| wire(p).is_some()) {
-        return Err("Drag a component, terminal, label or junction; wire segment dragging is not supported yet".into());
-    }
     let mut moved = BTreeMap::<Node, (Point, Uuid)>::new();
     for p in &selected.primitives {
         if let Some(at) = pin_end(p) {
@@ -160,34 +157,48 @@ pub fn connected_transform(
                 moved.insert(key(at), (to, p.id));
             }
         }
+        if let Some(path) = wire(p) {
+            // Explicitly selected wires move rigidly with the group. Their bends,
+            // endpoints and existing attachments drive the unselected neighbours.
+            let attachments = s
+                .primitives
+                .iter()
+                .filter(|p| !seen.contains(&p.id))
+                .flat_map(|p| {
+                    let mut nodes: Vec<_> = pin_end(p).into_iter().collect();
+                    if let Some(path) = wire(p) {
+                        nodes.extend(path.first().into_iter().chain(path.last()).copied());
+                    }
+                    nodes
+                });
+            for at in path
+                .iter()
+                .copied()
+                .chain(attachments.filter(|at| path.windows(2).any(|e| at.on_segment(e[0], e[1]))))
+            {
+                let to = transform_point(at, pivot, turns, delta)?;
+                if to != at {
+                    moved.insert(key(at), (to, p.id));
+                }
+            }
+        }
     }
     let mut result = selected.transformed(pivot, turns, delta)?;
     if moved.is_empty() {
         return Ok(result);
     }
-    let mut anchors = BTreeSet::<Node>::new();
     let mut fixed = BTreeSet::<Node>::new();
     for p in &s.primitives {
         if seen.contains(&p.id) {
             continue;
         }
         if let Some(at) = pin_end(p) {
-            anchors.insert(key(at));
             // A dot alone can accompany a pin. Shared net terminals remain fixed.
             if !matches!(p.kind, K::Junction { .. }) {
                 fixed.insert(key(at));
             }
         }
-        if let Some(points) = wire(p) {
-            if let Some(at) = points.first() {
-                anchors.insert(key(*at));
-            }
-            if let Some(at) = points.last() {
-                anchors.insert(key(*at));
-            }
-        }
     }
-    anchors.extend(moved.keys());
     // Multiple wire branches sharing a moving terminal keep their common node fixed.
     // Stretch a single stem from that node instead of splitting the branch apart.
     for node in moved.keys() {
@@ -206,15 +217,46 @@ pub fn connected_transform(
                 }
             })
             .sum::<usize>();
-        let explicit_junction = selected
-            .primitives
-            .iter()
-            .any(|p| matches!(p.kind, K::Junction { position, .. } if key(position) == *node));
+        let explicit_junction = selected.primitives.iter().any(|p| {
+            matches!(p.kind, K::Junction { position, .. } if key(position) == *node)
+                || wire(p).is_some_and(|path| path.windows(2).any(|e| at.on_segment(e[0], e[1])))
+        });
         if branches > 1 && !explicit_junction {
             fixed.insert(*node);
         }
     }
+    stretch_wires(s, &seen, &moved, &fixed, (pivot, turns, delta), &mut result)?;
+    Ok(result)
+}
+
+pub(super) fn stretch_wires(
+    s: &Schematic,
+    seen: &BTreeSet<Uuid>,
+    moved: &BTreeMap<Node, (Point, Uuid)>,
+    fixed: &BTreeSet<Node>,
+    transform: (Point, u32, Point),
+    result: &mut Fragment,
+) -> Result<(), String> {
+    let (pivot, turns, delta) = transform;
+    let mut anchors: BTreeSet<_> = moved.keys().copied().collect();
     for p in &s.primitives {
+        if let Some(at) = pin_end(p) {
+            anchors.insert(key(at));
+        }
+        if let Some(path) = wire(p) {
+            anchors.extend(
+                path.first()
+                    .into_iter()
+                    .chain(path.last())
+                    .copied()
+                    .map(key),
+            );
+        }
+    }
+    for p in &s.primitives {
+        if seen.contains(&p.id) {
+            continue;
+        }
         let Some(path) = wire(p) else {
             continue;
         };
@@ -292,7 +334,7 @@ pub fn connected_transform(
             result.primitives.push(replacement);
         }
     }
-    for (node, (to, owner)) in &moved {
+    for (node, (to, owner)) in moved {
         if !fixed.contains(node) {
             continue;
         }
@@ -339,5 +381,5 @@ pub fn connected_transform(
         };
         result.primitives.push(p);
     }
-    Ok(result)
+    Ok(())
 }
