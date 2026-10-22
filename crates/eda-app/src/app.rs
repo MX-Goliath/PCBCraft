@@ -1941,6 +1941,7 @@ impl eframe::App for PcbCraft {
         if let Some(command) = self.command.take() {
             self.run(command, ctx);
         }
+        self.poll_pcb_pours(ctx);
         let title = self
             .active
             .map(|i| {

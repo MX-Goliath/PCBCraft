@@ -404,6 +404,25 @@ fn thermals(item: &Item, p: &Polygon, material: &MultiPolygon<f64>) -> MultiPoly
         .buffer(p.thermal_gap as f64 / 1e6)
         .difference(&material.union(&spokes))
 }
+/// Prepared derived geometry is applied through History without adding a user
+/// action. Its source document/revision prevent delayed results replacing edits.
+pub struct PreparedPour {
+    pub(crate) document: Uuid,
+    pub(crate) revision: u64,
+    pub(crate) board: Board,
+}
+pub fn prepare_repour(
+    document: Uuid,
+    revision: u64,
+    board: &Board,
+) -> Result<PreparedPour, String> {
+    Ok(PreparedPour {
+        document,
+        revision,
+        board: repour(board)?,
+    })
+}
+
 /// Rebuild all pours in dependency order, leaving the caller untouched on error.
 pub fn repour(board: &Board) -> Result<Board, String> {
     let mut result = board.clone();

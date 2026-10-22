@@ -572,3 +572,18 @@ Linux GNU all-target cross-check. Linux GUI/артефакты не запуск
       Linux native UI/performance verification remain open.
 
 Measurements, method and limits: docs/pcb-update/PERFORMANCE.md.
+
+### PCB release latency — 22.10.2026
+
+- [x] Isolated synchronous auto-repour as the release stall: ~1.4 s on the
+      15,513-object / three-polygon board.
+- [x] Commit position immediately, reuse matching preview, avoid cloning the
+      replaced board; measured ready-preview commit ~9 ms + worker snapshot ~11 ms.
+- [x] One background repour per document; stale results rejected, newer edits
+      coalesced, application deferred during gestures/Properties/model dialogs.
+- [x] Typed derived-geometry update through core History: validation/revision
+      checks, one Undo per move, Redo preserved, saved-content state retained.
+- [x] 280 tests, fmt --check, strict Clippy, Windows GUI via move/Undo/Redo,
+      Windows dev build and Linux all-target cross-check.
+- [ ] Full Altium pour algorithm parity and native Linux latency measurements;
+      explicit repour/native save rebuilds remain synchronous.

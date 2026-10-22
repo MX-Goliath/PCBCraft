@@ -7,6 +7,8 @@ use eda_core::{
     pcb_tools::{self, Handle},
 };
 use eda_geom::Point;
+#[path = "pcb_pours.rs"]
+mod pours;
 #[path = "pcb_properties_v2.rs"]
 mod properties_v2;
 use eda_render::pcb::Input;
@@ -130,6 +132,7 @@ pub(super) struct Editor {
     polygon_draft: Option<PolygonDraft>,
     properties_panel: properties_v2::Panel,
     last_error: Option<String>,
+    pours: pours::State,
 }
 impl Default for Editor {
     fn default() -> Self {
@@ -171,6 +174,7 @@ impl Default for Editor {
             polygon_draft: None,
             properties_panel: Default::default(),
             last_error: None,
+            pours: Default::default(),
         }
     }
 }
@@ -225,14 +229,7 @@ impl Editor {
     }
 }
 pub(super) fn commit(doc: &mut OpenDocument, next: Board) -> Result<bool, String> {
-    let next = if next.pours_stale {
-        pcb_polygon::repour(&next)?
-    } else {
-        next
-    };
-    let mut model = doc.model.clone();
-    model.pcb = Some(next);
-    doc.history.commit(&mut doc.model, model)
+    doc.history.commit_pcb(&mut doc.model, next)
 }
 fn picked(board: &Board, view: &eda_render::pcb::BoardView, id: Uuid) -> Uuid {
     if let Some(poly) = board
@@ -732,6 +729,14 @@ fn input(
                         return Err("Document changed during drag; gesture cancelled".into());
                     }
                     let preview_key = (p, rotation.to_bits());
+                    if i.drag_stopped
+                        && ed.gesture_preview == Some(preview_key)
+                        && let Some(next) = doc.view.pcb.take_preview()
+                    {
+                        ed.gesture = None;
+                        commit(doc, next)?;
+                        return Ok(());
+                    }
                     if !i.drag_stopped
                         && ed.gesture_preview == Some(preview_key)
                         && doc.view.pcb.preview().is_some()
@@ -782,6 +787,14 @@ fn input(
                         return Err("Document changed during handle drag".into());
                     }
                     let preview_key = (p, 0);
+                    if i.drag_stopped
+                        && ed.gesture_preview == Some(preview_key)
+                        && let Some(next) = doc.view.pcb.take_preview()
+                    {
+                        ed.gesture = None;
+                        commit(doc, next)?;
+                        return Ok(());
+                    }
                     if !i.drag_stopped
                         && ed.gesture_preview == Some(preview_key)
                         && doc.view.pcb.preview().is_some()
@@ -1171,6 +1184,23 @@ fn input(
     Ok(())
 }
 impl PcbCraft {
+    pub(super) fn poll_pcb_pours(&mut self, ctx: &egui::Context) {
+        let allow_apply = self.layer_stack.is_none() && self.annotation.is_none();
+        let mut errors = vec![];
+        for doc in &mut self.documents {
+            if doc.model.pcb.is_none() {
+                continue;
+            }
+            let mut pours = std::mem::take(&mut doc.pcb_editor.pours);
+            if let Err(error) = pours.update(doc, ctx, allow_apply) {
+                errors.push(error);
+            }
+            doc.pcb_editor.pours = pours;
+        }
+        for error in errors {
+            self.message(true, error);
+        }
+    }
     pub(super) fn finish_pcb_interaction(&mut self, ctx: &egui::Context) {
         for (index, doc) in self.documents.iter_mut().enumerate() {
             if doc.model.pcb.is_some() && (self.active != Some(index) || ctx.input(|i| !i.focused))
@@ -2462,6 +2492,7 @@ mod controller_tests {
             .shape
             .clone();
         assert_eq!(d.history.revision, 0);
+        let reused_items = d.view.pcb.preview().unwrap().items.as_ptr();
         input(
             &mut d,
             &mut ed,
@@ -2480,6 +2511,7 @@ mod controller_tests {
             preview
         );
         assert!(matches!(preview,Shape::Pad {rotation,..} if rotation==90.0));
+        assert_eq!(reused_items, d.model.pcb.as_ref().unwrap().items.as_ptr());
         assert_eq!(d.history.revision, 1);
     }
 }

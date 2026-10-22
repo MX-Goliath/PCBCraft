@@ -55,6 +55,52 @@ compiler optimization, geometry caching and broad-phase picking alone reduced
 warm unoptimized 2D paint+tessellation from approximately 150 ms to 90–100 ms.
 Timings vary with zoom, visibility, board contents and CPU load.
 
+## Delay when releasing a moved object
+
+The follow-up report was reproduced separately from frame rendering: committing
+every copper edit synchronously called `repour` for all three polygons. On the
+same 15,513-object board this took 1.38–1.43 seconds, in addition to move
+validation, document cloning and history accounting.
+
+The editor now commits the move immediately, retains the explicit stale-copper
+flag, and starts one background repour per document. Ready geometry is applied
+through a typed, validated History operation only for its source document and
+revision. It refreshes derived copper without adding a user Undo entry or
+clearing the Redo chain. New edits/Undo supersede old jobs; an active gesture,
+dirty Properties draft or model-editing dialog defers result application.
+Failures keep the stale flag, report the error once and do not retry endlessly.
+
+Release reuses the validated preview when its point/rotation/revision match.
+PCB commits copy the document envelope without cloning the board they replace.
+The read-only `pcb_edit_profile` example compares the synchronous and deferred
+paths, checks identical generated geometry, and checks one Undo/Redo round trip:
+
+```powershell
+.\scripts\dev.ps1 -Task run -Package eda-app -ExtraArgs @('--example','pcb_edit_profile','--','INPUT.PcbDoc')
+```
+
+Measured with the same optimized dev profile:
+
+| Work | CPU time |
+|---|---:|
+| Previous synchronous repour on release | 1,378 ms |
+| New commit of the ready preview | 9.1 ms |
+| Snapshot for the background worker | 10.8 ms |
+| Background repour | 1,355 ms |
+| Apply validated result | 7.2 ms |
+
+These are isolated model/history timings, not end-to-end input latency or frame
+times. Explicit Repour All Polygons and native serialization of stale copper
+still perform their requested rebuild synchronously. JSON saves retain the stale
+flag and rebuild on open; completing a background refresh after saving does not
+make a clean document dirty again.
+
+Follow-up verification: 280 workspace tests, fmt --check, strict Clippy, Windows
+dev build, Linux all-target cross-check. Windows GUI: via release displays
+`Repouring polygons…`, the new position/Properties are available immediately,
+and a single Undo/Redo restores/reapplies the move. The research copy was not
+saved. Linux runtime input latency is not measured.
+
 ## Verification and remaining limits
 
 Regression coverage checks geometry equality/reuse/expiry, preview rotation and

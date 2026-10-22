@@ -1,6 +1,6 @@
 //! Bounded document history. Historical native data is shared by the model;
 //! the byte budget estimates editable snapshot data, not allocator RSS.
-//! Mutations must go through commit, as required by the document revision protocol.
+//! User edits use commit; derived PCB pours use a revision-checked typed result.
 use crate::Document;
 use serde::Serialize;
 use std::collections::VecDeque;
@@ -97,6 +97,29 @@ impl History {
         self.revision += 1;
         Ok(true)
     }
+    /// PCB controllers already own the validated replacement board. Copy only
+    /// the document envelope, rather than cloning and then discarding its PCB.
+    pub fn commit_pcb(
+        &mut self,
+        current: &mut Document,
+        board: crate::pcb::Board,
+    ) -> Result<bool, String> {
+        if current.kind != crate::DocumentKind::Board {
+            return Err("Not a PCB document".into());
+        }
+        let next = Document {
+            schema_version: current.schema_version,
+            id: current.id,
+            name: current.name.clone(),
+            kind: current.kind,
+            size: current.size,
+            pads: current.pads.clone(),
+            tracks: current.tracks.clone(),
+            schematic: current.schematic.clone(),
+            pcb: Some(board),
+        };
+        self.commit(current, next)
+    }
     pub fn undo(&mut self, doc: &mut Document) {
         if let Some(previous) = self.undo.pop_back() {
             let bytes = self
@@ -115,6 +138,29 @@ impl History {
             self.trim(false);
             self.revision += 1;
         }
+    }
+    /// Refresh only geometry produced by the pure polygon generator. Preserve
+    /// the edit's Undo entry and the remaining Redo chain; expire view caches.
+    pub fn apply_pcb_pour(
+        &mut self,
+        doc: &mut Document,
+        result: crate::pcb_polygon::PreparedPour,
+    ) -> Result<bool, String> {
+        if result.document != doc.id || doc.kind != crate::DocumentKind::Board || doc.pcb.is_none()
+        {
+            return Err("Polygon result belongs to another PCB document".into());
+        }
+        if result.revision != self.revision {
+            return Ok(false);
+        }
+        result.board.validate()?;
+        if doc.pcb.as_ref() == Some(&result.board) {
+            return Ok(false);
+        }
+        doc.pcb = Some(result.board);
+        self.current_bytes = None;
+        self.revision += 1;
+        Ok(true)
     }
     pub fn redo(&mut self, doc: &mut Document) {
         if let Some(next) = self.redo.pop() {
@@ -193,6 +239,115 @@ fn snapshot_bytes(doc: &Document) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn pcb_doc() -> Document {
+        use crate::{pcb::*, pcb_polygon::*};
+        let mut doc = Document::new(crate::DocumentKind::Board, "Background pour");
+        let mut board = Board::from_legacy(&doc);
+        board.items.push(Item::new(
+            MULTI_LAYER,
+            None,
+            Shape::Via {
+                position: eda_geom::Point::mm(5, 5),
+                diameter: 600_000,
+                hole: 300_000,
+                from_layer: TOP,
+                to_layer: BOTTOM,
+            },
+        ));
+        board.polygon_pours.push(Polygon {
+            contour: straight_contour(&[
+                eda_geom::Point::mm(0, 0),
+                eda_geom::Point::mm(10, 0),
+                eda_geom::Point::mm(10, 10),
+                eda_geom::Point::mm(0, 10),
+            ]),
+            ..Default::default()
+        });
+        doc.pcb = Some(repour(&board).unwrap());
+        doc
+    }
+    fn move_via(doc: &mut Document, history: &mut History, dx: i64) {
+        use crate::pcb::*;
+        let board = doc.pcb.as_ref().unwrap();
+        let via = board
+            .items
+            .iter()
+            .find(|i| matches!(i.shape, Shape::Via { .. }))
+            .unwrap();
+        let next = board
+            .edited(Edit::Transform {
+                selection: vec![via.id],
+                pivot: via.anchor(),
+                translation: eda_geom::Point::mm(dx, 0),
+                angle: 0.,
+            })
+            .unwrap();
+        assert!(history.commit_pcb(doc, next).unwrap());
+    }
+    fn prepare(doc: &Document, history: &History) -> crate::pcb_polygon::PreparedPour {
+        crate::pcb_polygon::prepare_repour(doc.id, history.revision, doc.pcb.as_ref().unwrap())
+            .unwrap()
+    }
+    #[test]
+    fn derived_pour_is_part_of_the_move_single_undo_and_redo() {
+        let mut doc = pcb_doc();
+        let original = doc.clone();
+        let mut history = History::default();
+        move_via(&mut doc, &mut history, 1);
+        assert!(doc.pcb.as_ref().unwrap().pours_stale);
+        let prepared = prepare(&doc, &history);
+        assert!(history.apply_pcb_pour(&mut doc, prepared).unwrap());
+        assert!(!doc.pcb.as_ref().unwrap().pours_stale);
+        let moved = doc.clone();
+        assert_eq!(history.retained_steps(), 1);
+        assert_eq!(history.revision, 2);
+        history.undo(&mut doc);
+        assert_eq!(doc, original);
+        assert!(!history.can_undo());
+        history.redo(&mut doc);
+        assert_eq!(doc, moved);
+    }
+    #[test]
+    fn delayed_pour_after_undo_or_new_edit_cannot_overwrite_the_model() {
+        let mut doc = pcb_doc();
+        let original = doc.clone();
+        let mut history = History::default();
+        move_via(&mut doc, &mut history, 1);
+        let late = prepare(&doc, &history);
+        history.undo(&mut doc);
+        assert!(!history.apply_pcb_pour(&mut doc, late).unwrap());
+        assert_eq!(doc, original);
+        assert!(history.can_redo());
+        history.redo(&mut doc);
+        let late = prepare(&doc, &history);
+        move_via(&mut doc, &mut history, 1);
+        let newer = doc.clone();
+        assert!(!history.apply_pcb_pour(&mut doc, late).unwrap());
+        assert_eq!(doc, newer);
+    }
+    #[test]
+    fn derived_refresh_keeps_redo_chain_and_rejects_another_document() {
+        let mut doc = pcb_doc();
+        let mut history = History::default();
+        move_via(&mut doc, &mut history, 1);
+        move_via(&mut doc, &mut history, 1);
+        history.undo(&mut doc);
+        let prepared = prepare(&doc, &history);
+        assert!(history.apply_pcb_pour(&mut doc, prepared).unwrap());
+        let first_move = doc.clone();
+        assert!(history.can_redo());
+        history.redo(&mut doc);
+        assert!(doc.pcb.as_ref().unwrap().pours_stale);
+        let prepared = prepare(&doc, &history);
+        history.apply_pcb_pour(&mut doc, prepared).unwrap();
+        history.undo(&mut doc);
+        assert_eq!(doc, first_move);
+        let prepared = prepare(&doc, &history);
+        let mut other = pcb_doc();
+        let before = other.clone();
+        assert!(history.apply_pcb_pour(&mut other, prepared).is_err());
+        assert_eq!(other, before);
+    }
     #[test]
     fn long_edit_session_is_bounded_and_preserves_nearest_undo_redo() {
         let mut doc = Document::example();

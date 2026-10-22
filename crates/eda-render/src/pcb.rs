@@ -54,6 +54,7 @@ pub struct BoardView {
     pub show_layer_dialog: bool,
     pub show_grid_dialog: bool,
     pub polygons_visible: bool,
+    pub repour_pending: bool,
     cache: HashMap<Uuid, (u64, Vec<usize>, bool)>,
     geometry: geometry::Cache,
     display: display::Settings,
@@ -131,6 +132,12 @@ impl BoardView {
     }
     pub fn preview(&self) -> Option<&Board> {
         self.preview.as_deref()
+    }
+    pub fn take_preview(&mut self) -> Option<Board> {
+        self.preview.take().map(|board| {
+            self.preview_generation = self.preview_generation.wrapping_add(1);
+            std::sync::Arc::unwrap_or_clone(board)
+        })
     }
     fn begin_frame(&mut self) {
         self.cache.retain(|_, (_, _, used)| std::mem::take(used));
@@ -741,7 +748,11 @@ pub fn canvas(ui: &mut egui::Ui, b: &Board, view: &mut View) -> CanvasOutput {
         painter.text(
             rect.left_top() + Vec2::splat(8.0),
             egui::Align2::LEFT_TOP,
-            "Polygon copper preview is stale; it is rebuilt when the edit is committed",
+            if view.pcb.repour_pending {
+                "Repouring polygons…"
+            } else {
+                "Polygon copper is out of date; run Repour All Polygons"
+            },
             egui::FontId::proportional(12.0),
             Color32::YELLOW,
         );
