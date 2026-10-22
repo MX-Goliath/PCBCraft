@@ -459,3 +459,21 @@ glibc >= 2.39, вне Git). Проверены запуск пакета, zoom, 
 иерархический компилятор не подменяется совпадением названия.
 Итог: 219 workspace tests, fmt, strict Clippy и debug build проходят.
 Linux GUI дополнительно проверен выбор физического экземпляра CHANNEL1/CHANNEL2.
+
+### PCB 3D Layout Mode — 22.10.2026
+
+- [x] Клавиши 3/2 и меню View, отдельная камера, orbit/pan/zoom, Top/Bottom/Fit.
+- [x] Объёмная плата с толщиной, сквозными отверстиями/вырезами и геометрией
+      наружных слоёв; проекции корпусов с высотой/standoff и fallback по pads.
+- [x] Depth picking, выбор/Properties, поворот вокруг component origin, Undo,
+      Cross Probe и переключатель видимости компонентов.
+- [x] Кэш сцены/текстуры, неизменность модели при навигации, регрессии быстрых
+      жестов/окклюзии/возврата 2D и незавершённых правок.
+- [ ] STEP/Parasolid meshes, точные материалы/маски/шелкография, collision,
+      rigid-flex и полная живая сверка AD. Корпуса явно упрощённые.
+
+Описание и ограничения: docs/pcb-update/3D_VIEW.md.
+
+Проверка 3D: 228 workspace tests, fmt и strict Clippy проходят. Локальный
+release AppImage проверен на TI PMP23595: выбор/Properties, orbit/zoom,
+вид снизу со сквозными отверстиями и возврат в 2D. TI файлы вне Git.

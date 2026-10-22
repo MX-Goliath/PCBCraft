@@ -11,6 +11,8 @@ mod chrome;
 mod components;
 #[path = "cross_probe.rs"]
 mod cross_probe;
+#[path = "pcb_3d.rs"]
+mod pcb_3d;
 #[path = "pcb_editor.rs"]
 mod pcb_editor;
 #[path = "properties.rs"]
@@ -111,6 +113,7 @@ impl Default for Settings {
 #[derive(Clone, Copy)]
 enum Command {
     CrossProbe,
+    Pcb3d(bool),
     ShowComponents,
     ToggleComponents,
     SchPlace(Placement),
@@ -488,6 +491,7 @@ impl PcbCraft {
         }
         match command {
             Command::CrossProbe => self.start_cross_probe(),
+            Command::Pcb3d(enabled) => self.set_pcb_3d(enabled),
             Command::SchPlace(kind) => self.start_schematic_tool(kind),
             Command::SchEdit(action) => self.schematic_action(action, ctx),
             Command::Pcb(action) => self.pcb_action(action),
@@ -576,7 +580,11 @@ impl PcbCraft {
             }
             Command::Fit => {
                 if let Some(i) = self.active {
-                    self.documents[i].view.camera.fitted = false;
+                    if self.documents[i].view.pcb.three_d.enabled {
+                        self.documents[i].view.pcb.three_d.fit();
+                    } else {
+                        self.documents[i].view.camera.fitted = false;
+                    }
                 }
             }
             Command::Home => self.active = None,
@@ -785,6 +793,9 @@ impl PcbCraft {
                             has_doc,
                         );
                         if pcb_active {
+                            self.action(ui, "2D Layout Mode", "2", Command::Pcb3d(false), true);
+                            self.action(ui, "3D Layout Mode", "3", Command::Pcb3d(true), true);
+                            ui.separator();
                             self.action(
                                 ui,
                                 "Fit Board",
@@ -1402,6 +1413,7 @@ impl PcbCraft {
                         .map_or_else(|| doc.model.name.clone(), |p| p.display().to_string());
                     doc.view.display_date = chrono::Local::now().format("%m.%d.%Y").to_string();
                     doc.view.pcb.navigation = self.settings.pcb_navigation;
+                    doc.view.pcb.three_d.revision = doc.history.revision;
                     doc.view.cross_probe = self.cross_probe.enabled;
                     let output = eda_render::canvas(ui, &doc.model, &mut doc.view);
                     let pcb_input = doc.view.pcb.input.take();
@@ -1629,6 +1641,9 @@ impl PcbCraft {
 
     fn shortcuts(&mut self, ctx: &egui::Context) {
         if self.pending.is_some() || ctx.wants_keyboard_input() {
+            return;
+        }
+        if self.pcb_view_shortcuts(ctx) {
             return;
         }
         if self.cross_probe_shortcuts(ctx) {

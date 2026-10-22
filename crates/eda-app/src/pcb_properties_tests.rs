@@ -421,3 +421,105 @@ fn pcb_shortcut_sequences_and_inactive_drag_cleanup_are_routed_to_active_documen
     assert_eq!(doc.model, before);
     assert!(!doc.dirty());
 }
+
+#[test]
+fn three_d_mode_shortcuts_selection_rotation_and_return_preserve_history_and_camera() {
+    let mut app = app();
+    let ctx = egui::Context::default();
+    let id = Uuid::new_v4();
+    let d = &mut app.documents[0];
+    d.model
+        .pcb
+        .as_mut()
+        .unwrap()
+        .components
+        .push(pcb::Component {
+            id,
+            index: 0,
+            designator: "U1".into(),
+            comment: String::new(),
+            footprint: String::new(),
+            position: Point::mm(10, 10),
+            rotation: 0.,
+            layer: pcb::TOP,
+            locked: false,
+            properties: Default::default(),
+        });
+    d.saved = Some(d.model.clone());
+    d.view.camera.centre_mm = [12., 34.];
+    d.view.camera.pixels_per_mm = 7.;
+    let event = |key| egui::Event::Key {
+        key,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: egui::Modifiers::NONE,
+    };
+    let _ = ctx.run(
+        egui::RawInput {
+            events: vec![event(Key::Num3)],
+            ..Default::default()
+        },
+        |ctx| {
+            assert!(app.pcb_view_shortcuts(ctx));
+        },
+    );
+    assert!(app.documents[0].view.pcb.three_d.enabled);
+    app.pcb_input(
+        0,
+        Input {
+            hit: Some(id),
+            clicked: true,
+            double_clicked: true,
+            ..Default::default()
+        },
+        &ctx,
+    );
+    assert_eq!(app.documents[0].view.pcb.selected, vec![id]);
+    assert!(!app.documents[0].dirty());
+    assert_eq!(app.documents[0].history.revision, 0);
+    app.pcb_action(Action::Rotate);
+    assert_eq!(
+        app.documents[0].model.pcb.as_ref().unwrap().components[0].rotation,
+        90.
+    );
+    assert_eq!(
+        app.documents[0].model.pcb.as_ref().unwrap().components[0].position,
+        Point::mm(10, 10)
+    );
+    assert_eq!(app.documents[0].history.revision, 1);
+    assert!(app.documents[0].view.pcb.three_d.enabled);
+    app.run(Command::Undo, &ctx);
+    assert_eq!(
+        app.documents[0].model.pcb.as_ref().unwrap().components[0].rotation,
+        0.
+    );
+    let _ = ctx.run(
+        egui::RawInput {
+            events: vec![event(Key::Num2)],
+            ..Default::default()
+        },
+        |ctx| {
+            assert!(app.pcb_view_shortcuts(ctx));
+        },
+    );
+    assert!(!app.documents[0].view.pcb.three_d.enabled);
+    assert_eq!(app.documents[0].view.camera.centre_mm, [12., 34.]);
+    assert_eq!(app.documents[0].view.camera.pixels_per_mm, 7.);
+    assert!(!app.documents[0].dirty());
+}
+
+#[test]
+fn entering_three_d_rejects_pending_gesture_and_two_d_noop_keeps_it() {
+    let mut app = app();
+    app.documents[0].pcb_editor.gesture = Some(Gesture::Box {
+        origin: Point::mm(1, 1),
+        add: false,
+    });
+    app.set_pcb_3d(true);
+    assert!(!app.documents[0].view.pcb.three_d.enabled);
+    assert!(app.documents[0].pcb_editor.gesture.is_some());
+    app.set_pcb_3d(false);
+    assert!(app.documents[0].pcb_editor.gesture.is_some());
+    assert_eq!(app.documents[0].history.revision, 0);
+}

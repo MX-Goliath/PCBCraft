@@ -1154,6 +1154,7 @@ impl PcbCraft {
             if doc.model.pcb.is_some() && (self.active != Some(index) || ctx.input(|i| !i.focused))
             {
                 doc.pcb_editor.cancel_pointer(&mut doc.view);
+                doc.view.pcb.three_d.cancel_drag();
             }
         }
     }
@@ -1162,6 +1163,9 @@ impl PcbCraft {
             self.settings.properties = true;
             self.settings.right_components = false;
             self.settings.right_messages = false;
+        }
+        if self.pcb_3d_input(index, &input_, ctx) {
+            return;
         }
         let doc = &mut self.documents[index];
         let mut editor = std::mem::take(&mut doc.pcb_editor);
@@ -1177,6 +1181,16 @@ impl PcbCraft {
         }
     }
     pub(super) fn pcb_action(&mut self, action: Action) {
+        if self
+            .active
+            .is_some_and(|i| self.documents[i].view.pcb.three_d.enabled)
+            && matches!(
+                action,
+                Action::Tool(_) | Action::Copy | Action::Cut | Action::Paste
+            )
+        {
+            self.set_pcb_3d(false);
+        }
         let Some(index) = self.active else {
             return;
         };
@@ -1250,7 +1264,17 @@ impl PcbCraft {
                     if let Some(bounds) = board.selected_bounds(&doc.view.pcb.selected) {
                         let next = board.edited(Edit::Transform {
                             selection: doc.view.pcb.selected.clone(),
-                            pivot: bounds.centre(),
+                            pivot: if doc.view.pcb.three_d.enabled
+                                && doc.view.pcb.selected.len() == 1
+                            {
+                                board
+                                    .components
+                                    .iter()
+                                    .find(|c| Some(&c.id) == doc.view.pcb.selected.first())
+                                    .map_or(bounds.centre(), |c| c.position)
+                            } else {
+                                bounds.centre()
+                            },
                             translation: Point::default(),
                             angle: if matches!(action, Action::RotateBack) {
                                 -90.0

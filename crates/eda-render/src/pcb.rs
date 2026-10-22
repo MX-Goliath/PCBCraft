@@ -17,6 +17,7 @@ mod text;
 pub use navigation::{CursorStyle, FitTarget, NavigationOptions};
 #[derive(Clone, Default)]
 pub struct BoardView {
+    pub three_d: crate::pcb_3d::State,
     pub initialized: bool,
     pub selected: Vec<Uuid>,
     pub visible: BTreeSet<u16>,
@@ -190,6 +191,9 @@ fn dim(c: Color32, alpha: u8) -> Color32 {
 }
 pub fn canvas(ui: &mut egui::Ui, b: &Board, view: &mut View) -> CanvasOutput {
     view.pcb.initialize(b);
+    if view.pcb.three_d.enabled {
+        return crate::pcb_3d::canvas(ui, b, view);
+    }
     if !view.pcb.grid_initialized {
         view.pcb.grid_initialized = true;
         if let Some(grid) = view.pcb.display.snap_grid_nm {

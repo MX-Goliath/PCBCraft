@@ -24,11 +24,11 @@ impl Default for PreviewState {
     }
 }
 #[derive(Clone, Debug)]
-struct Triangle {
-    v: [[f32; 3]; 3],
-    color: Color32,
+pub(crate) struct Triangle {
+    pub v: [[f32; 3]; 3],
+    pub color: Color32,
 }
-fn surface(
+pub(crate) fn surface(
     faces: &mut Vec<Triangle>,
     outer: &[Point],
     hole: &[Point],
@@ -63,7 +63,7 @@ fn surface(
         }
     }
 }
-fn wall(
+pub(crate) fn wall(
     faces: &mut Vec<Triangle>,
     points: &[Point],
     z0: f32,
@@ -207,7 +207,7 @@ fn project(v: [f32; 3], state: &PreviewState) -> [f32; 3] {
     let (sp, cp) = state.pitch.sin_cos();
     [x, y * sp - v[2] * cp, y * cp + v[2] * sp]
 }
-fn shade(face: &Triangle) -> Color32 {
+pub(crate) fn shade(face: &Triangle) -> Color32 {
     let [a, b, c] = face.v;
     let u = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
     let v = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];

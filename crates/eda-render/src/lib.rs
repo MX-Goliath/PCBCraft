@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 mod image_cache;
 pub mod pcb;
+pub mod pcb_3d;
 pub mod pcb_stack;
 mod schematic;
 

@@ -21,6 +21,7 @@ mod stack;
 pub use stack::{DrillShape, PadGeometry, PadStack, StackMode, StackSurface, cutout_surface};
 #[path = "pcb_mask.rs"]
 mod mask;
+pub use mask::dimension as dimension_nm;
 pub use mask::{MaskKind, MaskMode, MaskSettings, MaskSide, ResolvedMask};
 #[cfg(test)]
 #[path = "pcb_stack_tests.rs"]
