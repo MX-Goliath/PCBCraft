@@ -5,6 +5,8 @@ use egui::{Color32, Key, RichText};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use uuid::Uuid;
+#[path = "annotation.rs"]
+mod annotation;
 #[path = "chrome.rs"]
 mod chrome;
 #[path = "components.rs"]
@@ -117,6 +119,7 @@ enum Command {
     CrossProbe,
     Pcb3d(bool),
     LayerStack,
+    Annotate,
     ShowComponents,
     ToggleComponents,
     SchPlace(Placement),
@@ -162,6 +165,7 @@ struct PadEdit {
 }
 
 pub struct PcbCraft {
+    annotation: Option<annotation::Dialog>,
     layer_stack: Option<layer_stack::Manager>,
     cross_probe: cross_probe::State,
     file_dialog: rfd::FileDialog,
@@ -208,6 +212,7 @@ impl PcbCraft {
             preferences: false,
             about: false,
             layer_stack: None,
+            annotation: None,
             allow_exit: false,
             cursor_mm: None,
             pad_edit: None,
@@ -491,6 +496,10 @@ impl PcbCraft {
     }
 
     fn run(&mut self, command: Command, ctx: &egui::Context) {
+        if self.annotation.is_some() {
+            self.message(true, "Close the annotation dialog before another command");
+            return;
+        }
         if self.layer_stack.is_some() {
             self.message(
                 true,
@@ -503,6 +512,7 @@ impl PcbCraft {
         }
         match command {
             Command::CrossProbe => self.start_cross_probe(),
+            Command::Annotate => self.open_annotation(),
             Command::LayerStack => self.open_layer_stack(),
             Command::Pcb3d(enabled) => self.set_pcb_3d(enabled),
             Command::SchPlace(kind) => self.start_schematic_tool(kind),
@@ -915,6 +925,16 @@ impl PcbCraft {
                                         true,
                                     );
                                     if schematic {
+                                        ui.separator();
+                                        ui.menu_button("Annotation", |ui| {
+                                            self.action(
+                                                ui,
+                                                "Annotate Schematics...",
+                                                "",
+                                                Command::Annotate,
+                                                true,
+                                            );
+                                        });
                                         return;
                                     }
                                     ui.separator();
@@ -1657,7 +1677,11 @@ impl PcbCraft {
     }
 
     fn shortcuts(&mut self, ctx: &egui::Context) {
-        if self.layer_stack.is_some() || self.pending.is_some() || ctx.wants_keyboard_input() {
+        if self.annotation.is_some()
+            || self.layer_stack.is_some()
+            || self.pending.is_some()
+            || ctx.wants_keyboard_input()
+        {
             return;
         }
         if self.pcb_view_shortcuts(ctx) {
@@ -1734,6 +1758,7 @@ impl eframe::App for PcbCraft {
         self.pcb_dialogs(ctx);
         self.cross_probe_dialog(ctx);
         self.dialogs(ctx);
+        self.annotation_dialog(ctx);
         self.resize_edges(ctx);
         if let Some(command) = self.command.take() {
             self.run(command, ctx);

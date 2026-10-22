@@ -19,6 +19,7 @@ fn app() -> PcbCraft {
         preferences: false,
         about: false,
         layer_stack: None,
+        annotation: None,
         allow_exit: false,
         cursor_mm: None,
         pad_edit: None,

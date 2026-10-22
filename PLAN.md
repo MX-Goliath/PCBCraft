@@ -499,3 +499,20 @@ release AppImage проверен на TI PMP23595: выбор/Properties, orbit
 Проверка LSM: 236 workspace tests, fmt, strict Clippy и debug build. Linux GUI:
 слои/via/импеданс 50 Ω/Apply/Undo; TI PMP23595 — исходные 6 слоёв и материалы,
 2.2082 мм; открытие/Apply без изменений сохраняет clean state.
+
+### Schematic Annotation — 22.10.2026
+
+- [x] Tools > Annotation > Annotate Schematics..., Annotate и отдельный ECO.
+- [x] Проектные листы/область выделения, порядок обхода и листов, Start Index,
+      сохранение заблокированных номеров, сброс/дубликаты и предпросмотр.
+- [x] Общий номер многосекционных корпусов, совместимая упаковка новых секций,
+      защита от коллизий/устаревшего проекта и валидация всех листов до Apply.
+- [x] Обновление видимого/скрытого текста, Unique ID неизменны, Undo по листам.
+- [ ] Живая сверка AD, compiled channels, advanced sorting/part swapping,
+      back annotation/quiet mode/native SchDoc writer и общий project Undo.
+
+Поведение и ограничения: docs/ANNOTATION.md.
+
+Проверка Annotation: 247 workspace tests, fmt и strict Clippy. Linux GUI:
+меню/предпросмотр/ECO/Undo/Redo/JSON; TI PMP23595 — 5 листов, 167 компонентов,
+сохранение существующих номеров и Validate полной перенумерации без Apply.
