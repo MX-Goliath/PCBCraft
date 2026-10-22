@@ -26,6 +26,7 @@ pub(super) enum Tool {
     Arc,
     Outline,
     Move,
+    Drag,
     Paste,
     CopyReference,
 }
@@ -51,6 +52,7 @@ pub(super) enum Action {
     FinishRoute,
     Flip,
     GroupComponent,
+    Fit(eda_render::pcb::FitTarget),
 }
 #[derive(Clone)]
 pub(super) struct Clipboard {
@@ -65,6 +67,7 @@ enum Gesture {
         origin: Point,
         selection: Vec<Uuid>,
         connected: bool,
+        rotation: f64,
     },
     Box {
         origin: Point,
@@ -182,9 +185,16 @@ impl Editor {
         self.sequence = None;
         view.pcb.clear_gesture();
     }
+    fn cancel_pointer(&mut self, view: &mut eda_render::View) {
+        self.gesture = None;
+        view.pcb.clear_pointer();
+    }
     fn set_tool(&mut self, tool: Tool, view: &mut eda_render::View) {
         self.cancel(view);
         self.tool = tool;
+        if tool == Tool::Paste {
+            self.rotation = 0.0;
+        }
         view.pcb.tool_active = tool != Tool::Select;
     }
     pub(super) fn properties_dirty(&self, board: &Board, revision: u64) -> bool {
@@ -654,6 +664,17 @@ fn input(
     i: Input,
     ctx: &egui::Context,
 ) -> Result<(), String> {
+    if i.cancelled {
+        ed.cancel_pointer(&mut doc.view);
+        return Ok(());
+    }
+    if i.panning {
+        return Ok(());
+    }
+    if i.secondary_clicked && ed.gesture.is_some() {
+        ed.cancel_pointer(&mut doc.view);
+        return Ok(());
+    }
     ed.last_hits = i.hits.clone();
     if let Some(p) = i.point {
         ed.last_point = Some(p);
@@ -701,6 +722,7 @@ fn input(
                     origin,
                     selection,
                     connected,
+                    rotation,
                 } => {
                     if *revision != doc.history.revision {
                         ed.gesture = None;
@@ -712,13 +734,13 @@ fn input(
                         y: p.y - origin.y,
                     };
                     let next = if *connected {
-                        pcb_tools::drag_connected(base, selection, *origin, translation, 0.0)
+                        pcb_tools::drag_connected(base, selection, *origin, translation, *rotation)
                     } else {
                         base.edited(Edit::Transform {
                             selection: selection.clone(),
                             pivot: *origin,
                             translation,
-                            angle: 0.0,
+                            angle: *rotation,
                         })
                     };
                     match next {
@@ -746,6 +768,7 @@ fn input(
                     handle,
                 } => {
                     if *revision != doc.history.revision {
+                        ed.cancel_pointer(&mut doc.view);
                         return Err("Document changed during handle drag".into());
                     }
                     match pcb_tools::move_handle(base, *handle, p, true) {
@@ -810,13 +833,34 @@ fn input(
                     revision: doc.history.revision,
                     handle,
                 });
-                return Ok(());
+                return input(
+                    doc,
+                    ed,
+                    clip,
+                    Input {
+                        drag_started: false,
+                        ..i
+                    },
+                    ctx,
+                );
             }
             let hit = board
                 .items
                 .iter()
                 .filter(|v| doc.view.pcb.selectable(v))
-                .map(|v| (v, pcb::hit_distance(v, origin)))
+                .map(|v| {
+                    (
+                        v,
+                        v.hit_distance_on_layer(
+                            origin,
+                            if v.layer == pcb::MULTI_LAYER {
+                                doc.view.pcb.active_layer
+                            } else {
+                                v.layer
+                            },
+                        ),
+                    )
+                })
                 .filter(|(_, d)| *d <= tol)
                 .min_by(|a, b| {
                     let rank = |i: &Item| match i.shape {
@@ -846,15 +890,20 @@ fn input(
                 ed.gesture = Some(Gesture::Move {
                     base: board.clone(),
                     revision: doc.history.revision,
-                    origin: board.snap(
-                        origin,
-                        doc.view.grid_nm,
-                        0,
-                        doc.view.pcb.active_layer,
-                        &doc.view.pcb.visible,
-                    ),
+                    origin: if modifiers.ctrl && modifiers.shift {
+                        origin
+                    } else {
+                        board.snap_with_options(
+                            origin,
+                            if doc.view.grid { doc.view.grid_nm } else { 0 },
+                            doc.view.pcb.active_layer,
+                            &doc.view.pcb.visible,
+                            &doc.view.pcb.snap,
+                        )
+                    },
                     selection: doc.view.pcb.selected.clone(),
-                    connected: modifiers.ctrl || modifiers.command,
+                    connected: (modifiers.ctrl || modifiers.command) && !modifiers.shift,
+                    rotation: 0.0,
                 });
             } else {
                 ed.gesture = Some(Gesture::Box {
@@ -862,7 +911,16 @@ fn input(
                     add: modifiers.shift,
                 });
             }
-            return Ok(());
+            return input(
+                doc,
+                ed,
+                clip,
+                Input {
+                    drag_started: false,
+                    ..i
+                },
+                ctx,
+            );
         }
         if i.clicked || i.double_clicked {
             if modifiers.ctrl || modifiers.command {
@@ -906,7 +964,15 @@ fn input(
         }
         Tool::Paste => {
             if let Some(c) = clip {
-                let (next, selection) = pasted(board, c, p)?;
+                let (mut next, selection) = pasted(board, c, p)?;
+                if ed.rotation.rem_euclid(360.0) != 0.0 {
+                    next = next.edited(Edit::Transform {
+                        selection: selection.clone(),
+                        pivot: p,
+                        translation: Point::default(),
+                        angle: ed.rotation,
+                    })?;
+                }
                 if i.clicked {
                     commit(doc, next)?;
                     doc.view.pcb.selected = selection;
@@ -916,7 +982,7 @@ fn input(
                 }
             }
         }
-        Tool::Move => {
+        Tool::Move | Tool::Drag => {
             if let Some((base, revision)) = &ed.tool_base {
                 if *revision != doc.history.revision {
                     return Err(
@@ -924,15 +990,26 @@ fn input(
                     );
                 }
                 let origin = ed.start.unwrap_or(p);
-                let next = base.edited(Edit::Transform {
-                    selection: doc.view.pcb.selected.clone(),
-                    pivot: origin,
-                    translation: Point {
-                        x: p.x - origin.x,
-                        y: p.y - origin.y,
-                    },
-                    angle: ed.rotation,
-                })?;
+                let translation = Point {
+                    x: p.x - origin.x,
+                    y: p.y - origin.y,
+                };
+                let next = if ed.tool == Tool::Drag {
+                    pcb_tools::drag_connected(
+                        base,
+                        &doc.view.pcb.selected,
+                        origin,
+                        translation,
+                        ed.rotation,
+                    )?
+                } else {
+                    base.edited(Edit::Transform {
+                        selection: doc.view.pcb.selected.clone(),
+                        pivot: origin,
+                        translation,
+                        angle: ed.rotation,
+                    })?
+                };
                 if i.clicked {
                     commit(doc, next)?;
                     ed.cancel(&mut doc.view);
@@ -940,6 +1017,12 @@ fn input(
                     doc.view.pcb.preview = Some(next);
                 }
             } else if i.clicked {
+                if doc.view.pcb.selected.is_empty() {
+                    let Some(id) = i.hit.map(|id| picked(board, &doc.view.pcb, id)) else {
+                        return Ok(());
+                    };
+                    doc.view.pcb.selected = vec![id];
+                }
                 ed.start = Some(p);
                 ed.rotation = 0.0;
                 ed.tool_base = Some((board.clone(), doc.history.revision));
@@ -1066,6 +1149,14 @@ fn input(
     Ok(())
 }
 impl PcbCraft {
+    pub(super) fn finish_pcb_interaction(&mut self, ctx: &egui::Context) {
+        for (index, doc) in self.documents.iter_mut().enumerate() {
+            if doc.model.pcb.is_some() && (self.active != Some(index) || ctx.input(|i| !i.focused))
+            {
+                doc.pcb_editor.cancel_pointer(&mut doc.view);
+            }
+        }
+    }
     pub(super) fn pcb_input(&mut self, index: usize, input_: Input, ctx: &egui::Context) {
         if input_.double_clicked {
             self.settings.properties = true;
@@ -1116,7 +1207,10 @@ impl PcbCraft {
                 finish_route(doc, &mut ed)?;
             }
             if ed.gesture.is_some()
-                && !matches!(action, Action::Report | Action::Layers | Action::Grid)
+                && !matches!(
+                    action,
+                    Action::Report | Action::Layers | Action::Grid | Action::Fit(_)
+                )
             {
                 return Err("Finish or cancel the active drag before running another edit".into());
             }
@@ -1313,6 +1407,7 @@ impl PcbCraft {
                     commit(doc, next)?;
                     doc.view.pcb.selected = vec![id];
                 }
+                Action::Fit(target) => doc.view.pcb.requested_fit = Some(target),
                 Action::Report => {}
             }
             Ok(())
@@ -1358,6 +1453,19 @@ impl PcbCraft {
             doc.pcb_editor.sequence = None;
         }
         ctx.input_mut(|input| {
+            if let Some((Key::V, _)) = doc.pcb_editor.sequence {
+                for (key, target) in [
+                    (Key::F, eda_render::pcb::FitTarget::Board),
+                    (Key::D, eda_render::pcb::FitTarget::Document),
+                ] {
+                    if input.consume_key(egui::Modifiers::NONE, key) {
+                        action = Some(Action::Fit(target));
+                        doc.pcb_editor.sequence = None;
+                        handled = true;
+                        return;
+                    }
+                }
+            }
             if let Some((prefix, _)) = doc.pcb_editor.sequence {
                 for (key, tool) in [
                     (Key::T, Tool::Route),
@@ -1368,9 +1476,11 @@ impl PcbCraft {
                     (Key::G, Tool::Polygon),
                     (Key::A, Tool::Arc),
                     (Key::M, Tool::Move),
+                    (Key::D, Tool::Drag),
                 ] {
                     if input.consume_key(egui::Modifiers::NONE, key) {
-                        if prefix == Key::P || (prefix == Key::M && key == Key::M) {
+                        if prefix == Key::P || (prefix == Key::M && matches!(key, Key::M | Key::D))
+                        {
                             action = Some(Action::Tool(tool));
                         }
                         doc.pcb_editor.sequence = None;
@@ -1387,6 +1497,16 @@ impl PcbCraft {
                 return;
             }
             for (mods, key, command) in [
+                (
+                    ctrl,
+                    Key::PageDown,
+                    Action::Fit(eda_render::pcb::FitTarget::Document),
+                ),
+                (
+                    ctrl,
+                    Key::Home,
+                    Action::Fit(eda_render::pcb::FitTarget::Selection),
+                ),
                 (ctrl, Key::W, Action::Tool(Tool::Route)),
                 (ctrl, Key::C, Action::Copy),
                 (ctrl, Key::X, Action::Cut),
@@ -1478,7 +1598,9 @@ impl PcbCraft {
                 return;
             }
             if input.consume_key(shift, Key::Space) {
-                if doc.pcb_editor.tool == Tool::Route {
+                if let Some(Gesture::Move { rotation, .. }) = &mut doc.pcb_editor.gesture {
+                    *rotation -= 90.0;
+                } else if doc.pcb_editor.tool == Tool::Route {
                     doc.pcb_editor.corner_mode = (doc.pcb_editor.corner_mode + 1) % 3;
                 } else if doc.pcb_editor.tool == Tool::Select {
                     action = Some(Action::RotateBack);
@@ -1489,7 +1611,9 @@ impl PcbCraft {
                 return;
             }
             if input.consume_key(egui::Modifiers::NONE, Key::Space) {
-                if doc.pcb_editor.tool == Tool::Route {
+                if let Some(Gesture::Move { rotation, .. }) = &mut doc.pcb_editor.gesture {
+                    *rotation += 90.0;
+                } else if doc.pcb_editor.tool == Tool::Route {
                     doc.pcb_editor.diagonal_first = !doc.pcb_editor.diagonal_first;
                 } else if doc.pcb_editor.tool == Tool::Select {
                     action = Some(Action::Rotate);
@@ -1499,7 +1623,7 @@ impl PcbCraft {
                 handled = true;
                 return;
             }
-            for key in [Key::P, Key::M] {
+            for key in [Key::P, Key::M, Key::V] {
                 if input.consume_key(egui::Modifiers::NONE, key) {
                     doc.pcb_editor.sequence = Some((key, now));
                     handled = true;
@@ -1533,7 +1657,8 @@ impl PcbCraft {
             ),
             ("Delete", "Del", Action::Delete, selected),
             ("Rotate Selection 90°", "Space", Action::Rotate, selected),
-            ("Move Selection", "M, M", Action::Tool(Tool::Move), selected),
+            ("Move", "M, M", Action::Tool(Tool::Move), true),
+            ("Drag", "M, D", Action::Tool(Tool::Drag), true),
             ("Flip Component", "", Action::Flip, selected),
             (
                 "Create Component from Selection",
@@ -1998,5 +2123,329 @@ mod controller_tests {
         assert!(prepare_save(&mut d).is_err());
         assert_eq!(d.pcb_editor.start, Some(Point::mm(3, 4)));
         assert_eq!(d.history.revision, 0);
+    }
+    fn drag_frame(origin: Point, point: Point, finish: bool) -> Input {
+        Input {
+            point: Some(point),
+            raw_point: Some(point),
+            press_origin: Some(origin),
+            drag_started: true,
+            dragging: !finish,
+            drag_stopped: finish,
+            hovered: true,
+            ..Default::default()
+        }
+    }
+    #[test]
+    fn fast_drag_is_one_transaction_and_undo_redo_restore_geometry() {
+        let mut d = doc();
+        let mut ed = Editor::default();
+        let before = d.model.clone();
+        let id = d.model.pcb.as_ref().unwrap().items.last().unwrap().id;
+        input(
+            &mut d,
+            &mut ed,
+            &mut None,
+            drag_frame(Point::mm(10, 0), Point::mm(12, 2), true),
+            &egui::Context::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            d.model.pcb.as_ref().unwrap().item(id).unwrap().anchor(),
+            Point::mm(12, 2)
+        );
+        assert_eq!(d.history.revision, 1);
+        assert!(ed.gesture.is_none());
+        assert!(d.view.pcb.preview.is_none());
+        let after = d.model.clone();
+        d.history.undo(&mut d.model);
+        assert_eq!(d.model, before);
+        d.history.redo(&mut d.model);
+        assert_eq!(d.model, after);
+    }
+    #[test]
+    fn interrupted_drag_never_commits_and_discards_preview() {
+        for stop in [
+            Input {
+                secondary_clicked: true,
+                hovered: true,
+                ..Default::default()
+            },
+            Input {
+                cancelled: true,
+                ..Default::default()
+            },
+            Input {
+                drag_stopped: true,
+                hovered: false,
+                ..Default::default()
+            },
+        ] {
+            let mut d = doc();
+            let original = d.model.clone();
+            let mut ed = Editor::default();
+            let ctx = egui::Context::default();
+            input(
+                &mut d,
+                &mut ed,
+                &mut None,
+                drag_frame(Point::mm(10, 0), Point::mm(12, 2), false),
+                &ctx,
+            )
+            .unwrap();
+            assert!(d.view.pcb.preview.is_some());
+            input(&mut d, &mut ed, &mut None, stop, &ctx).unwrap();
+            assert_eq!(d.model, original);
+            assert_eq!(d.history.revision, 0);
+            assert!(ed.gesture.is_none());
+            assert!(d.view.pcb.preview.is_none());
+        }
+    }
+    #[test]
+    fn move_and_connected_drag_can_pick_an_unselected_object() {
+        for tool in [Tool::Move, Tool::Drag] {
+            let mut d = doc();
+            let board = d.model.pcb.as_mut().unwrap();
+            let id = board.items.last().unwrap().id;
+            let track = Item::new(
+                pcb::TOP,
+                Some(0),
+                Shape::Track {
+                    start: Point::mm(10, 0),
+                    end: Point::mm(20, 0),
+                    width: 200_000,
+                },
+            );
+            let track_id = track.id;
+            board.items.push(track);
+            let original = d.model.clone();
+            let mut ed = Editor::default();
+            ed.set_tool(tool, &mut d.view);
+            let ctx = egui::Context::default();
+            let mut first = click(10, 0);
+            first.hit = Some(id);
+            input(&mut d, &mut ed, &mut None, first, &ctx).unwrap();
+            assert_eq!(d.view.pcb.selected, vec![id]);
+            input(
+                &mut d,
+                &mut ed,
+                &mut None,
+                Input {
+                    point: Some(Point::mm(13, 2)),
+                    hovered: true,
+                    ..Default::default()
+                },
+                &ctx,
+            )
+            .unwrap();
+            assert_eq!(d.model, original);
+            input(&mut d, &mut ed, &mut None, click(13, 2), &ctx).unwrap();
+            let b = d.model.pcb.as_ref().unwrap();
+            assert_eq!(b.item(id).unwrap().anchor(), Point::mm(13, 2));
+            let Shape::Track { start, end, .. } = b.item(track_id).unwrap().shape else {
+                panic!()
+            };
+            assert_eq!(
+                start,
+                if tool == Tool::Drag {
+                    Point::mm(13, 2)
+                } else {
+                    Point::mm(10, 0)
+                }
+            );
+            assert_eq!(end, Point::mm(20, 0));
+            assert_eq!(d.history.revision, 1);
+            assert_eq!(ed.tool, Tool::Select);
+        }
+    }
+    #[test]
+    fn fast_box_selection_honours_direction_and_does_not_edit_the_board() {
+        for crossing in [false, true] {
+            let mut d = doc();
+            let original = d.model.clone();
+            let mut ed = Editor::default();
+            let a = Point {
+                x: 9_750_000,
+                y: -1_000_000,
+            };
+            let b = Point {
+                x: 10_250_000,
+                y: 1_000_000,
+            };
+            let (a, b) = if crossing { (b, a) } else { (a, b) };
+            input(
+                &mut d,
+                &mut ed,
+                &mut None,
+                drag_frame(a, b, true),
+                &egui::Context::default(),
+            )
+            .unwrap();
+            assert_eq!(d.view.pcb.selected.len(), usize::from(crossing));
+            assert_eq!(d.model, original);
+            assert_eq!(d.history.revision, 0);
+            assert!(d.view.pcb.selection_box.is_none());
+            assert!(ed.gesture.is_none());
+        }
+    }
+    #[test]
+    fn grid_disabled_drag_preserves_fractional_position() {
+        let mut d = doc();
+        d.view.grid = false;
+        let id = d.model.pcb.as_ref().unwrap().items.last().unwrap().id;
+        let position = Point {
+            x: 10_230_000,
+            y: 170_000,
+        };
+        let pad = d.model.pcb.as_mut().unwrap().item_mut(id).unwrap();
+        if let Shape::Pad { position: p, .. } = &mut pad.shape {
+            *p = position;
+        }
+        let destination = Point {
+            x: 12_230_000,
+            y: 2_170_000,
+        };
+        input(
+            &mut d,
+            &mut Editor::default(),
+            &mut None,
+            drag_frame(position, destination, true),
+            &egui::Context::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            d.model.pcb.as_ref().unwrap().item(id).unwrap().anchor(),
+            destination
+        );
+    }
+    #[test]
+    fn rotated_clipboard_preview_matches_commit_and_undo() {
+        let mut d = doc();
+        let board = d.model.pcb.as_mut().unwrap();
+        let item = Item::new(
+            pcb::TOP,
+            None,
+            Shape::Track {
+                start: Point::mm(1, 0),
+                end: Point::mm(3, 0),
+                width: 200_000,
+            },
+        );
+        let id = item.id;
+        board.items.push(item);
+        let mut clip = Some(clipboard(board, &[id], Point::default()));
+        let original = d.model.clone();
+        let mut ed = Editor::default();
+        ed.set_tool(Tool::Paste, &mut d.view);
+        ed.rotation = 90.0;
+        let ctx = egui::Context::default();
+        input(
+            &mut d,
+            &mut ed,
+            &mut clip,
+            Input {
+                point: Some(Point::mm(20, 10)),
+                hovered: true,
+                ..Default::default()
+            },
+            &ctx,
+        )
+        .unwrap();
+        let preview = d
+            .view
+            .pcb
+            .preview
+            .as_ref()
+            .unwrap()
+            .items
+            .last()
+            .unwrap()
+            .shape
+            .clone();
+        assert_eq!(
+            preview,
+            Shape::Track {
+                start: Point::mm(20, 11),
+                end: Point::mm(20, 13),
+                width: 200_000
+            }
+        );
+        assert_eq!(d.model, original);
+        input(&mut d, &mut ed, &mut clip, click(20, 10), &ctx).unwrap();
+        assert_eq!(
+            d.model.pcb.as_ref().unwrap().items.last().unwrap().shape,
+            preview
+        );
+        assert_eq!(d.history.revision, 1);
+        d.history.undo(&mut d.model);
+        assert_eq!(d.model, original);
+    }
+    #[test]
+    fn rotating_an_active_mouse_move_changes_preview_before_single_commit() {
+        let mut d = doc();
+        let mut ed = Editor::default();
+        let ctx = egui::Context::default();
+        let board = d.model.pcb.as_mut().unwrap();
+        let pad = board.items.last_mut().unwrap();
+        let id = pad.id;
+        if let Shape::Pad { size, shape, .. } = &mut pad.shape {
+            *size = Point::mm(2, 1);
+            *shape = PadShape::Rectangle;
+        }
+        input(
+            &mut d,
+            &mut ed,
+            &mut None,
+            drag_frame(Point::mm(10, 0), Point::mm(12, 2), false),
+            &ctx,
+        )
+        .unwrap();
+        let Some(Gesture::Move { rotation, .. }) = &mut ed.gesture else {
+            panic!()
+        };
+        *rotation = 90.0;
+        input(
+            &mut d,
+            &mut ed,
+            &mut None,
+            Input {
+                point: Some(Point::mm(12, 2)),
+                dragging: true,
+                hovered: true,
+                ..Default::default()
+            },
+            &ctx,
+        )
+        .unwrap();
+        let preview = d
+            .view
+            .pcb
+            .preview
+            .as_ref()
+            .unwrap()
+            .item(id)
+            .unwrap()
+            .shape
+            .clone();
+        assert_eq!(d.history.revision, 0);
+        input(
+            &mut d,
+            &mut ed,
+            &mut None,
+            Input {
+                point: Some(Point::mm(12, 2)),
+                drag_stopped: true,
+                hovered: true,
+                ..Default::default()
+            },
+            &ctx,
+        )
+        .unwrap();
+        assert_eq!(
+            d.model.pcb.as_ref().unwrap().item(id).unwrap().shape,
+            preview
+        );
+        assert!(matches!(preview,Shape::Pad {rotation,..} if rotation==90.0));
+        assert_eq!(d.history.revision, 1);
     }
 }

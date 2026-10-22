@@ -132,14 +132,14 @@ fn tabs(ui: &mut egui::Ui, second: &mut bool, _a: &str, _b: &str) {
         }
     });
 }
-fn description(ui: &mut egui::Ui, value: &str) {
+fn description(ui: &mut egui::Ui, id: &str, value: &str) {
     row_height(ui, "Description", 60.0, |ui| {
         egui::Frame::NONE
             .fill(Color32::from_gray(45))
             .inner_margin(3)
             .show(ui, |ui| {
                 egui::ScrollArea::vertical()
-                    .id_salt("description")
+                    .id_salt(("description", id))
                     .max_height(54.0)
                     .min_scrolled_height(54.0)
                     .auto_shrink([false, false])
@@ -422,7 +422,7 @@ fn component(
             }
             read_row(ui, "Area", "—");
             ui.separator();
-            description(ui, property(&c.properties, "SOURCEDESCRIPTION"));
+            description(ui, "source", property(&c.properties, "SOURCEDESCRIPTION"));
             let kind = match property(&c.properties, "COMPONENTKINDVERSION2") {
                 "5" => "Standard (No BOM)",
                 "1" => "Mechanical",
@@ -467,7 +467,11 @@ fn component(
         section(ui, "Footprint", query, |ui| {
             read_row(ui, "Footprint Name", &c.footprint);
             source_row(ui, "Library", &c.properties, "SOURCEFOOTPRINTLIBRARY");
-            description(ui, property(&c.properties, "FOOTPRINTDESCRIPTION"));
+            description(
+                ui,
+                "footprint",
+                property(&c.properties, "FOOTPRINTDESCRIPTION"),
+            );
         });
         section(ui, "Swapping Options", query, |ui| {
             row(ui, "", |ui| {
@@ -1136,6 +1140,7 @@ fn board_panel(
                                 0 => Some(&mut snap.track_vertices),
                                 2 => Some(&mut snap.arc_centres),
                                 4 => Some(&mut snap.pad_centres),
+                                6 => Some(&mut snap.pad_edges),
                                 7 => Some(&mut snap.via_centres),
                                 8 => Some(&mut snap.region_vertices),
                                 9 => Some(&mut snap.board_vertices),

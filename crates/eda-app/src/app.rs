@@ -84,6 +84,7 @@ struct Settings {
     show_grid: bool,
     grid_nm: i64,
     right_messages: bool,
+    pcb_navigation: eda_render::pcb::NavigationOptions,
 }
 
 impl Default for Settings {
@@ -100,6 +101,7 @@ impl Default for Settings {
             show_grid: true,
             grid_nm: 1_000_000,
             right_messages: false,
+            pcb_navigation: Default::default(),
         }
     }
 }
@@ -773,6 +775,26 @@ impl PcbCraft {
                             Command::Fit,
                             has_doc,
                         );
+                        if pcb_active {
+                            self.action(
+                                ui,
+                                "Fit Board",
+                                "V, F",
+                                Command::Pcb(pcb_editor::Action::Fit(
+                                    eda_render::pcb::FitTarget::Board,
+                                )),
+                                true,
+                            );
+                            self.action(
+                                ui,
+                                "Selected Objects",
+                                "Ctrl+Home",
+                                Command::Pcb(pcb_editor::Action::Fit(
+                                    eda_render::pcb::FitTarget::Selection,
+                                )),
+                                true,
+                            );
+                        }
                         self.action(ui, "Home Page", "", Command::Home, true);
                         ui.separator();
                         if ui
@@ -1352,6 +1374,7 @@ impl PcbCraft {
                         .or(doc.path.as_ref())
                         .map_or_else(|| doc.model.name.clone(), |p| p.display().to_string());
                     doc.view.display_date = chrono::Local::now().format("%m.%d.%Y").to_string();
+                    doc.view.pcb.navigation = self.settings.pcb_navigation;
                     let output = eda_render::canvas(ui, &doc.model, &mut doc.view);
                     let pcb_input = doc.view.pcb.input.take();
                     self.cursor_mm = output.cursor_mm;
@@ -1423,6 +1446,7 @@ impl PcbCraft {
 
     fn dialogs(&mut self, ctx: &egui::Context) {
         if self.preferences {
+            let old_grid = (self.settings.show_grid, self.settings.grid_nm);
             let mut open = true;
             egui::Window::new("Preferences")
                 .open(&mut open)
@@ -1436,6 +1460,19 @@ impl PcbCraft {
                         ui.selectable_value(&mut self.settings.units, Units::Millimetres, "mm");
                         ui.selectable_value(&mut self.settings.units, Units::Mils, "mil");
                     });
+                    ui.horizontal(|ui| {
+                        ui.label("Cursor Type");
+                        egui::ComboBox::from_id_salt("pcb_cursor_type")
+                            .selected_text(self.settings.pcb_navigation.cursor.label())
+                            .show_ui(ui, |ui| {
+                                for style in [eda_render::pcb::CursorStyle::Small90,
+                                    eda_render::pcb::CursorStyle::Small45, eda_render::pcb::CursorStyle::Large90] {
+                                    ui.selectable_value(&mut self.settings.pcb_navigation.cursor,style,style.label());
+                                }
+                            });
+                    });
+                    ui.checkbox(&mut self.settings.pcb_navigation.wheel_zoom, "Zoom with mouse wheel")
+                        .on_hover_text("Ctrl+wheel always zooms. When disabled, the wheel scrolls vertically; Shift+wheel scrolls horizontally.");
                     ui.checkbox(&mut self.settings.show_grid, "Show grid");
                     ui.horizontal(|ui| {
                         ui.label("Grid step");
@@ -1459,9 +1496,11 @@ impl PcbCraft {
                     );
                 });
             self.preferences = open;
-            for doc in &mut self.documents {
-                doc.view.grid = self.settings.show_grid;
-                doc.view.grid_nm = self.settings.grid_nm;
+            if old_grid != (self.settings.show_grid, self.settings.grid_nm) {
+                for doc in &mut self.documents {
+                    doc.view.grid = self.settings.show_grid;
+                    doc.view.grid_nm = self.settings.grid_nm;
+                }
             }
         }
         if self.about {
@@ -1605,6 +1644,7 @@ impl eframe::App for PcbCraft {
         self.library_dialog(ctx);
         self.workspace(ctx);
         self.finish_schematic_interaction();
+        self.finish_pcb_interaction(ctx);
         self.finish_library_drag(ctx);
         self.schematic_move_menu(ctx);
         self.pcb_dialogs(ctx);
@@ -1650,5 +1690,24 @@ mod tests {
         first.history.redo(&mut first.model);
         assert!(first.dirty());
         assert!(!second.dirty());
+    }
+    #[test]
+    fn pcb_navigation_preferences_restore_and_old_settings_keep_small_cursor() {
+        let old: Settings = serde_json::from_str("{}").unwrap();
+        assert!(!old.pcb_navigation.wheel_zoom);
+        assert_eq!(
+            old.pcb_navigation.cursor,
+            eda_render::pcb::CursorStyle::Small90
+        );
+        let mut settings = Settings::default();
+        settings.pcb_navigation.wheel_zoom = true;
+        settings.pcb_navigation.cursor = eda_render::pcb::CursorStyle::Small45;
+        let restored: Settings =
+            serde_json::from_str(&serde_json::to_string(&settings).unwrap()).unwrap();
+        assert!(restored.pcb_navigation.wheel_zoom);
+        assert_eq!(
+            restored.pcb_navigation.cursor,
+            eda_render::pcb::CursorStyle::Small45
+        );
     }
 }

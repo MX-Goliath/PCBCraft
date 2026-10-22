@@ -10,8 +10,11 @@ use std::{
 use uuid::Uuid;
 #[path = "pcb_display.rs"]
 mod display;
+#[path = "pcb_navigation.rs"]
+mod navigation;
 #[path = "pcb_text.rs"]
 mod text;
+pub use navigation::{CursorStyle, FitTarget, NavigationOptions};
 #[derive(Clone, Default)]
 pub struct BoardView {
     pub initialized: bool,
@@ -27,6 +30,12 @@ pub struct BoardView {
     pub select_bodies: bool,
     pub select_keepouts: bool,
     pub snap: SnapOptions,
+    pub navigation: NavigationOptions,
+    pub requested_fit: Option<FitTarget>,
+    primary_origin: Option<Point>,
+    primary_press: Option<Pos2>,
+    primary_dragging: bool,
+    suppress_primary_until_release: bool,
     pub preview: Option<Board>,
     pub tool_active: bool,
     pub selection_box: Option<(Point, Point)>,
@@ -53,6 +62,8 @@ pub struct Input {
     pub dragging: bool,
     pub drag_stopped: bool,
     pub hovered: bool,
+    pub cancelled: bool,
+    pub panning: bool,
 }
 pub fn layer_color(id: u16) -> Color32 {
     match id {
@@ -139,15 +150,24 @@ impl BoardView {
             && self.is_visible(i)
     }
     pub fn clear_gesture(&mut self) {
-        self.preview = None;
+        self.clear_pointer();
         self.tool_active = false;
+    }
+    pub fn clear_pointer(&mut self) {
+        self.suppress_primary_until_release = true;
+        self.preview = None;
         self.selection_box = None;
         self.draft_outline.clear();
         self.input = None;
+        self.primary_origin = None;
+        self.primary_press = None;
+        self.primary_dragging = false;
     }
 }
 pub fn fit(camera: &mut Camera, b: &Board, rect: Rect) {
-    let bounds = b.bounds();
+    fit_bounds(camera, b.bounds(), rect);
+}
+fn fit_bounds(camera: &mut Camera, bounds: Bounds, rect: Rect) {
     let w = ((bounds.max.x - bounds.min.x) as f64 / 1e6).max(0.1);
     let h = ((bounds.max.y - bounds.min.y) as f64 / 1e6).max(0.1);
     let c = bounds.centre();
@@ -168,51 +188,6 @@ fn dim(c: Color32, alpha: u8) -> Color32 {
     let [r, g, b, _] = c.to_array();
     Color32::from_rgba_unmultiplied(r, g, b, alpha)
 }
-/// PCB zoom uses the same bounds as PCB fit; shared schematic camera limits differ.
-fn zoom_at(camera: &mut Camera, point: Pos2, rect: Rect, factor: f64) {
-    let before = camera.world_mm(point, rect);
-    camera.pixels_per_mm = (camera.pixels_per_mm * factor).clamp(0.001, 100_000.0);
-    let after = camera.world_mm(point, rect);
-    camera.centre_mm[0] += before[0] - after[0];
-    camera.centre_mm[1] += before[1] - after[1];
-}
-fn navigate(ui: &egui::Ui, r: &Response, camera: &mut Camera, b: &Board, rect: Rect) {
-    if !camera.fitted {
-        fit(camera, b, rect);
-    }
-    if r.dragged_by(egui::PointerButton::Middle) || r.dragged_by(egui::PointerButton::Secondary) {
-        let d = ui.input(|i| i.pointer.delta());
-        camera.centre_mm[0] -= d.x as f64 / camera.pixels_per_mm;
-        camera.centre_mm[1] += d.y as f64 / camera.pixels_per_mm;
-    }
-    if let Some(p) = r.hover_pos() {
-        let (scroll, modifiers) = ui.input(|i| (i.smooth_scroll_delta, i.modifiers));
-        if modifiers.ctrl || modifiers.command {
-            if scroll.y != 0.0 {
-                zoom_at(camera, p, rect, (scroll.y as f64 * 0.003).exp());
-            }
-        } else if modifiers.shift {
-            camera.centre_mm[0] -= (scroll.x + scroll.y) as f64 / camera.pixels_per_mm;
-        } else {
-            camera.centre_mm[0] -= scroll.x as f64 / camera.pixels_per_mm;
-            camera.centre_mm[1] += scroll.y as f64 / camera.pixels_per_mm;
-        }
-        if !ui.ctx().wants_keyboard_input() {
-            ui.input(|i| {
-                if i.key_pressed(egui::Key::PageDown) && (i.modifiers.ctrl || i.modifiers.command) {
-                    fit(camera, b, rect);
-                } else if i.key_pressed(egui::Key::PageUp) {
-                    zoom_at(camera, p, rect, 1.5);
-                } else if i.key_pressed(egui::Key::PageDown) {
-                    zoom_at(camera, p, rect, 1.0 / 1.5);
-                }
-                if i.key_pressed(egui::Key::Home) {
-                    camera.centre_mm = camera.world_mm(p, rect);
-                }
-            });
-        }
-    }
-}
 pub fn canvas(ui: &mut egui::Ui, b: &Board, view: &mut View) -> CanvasOutput {
     view.pcb.initialize(b);
     if !view.pcb.grid_initialized {
@@ -222,7 +197,7 @@ pub fn canvas(ui: &mut egui::Ui, b: &Board, view: &mut View) -> CanvasOutput {
         }
     }
     let (rect, response) = ui.allocate_exact_size(ui.available_size(), Sense::click_and_drag());
-    navigate(ui, &response, &mut view.camera, b, rect);
+    let panning = navigation::navigate(ui, &response, &mut view.camera, b, &mut view.pcb, rect);
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, 0.0, Color32::from_rgb(109, 106, 105));
     // Release abandoned preview/deleted/hidden regions after one unused frame,
@@ -534,20 +509,7 @@ pub fn canvas(ui: &mut egui::Ui, b: &Board, view: &mut View) -> CanvasOutput {
         }
     }
     let hit = hits.first().copied();
-    if let Some(p) = point {
-        let s = view.camera.screen(p, rect);
-        if response.hovered() {
-            painter.line_segment(
-                [Pos2::new(rect.left(), s.y), Pos2::new(rect.right(), s.y)],
-                Stroke::new(0.5, Color32::from_gray(100)),
-            );
-            painter.line_segment(
-                [Pos2::new(s.x, rect.top()), Pos2::new(s.x, rect.bottom())],
-                Stroke::new(0.5, Color32::from_gray(100)),
-            );
-            ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
-        }
-    }
+    navigation::paint_cursor(ui, &painter, &response, point, view, rect, panning);
     if scene.pours_stale {
         painter.text(
             rect.left_top() + Vec2::splat(8.0),
@@ -557,23 +519,67 @@ pub fn canvas(ui: &mut egui::Ui, b: &Board, view: &mut View) -> CanvasOutput {
             Color32::YELLOW,
         );
     }
-    let origin = ui
-        .input(|i| i.pointer.press_origin())
-        .filter(|p| rect.contains(*p))
-        .map(|p| world(&view.camera, p, rect));
+    // Keep the press location across release, including fast drags whose
+    // threshold and release arrive in one frame (egui clears press_origin then).
+    let pressed = ui.input(|i| {
+        i.events.iter().find_map(|e| match e {
+            egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                ..
+            } => Some(*pos),
+            _ => None,
+        })
+    });
+    let suppressed = view.pcb.suppress_primary_until_release;
+    if let Some(pos) =
+        pressed.filter(|pos| !suppressed && rect.contains(*pos) && response.contains_pointer())
+    {
+        view.pcb.primary_origin = Some(world(&view.camera, pos, rect));
+        view.pcb.primary_press = Some(pos);
+        view.pcb.primary_dragging = false;
+    }
+    let origin = view.pcb.primary_origin;
+    let was_dragging = view.pcb.primary_dragging;
+    let (down, released, focused, pointer_pos) = ui.input(|i| {
+        (
+            i.pointer.primary_down(),
+            i.pointer.button_released(egui::PointerButton::Primary),
+            i.focused,
+            i.pointer.latest_pos(),
+        )
+    });
+    if let (Some(start), Some(end)) = (view.pcb.primary_press, pointer_pos)
+        && start.distance(end) > 6.0
+    {
+        view.pcb.primary_dragging = true;
+    }
+    let dragging = view.pcb.primary_dragging;
+    if !down {
+        view.pcb.suppress_primary_until_release = false;
+    }
+    let interrupted = !focused || (panning && origin.is_some());
+    if !down || interrupted {
+        view.pcb.primary_origin = None;
+        view.pcb.primary_press = None;
+        view.pcb.primary_dragging = false;
+    }
     view.pcb.input = Some(Input {
         point,
         raw_point: raw,
         press_origin: origin,
         hit,
         hits,
-        clicked: response.clicked(),
-        double_clicked: response.double_clicked(),
+        clicked: response.clicked() && !dragging && !suppressed,
+        double_clicked: response.double_clicked() && !dragging && !suppressed,
         secondary_clicked: response.secondary_clicked(),
-        drag_started: response.drag_started_by(egui::PointerButton::Primary),
-        dragging: response.dragged_by(egui::PointerButton::Primary),
-        drag_stopped: response.drag_stopped_by(egui::PointerButton::Primary),
+        drag_started: dragging && !was_dragging && !interrupted,
+        dragging: dragging && down && !interrupted,
+        drag_stopped: dragging && released && !interrupted,
         hovered: response.hovered(),
+        cancelled: interrupted,
+        panning,
     });
     CanvasOutput {
         cursor_mm: point.map(|p| [p.x as f64 / 1e6, p.y as f64 / 1e6]),
@@ -857,6 +863,85 @@ fn polygon(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn canvas_passes_pad_edge_snap_and_bypass_to_editor_without_editing_board() {
+        let mut board = Board::default();
+        board.items.push(Item::new(
+            TOP,
+            None,
+            Shape::Pad {
+                position: Point::default(),
+                size: Point::mm(2, 2),
+                rotation: 0.0,
+                shape: PadShape::Rectangle,
+                hole: 0,
+                plated: false,
+                name: "1".into(),
+                bottom_size: None,
+                middle_size: None,
+            },
+        ));
+        let original = board.clone();
+        let ctx = egui::Context::default();
+        let mut view = View::default();
+        view.camera.fitted = true;
+        view.camera.pixels_per_mm = 100.0;
+        view.camera.centre_mm = [0.0, 0.0];
+        view.grid = false;
+        let raw = Point {
+            x: 1_100_000,
+            y: 400_000,
+        };
+        let mut canvas_rect = Rect::NOTHING;
+        let _ = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 600.0))),
+                ..Default::default()
+            },
+            |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    canvas_rect = ui.available_rect_before_wrap();
+                    canvas(ui, &board, &mut view);
+                });
+            },
+        );
+        let pointer = view.camera.screen(raw, canvas_rect);
+        for (enabled, bypass) in [(true, false), (false, false), (true, true), (true, false)] {
+            view.pcb.snap.pad_edges = enabled;
+            let _ = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 600.0))),
+                    focused: true,
+                    modifiers: egui::Modifiers {
+                        ctrl: bypass,
+                        shift: bypass,
+                        ..Default::default()
+                    },
+                    events: vec![egui::Event::PointerMoved(pointer)],
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        canvas(ui, &board, &mut view);
+                    });
+                },
+            );
+            let input = view.pcb.input.as_ref().unwrap();
+            assert_eq!(input.raw_point, Some(raw));
+            assert_eq!(
+                input.point,
+                Some(if enabled && !bypass {
+                    Point {
+                        x: 1_000_000,
+                        y: 400_000,
+                    }
+                } else {
+                    raw
+                })
+            );
+        }
+        assert_eq!(board, original);
+    }
     #[test]
     fn source_grid_applies_after_layer_bar_initialization_without_overriding_later_edits() {
         let mut board = Board::default();

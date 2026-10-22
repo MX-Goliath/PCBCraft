@@ -348,3 +348,75 @@ fn numeric_fields_commit_on_enter_and_escape_reverts_in_mm_and_mils() {
         }
     }
 }
+
+#[test]
+fn pcb_shortcut_sequences_and_inactive_drag_cleanup_are_routed_to_active_document() {
+    let mut app = app();
+    app.documents[0].saved = Some(app.documents[0].model.clone());
+    let ctx = egui::Context::default();
+    fn press(app: &mut PcbCraft, ctx: &egui::Context, key: Key, mods: egui::Modifiers) {
+        let _ = ctx.run(
+            egui::RawInput {
+                focused: true,
+                events: vec![
+                    egui::Event::Key {
+                        key,
+                        physical_key: None,
+                        pressed: true,
+                        repeat: false,
+                        modifiers: mods,
+                    },
+                    egui::Event::Key {
+                        key,
+                        physical_key: None,
+                        pressed: false,
+                        repeat: false,
+                        modifiers: mods,
+                    },
+                ],
+                modifiers: mods,
+                ..Default::default()
+            },
+            |ctx| app.shortcuts(ctx),
+        );
+    }
+    for (key, tool) in [(Key::M, Tool::Move), (Key::D, Tool::Drag)] {
+        press(&mut app, &ctx, Key::M, egui::Modifiers::NONE);
+        press(&mut app, &ctx, key, egui::Modifiers::NONE);
+        assert_eq!(app.documents[0].pcb_editor.tool, tool);
+        press(&mut app, &ctx, Key::Escape, egui::Modifiers::NONE);
+        assert_eq!(app.documents[0].pcb_editor.tool, Tool::Select);
+    }
+    press(&mut app, &ctx, Key::V, egui::Modifiers::NONE);
+    press(&mut app, &ctx, Key::F, egui::Modifiers::NONE);
+    assert!(matches!(
+        app.documents[0].view.pcb.requested_fit,
+        Some(eda_render::pcb::FitTarget::Board)
+    ));
+    press(&mut app, &ctx, Key::Home, egui::Modifiers::CTRL);
+    assert!(matches!(
+        app.documents[0].view.pcb.requested_fit,
+        Some(eda_render::pcb::FitTarget::Selection)
+    ));
+    press(&mut app, &ctx, Key::PageDown, egui::Modifiers::CTRL);
+    assert!(matches!(
+        app.documents[0].view.pcb.requested_fit,
+        Some(eda_render::pcb::FitTarget::Document)
+    ));
+    let doc = &mut app.documents[0];
+    let before = doc.model.clone();
+    doc.pcb_editor.gesture = Some(Gesture::Box {
+        origin: Point::default(),
+        add: false,
+    });
+    doc.view.pcb.selection_box = Some((Point::default(), Point::mm(5, 5)));
+    doc.view.pcb.preview = doc.model.pcb.clone();
+    app.active = None;
+    app.finish_pcb_interaction(&ctx);
+    let doc = &app.documents[0];
+    assert!(doc.pcb_editor.gesture.is_none());
+    assert!(doc.view.pcb.selection_box.is_none());
+    assert!(doc.view.pcb.preview.is_none());
+    assert_eq!(doc.model, before);
+    assert!(!doc.dirty());
+}

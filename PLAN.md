@@ -392,3 +392,46 @@ Altium interoperability, Windows GUI, реальные платы, DRC/shove/ECO
 - [ ] Полная pixel/material parity, templates/custom apertures/thermal relief,
       modern native independent masks, plane stack и перестройка native references
       после repour. Native Save при неподдержанном remap сохраняет отказ.
+
+
+### Продолжение PCB: Pad Edges — 22.10.2026
+
+- [x] Получены обновления origin/main до e8f7ed7 без конфликтов.
+- [x] В существующих PCB Snap Options включён Pad Edges по сохранённому
+      наблюдению AD 24.4.1; настройки привязки не изменяют документ/историю.
+- [x] Проекция на реальную внешнюю границу меди с учётом формы, угловых радиусов,
+      поворота, Copper Offset, padstack и видимых слоёв; аналитические дуги.
+- [x] Регрессии геометрии/радиуса/слоёв/переключателей и настоящих событий
+      PCB canvas, включая Ctrl+Shift bypass. Границы: pcb-update/PROPERTIES.md.
+- [ ] Новая живая Altium-сверка приоритетов snap/custom shapes и всех DPI;
+      остальные незавершённые PCB-этапы выше сохраняются.
+
+Проверены 193 workspace tests, fmt, strict Clippy и Linux debug build.
+Linux GUI: переключение Pad Edges с привязкой к краю / возвратом к сетке,
+без dirty state. TI PMP23595 импортируется; PMP22650 по-прежнему блокирует
+валидация padstack. Новая живая Altium-сверка пока отсутствует.
+
+
+### Управление PCB — 22.10.2026
+
+По сообщению пользователя исправлен отдельный PCB input path: Ctrl+wheel
+обрабатывает egui zoom_delta; pinch/PgUp/PgDn сохраняют anchor под курсором;
+pan правой/средней кнопкой, fit document/board/selection и Home. Вместо
+безусловных полос введён Small 90 с сохраняемыми настройками курсора/колеса.
+Исправлены быстрый drag-release, выбор объекта командами M,M/M,D, отмена
+mouse gesture при потере фокуса/смене вкладки, grid-off drag, поворот во время
+mouse move и paste. Добавлены регрессии событий и истории. Новая живая сверка
+с AD 24.4.1 недоступна; полное совпадение не заявляется.
+Карта управления и границы: docs/pcb-update/CONTROLS.md.
+
+Валидация управления: 210 workspace tests, fmt и strict Clippy. В настоящем
+Linux GUI проверены Ctrl-wheel туда/обратно, pan, V,F, перенос + Space,
+Undo/Redo, Esc и сохранение точных координат/угла в PcbDoc; Ctrl+W добавляет
+проводник с ожидаемой сетью и концами. Исправлен обнаруженный конфликт
+ScrollArea двух Description компонента. Тестовые платы находятся вне репозитория.
+Отмена также подавляет события нажатия/отпускания мыши в том же кадре до
+отпускания кнопки; добавлена отдельная регрессия этой гонки событий.
+Локально собран PCBCraft-0.1.0-controls-20261022-x86_64.AppImage (x86_64,
+glibc >= 2.39, вне Git). Проверены запуск пакета, zoom, выбор компонента,
+отсутствие конфликта Description и Esc + отпускание мыши с побайтово
+неизменным сохранённым PcbDoc.
