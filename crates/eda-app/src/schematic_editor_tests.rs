@@ -3,6 +3,7 @@ use eda_render::SchematicInput;
 
 fn app() -> PcbCraft {
     PcbCraft {
+        cross_probe: Default::default(),
         file_dialog: rfd::FileDialog::new(),
         documents: vec![OpenDocument::new(
             Document::new(DocumentKind::Schematic, "Interaction test"),

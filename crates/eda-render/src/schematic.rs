@@ -1304,7 +1304,7 @@ pub(super) fn paint(
                 hit = Some(
                     if parameter
                         || (matches!(primitive.kind, K::Pin { .. })
-                            && ui.input(|i| i.modifiers.ctrl))
+                            && (view.cross_probe || ui.input(|i| i.modifiers.ctrl)))
                     {
                         primitive.id
                     } else {

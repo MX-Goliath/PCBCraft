@@ -6,6 +6,7 @@ fn app() -> PcbCraft {
     let mut model = model;
     model.pcb = Some(board);
     PcbCraft {
+        cross_probe: Default::default(),
         file_dialog: rfd::FileDialog::new(),
         documents: vec![OpenDocument::new(model, None)],
         projects: vec![],

@@ -89,6 +89,8 @@ impl Camera {
 #[serde(default)]
 pub struct View {
     #[serde(skip)]
+    pub cross_probe: bool,
+    #[serde(skip)]
     pub pcb: pcb::BoardView,
     pub camera: Camera,
     pub grid: bool,
@@ -165,6 +167,7 @@ impl Default for View {
             grid_nm: 1_000_000,
             visible: [true; 4],
             active_layer: Layer::Top,
+            cross_probe: false,
             selected: None,
             select_pads: true,
             show_axes: true,

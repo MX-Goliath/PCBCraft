@@ -463,7 +463,13 @@ pub fn canvas(ui: &mut egui::Ui, b: &Board, view: &mut View) -> CanvasOutput {
         let mut candidates: Vec<_> = order
             .iter()
             .rev()
-            .filter(|i| view.pcb.selectable(i))
+            .filter(|i| {
+                if view.cross_probe {
+                    view.pcb.is_visible(i)
+                } else {
+                    view.pcb.selectable(i)
+                }
+            })
             .filter_map(|i| {
                 let d = i.hit_distance_on_layer(
                     p,

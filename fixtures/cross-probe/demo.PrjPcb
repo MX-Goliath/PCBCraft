@@ -1,0 +1,9 @@
+[Design]
+Version=1.0
+HierarchyMode=0
+
+[Document1]
+DocumentPath=../schematic/minimal.SchDoc
+
+[Document2]
+DocumentPath=../pcb-update/editor-v2.PcbDoc

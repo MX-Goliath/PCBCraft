@@ -11,6 +11,10 @@ use uuid::Uuid;
 #[path = "schematic_drag.rs"]
 mod drag;
 pub use drag::connected_transform;
+/// Electrical connection point in document coordinates.
+pub fn electrical_endpoint(p: &SchPrimitive) -> Option<Point> {
+    drag::pin_end(p)
+}
 #[path = "schematic_wire.rs"]
 mod wire_edit;
 pub use wire_edit::{WireHandle, connection_at, junctions, wire_drag, wire_handle_at};

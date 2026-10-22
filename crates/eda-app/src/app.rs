@@ -9,6 +9,8 @@ use uuid::Uuid;
 mod chrome;
 #[path = "components.rs"]
 mod components;
+#[path = "cross_probe.rs"]
+mod cross_probe;
 #[path = "pcb_editor.rs"]
 mod pcb_editor;
 #[path = "properties.rs"]
@@ -108,6 +110,7 @@ impl Default for Settings {
 
 #[derive(Clone, Copy)]
 enum Command {
+    CrossProbe,
     ShowComponents,
     ToggleComponents,
     SchPlace(Placement),
@@ -153,6 +156,7 @@ struct PadEdit {
 }
 
 pub struct PcbCraft {
+    cross_probe: cross_probe::State,
     file_dialog: rfd::FileDialog,
     documents: Vec<OpenDocument>,
     projects: Vec<eda_io::altium::Project>,
@@ -184,6 +188,7 @@ impl PcbCraft {
             settings.grid_nm = 1_000_000;
         }
         let mut app = Self {
+            cross_probe: Default::default(),
             file_dialog: rfd::FileDialog::new().set_parent(cc),
             documents: vec![],
             projects: vec![],
@@ -478,7 +483,11 @@ impl PcbCraft {
     }
 
     fn run(&mut self, command: Command, ctx: &egui::Context) {
+        if !matches!(command, Command::CrossProbe | Command::Fit) {
+            self.cross_probe.enabled = false;
+        }
         match command {
+            Command::CrossProbe => self.start_cross_probe(),
             Command::SchPlace(kind) => self.start_schematic_tool(kind),
             Command::SchEdit(action) => self.schematic_action(action, ctx),
             Command::Pcb(action) => self.pcb_action(action),
@@ -873,6 +882,19 @@ impl PcbCraft {
                             "Reports",
                         ] {
                             ui.menu_button(label, |ui| {
+                                if label == "Tools" {
+                                    self.action(
+                                        ui,
+                                        "Cross Probe",
+                                        "T, C",
+                                        Command::CrossProbe,
+                                        true,
+                                    );
+                                    if schematic {
+                                        return;
+                                    }
+                                    ui.separator();
+                                }
                                 if label == "Place" && schematic {
                                     self.schematic_place_menu(ui);
                                     return;
@@ -1161,6 +1183,11 @@ impl PcbCraft {
                         .small()
                         .color(MUTED),
                     );
+                    if self.cross_probe.enabled {
+                        ui.separator();
+                        ui.label(RichText::new("Cross Probe · Esc exits").strong())
+                            .on_hover_text(&self.cross_probe.status);
+                    }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.menu_button("Panels", |ui| {
                             self.action(ui, "Components", "", Command::ToggleComponents, true);
@@ -1375,13 +1402,30 @@ impl PcbCraft {
                         .map_or_else(|| doc.model.name.clone(), |p| p.display().to_string());
                     doc.view.display_date = chrono::Local::now().format("%m.%d.%Y").to_string();
                     doc.view.pcb.navigation = self.settings.pcb_navigation;
+                    doc.view.cross_probe = self.cross_probe.enabled;
                     let output = eda_render::canvas(ui, &doc.model, &mut doc.view);
                     let pcb_input = doc.view.pcb.input.take();
                     self.cursor_mm = output.cursor_mm;
-                    if let Some(input) = output.schematic_input {
+                    if let Some(input) = output.schematic_input
+                        && !self.cross_probe_input(
+                            index,
+                            input.hit,
+                            input.clicked,
+                            input.secondary_clicked,
+                            ctx,
+                        )
+                    {
                         self.schematic_input(index, input, ctx);
                     }
-                    if let Some(input) = pcb_input {
+                    if let Some(input) = pcb_input
+                        && !self.cross_probe_input(
+                            index,
+                            input.hit,
+                            input.clicked,
+                            input.secondary_clicked,
+                            ctx,
+                        )
+                    {
                         self.pcb_input(index, input, ctx);
                     }
                     if self.documents[index].model.kind == DocumentKind::Schematic {
@@ -1587,6 +1631,12 @@ impl PcbCraft {
         if self.pending.is_some() || ctx.wants_keyboard_input() {
             return;
         }
+        if self.cross_probe_shortcuts(ctx) {
+            return;
+        }
+        if self.cross_probe.enabled {
+            return;
+        }
         if self.pcb_shortcuts(ctx) {
             return;
         }
@@ -1648,6 +1698,7 @@ impl eframe::App for PcbCraft {
         self.finish_library_drag(ctx);
         self.schematic_move_menu(ctx);
         self.pcb_dialogs(ctx);
+        self.cross_probe_dialog(ctx);
         self.dialogs(ctx);
         self.resize_edges(ctx);
         if let Some(command) = self.command.take() {

@@ -1,4 +1,5 @@
 //! GUI-independent document model and history.
+pub mod cross_probe;
 pub mod library;
 pub mod pcb;
 pub mod pcb_polygon;
