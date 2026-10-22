@@ -1234,6 +1234,18 @@ impl PcbCraft {
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.menu_button("Panels", |ui| {
+                            if self
+                                .active
+                                .is_some_and(|i| self.documents[i].model.pcb.is_some())
+                            {
+                                self.action(
+                                    ui,
+                                    "View Configuration",
+                                    "L",
+                                    Command::Pcb(pcb_editor::Action::Layers),
+                                    true,
+                                );
+                            }
                             self.action(ui, "Components", "", Command::ToggleComponents, true);
                             self.action(ui, "Projects", "", Command::ToggleProjects, true);
                             self.action(ui, "Properties", "", Command::ToggleProperties, true);
@@ -1257,6 +1269,29 @@ impl PcbCraft {
         .width_range(230.0..=500.0)
         .resizable(true)
         .show(ctx, |ui| {
+            if let Some(i) = self.active
+                && self.documents[i].model.pcb.is_some()
+                && self.documents[i].view.pcb.show_layer_dialog
+            {
+                ui.horizontal(|ui| {
+                    ui.strong("View Configuration");
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if theme::icon_button(ui, theme::Icon::Close, false, true).clicked() {
+                            self.documents[i].view.pcb.show_layer_dialog = false;
+                        }
+                    });
+                });
+                ui.separator();
+                let doc = &mut self.documents[i];
+                if let Some(layer) = doc.view.pcb.configuration_panel(
+                    ui,
+                    doc.model.pcb.as_ref().unwrap(),
+                    &mut doc.view.grid,
+                ) {
+                    self.command = Some(Command::Pcb(pcb_editor::Action::RouteLayer(layer)));
+                }
+                return;
+            }
             if let Some(position) = ctx.input(|i| i.pointer.press_origin()) {
                 self.property_ui.focused = ui.max_rect().contains(position);
             }
@@ -1745,7 +1780,12 @@ impl eframe::App for PcbCraft {
             self.projects(ctx);
         }
         if self.layer_stack.is_none()
-            && (self.settings.properties || self.settings.messages || self.settings.components)
+            && (self.settings.properties
+                || self.settings.messages
+                || self.settings.components
+                || self
+                    .active
+                    .is_some_and(|i| self.documents[i].view.pcb.show_layer_dialog))
         {
             self.right_dock(ctx);
         }

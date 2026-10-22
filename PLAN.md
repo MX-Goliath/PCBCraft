@@ -516,3 +516,20 @@ release AppImage проверен на TI PMP23595: выбор/Properties, orbit
 Проверка Annotation: 247 workspace tests, fmt и strict Clippy. Linux GUI:
 меню/предпросмотр/ECO/Undo/Redo/JSON; TI PMP23595 — 5 листов, 167 компонентов,
 сохранение существующих номеров и Validate полной перенумерации без Apply.
+
+### PCB View Configuration and connections — 22.10.2026
+
+- [x] Previous schematic annotation committed and pushed to main: 84951bf.
+- [x] Right dock View Configuration, L/Panels/menu/layer-bar entry points.
+- [x] Layer visibility/colors, physical ordering, object transparency, labels,
+      single-layer dim/hide, grid/system colors and basic 3D view controls.
+- [x] Physical copper islands and minimum spanning connection guides; native
+      polygon NET inheritance, plated/via spans, holes and stale pour handling.
+- [x] Bounded background calculation/cache with stale-result rejection.
+- [ ] Exact AD visual/functional verification: official docs blocked by proxy;
+      native profile persistence, draft objects, via span markers and full 3D
+      settings remain incomplete. See docs/pcb-update/VIEW_CONFIGURATION.md.
+
+Validation: 255 workspace tests; fmt, strict Clippy, debug build. Linux GUI:
+fixture connection lines and view toggles; TI PMP23595 Layers & Colors and
+3D View Options. No TI project files committed or modified.

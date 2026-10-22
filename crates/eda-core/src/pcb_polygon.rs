@@ -322,7 +322,7 @@ fn segment_copper(a: Point, b: Point, width: i64) -> MultiPolygon<f64> {
 fn circle(c: Point, r: i64) -> MultiPolygon<f64> {
     geo::Point::new(c.x as f64 / 1e6, c.y as f64 / 1e6).buffer(r as f64 / 1e6)
 }
-fn copper(item: &Item, layer: u16) -> MultiPolygon<f64> {
+pub(crate) fn copper(item: &Item, layer: u16) -> MultiPolygon<f64> {
     // Drills are physical obstacles, never electrical lands/thermal anchors.
     if item.is_drill_only()
         && let Shape::Pad { position, hole, .. } = &item.shape

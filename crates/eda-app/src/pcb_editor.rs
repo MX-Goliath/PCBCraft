@@ -1827,8 +1827,7 @@ impl PcbCraft {
                             if ui
                                 .selectable_label(
                                     active,
-                                    RichText::new(&layer.name)
-                                        .color(eda_render::pcb::layer_color(layer.id)),
+                                    RichText::new(&layer.name).color(doc.view.pcb.color(layer.id)),
                                 )
                                 .clicked()
                                 && doc.view.pcb.active_layer != layer.id
@@ -1882,53 +1881,9 @@ impl PcbCraft {
             return;
         };
         let doc = &mut self.documents[i];
-        let Some(board) = &doc.model.pcb else {
+        let Some(_) = &doc.model.pcb else {
             return;
         };
-        let mut layers = doc.view.pcb.show_layer_dialog;
-        if layers {
-            egui::Window::new("View Configuration — Layers and Colors")
-                .open(&mut layers)
-                .default_width(380.0)
-                .show(ctx, |ui| {
-                    ui.horizontal(|ui| {
-                        if ui.button("All On").clicked() {
-                            doc.view.pcb.visible = board.layers.iter().map(|l| l.id).collect();
-                        }
-                        if ui.button("All Off").clicked() {
-                            doc.view.pcb.visible.clear();
-                        }
-                    });
-                    for l in &board.layers {
-                        ui.horizontal(|ui| {
-                            let mut visible = doc.view.pcb.visible.contains(&l.id);
-                            if ui.checkbox(&mut visible, "").changed() {
-                                if visible {
-                                    doc.view.pcb.visible.insert(l.id);
-                                } else {
-                                    doc.view.pcb.visible.remove(&l.id);
-                                }
-                            }
-                            ui.colored_label(eda_render::pcb::layer_color(l.id), "■");
-                            if ui
-                                .selectable_label(doc.view.pcb.active_layer == l.id, &l.name)
-                                .clicked()
-                            {
-                                self.command = Some(Command::Pcb(Action::RouteLayer(l.id)));
-                            }
-                        });
-                    }
-                    ui.separator();
-                    ui.checkbox(&mut doc.view.pcb.polygons_visible, "Show polygon copper");
-                    ui.horizontal(|ui| {
-                        ui.label("Single layer");
-                        for (value, label) in [(0, "Off"), (1, "Dim"), (2, "Hide")] {
-                            ui.selectable_value(&mut doc.view.pcb.single_layer, value, label);
-                        }
-                    });
-                });
-        }
-        doc.view.pcb.show_layer_dialog = layers;
         let mut grid = doc.view.pcb.show_grid_dialog;
         if grid {
             egui::Window::new("Snap Grid")

@@ -8,6 +8,8 @@ use std::{
     hash::{Hash, Hasher},
 };
 use uuid::Uuid;
+#[path = "pcb_connections.rs"]
+mod connections;
 #[path = "pcb_display.rs"]
 mod display;
 #[path = "pcb_navigation.rs"]
@@ -48,6 +50,7 @@ pub struct BoardView {
     cache: HashMap<Uuid, (u64, Vec<usize>, bool)>,
     display: display::Settings,
     grid_initialized: bool,
+    connections: connections::Cache,
 }
 #[derive(Clone, Default)]
 pub struct Input {
@@ -128,11 +131,22 @@ impl BoardView {
         item.properties
             .get("PCBCRAFT_LEGACY_REGION_DUPLICATE")
             .is_none_or(|v| v != "TRUE")
+            && self.display.alpha(item) > 0
             && self.visible.contains(&item.layer)
             && (self.single_layer != 2
                 || item.layer == self.active_layer
                 || item.layer == MULTI_LAYER)
             && (self.polygons_visible || item.polygon.is_none())
+    }
+    fn polygon_visible(&self, layer: u16) -> bool {
+        self.polygons_visible
+            && self.visible.contains(&layer)
+            && self
+                .display
+                .opacity
+                .get(&layer)
+                .is_none_or(|values| values[10] > 0)
+            && (self.single_layer != 2 || layer == self.active_layer)
     }
     pub fn selectable(&self, i: &Item) -> bool {
         let idx = match i.shape {
@@ -203,10 +217,18 @@ pub fn canvas(ui: &mut egui::Ui, b: &Board, view: &mut View) -> CanvasOutput {
     let (rect, response) = ui.allocate_exact_size(ui.available_size(), Sense::click_and_drag());
     let panning = navigation::navigate(ui, &response, &mut view.camera, b, &mut view.pcb, rect);
     let painter = ui.painter_at(rect);
-    painter.rect_filled(rect, 0.0, Color32::from_rgb(109, 106, 105));
+    painter.rect_filled(rect, 0.0, view.pcb.display.background);
     // Release abandoned preview/deleted/hidden regions after one unused frame,
     // including large meshes that would remain below the old entry-count cap.
     view.pcb.begin_frame();
+    if view.pcb.display.connections {
+        view.pcb.connections.update(
+            b,
+            view.pcb.preview.as_ref(),
+            view.pcb.three_d.revision,
+            ui.ctx(),
+        );
+    }
     let scene = view.pcb.preview.as_ref().unwrap_or(b);
     let outline = scene.outline_points(256);
     if outline.len() >= 3 {
@@ -216,7 +238,7 @@ pub fn canvas(ui: &mut egui::Ui, b: &Board, view: &mut View) -> CanvasOutput {
             rect,
             &outline,
             &[],
-            Color32::BLACK,
+            view.pcb.display.board_color,
             None,
         );
         // Native arc/line seams can backtrack by a few nanometres. A joined
@@ -262,7 +284,7 @@ pub fn canvas(ui: &mut egui::Ui, b: &Board, view: &mut View) -> CanvasOutput {
                         rect,
                     ),
                     0.65,
-                    Color32::from_gray(65),
+                    view.pcb.display.grid_color,
                 );
             }
         }
@@ -305,12 +327,12 @@ pub fn canvas(ui: &mut egui::Ui, b: &Board, view: &mut View) -> CanvasOutput {
     });
     paint_masks(&painter, scene, view, rect, false);
     for item in &order {
-        let mut color = dim(layer_color(item.layer), view.pcb.display.alpha(item));
+        let mut color = dim(view.pcb.color(item.layer), view.pcb.display.alpha(item));
         if view.pcb.single_layer == 1
             && item.layer != view.pcb.active_layer
             && item.layer != MULTI_LAYER
         {
-            color = dim(color, 50);
+            color = dim(color, view.pcb.display.dim);
         }
         if view.pcb.highlight_net.is_some() && item.net != view.pcb.highlight_net {
             color = dim(color, 35);
@@ -319,7 +341,7 @@ pub fn canvas(ui: &mut egui::Ui, b: &Board, view: &mut View) -> CanvasOutput {
             color = Color32::from_rgb(255, 255, 255);
         }
         if scene.pours_stale && item.polygon.is_some() {
-            color = dim(color, 50);
+            color = dim(color, view.pcb.display.dim);
         }
         paint_item(
             &painter,
@@ -331,17 +353,38 @@ pub fn canvas(ui: &mut egui::Ui, b: &Board, view: &mut View) -> CanvasOutput {
             &mut view.pcb.cache,
         );
     }
+    if view.pcb.display.connections {
+        for connection in view.pcb.connections.lines.iter() {
+            let color = if view
+                .pcb
+                .highlight_net
+                .is_some_and(|net| net != connection.net)
+            {
+                dim(view.pcb.display.connection_color, view.pcb.display.dim)
+            } else {
+                view.pcb.display.connection_color
+            };
+            painter.line_segment(
+                [
+                    view.camera.screen(connection.start, rect),
+                    view.camera.screen(connection.end, rect),
+                ],
+                Stroke::new(1.0, color),
+            );
+        }
+    }
     for poly in &scene.polygon_pours {
-        if !view.pcb.visible.contains(&poly.layer)
-            || (view.pcb.single_layer == 2 && poly.layer != view.pcb.active_layer)
-        {
+        if !view.pcb.polygon_visible(poly.layer) {
             continue;
         }
         let selected = view.pcb.selected.contains(&poly.id);
         let color = if selected {
             Color32::WHITE
         } else {
-            dim(layer_color(poly.layer), if poly.shelved { 80 } else { 140 })
+            dim(
+                view.pcb.color(poly.layer),
+                if poly.shelved { 80 } else { 140 },
+            )
         };
         let points = poly.points();
         if points.len() > 2 {
@@ -412,7 +455,7 @@ pub fn canvas(ui: &mut egui::Ui, b: &Board, view: &mut View) -> CanvasOutput {
                     .into_iter()
                     .map(|p| view.camera.screen(p, rect))
                     .collect(),
-                Color32::from_rgb(210, 210, 190),
+                view.pcb.display.hole_color,
                 Stroke::NONE,
             ));
         }
@@ -436,11 +479,23 @@ pub fn canvas(ui: &mut egui::Ui, b: &Board, view: &mut View) -> CanvasOutput {
                 } else {
                     net
                 };
+                let both = view.pcb.display.pad_numbers && !net.is_empty();
+                let center = view.camera.screen(*position, rect);
+                if both {
+                    text::label(
+                        &painter,
+                        center + Vec2::new(0.0, height * 0.23),
+                        net,
+                        height * 0.35,
+                        height * 0.9,
+                        Color32::from_rgb(255, 255, 200),
+                    );
+                }
                 text::label(
                     &painter,
-                    view.camera.screen(*position, rect),
+                    center - Vec2::new(0.0, if both { height * 0.23 } else { 0.0 }),
                     value,
-                    height * 0.7,
+                    height * if both { 0.35 } else { 0.7 },
                     height * 0.9,
                     Color32::from_rgb(255, 255, 200),
                 );
@@ -499,9 +554,7 @@ pub fn canvas(ui: &mut egui::Ui, b: &Board, view: &mut View) -> CanvasOutput {
         hits.extend(candidates.into_iter().map(|c| c.0));
         if view.pcb.filters[7] {
             for poly in scene.polygon_pours.iter().rev() {
-                if !view.pcb.visible.contains(&poly.layer)
-                    || (poly.locked && !view.pcb.select_locked)
-                    || (view.pcb.single_layer == 2 && poly.layer != view.pcb.active_layer)
+                if !view.pcb.polygon_visible(poly.layer) || (poly.locked && !view.pcb.select_locked)
                 {
                     continue;
                 }
@@ -628,7 +681,7 @@ fn paint_masks(painter: &egui::Painter, board: &Board, view: &View, rect: Rect, 
                         .into_iter()
                         .map(|p| view.camera.screen(p, rect))
                         .collect(),
-                    dim(layer_color(layer), alpha),
+                    dim(view.pcb.color(layer), alpha),
                     Stroke::NONE,
                 ));
             }

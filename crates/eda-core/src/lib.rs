@@ -3,6 +3,7 @@ pub mod cross_probe;
 pub mod library;
 pub mod pcb;
 pub mod pcb_3d;
+pub mod pcb_connectivity;
 pub mod pcb_polygon;
 pub mod pcb_route;
 pub mod pcb_tools;
