@@ -7,7 +7,26 @@ pub(super) struct Settings {
     pub(super) opacity: BTreeMap<u16, [u8; 23]>,
     pub colors: BTreeMap<u16, egui::Color32>,
     pub options_tab: bool,
-    pub all_layers: bool,
+    pub panel: super::configuration::Panel,
+    pub hidden: [bool; 23],
+    pub draft: [bool; 23],
+    pub highlight_dim: u8,
+    pub masked_dim: u8,
+    pub selection_color: egui::Color32,
+    pub highlight_color: egui::Color32,
+    pub background_end: egui::Color32,
+    pub board_line: egui::Color32,
+    pub via_hole_color: egui::Color32,
+    pub origin_color: egui::Color32,
+    pub origin_visible: bool,
+    pub board_visible: bool,
+    pub pad_holes_visible: bool,
+    pub via_holes_visible: bool,
+    pub all_connections: bool,
+    pub layer_connections: bool,
+    pub via_span: bool,
+    pub track_names: bool,
+    pub status_info: bool,
     pub connections: bool,
     pub connection_color: egui::Color32,
     pub dim: u8,
@@ -53,11 +72,30 @@ impl Settings {
         let mut s = Self {
             connections: true,
             connection_color: egui::Color32::from_rgb(220, 220, 220),
-            dim: 50,
+            dim: 153,
+            highlight_dim: 102,
+            masked_dim: 128,
+            selection_color: egui::Color32::WHITE,
+            highlight_color: egui::Color32::from_rgb(255, 255, 200),
+            background_end: egui::Color32::from_rgb(109, 106, 105),
+            board_line: egui::Color32::BLACK,
+            via_hole_color: egui::Color32::from_rgb(128, 96, 0),
+            origin_color: egui::Color32::WHITE,
+            origin_visible: true,
+            board_visible: true,
+            pad_holes_visible: true,
+            via_holes_visible: true,
+            all_connections: fields.get("CFG2D.ALLCONNECTIONSINSINGLELAYERMODE") != Some(&"FALSE"),
+            layer_connections: fields.get("CFG2D.MULTICOLOREDCONNECTIONS") == Some(&"TRUE"),
+            via_span: fields.get("CFG2D.SHOWVIASPAN") == Some(&"TRUE"),
+            track_names: fields
+                .get("CFG2D.DISPLAYNETNAMESONTRACKS")
+                .is_some_and(|v| *v != "0"),
+            status_info: fields.get("CFG2D.SHOWSTATUSINFO") != Some(&"FALSE"),
             background: egui::Color32::from_rgb(109, 106, 105),
             board_color: egui::Color32::BLACK,
             grid_color: egui::Color32::from_gray(65),
-            hole_color: egui::Color32::from_rgb(210, 210, 190),
+            hole_color: egui::Color32::from_rgb(0, 128, 128),
             pad_numbers: fields.get("CFG2D.SHOWPADNUMBERS") == Some(&"TRUE"),
             pad_nets: fields.get("CFG2D.SHOWPADNETS") == Some(&"TRUE"),
             via_nets: fields.get("CFG2D.SHOWVIANETS") == Some(&"TRUE"),
@@ -94,7 +132,8 @@ impl Settings {
                 s.visible = Some(ids);
             }
         }
-        for layer in &board.layers {
+        let catalog = super::catalog::Catalog::from_board(board);
+        for layer in &catalog.layers {
             let key = format!("CFG2D.LAYEROPACITY.{}", layer_key(layer.id));
             if let Some(raw) = fields.get(key.as_str()) {
                 let mut values = [255; 23];
@@ -108,10 +147,19 @@ impl Settings {
                 s.opacity.insert(layer.id, values);
             }
         }
+        if let Some(raw) = fields.get("CFG2D.PRIMDRAWMODE") {
+            for (flag, mode) in s.draft.iter_mut().zip(raw.chars()) {
+                *flag = mode == '1';
+            }
+        }
+        s.panel.catalog = std::sync::Arc::new(catalog);
         s
     }
-    pub fn alpha(&self, item: &Item) -> u8 {
-        let kind = if item.properties.contains_key("PCBCRAFT_BODY_PROJECTION") {
+    pub fn kind(item: &Item) -> usize {
+        if item.keepout {
+            return 13;
+        }
+        if item.properties.contains_key("PCBCRAFT_BODY_PROJECTION") {
             12
         } else if item.polygon.is_some() {
             10
@@ -125,8 +173,15 @@ impl Settings {
                 Shape::Fill { .. } => 6,
                 Shape::Region { .. } => 11,
             }
-        };
-        self.opacity.get(&item.layer).map_or(255, |v| v[kind])
+        }
+    }
+    pub fn alpha(&self, item: &Item) -> u8 {
+        let kind = Self::kind(item);
+        if self.hidden[kind] {
+            0
+        } else {
+            self.opacity.get(&item.layer).map_or(255, |v| v[kind])
+        }
     }
 }
 
@@ -137,209 +192,6 @@ impl super::BoardView {
             .get(&layer)
             .copied()
             .unwrap_or_else(|| super::layer_color(layer))
-    }
-    /// Document-local display controls; never edit the electrical model or history.
-    pub fn configuration_panel(
-        &mut self,
-        ui: &mut egui::Ui,
-        board: &Board,
-        grid: &mut bool,
-    ) -> Option<u16> {
-        let mut requested_layer = None;
-        self.initialize(board);
-        ui.horizontal(|ui| {
-            ui.selectable_value(&mut self.display.options_tab, false, "Layers & Colors");
-            ui.selectable_value(&mut self.display.options_tab, true, "View Options");
-        });
-        ui.separator();
-        if self.display.connections {
-            ui.small(if self.connections.calculating() {
-                "Updating connections…".into()
-            } else {
-                format!("{} connections", self.connections.lines.len())
-            });
-        }
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            if !self.display.options_tab {
-                ui.collapsing("Configuration", |ui| {
-                    ui.label("Current document");
-                    ui.add_enabled(false, egui::Button::new("Load / Save Configuration…"))
-                        .on_hover_text("Native view configuration profiles are not supported yet");
-                });
-                for (group, title) in [
-                    (0, "Signal Layers"),
-                    (1, "Internal Planes"),
-                    (2, "Mechanical Layers"),
-                    (3, "Other Layers"),
-                ] {
-                    egui::CollapsingHeader::new(title)
-                        .default_open(true)
-                        .show(ui, |ui| {
-                            let mut layers: Vec<_> = board
-                                .layers
-                                .iter()
-                                .filter(|l| {
-                                    let g = if (39..=54).contains(&l.id) {
-                                        1
-                                    } else if l.copper {
-                                        0
-                                    } else if matches!(l.id,57..=72|83..=1090) {
-                                        2
-                                    } else {
-                                        3
-                                    };
-                                    g == group
-                                })
-                                .collect();
-                            layers.sort_by_key(|layer| layer.order);
-                            ui.horizontal(|ui| {
-                                for (label, on) in [("All On", true), ("All Off", false)] {
-                                    if ui.small_button(label).clicked() {
-                                        for l in &layers {
-                                            if on {
-                                                self.visible.insert(l.id);
-                                            } else {
-                                                self.visible.remove(&l.id);
-                                            }
-                                        }
-                                    }
-                                }
-                            });
-                            for layer in layers {
-                                ui.horizontal(|ui| {
-                                    let mut color = self.color(layer.id);
-                                    if ui.color_edit_button_srgba(&mut color).changed() {
-                                        self.display.colors.insert(layer.id, color);
-                                    }
-                                    let mut visible = self.visible.contains(&layer.id);
-                                    if ui.checkbox(&mut visible, "").changed() {
-                                        if visible {
-                                            self.visible.insert(layer.id);
-                                        } else {
-                                            self.visible.remove(&layer.id);
-                                        }
-                                    }
-                                    if ui
-                                        .selectable_label(
-                                            self.active_layer == layer.id,
-                                            &layer.name,
-                                        )
-                                        .clicked()
-                                    {
-                                        requested_layer = Some(layer.id);
-                                        self.visible.insert(layer.id);
-                                    }
-                                });
-                            }
-                        });
-                }
-                egui::CollapsingHeader::new("System Colors")
-                    .default_open(true)
-                    .show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            ui.color_edit_button_srgba(&mut self.display.connection_color);
-                            ui.checkbox(&mut self.display.connections, "Connections");
-                        });
-                        ui.checkbox(grid, "Visible Grid");
-                        for (label, color) in [
-                            ("Workspace", &mut self.display.background),
-                            ("Board Area", &mut self.display.board_color),
-                            ("Grid", &mut self.display.grid_color),
-                            ("Pad / Via Holes", &mut self.display.hole_color),
-                        ] {
-                            ui.horizontal(|ui| {
-                                ui.color_edit_button_srgba(color);
-                                ui.label(label);
-                            });
-                        }
-                    });
-            } else {
-                if self.three_d.enabled {
-                    egui::CollapsingHeader::new("3D Settings")
-                        .default_open(true)
-                        .show(ui, |ui| {
-                            ui.checkbox(&mut self.three_d.show_components, "Show Component Bodies");
-                            ui.horizontal(|ui| {
-                                if ui.button("Top").clicked() {
-                                    self.three_d.top();
-                                }
-                                if ui.button("Bottom").clicked() {
-                                    self.three_d.bottom();
-                                }
-                                if ui.button("Fit Board").clicked() {
-                                    self.three_d.fit();
-                                }
-                            });
-                            ui.label("2D display settings apply when returning to 2D.");
-                        });
-                }
-                egui::CollapsingHeader::new("Object Visibility")
-                    .default_open(true)
-                    .show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            ui.selectable_value(
-                                &mut self.display.all_layers,
-                                false,
-                                "Active layer",
-                            );
-                            ui.selectable_value(&mut self.display.all_layers, true, "All layers");
-                        });
-                        ui.label("Transparency (%)");
-                        for (kind, label) in [
-                            (1, "Arcs"),
-                            (2, "Pads"),
-                            (3, "Vias"),
-                            (4, "Tracks"),
-                            (5, "Texts"),
-                            (6, "Fills"),
-                            (10, "Polygons"),
-                            (11, "Regions"),
-                            (12, "Component Bodies"),
-                        ] {
-                            let alpha = self
-                                .display
-                                .opacity
-                                .get(&self.active_layer)
-                                .map_or(255, |v| v[kind]);
-                            let mut transparency = 100.0 - f32::from(alpha) * 100.0 / 255.0;
-                            if ui
-                                .add(egui::Slider::new(&mut transparency, 0.0..=100.0).text(label))
-                                .changed()
-                            {
-                                let alpha = ((100.0 - transparency) * 255.0 / 100.0).round() as u8;
-                                for layer in &board.layers {
-                                    if self.display.all_layers || layer.id == self.active_layer {
-                                        self.display.opacity.entry(layer.id).or_insert([255; 23])
-                                            [kind] = alpha;
-                                    }
-                                }
-                            }
-                        }
-                    });
-                egui::CollapsingHeader::new("Additional Options")
-                    .default_open(true)
-                    .show(ui, |ui| {
-                        ui.checkbox(&mut self.display.connections, "Show Connections");
-                        ui.checkbox(&mut self.display.pad_numbers, "Show Pad Numbers");
-                        ui.checkbox(&mut self.display.pad_nets, "Show Pad Nets");
-                        ui.checkbox(&mut self.display.via_nets, "Show Via Nets");
-                        ui.checkbox(&mut self.polygons_visible, "Show Polygon Copper");
-                        ui.checkbox(grid, "Show Grid");
-                    });
-                egui::CollapsingHeader::new("Mask and Dim Settings")
-                    .default_open(true)
-                    .show(ui, |ui| {
-                        ui.label("Single Layer Mode (Shift+S)");
-                        ui.horizontal(|ui| {
-                            for (n, s) in [(0, "Off"), (1, "Dim"), (2, "Hide")] {
-                                ui.selectable_value(&mut self.single_layer, n, s);
-                            }
-                        });
-                        ui.add(egui::Slider::new(&mut self.display.dim, 0..=255).text("Dim level"));
-                    });
-            }
-        });
-        requested_layer
     }
 }
 

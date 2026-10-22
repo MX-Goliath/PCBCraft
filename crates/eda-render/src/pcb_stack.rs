@@ -219,7 +219,12 @@ pub(crate) fn shade(face: &Triangle) -> Color32 {
     let norm = n.iter().map(|v| v * v).sum::<f32>().sqrt().max(1e-8);
     let light =
         (0.35 + 0.65 * ((n[0] * 0.3 - n[1] * 0.45 + n[2] * 0.84) / norm).abs()).clamp(0.25, 1.0);
-    face.color.gamma_multiply(light)
+    Color32::from_rgba_premultiplied(
+        (f32::from(face.color.r()) * light).round() as u8,
+        (f32::from(face.color.g()) * light).round() as u8,
+        (f32::from(face.color.b()) * light).round() as u8,
+        face.color.a(),
+    )
 }
 fn rasterize(
     faces: &[Triangle],

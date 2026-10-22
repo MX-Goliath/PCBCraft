@@ -1256,6 +1256,162 @@ impl PcbCraft {
             });
     }
 
+    fn view_configuration(&mut self, ctx: &egui::Context) {
+        let Some(i) = self.active else {
+            return;
+        };
+        let mut close = false;
+        let mut projects = false;
+        let mut requested_mode = None;
+        egui::SidePanel::left("view_configuration_altium_v1")
+            .default_width(330.0)
+            .width_range(300.0..=600.0)
+            .resizable(true)
+            .frame(
+                egui::Frame::NONE
+                    .fill(theme::PANEL)
+                    .inner_margin(egui::Margin {
+                        left: 4,
+                        right: 4,
+                        top: 0,
+                        bottom: 4,
+                    }),
+            )
+            .show(ctx, |ui| {
+                let (header, _) = ui.allocate_exact_size(
+                    egui::vec2(ui.available_width(), 23.0),
+                    egui::Sense::hover(),
+                );
+                ui.painter()
+                    .rect_filled(header, 0.0, Color32::from_rgb(92, 128, 155));
+                ui.painter().text(
+                    header.left_center() + egui::vec2(5.0, 0.0),
+                    egui::Align2::LEFT_CENTER,
+                    "View Configuration",
+                    egui::FontId::new(11.0, egui::FontFamily::Name("ui-bold".into())),
+                    Color32::from_gray(240),
+                );
+                for (n, icon) in [theme::Icon::Close, theme::Icon::Pin]
+                    .into_iter()
+                    .enumerate()
+                {
+                    let r = egui::Rect::from_min_size(
+                        egui::pos2(header.right() - 17.0 * (n + 1) as f32, header.top()),
+                        egui::vec2(17.0, 23.0),
+                    );
+                    theme::draw_icon(
+                        ui.painter(),
+                        egui::Rect::from_center_size(r.center(), egui::vec2(16., 16.)),
+                        icon,
+                        n == 0,
+                    );
+                    if n == 0
+                        && ui
+                            .interact(r, ui.id().with("view_config_close"), egui::Sense::click())
+                            .clicked()
+                    {
+                        close = true;
+                    }
+                }
+                let c = egui::pos2(header.right() - 42., header.center().y);
+                ui.painter().add(egui::Shape::convex_polygon(
+                    vec![
+                        c + egui::vec2(-3., -2.),
+                        c + egui::vec2(3., -2.),
+                        c + egui::vec2(0., 3.),
+                    ],
+                    Color32::GRAY,
+                    egui::Stroke::NONE,
+                ));
+                egui::TopBottomPanel::bottom("view_configuration_tabs")
+                    .exact_height(23.0)
+                    .frame(egui::Frame::NONE)
+                    .show_inside(ui, |ui| {
+                        let (tabs, _) = ui.allocate_exact_size(
+                            egui::vec2(ui.available_width(), 23.0),
+                            egui::Sense::hover(),
+                        );
+                        let mut x = tabs.left();
+                        for (n, name, width) in [
+                            (0, "Projects", 52.0),
+                            (1, "Navigator", 65.0),
+                            (2, "PCB", 32.0),
+                            (3, "PCB Filter", 62.0),
+                            (4, "View Configuration", 110.0),
+                        ] {
+                            let r = egui::Rect::from_min_size(
+                                egui::pos2(x, tabs.top()),
+                                egui::vec2(width, 23.0),
+                            );
+                            if n == 4 {
+                                ui.painter().rect_filled(r, 0.0, Color32::from_gray(76));
+                            }
+                            ui.painter().line_segment(
+                                [r.right_top(), r.right_bottom()],
+                                egui::Stroke::new(1.0, Color32::from_gray(40)),
+                            );
+                            ui.painter().text(
+                                r.center(),
+                                egui::Align2::CENTER_CENTER,
+                                name,
+                                egui::FontId::proportional(11.0),
+                                if n == 0 || n == 4 {
+                                    Color32::from_gray(212)
+                                } else {
+                                    Color32::GRAY
+                                },
+                            );
+                            if n == 0
+                                && ui
+                                    .interact(
+                                        r,
+                                        ui.id().with("view_config_projects"),
+                                        egui::Sense::click(),
+                                    )
+                                    .clicked()
+                            {
+                                projects = true;
+                            }
+                            x += width;
+                        }
+                    });
+                egui::Frame::NONE
+                    .inner_margin(egui::Margin {
+                        left: 6,
+                        right: 4,
+                        top: 0,
+                        bottom: 0,
+                    })
+                    .show(ui, |ui| {
+                        let doc = &mut self.documents[i];
+                        let previous_mode = doc.view.pcb.three_d.enabled;
+                        let layer = doc.view.pcb.configuration_panel(
+                            ui,
+                            doc.model.pcb.as_ref().unwrap(),
+                            &mut doc.view.grid,
+                            &mut doc.view.camera,
+                        );
+                        if doc.view.pcb.three_d.enabled != previous_mode {
+                            requested_mode = Some(doc.view.pcb.three_d.enabled);
+                            doc.view.pcb.three_d.enabled = previous_mode;
+                        }
+                        if let Some(layer) = layer {
+                            self.command =
+                                Some(Command::Pcb(pcb_editor::Action::RouteLayer(layer)));
+                        }
+                    });
+            });
+        if let Some(enabled) = requested_mode {
+            self.set_pcb_3d(enabled);
+        }
+        if close || projects {
+            self.documents[i].view.pcb.show_layer_dialog = false;
+            if projects {
+                self.settings.projects = true;
+            }
+        }
+    }
+
     fn right_dock(&mut self, ctx: &egui::Context) {
         let schematic = self
             .active
@@ -1269,29 +1425,6 @@ impl PcbCraft {
         .width_range(230.0..=500.0)
         .resizable(true)
         .show(ctx, |ui| {
-            if let Some(i) = self.active
-                && self.documents[i].model.pcb.is_some()
-                && self.documents[i].view.pcb.show_layer_dialog
-            {
-                ui.horizontal(|ui| {
-                    ui.strong("View Configuration");
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if theme::icon_button(ui, theme::Icon::Close, false, true).clicked() {
-                            self.documents[i].view.pcb.show_layer_dialog = false;
-                        }
-                    });
-                });
-                ui.separator();
-                let doc = &mut self.documents[i];
-                if let Some(layer) = doc.view.pcb.configuration_panel(
-                    ui,
-                    doc.model.pcb.as_ref().unwrap(),
-                    &mut doc.view.grid,
-                ) {
-                    self.command = Some(Command::Pcb(pcb_editor::Action::RouteLayer(layer)));
-                }
-                return;
-            }
             if let Some(position) = ctx.input(|i| i.pointer.press_origin()) {
                 self.property_ui.focused = ui.max_rect().contains(position);
             }
@@ -1715,6 +1848,9 @@ impl PcbCraft {
         if self.annotation.is_some()
             || self.layer_stack.is_some()
             || self.pending.is_some()
+            || self
+                .active
+                .is_some_and(|i| self.documents[i].view.pcb.configuration_modal_open())
             || ctx.wants_keyboard_input()
         {
             return;
@@ -1776,16 +1912,18 @@ impl eframe::App for PcbCraft {
         self.title_bar(ctx);
         self.menus(ctx);
         self.status(ctx);
-        if self.settings.projects {
+        let view_configuration = self.layer_stack.is_none()
+            && self.active.is_some_and(|i| {
+                self.documents[i].model.pcb.is_some()
+                    && self.documents[i].view.pcb.show_layer_dialog
+            });
+        if view_configuration {
+            self.view_configuration(ctx);
+        } else if self.settings.projects {
             self.projects(ctx);
         }
         if self.layer_stack.is_none()
-            && (self.settings.properties
-                || self.settings.messages
-                || self.settings.components
-                || self
-                    .active
-                    .is_some_and(|i| self.documents[i].view.pcb.show_layer_dialog))
+            && (self.settings.properties || self.settings.messages || self.settings.components)
         {
             self.right_dock(ctx);
         }

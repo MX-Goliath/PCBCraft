@@ -33,6 +33,8 @@ pub struct Camera {
     pub centre_mm: [f64; 2],
     pub pixels_per_mm: f64,
     pub fitted: bool,
+    #[serde(default)]
+    pub mirrored_x: bool,
 }
 
 impl Default for Camera {
@@ -41,6 +43,7 @@ impl Default for Camera {
             centre_mm: [0.0, 0.0],
             pixels_per_mm: 10.0,
             fitted: false,
+            mirrored_x: false,
         }
     }
 }
@@ -66,13 +69,17 @@ impl Camera {
     fn screen_mm(&self, point: [f64; 2], rect: Rect) -> Pos2 {
         rect.center()
             + Vec2::new(
-                ((point[0] - self.centre_mm[0]) * self.pixels_per_mm) as f32,
+                ((point[0] - self.centre_mm[0])
+                    * self.pixels_per_mm
+                    * if self.mirrored_x { -1.0 } else { 1.0 }) as f32,
                 (-(point[1] - self.centre_mm[1]) * self.pixels_per_mm) as f32,
             )
     }
     pub fn world_mm(&self, point: Pos2, rect: Rect) -> [f64; 2] {
         [
-            self.centre_mm[0] + (point.x - rect.center().x) as f64 / self.pixels_per_mm,
+            self.centre_mm[0]
+                + (point.x - rect.center().x) as f64 / self.pixels_per_mm
+                    * if self.mirrored_x { -1.0 } else { 1.0 },
             self.centre_mm[1] - (point.y - rect.center().y) as f64 / self.pixels_per_mm,
         ]
     }
@@ -565,5 +572,24 @@ mod tests {
         camera.zoom_at(pixel, rect, 2.7);
         let after = camera.world_mm(pixel, rect);
         assert!((world[0] - after[0]).abs() < 1e-9 && (world[1] - after[1]).abs() < 1e-9);
+    }
+    #[test]
+    fn bottom_view_mirrors_coordinates_and_keeps_zoom_anchored() {
+        let rect = Rect::from_min_size(Pos2::new(330., 90.), Vec2::new(800., 600.));
+        let mut camera = Camera {
+            centre_mm: [15., 25.],
+            mirrored_x: true,
+            ..Default::default()
+        };
+        let point = Point::mm(20, 31);
+        let pixel = camera.screen(point, rect);
+        assert!(pixel.x < rect.center().x);
+        let before = camera.world_mm(pixel, rect);
+        assert_eq!(before, [20., 31.]);
+        camera.zoom_at(pixel, rect, 3.2);
+        let after = camera.world_mm(pixel, rect);
+        for n in 0..2 {
+            assert!((after[n] - before[n]).abs() < 1e-9);
+        }
     }
 }

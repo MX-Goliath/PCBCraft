@@ -1546,6 +1546,17 @@ impl PcbCraft {
                     return;
                 }
             }
+            if input.consume_key(ctrl, Key::F) {
+                doc.view.camera.mirrored_x = !doc.view.camera.mirrored_x;
+                handled = true;
+                return;
+            }
+            if input.consume_key(shift, Key::Num7) {
+                doc.view.pcb.three_d.show_components = !doc.view.pcb.three_d.show_components;
+                doc.view.pcb.three_d.invalidate();
+                handled = true;
+                return;
+            }
             if input.consume_key(shift, Key::E) {
                 doc.view.pcb.snap.mode = match doc.view.pcb.snap.mode {
                     pcb::SnapLayerMode::All => pcb::SnapLayerMode::Current,
@@ -1556,7 +1567,12 @@ impl PcbCraft {
                 return;
             }
             if input.consume_key(shift, Key::S) {
-                doc.view.pcb.single_layer = (doc.view.pcb.single_layer + 1) % 3;
+                if doc.view.pcb.three_d.enabled {
+                    doc.view.pcb.three_d.presentation.single_layer =
+                        !doc.view.pcb.three_d.presentation.single_layer;
+                } else {
+                    doc.view.pcb.single_layer = (doc.view.pcb.single_layer + 1) % 3;
+                }
                 handled = true;
                 return;
             }

@@ -79,7 +79,8 @@ pub(super) fn navigate(
         r.dragged_by(egui::PointerButton::Middle) || r.dragged_by(egui::PointerButton::Secondary);
     if panning {
         let d = ui.input(|i| i.pointer.delta());
-        camera.centre_mm[0] -= d.x as f64 / camera.pixels_per_mm;
+        camera.centre_mm[0] -=
+            d.x as f64 / camera.pixels_per_mm * if camera.mirrored_x { -1.0 } else { 1.0 };
         camera.centre_mm[1] += d.y as f64 / camera.pixels_per_mm;
     }
     if let Some(p) = r.hover_pos() {

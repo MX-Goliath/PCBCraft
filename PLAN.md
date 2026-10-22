@@ -533,3 +533,22 @@ release AppImage проверен на TI PMP23595: выбор/Properties, orbit
 Validation: 255 workspace tests; fmt, strict Clippy, debug build. Linux GUI:
 fixture connection lines and view toggles; TI PMP23595 Layers & Colors and
 3D View Options. No TI project files committed or modified.
+
+### View Configuration — живая сверка AD 24.4.1, 22.10.2026
+
+- [x] Сверены Layers & Colors, System Colors, 2D/3D View Options,
+      Object Visibility и Section View на исследовательской копии PcbDoc.
+- [x] Левая панель 330 px, независимые Properties справа, вкладки/строки/отступы,
+      дерево ролей и пар механических слоёв, Used On и настроенные пустые слои.
+- [x] Независимые visibility/draft/opacity, матрица Apply/Cancel, цвета,
+      зеркальный вид снизу, подписи и режимы соединений; быстрые жесты мыши.
+- [x] Native 3D colors/opacity/background, перспектива, масштаб толщины,
+      материалы и прозрачность, независимый single-layer и dim/highlight.
+- [ ] Полное совпадение: профили/import/export, Section View, native color picker,
+      docking/autohide, категории без модели/рендерера, text draft, via-span,
+      native range/parent matrix editing и точные состояния/метрики Linux.
+
+Статус остаётся partial; наличие отключённых элементов не считается реализацией.
+Границы и проверки: docs/pcb-update/VIEW_CONFIGURATION.md, docs/features.json.
+Проверка: 267 workspace tests, fmt --check, strict Clippy, Windows debug build,
+Linux GNU all-target cross-check. Linux GUI/артефакты не запускались и не собирались.

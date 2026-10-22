@@ -8,6 +8,10 @@ use std::{
     hash::{Hash, Hasher},
 };
 use uuid::Uuid;
+#[path = "pcb_layer_catalog.rs"]
+mod catalog;
+#[path = "pcb_configuration.rs"]
+mod configuration;
 #[path = "pcb_connections.rs"]
 mod connections;
 #[path = "pcb_display.rs"]
@@ -75,8 +79,10 @@ pub fn layer_color(id: u16) -> Color32 {
         BOTTOM => Color32::from_rgb(11, 83, 148),
         TOP_OVERLAY => Color32::from_rgb(255, 255, 0),
         BOTTOM_OVERLAY => Color32::from_rgb(128, 128, 0),
-        35 | 36 => Color32::from_rgb(170, 170, 170),
-        37 | 38 => Color32::from_rgb(128, 0, 128),
+        35 => Color32::from_rgb(170, 170, 170),
+        36 | 55 => Color32::RED,
+        37 => Color32::from_rgb(128, 0, 128),
+        38 => Color32::MAGENTA,
         MULTI_LAYER => Color32::from_rgb(204, 204, 204),
         KEEP_OUT => Color32::from_rgb(255, 0, 255),
         2..=31 => {
@@ -95,6 +101,12 @@ pub fn layer_color(id: u16) -> Color32 {
         73 => Color32::from_rgb(255, 0, 0),
         57..=72 | 83..=1090 => {
             let n = if id <= 72 { id - 56 } else { id - 66 };
+            if n == 16 {
+                return Color32::BLACK;
+            }
+            if n == 17 {
+                return Color32::from_rgb(128, 128, 0);
+            }
             match (n - 1) % 4 {
                 0 => Color32::from_rgb(255, 0, 255),
                 1 => Color32::from_rgb(128, 0, 128),
@@ -116,6 +128,15 @@ impl BoardView {
         self.initialized = true;
         self.active_layer = TOP;
         self.display = display::Settings::from_board(b);
+        self.three_d.read_configuration(b);
+        if let Some(raw) = b.properties.get("2DCONFIGURATION") {
+            self.single_layer = raw
+                .split('`')
+                .find_map(|s| s.strip_prefix("CFG2D.SINGLELAYERMODESTATE="))
+                .and_then(|s| s.trim().parse().ok())
+                .unwrap_or(0)
+                .min(2);
+        }
         self.visible = self
             .display
             .visible
@@ -140,6 +161,7 @@ impl BoardView {
     }
     fn polygon_visible(&self, layer: u16) -> bool {
         self.polygons_visible
+            && !self.display.hidden[10]
             && self.visible.contains(&layer)
             && self
                 .display
@@ -200,8 +222,8 @@ fn world(camera: &Camera, p: Pos2, rect: Rect) -> Point {
     }
 }
 fn dim(c: Color32, alpha: u8) -> Color32 {
-    let [r, g, b, _] = c.to_array();
-    Color32::from_rgba_unmultiplied(r, g, b, alpha)
+    let [r, g, b, a] = c.to_srgba_unmultiplied();
+    Color32::from_rgba_unmultiplied(r, g, b, (u16::from(a) * u16::from(alpha) / 255) as u8)
 }
 pub fn canvas(ui: &mut egui::Ui, b: &Board, view: &mut View) -> CanvasOutput {
     view.pcb.initialize(b);
@@ -217,7 +239,18 @@ pub fn canvas(ui: &mut egui::Ui, b: &Board, view: &mut View) -> CanvasOutput {
     let (rect, response) = ui.allocate_exact_size(ui.available_size(), Sense::click_and_drag());
     let panning = navigation::navigate(ui, &response, &mut view.camera, b, &mut view.pcb, rect);
     let painter = ui.painter_at(rect);
-    painter.rect_filled(rect, 0.0, view.pcb.display.background);
+    let mut background = egui::Mesh::default();
+    for (pos, color) in [
+        (rect.left_top(), view.pcb.display.background),
+        (rect.right_top(), view.pcb.display.background),
+        (rect.right_bottom(), view.pcb.display.background_end),
+        (rect.left_bottom(), view.pcb.display.background_end),
+    ] {
+        background.colored_vertex(pos, color);
+    }
+    background.add_triangle(0, 1, 2);
+    background.add_triangle(0, 2, 3);
+    painter.add(egui::Shape::mesh(background));
     // Release abandoned preview/deleted/hidden regions after one unused frame,
     // including large meshes that would remain below the old entry-count cap.
     view.pcb.begin_frame();
@@ -231,7 +264,7 @@ pub fn canvas(ui: &mut egui::Ui, b: &Board, view: &mut View) -> CanvasOutput {
     }
     let scene = view.pcb.preview.as_ref().unwrap_or(b);
     let outline = scene.outline_points(256);
-    if outline.len() >= 3 {
+    if outline.len() >= 3 && view.pcb.display.board_visible {
         polygon(
             &painter,
             &view.camera,
@@ -251,7 +284,7 @@ pub fn canvas(ui: &mut egui::Ui, b: &Board, view: &mut View) -> CanvasOutput {
             let a = view.camera.screen(*a, rect);
             let z = view.camera.screen(*z, rect);
             if a.distance(z) > 0.001 {
-                painter.line_segment([a, z], Stroke::new(1.0, Color32::from_gray(180)));
+                painter.line_segment([a, z], Stroke::new(1.0, view.pcb.display.board_line));
             }
         }
     }
@@ -260,8 +293,10 @@ pub fn canvas(ui: &mut egui::Ui, b: &Board, view: &mut View) -> CanvasOutput {
         while step * view.camera.pixels_per_mm < 14.0 {
             step *= 5.0;
         }
-        let min = view.camera.world_mm(rect.left_bottom(), rect);
-        let max = view.camera.world_mm(rect.right_top(), rect);
+        let a = view.camera.world_mm(rect.left_bottom(), rect);
+        let b = view.camera.world_mm(rect.right_top(), rect);
+        let min = [a[0].min(b[0]), a[1].min(b[1])];
+        let max = [a[0].max(b[0]), a[1].max(b[1])];
         let sx = (min[0] / step).floor() * step;
         let sy = (min[1] / step).floor() * step;
         let cols = ((max[0] - min[0]) / step).ceil() as usize + 2;
@@ -334,14 +369,33 @@ pub fn canvas(ui: &mut egui::Ui, b: &Board, view: &mut View) -> CanvasOutput {
         {
             color = dim(color, view.pcb.display.dim);
         }
-        if view.pcb.highlight_net.is_some() && item.net != view.pcb.highlight_net {
-            color = dim(color, 35);
+        if let Some(net) = view.pcb.highlight_net {
+            color = if item.net == Some(net) {
+                dim(
+                    view.pcb.display.highlight_color,
+                    view.pcb.display.highlight_dim,
+                )
+            } else {
+                dim(color, view.pcb.display.masked_dim)
+            };
         }
         if selected.contains(&item.id) {
-            color = Color32::from_rgb(255, 255, 255);
+            color = view.pcb.display.selection_color;
         }
         if scene.pours_stale && item.polygon.is_some() {
             color = dim(color, view.pcb.display.dim);
+        }
+        if view.pcb.display.draft[display::Settings::kind(item)]
+            && paint_draft(
+                &painter,
+                &view.camera,
+                rect,
+                item,
+                view.pcb.active_layer,
+                color,
+            )
+        {
+            continue;
         }
         paint_item(
             &painter,
@@ -354,13 +408,27 @@ pub fn canvas(ui: &mut egui::Ui, b: &Board, view: &mut View) -> CanvasOutput {
         );
     }
     if view.pcb.display.connections {
+        let active_nets: BTreeSet<_> = scene
+            .items
+            .iter()
+            .filter(|i| i.layer == view.pcb.active_layer || i.layer == MULTI_LAYER)
+            .filter_map(|i| i.net)
+            .collect();
         for connection in view.pcb.connections.lines.iter() {
+            if view.pcb.single_layer != 0
+                && !view.pcb.display.all_connections
+                && !active_nets.contains(&connection.net)
+            {
+                continue;
+            }
             let color = if view
                 .pcb
                 .highlight_net
                 .is_some_and(|net| net != connection.net)
             {
                 dim(view.pcb.display.connection_color, view.pcb.display.dim)
+            } else if view.pcb.display.layer_connections {
+                view.pcb.color(view.pcb.active_layer)
             } else {
                 view.pcb.display.connection_color
             };
@@ -449,13 +517,22 @@ pub fn canvas(ui: &mut egui::Ui, b: &Board, view: &mut View) -> CanvasOutput {
     });
     for item in &order {
         let drill = item.drill_outline();
-        if drill.len() >= 3 {
+        let show_drill = if matches!(item.shape, Shape::Via { .. }) {
+            view.pcb.display.via_holes_visible
+        } else {
+            view.pcb.display.pad_holes_visible
+        };
+        if drill.len() >= 3 && show_drill {
             painter.add(egui::Shape::convex_polygon(
                 drill
                     .into_iter()
                     .map(|p| view.camera.screen(p, rect))
                     .collect(),
-                view.pcb.display.hole_color,
+                if matches!(item.shape, Shape::Via { .. }) {
+                    view.pcb.display.via_hole_color
+                } else {
+                    view.pcb.display.hole_color
+                },
                 Stroke::NONE,
             ));
         }
@@ -513,7 +590,49 @@ pub fn canvas(ui: &mut egui::Ui, b: &Board, view: &mut View) -> CanvasOutput {
                     Color32::from_rgb(255, 255, 200),
                 );
             }
+            Shape::Track { start, end, width }
+                if view.pcb.display.track_names && item.net.is_some() =>
+            {
+                let a = view.camera.screen(*start, rect);
+                let z = view.camera.screen(*end, rect);
+                let height = (*width as f64 / 1e6 * view.camera.pixels_per_mm) as f32;
+                if a.distance(z) > 45.0 && height > 4.0 {
+                    text::track_labels(
+                        &painter,
+                        a,
+                        z,
+                        b.net_name(item.net),
+                        height * 0.6,
+                        view.pcb.display.highlight_color,
+                    );
+                }
+            }
             _ => {}
+        }
+    }
+    if view.pcb.display.origin_visible {
+        let coordinate = |key| {
+            scene
+                .properties
+                .get(key)
+                .and_then(|v| dimension_nm(v).ok())
+                .unwrap_or(0)
+        };
+        let c = view.camera.screen(
+            Point {
+                x: coordinate("ORIGINX"),
+                y: coordinate("ORIGINY"),
+            },
+            rect,
+        );
+        if rect.contains(c) {
+            painter.circle_stroke(c, 9.0, Stroke::new(0.7, view.pcb.display.origin_color));
+            for d in [Vec2::new(14.0, 0.0), Vec2::new(0.0, 14.0)] {
+                painter.line_segment(
+                    [c - d, c + d],
+                    Stroke::new(0.7, view.pcb.display.origin_color),
+                );
+            }
         }
     }
     let mut hits = Vec::new();
@@ -572,6 +691,21 @@ pub fn canvas(ui: &mut egui::Ui, b: &Board, view: &mut View) -> CanvasOutput {
         }
     }
     let hit = hits.first().copied();
+    if view.pcb.display.status_info
+        && let Some(item) = hit.and_then(|id| b.item(id))
+    {
+        let kind = configuration::OBJECTS
+            .iter()
+            .find(|(kind, _)| *kind == display::Settings::kind(item))
+            .map_or("Object", |(_, name)| *name);
+        response.clone().on_hover_ui(|ui| {
+            ui.label(format!("{} · {}", kind, layer_name(item.layer)));
+            let net = b.net_name(item.net);
+            if !net.is_empty() {
+                ui.label(format!("Net: {net}"));
+            }
+        });
+    }
     navigation::paint_cursor(ui, &painter, &response, point, view, rect, panning);
     if scene.pours_stale {
         painter.text(
@@ -689,6 +823,91 @@ fn paint_masks(painter: &egui::Painter, board: &Board, view: &View, rect: Rect, 
     }
 }
 
+fn paint_draft(
+    p: &egui::Painter,
+    camera: &Camera,
+    rect: Rect,
+    item: &Item,
+    active: u16,
+    color: Color32,
+) -> bool {
+    let screen = |point| camera.screen(point, rect);
+    let ring = |points: Vec<Point>| {
+        p.add(egui::Shape::closed_line(
+            points.into_iter().map(screen).collect(),
+            Stroke::new(1.0, color),
+        ))
+    };
+    match &item.shape {
+        Shape::Track { start, end, width } => {
+            let length = distance_sq(*start, *end).sqrt() as i64;
+            let angle = ((end.y - start.y) as f64)
+                .atan2((end.x - start.x) as f64)
+                .to_degrees();
+            ring(eda_core::pcb_polygon::pad_outline_radius(
+                midpoint(*start, *end),
+                Point {
+                    x: length + width,
+                    y: *width,
+                },
+                angle,
+                PadShape::Round,
+                100,
+            ));
+        }
+        Shape::Arc {
+            centre,
+            radius,
+            start_angle,
+            end_angle,
+            width,
+        } => {
+            for r in [radius - width / 2, radius + width / 2] {
+                if r > 0 {
+                    p.add(egui::Shape::line(
+                        arc_points(*centre, r, *start_angle, *end_angle, 128)
+                            .into_iter()
+                            .map(screen)
+                            .collect(),
+                        Stroke::new(1.0, color),
+                    ));
+                }
+            }
+        }
+        Shape::Pad { .. } | Shape::Via { .. } => {
+            let outline = item.pad_outline(if item.layer == MULTI_LAYER {
+                active
+            } else {
+                item.layer
+            });
+            if outline.len() >= 3 {
+                ring(outline);
+            }
+        }
+        Shape::Fill {
+            start,
+            end,
+            rotation,
+        } => {
+            ring(rectangle(
+                midpoint(*start, *end),
+                Point {
+                    x: (end.x - start.x).abs(),
+                    y: (end.y - start.y).abs(),
+                },
+                *rotation,
+            ));
+        }
+        Shape::Region { contour, holes, .. } => {
+            ring(contour.clone());
+            for hole in holes {
+                ring(hole.clone());
+            }
+        }
+        Shape::Text { .. } => return false,
+    }
+    true
+}
 fn paint_item(
     p: &egui::Painter,
     camera: &Camera,
@@ -744,14 +963,6 @@ fn paint_item(
                 p.add(egui::Shape::convex_polygon(
                     outline.into_iter().map(screen).collect(),
                     color,
-                    Stroke::NONE,
-                ));
-            }
-            let drill = item.drill_outline();
-            if drill.len() >= 3 {
-                p.add(egui::Shape::convex_polygon(
-                    drill.into_iter().map(screen).collect(),
-                    Color32::BLACK,
                     Stroke::NONE,
                 ));
             }
@@ -926,6 +1137,15 @@ fn polygon(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn dimming_composes_with_object_transparency_without_double_premultiplying_rgb() {
+        let original = Color32::from_rgba_unmultiplied(150, 50, 20, 204);
+        let dimmed = dim(original, 153);
+        assert_eq!(dimmed.a(), 122);
+        let rgb = dimmed.to_srgba_unmultiplied();
+        assert!((i16::from(rgb[0]) - 150).abs() < 3);
+        assert_eq!(dim(original, 0), Color32::TRANSPARENT);
+    }
     #[test]
     fn canvas_passes_pad_edge_snap_and_bypass_to_editor_without_editing_board() {
         let mut board = Board::default();
