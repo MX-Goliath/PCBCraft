@@ -11,6 +11,8 @@ mod chrome;
 mod components;
 #[path = "cross_probe.rs"]
 mod cross_probe;
+#[path = "layer_stack.rs"]
+mod layer_stack;
 #[path = "pcb_3d.rs"]
 mod pcb_3d;
 #[path = "pcb_editor.rs"]
@@ -114,6 +116,7 @@ impl Default for Settings {
 enum Command {
     CrossProbe,
     Pcb3d(bool),
+    LayerStack,
     ShowComponents,
     ToggleComponents,
     SchPlace(Placement),
@@ -159,6 +162,7 @@ struct PadEdit {
 }
 
 pub struct PcbCraft {
+    layer_stack: Option<layer_stack::Manager>,
     cross_probe: cross_probe::State,
     file_dialog: rfd::FileDialog,
     documents: Vec<OpenDocument>,
@@ -203,6 +207,7 @@ impl PcbCraft {
             pending: None,
             preferences: false,
             about: false,
+            layer_stack: None,
             allow_exit: false,
             cursor_mm: None,
             pad_edit: None,
@@ -486,11 +491,19 @@ impl PcbCraft {
     }
 
     fn run(&mut self, command: Command, ctx: &egui::Context) {
+        if self.layer_stack.is_some() {
+            self.message(
+                true,
+                "Apply or close Layer Stack Manager before another command",
+            );
+            return;
+        }
         if !matches!(command, Command::CrossProbe | Command::Fit) {
             self.cross_probe.enabled = false;
         }
         match command {
             Command::CrossProbe => self.start_cross_probe(),
+            Command::LayerStack => self.open_layer_stack(),
             Command::Pcb3d(enabled) => self.set_pcb_3d(enabled),
             Command::SchPlace(kind) => self.start_schematic_tool(kind),
             Command::SchEdit(action) => self.schematic_action(action, ctx),
@@ -1324,6 +1337,10 @@ impl PcbCraft {
     }
 
     fn workspace(&mut self, ctx: &egui::Context) {
+        if self.layer_stack.is_some() {
+            self.layer_stack_workspace(ctx);
+            return;
+        }
         egui::CentralPanel::default()
             .frame(
                 egui::Frame::NONE
@@ -1640,7 +1657,7 @@ impl PcbCraft {
     }
 
     fn shortcuts(&mut self, ctx: &egui::Context) {
-        if self.pending.is_some() || ctx.wants_keyboard_input() {
+        if self.layer_stack.is_some() || self.pending.is_some() || ctx.wants_keyboard_input() {
             return;
         }
         if self.pcb_view_shortcuts(ctx) {
@@ -1703,7 +1720,9 @@ impl eframe::App for PcbCraft {
         if self.settings.projects {
             self.projects(ctx);
         }
-        if self.settings.properties || self.settings.messages || self.settings.components {
+        if self.layer_stack.is_none()
+            && (self.settings.properties || self.settings.messages || self.settings.components)
+        {
             self.right_dock(ctx);
         }
         self.library_dialog(ctx);

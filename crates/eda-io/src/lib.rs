@@ -90,3 +90,51 @@ mod tests {
         assert!(load(&path).unwrap_err().contains("unknown field"));
     }
 }
+
+#[cfg(test)]
+mod layer_stack_tests {
+    use super::*;
+    use eda_core::{
+        DocumentKind,
+        layer_stack::{Impedance, Stack, ViaKind, ViaType},
+        pcb::Board,
+    };
+    #[test]
+    fn edited_stack_json_roundtrip_and_native_refusal_preserve_destination() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("stack.pcbcraft.json");
+        let mut doc = Document::new(DocumentKind::Board, "stack");
+        let b = Board::default();
+        let mut s = Stack::from_board(&b);
+        s.add_copper(1).unwrap();
+        s.vias.push(ViaType {
+            id: uuid::Uuid::new_v4(),
+            name: "Laser".into(),
+            kind: ViaKind::Micro,
+            start: 1,
+            end: 2,
+            diameter: 300_000,
+            hole: 100_000,
+        });
+        s.impedances.push(Impedance {
+            id: uuid::Uuid::new_v4(),
+            name: "USB".into(),
+            differential: true,
+            target: 90.,
+            tolerance: 10.,
+            signal: 1,
+            reference: 2,
+            reference2: None,
+            width: 200_000,
+            gap: 150_000,
+        });
+        doc.pcb = Some(s.apply(&b).unwrap());
+        save(&path, &doc).unwrap();
+        let read = load(&path).unwrap();
+        assert_eq!(read, doc);
+        let native = dir.path().join("original.PcbDoc");
+        std::fs::write(&native, b"untouched").unwrap();
+        assert!(save(&native, &doc).unwrap_err().contains("PCBCraft JSON"));
+        assert_eq!(std::fs::read(native).unwrap(), b"untouched");
+    }
+}

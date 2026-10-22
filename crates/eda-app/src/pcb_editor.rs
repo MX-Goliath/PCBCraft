@@ -222,7 +222,7 @@ impl Editor {
             || !self.points.is_empty()
     }
 }
-fn commit(doc: &mut OpenDocument, next: Board) -> Result<bool, String> {
+pub(super) fn commit(doc: &mut OpenDocument, next: Board) -> Result<bool, String> {
     let next = if next.pours_stale {
         pcb_polygon::repour(&next)?
     } else {
@@ -1765,9 +1765,8 @@ impl PcbCraft {
                     Command::Pcb(Action::Layers),
                     true,
                 );
-                for name in ["Layer Stack Manager", "Rules…"] {
-                    ui.add_enabled(false, egui::Button::new(name));
-                }
+                self.action(ui, "Layer Stack Manager", "", Command::LayerStack, true);
+                ui.add_enabled(false, egui::Button::new("Rules…"));
             }
             "Tools" => {
                 ui.add_enabled(false, egui::Button::new("Design Rule Check…"));

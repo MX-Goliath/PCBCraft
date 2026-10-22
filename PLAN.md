@@ -477,3 +477,25 @@ Linux GUI дополнительно проверен выбор физичес�
 Проверка 3D: 228 workspace tests, fmt и strict Clippy проходят. Локальный
 release AppImage проверен на TI PMP23595: выбор/Properties, orbit/zoom,
 вид снизу со сквозными отверстиями и возврат в 2D. TI файлы вне Git.
+
+### Layer Stack Manager — 22.10.2026
+
+Предыдущие изменения 3D зафиксированы отдельным коммитом eb513d9.
+
+- [x] Design > Layer Stack Manager, Stackup/Via Types/Impedance, Properties,
+      поперечное сечение, мм/mil, Apply/Discard и атомарный Undo.
+- [x] Изменение/добавление/порядок слоёв, материалы, Dk/Df, толщины;
+      стабильные copper IDs и проверки ссылок при удалении.
+- [x] Through/Blind-Buried/Micro presets с диапазонами, диаметром/отверстием,
+      использование при размещении via.
+- [x] Профили одиночного/дифференциального импеданса, аналитическая оценка,
+      подбор ширины и применение одиночной ширины для трассировки.
+- [x] JSON persistence, сохранение исходного архива, согласованная толщина 3D.
+- [ ] Native stack serialization/custom-data import, полевой решатель,
+      rigid-flex/backdrill, auto symmetry, native rules и точная живая сверка AD.
+
+Подробные ограничения: docs/pcb-update/LAYER_STACK_MANAGER.md.
+
+Проверка LSM: 236 workspace tests, fmt, strict Clippy и debug build. Linux GUI:
+слои/via/импеданс 50 Ω/Apply/Undo; TI PMP23595 — исходные 6 слоёв и материалы,
+2.2082 мм; открытие/Apply без изменений сохраняет clean state.

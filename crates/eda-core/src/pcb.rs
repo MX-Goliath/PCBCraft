@@ -387,6 +387,8 @@ impl Item {
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Board {
+    #[serde(default)]
+    pub layer_stack: Option<crate::layer_stack::Stack>,
     pub outline: Vec<ContourVertex>,
     pub layers: Vec<PcbLayer>,
     pub nets: Vec<Net>,
@@ -413,6 +415,7 @@ pub struct Board {
 impl Default for Board {
     fn default() -> Self {
         Self {
+            layer_stack: None,
             outline: vec![],
             layers: [TOP, BOTTOM, TOP_OVERLAY, BOTTOM_OVERLAY, MULTI_LAYER]
                 .into_iter()
@@ -511,6 +514,9 @@ impl Board {
         }
     }
     pub fn validate(&self) -> Result<(), String> {
+        if let Some(stack) = &self.layer_stack {
+            stack.validate_for_board(self)?;
+        }
         if self.items.len() > MAX_ITEMS
             || self.components.len() > MAX_ITEMS
             || self.nets.len() > MAX_ITEMS

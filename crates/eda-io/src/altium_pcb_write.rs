@@ -1872,6 +1872,9 @@ pub fn serialize(doc: &Document, format: Format) -> Result<Vec<u8>> {
         legacy = Board::from_legacy(doc);
         &legacy
     };
+    if board.layer_stack.is_some() {
+        return Err("Edited layer stacks, via types and impedance profiles currently require PCBCraft JSON (Save As); native Altium stack serialization is not implemented".into());
+    }
     let original = source_bytes(board)?;
     let old = original
         .as_ref()

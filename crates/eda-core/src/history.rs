@@ -172,6 +172,7 @@ fn snapshot_bytes(doc: &Document) -> usize {
     }
     if let Some(b) = &doc.pcb {
         bytes = bytes.saturating_add(count(&(
+            &b.layer_stack,
             &b.properties,
             &b.layers,
             &b.nets,

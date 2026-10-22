@@ -396,6 +396,9 @@ pub fn cutout_surface(outline: &[Point], hole: &[Point]) -> Vec<StackSurface> {
 }
 impl Board {
     pub fn stack_thickness_nm(&self) -> i64 {
+        if let Some(s) = &self.layer_stack {
+            return s.thickness();
+        }
         let sum: i64 = self
             .properties
             .iter()
