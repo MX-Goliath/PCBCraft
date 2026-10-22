@@ -262,9 +262,20 @@ pub enum Handle {
     PolygonVertex(Uuid, usize),
 }
 pub fn handles(board: &Board, selected: &[Uuid]) -> Vec<(Handle, Point)> {
+    let indexed = (selected.len() > 8).then(|| {
+        board
+            .items
+            .iter()
+            .map(|item| (item.id, item))
+            .collect::<std::collections::HashMap<_, _>>()
+    });
     let mut out = Vec::new();
     for id in selected {
-        if let Some(item) = board.item(*id) {
+        let item = match &indexed {
+            Some(items) => items.get(id).copied(),
+            None => board.item(*id),
+        };
+        if let Some(item) = item {
             match &item.shape {
                 Shape::Track { start, end, .. } => {
                     out.push((Handle::TrackStart(*id), *start));

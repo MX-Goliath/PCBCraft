@@ -27,6 +27,9 @@ cargo run -p eda-app -- fixtures/schematic/editing-demo.pcbcraft.json
 ```
 
 Сборка: `target/debug/pcbcraft.exe` (или `target/release/pcbcraft.exe`).
+Обычная dev-сборка использует оптимизацию уровня 2 для интерактивной работы
+с платами, сохраняя отладочные символы и проверки. Методика измерений:
+[производительность PCB](docs/pcb-update/PERFORMANCE.md).
 `.tools` не входит в репозиторий. На другом компьютере установить Rust
 обычным способом; основной Cargo workspace не зависит от локального linker.
 

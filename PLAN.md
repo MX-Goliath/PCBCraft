@@ -552,3 +552,23 @@ fixture connection lines and view toggles; TI PMP23595 Layers & Colors and
 Границы и проверки: docs/pcb-update/VIEW_CONFIGURATION.md, docs/features.json.
 Проверка: 267 workspace tests, fmt --check, strict Clippy, Windows debug build,
 Linux GNU all-target cross-check. Linux GUI/артефакты не запускались и не собирались.
+
+### PCB editor performance — 22.10.2026
+
+- [x] View Configuration committed separately: 3402caa.
+- [x] Read-only CPU probe on the 15,513-object research PcbDoc: original warm
+      2D frame ~150 ms, first synchronous 3D frame ~14.8 seconds.
+- [x] Revision/preview-bound geometry caches, broad-phase picking, shared
+      previews and generation-based connection results; linear selection lookup.
+- [x] Bounded background scene/image preparation, stale-result rejection,
+      matching depth-buffer picking, cached triangle sort inputs.
+- [x] Optimized normal dev profile with debug symbols/assertions retained.
+- [x] Updated warm 2D CPU paint+tessellation ~22–23 ms; first 3D image ~0.87 s
+      in background, UI request ~10 ms and subsequent waiting frames <1 ms.
+- [x] Windows GUI: Fit Board, via selection/move/Undo, scroll, 2D/3D zoom/switch.
+- [x] 273 workspace tests, fmt --check, strict Clippy, Windows dev build and
+      Linux GNU all-targets cross-check; no Linux distributable built.
+- [ ] Continuous 60 FPS software 3D, large-board repour/model-copy costs and
+      Linux native UI/performance verification remain open.
+
+Measurements, method and limits: docs/pcb-update/PERFORMANCE.md.

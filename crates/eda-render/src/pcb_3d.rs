@@ -9,7 +9,7 @@ use eda_geom::Point;
 use egui::{Color32, Pos2, Rect, Sense, Vec2};
 use std::{
     hash::{Hash, Hasher},
-    sync::Arc,
+    sync::{Arc, Mutex, mpsc},
 };
 use uuid::Uuid;
 
@@ -74,6 +74,17 @@ impl Default for Presentation {
         }
     }
 }
+type SceneKey = (u64, bool, u64);
+struct SceneJob {
+    key: SceneKey,
+    receiver: Mutex<mpsc::Receiver<Scene>>,
+}
+struct RasterJob {
+    scene: SceneKey,
+    key: u64,
+    size: [usize; 2],
+    receiver: Mutex<mpsc::Receiver<(egui::ColorImage, Vec<u32>)>>,
+}
 #[derive(Clone)]
 pub struct State {
     pub enabled: bool,
@@ -88,7 +99,12 @@ pub struct State {
     drag: Option<(Pos2, egui::PointerButton, bool)>,
     pub show_components: bool,
     scene: Arc<Scene>,
-    built_revision: Option<u64>,
+    built_key: Option<SceneKey>,
+    generation: u64,
+    scene_job: Option<Arc<SceneJob>>,
+    failed_key: Option<SceneKey>,
+    raster_job: Option<Arc<RasterJob>>,
+    failed_raster: Option<u64>,
     texture: Option<egui::TextureHandle>,
     raster_key: Option<u64>,
     ids: Arc<Vec<u32>>,
@@ -109,7 +125,12 @@ impl Default for State {
             drag: None,
             show_components: true,
             scene: Arc::default(),
-            built_revision: None,
+            built_key: None,
+            generation: 0,
+            scene_job: None,
+            failed_key: None,
+            raster_job: None,
+            failed_raster: None,
             texture: None,
             raster_key: None,
             ids: Arc::default(),
@@ -177,8 +198,115 @@ impl State {
         }
     }
     pub fn invalidate(&mut self) {
-        self.built_revision = None;
+        self.generation = self.generation.wrapping_add(1);
+        self.built_key = None;
         self.raster_key = None;
+    }
+    pub fn preparing(&self) -> bool {
+        self.built_key != Some(self.scene_key())
+    }
+    pub fn rendering(&self) -> bool {
+        self.raster_job.is_some()
+    }
+    fn render(
+        &mut self,
+        key: u64,
+        selected: &[Uuid],
+        logical: Vec2,
+        size: [usize; 2],
+        ctx: &egui::Context,
+    ) {
+        if let Some(job) = &self.raster_job {
+            let result = job.receiver.lock().unwrap().try_recv();
+            match result {
+                Ok((image, ids)) => {
+                    if job.scene == self.scene_key() {
+                        self.ids = Arc::new(ids);
+                        self.size = job.size;
+                        if let Some(texture) = &mut self.texture {
+                            texture.set(image, egui::TextureOptions::LINEAR);
+                        } else {
+                            self.texture = Some(ctx.load_texture(
+                                "pcb-3d",
+                                image,
+                                egui::TextureOptions::LINEAR,
+                            ));
+                        }
+                        self.raster_key = Some(job.key);
+                    }
+                    self.raster_job = None;
+                }
+                Err(mpsc::TryRecvError::Empty) => {}
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    self.failed_raster = Some(job.key);
+                    self.raster_job = None;
+                }
+            }
+        }
+        if self.raster_key != Some(key)
+            && self.raster_job.is_none()
+            && self.failed_raster != Some(key)
+        {
+            let mut snapshot = self.clone();
+            snapshot.scene_job = None;
+            snapshot.raster_job = None;
+            snapshot.texture = None;
+            let selected = selected.to_vec();
+            let (sender, receiver) = mpsc::sync_channel(1);
+            self.raster_job = Some(Arc::new(RasterJob {
+                scene: self.scene_key(),
+                key,
+                size,
+                receiver: Mutex::new(receiver),
+            }));
+            let ctx = ctx.clone();
+            std::thread::spawn(move || {
+                let result = raster(&snapshot, &selected, logical, size);
+                let _ = sender.send(result);
+                ctx.request_repaint();
+            });
+        }
+        if self.raster_job.is_some() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(25));
+        }
+    }
+    fn scene_key(&self) -> SceneKey {
+        (self.revision, self.show_components, self.generation)
+    }
+    fn prepare(&mut self, board: &Board, ctx: &egui::Context) {
+        let key = self.scene_key();
+        if let Some(job) = &self.scene_job {
+            let received = job.receiver.lock().unwrap().try_recv();
+            match received {
+                Ok(scene) => {
+                    if job.key == key {
+                        self.scene = Arc::new(scene);
+                        self.built_key = Some(key);
+                        self.raster_key = None;
+                    }
+                    self.scene_job = None;
+                }
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    self.failed_key = Some(job.key);
+                    self.scene_job = None;
+                }
+                Err(mpsc::TryRecvError::Empty) => {}
+            }
+        }
+        if self.preparing() && self.scene_job.is_none() && self.failed_key != Some(key) {
+            let snapshot = board.clone();
+            let (sender, receiver) = mpsc::sync_channel(1);
+            self.scene_job = Some(Arc::new(SceneJob {
+                key,
+                receiver: Mutex::new(receiver),
+            }));
+            let ctx = ctx.clone();
+            std::thread::spawn(move || {
+                let scene = build(&snapshot, key.1);
+                let _ = sender.send(scene);
+                ctx.request_repaint();
+            });
+        }
     }
     pub fn cancel_drag(&mut self) {
         self.drag = None;
@@ -552,6 +680,7 @@ fn raster(
     logical: Vec2,
     size: [usize; 2],
 ) -> (egui::ColorImage, Vec<u32>) {
+    let selected: std::collections::HashSet<_> = selected.iter().copied().collect();
     let [w, h] = size;
     let mut image = egui::ColorImage::filled(size, state.presentation.background[0]);
     for y in 0..h {
@@ -575,28 +704,22 @@ fn raster(
         .faces
         .iter()
         .enumerate()
-        .filter(|(_, face)| material_color(face, state).a() > 0)
-        .collect();
-    order.sort_by(|(_, a), (_, b)| {
-        let aa = material_color(a, state).a() == 255;
-        let bb = material_color(b, state).a() == 255;
-        bb.cmp(&aa).then_with(|| {
-            a.triangle
-                .v
-                .iter()
-                .map(|p| project(*p, state)[2])
-                .sum::<f32>()
-                .total_cmp(
-                    &b.triangle
-                        .v
-                        .iter()
-                        .map(|p| project(*p, state)[2])
-                        .sum::<f32>(),
-                )
+        .filter_map(|(n, face)| {
+            let color = material_color(face, state);
+            if color.a() == 0 {
+                return None;
+            }
+            let projected = face.triangle.v.map(|v| project(v, state));
+            let depth = projected.iter().map(|v| v[2]).sum::<f32>();
+            Some((n, face, color, projected, depth))
         })
+        .collect();
+    order.sort_by(|a, b| {
+        let aa = a.2.a() == 255;
+        let bb = b.2.a() == 255;
+        bb.cmp(&aa).then_with(|| a.4.total_cmp(&b.4))
     });
-    for (n, face) in order {
-        let projected = face.triangle.v.map(|v| project(v, state));
+    for (n, face, material, projected, _) in order {
         let v = projected.map(|v| {
             [
                 (v[0] * scale + logical.x / 2. + state.pan.x) * w as f32 / logical.x,
@@ -635,7 +758,7 @@ fn raster(
         }) {
             state.presentation.selection_color
         } else {
-            material_color(face, state)
+            material
         };
         let color = shade(&Triangle {
             v: projected,
@@ -706,17 +829,15 @@ pub fn canvas(ui: &mut egui::Ui, board: &Board, view: &mut View) -> CanvasOutput
             .checkbox(&mut state.show_components, "Components")
             .changed()
         {
-            state.built_revision = None;
+            state.invalidate();
         }
         ui.label("Shift + right drag: rotate · right drag: pan · wheel: zoom");
     });
     let (rect, response) = ui.allocate_exact_size(ui.available_size(), Sense::click_and_drag());
-    if state.built_revision != Some(state.revision) {
-        state.scene = Arc::new(build(board, state.show_components));
-        state.built_revision = Some(state.revision);
-        state.raster_key = None;
-    }
-    if let Some(target) = view.pcb.requested_fit.take() {
+    state.prepare(board, ui.ctx());
+    if !state.preparing()
+        && let Some(target) = view.pcb.requested_fit.take()
+    {
         state.fit();
         if matches!(target, crate::pcb::FitTarget::Selection) {
             let mut min = [f32::INFINITY; 3];
@@ -800,6 +921,30 @@ pub fn canvas(ui: &mut egui::Ui, board: &Board, view: &mut View) -> CanvasOutput
             }
         }
     }
+    if state.preparing() {
+        view.pcb.input = None;
+        ui.painter()
+            .rect_filled(rect, 0., state.presentation.background[0]);
+        ui.painter().text(
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            if state.failed_key == Some(state.scene_key()) {
+                "Could not prepare 3D view"
+            } else {
+                "Preparing 3D view…"
+            },
+            egui::FontId::proportional(14.),
+            Color32::WHITE,
+        );
+        if state.scene_job.is_some() {
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(50));
+        }
+        return CanvasOutput {
+            cursor_mm: None,
+            schematic_input: None,
+        };
+    }
     let size = [
         rect.width().ceil().clamp(1., 1200.) as usize,
         rect.height().ceil().clamp(1., 1000.) as usize,
@@ -838,21 +983,7 @@ pub fn canvas(ui: &mut egui::Ui, board: &Board, view: &mut View) -> CanvasOutput
         c.to_array().hash(&mut hash);
     }
     let key = hash.finish();
-    if state.raster_key != Some(key) {
-        let (image, ids) = raster(state, &view.pcb.selected, rect.size(), size);
-        state.ids = Arc::new(ids);
-        state.size = size;
-        if let Some(texture) = &mut state.texture {
-            texture.set(image, egui::TextureOptions::LINEAR);
-        } else {
-            state.texture = Some(ui.ctx().load_texture(
-                format!("pcb-3d-{:?}", response.id),
-                image,
-                egui::TextureOptions::LINEAR,
-            ));
-        }
-        state.raster_key = Some(key);
-    }
+    state.render(key, &view.pcb.selected, rect.size(), size, ui.ctx());
     if let Some(texture) = &state.texture {
         ui.painter().image(
             texture.id(),
@@ -860,8 +991,25 @@ pub fn canvas(ui: &mut egui::Ui, board: &Board, view: &mut View) -> CanvasOutput
             Rect::from_min_max(Pos2::ZERO, Pos2::new(1., 1.)),
             Color32::WHITE,
         );
+    } else {
+        ui.painter()
+            .rect_filled(rect, 0., state.presentation.background[0]);
+        ui.painter().text(
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            if state.failed_raster == Some(key) {
+                "Could not render 3D view"
+            } else {
+                "Rendering 3D view…"
+            },
+            egui::FontId::proportional(14.),
+            Color32::WHITE,
+        );
     }
-    let hit = response.hover_pos().and_then(|p| {
+    // The displayed image may lag while orbiting. Never pick using a depth
+    // buffer belonging to a different camera, selection, size or document.
+    let interactive = state.raster_key == Some(key);
+    let hit = response.hover_pos().filter(|_| interactive).and_then(|p| {
         let x = (((p.x - rect.min.x) / rect.width()) * size[0] as f32) as usize;
         let y = (((p.y - rect.min.y) / rect.height()) * size[1] as f32) as usize;
         state
@@ -888,8 +1036,8 @@ pub fn canvas(ui: &mut egui::Ui, board: &Board, view: &mut View) -> CanvasOutput
     view.pcb.input = Some(Input {
         hit,
         hits: hit.into_iter().collect(),
-        clicked: response.clicked(),
-        double_clicked: response.double_clicked(),
+        clicked: response.clicked() && interactive,
+        double_clicked: response.double_clicked() && interactive,
         secondary_clicked: response.secondary_clicked(),
         hovered: response.hovered(),
         panning: drag,
@@ -1086,6 +1234,18 @@ mod tests {
             )
         };
         frame(&mut view);
+        let wait = |view: &mut View| {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while view.pcb.three_d.preparing() || view.pcb.three_d.rendering() {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "3D worker did not finish"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(1));
+                frame(view);
+            }
+        };
+        wait(&mut view);
         let scene = view.pcb.three_d.scene.clone();
         let texture = view.pcb.three_d.texture.as_ref().unwrap().id();
         let output = frame(&mut view);
@@ -1096,8 +1256,83 @@ mod tests {
         assert_eq!(view.camera.pixels_per_mm, before.pixels_per_mm);
         view.pcb.three_d.revision += 1;
         frame(&mut view);
+        wait(&mut view);
         assert!(!Arc::ptr_eq(&scene, &view.pcb.three_d.scene));
         assert_eq!(view.pcb.three_d.texture.as_ref().unwrap().id(), texture);
+    }
+    #[test]
+    fn scene_worker_is_bounded_and_discards_stale_revisions_and_body_settings() {
+        for change_bodies in [false, true] {
+            let (sender, receiver) = mpsc::sync_channel(1);
+            let mut state = State::default();
+            let old_key = state.scene_key();
+            state.scene_job = Some(Arc::new(SceneJob {
+                key: old_key,
+                receiver: Mutex::new(receiver),
+            }));
+            let job = state.scene_job.clone().unwrap();
+            let original = state.scene.clone();
+            let board = Board::default();
+            let ctx = egui::Context::default();
+            if change_bodies {
+                state.show_components = false;
+            } else {
+                state.revision += 1;
+            }
+            for _ in 0..20 {
+                state.prepare(&board, &ctx);
+            }
+            assert!(Arc::ptr_eq(&job, state.scene_job.as_ref().unwrap()));
+            assert!(sender.send(Scene::default()).is_ok());
+            state.prepare(&board, &ctx);
+            assert!(Arc::ptr_eq(&original, &state.scene));
+            assert!(state.preparing());
+            assert_eq!(state.scene_job.as_ref().unwrap().key, state.scene_key());
+        }
+    }
+    #[test]
+    fn invalidation_expires_in_flight_scene_even_at_the_same_revision() {
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let mut state = State::default();
+        let old_key = state.scene_key();
+        state.scene_job = Some(Arc::new(SceneJob {
+            key: old_key,
+            receiver: Mutex::new(receiver),
+        }));
+        state.invalidate();
+        assert!(sender.send(Scene::default()).is_ok());
+        state.prepare(&Board::default(), &egui::Context::default());
+        assert_ne!(state.built_key, Some(old_key));
+        assert!(state.preparing());
+    }
+    #[test]
+    fn raster_worker_coalesces_camera_changes_and_drops_old_document_pixels() {
+        let ctx = egui::Context::default();
+        let mut state = State::default();
+        let (sender, receiver) = mpsc::sync_channel(1);
+        state.raster_job = Some(Arc::new(RasterJob {
+            scene: state.scene_key(),
+            key: 1,
+            size: [1, 1],
+            receiver: Mutex::new(receiver),
+        }));
+        let job = state.raster_job.clone().unwrap();
+        for key in 2..20 {
+            state.render(key, &[], Vec2::splat(1.), [1, 1], &ctx);
+            assert!(Arc::ptr_eq(&job, state.raster_job.as_ref().unwrap()));
+        }
+        let old_ids = state.ids.clone();
+        state.revision += 1;
+        assert!(
+            sender
+                .send((egui::ColorImage::filled([1, 1], Color32::RED), vec![42]))
+                .is_ok()
+        );
+        state.render(20, &[], Vec2::splat(1.), [1, 1], &ctx);
+        assert!(Arc::ptr_eq(&old_ids, &state.ids));
+        assert!(state.texture.is_none());
+        assert_ne!(state.raster_key, Some(1));
+        assert_eq!(state.raster_job.as_ref().unwrap().scene, state.scene_key());
     }
     #[test]
     fn fast_orbit_and_pan_use_press_modifiers_and_release_once() {

@@ -737,6 +737,10 @@ impl Board {
         self.items.iter_mut().find(|i| i.id == id)
     }
     pub fn resolve_selection(&self, selection: &[Uuid]) -> BTreeSet<Uuid> {
+        if selection.is_empty() {
+            return BTreeSet::new();
+        }
+        let selection: HashSet<_> = selection.iter().copied().collect();
         let component_indices: HashSet<_> = self
             .components
             .iter()

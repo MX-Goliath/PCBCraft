@@ -330,6 +330,7 @@ mod tests {
         );
         h.view.pcb.selected = vec![item.id];
         h.board.items.push(item);
+        h.view.pcb.three_d.revision += 1;
         h.key(Key::PageDown, Modifiers::CTRL);
         let all = h.view.camera.pixels_per_mm;
         h.view.pcb.requested_fit = Some(FitTarget::Board);

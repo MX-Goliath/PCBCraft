@@ -176,11 +176,14 @@ impl Settings {
         }
     }
     pub fn alpha(&self, item: &Item) -> u8 {
+        self.alpha_on_layer(item, item.layer)
+    }
+    pub(super) fn alpha_on_layer(&self, item: &Item, layer: u16) -> u8 {
         let kind = Self::kind(item);
         if self.hidden[kind] {
             0
         } else {
-            self.opacity.get(&item.layer).map_or(255, |v| v[kind])
+            self.opacity.get(&layer).map_or(255, |v| v[kind])
         }
     }
 }

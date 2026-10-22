@@ -413,13 +413,13 @@ fn pcb_shortcut_sequences_and_inactive_drag_cleanup_are_routed_to_active_documen
         add: false,
     });
     doc.view.pcb.selection_box = Some((Point::default(), Point::mm(5, 5)));
-    doc.view.pcb.preview = doc.model.pcb.clone();
+    doc.view.pcb.set_preview(doc.model.pcb.clone());
     app.active = None;
     app.finish_pcb_interaction(&ctx);
     let doc = &app.documents[0];
     assert!(doc.pcb_editor.gesture.is_none());
     assert!(doc.view.pcb.selection_box.is_none());
-    assert!(doc.view.pcb.preview.is_none());
+    assert!(doc.view.pcb.preview().is_none());
     assert_eq!(doc.model, before);
     assert!(!doc.dirty());
 }

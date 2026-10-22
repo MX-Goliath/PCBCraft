@@ -16,6 +16,8 @@ mod configuration;
 mod connections;
 #[path = "pcb_display.rs"]
 mod display;
+#[path = "pcb_geometry_cache.rs"]
+mod geometry;
 #[path = "pcb_navigation.rs"]
 mod navigation;
 #[path = "pcb_text.rs"]
@@ -43,7 +45,8 @@ pub struct BoardView {
     primary_press: Option<Pos2>,
     primary_dragging: bool,
     suppress_primary_until_release: bool,
-    pub preview: Option<Board>,
+    preview: Option<std::sync::Arc<Board>>,
+    preview_generation: u64,
     pub tool_active: bool,
     pub selection_box: Option<(Point, Point)>,
     pub draft_outline: Vec<Point>,
@@ -52,6 +55,7 @@ pub struct BoardView {
     pub show_grid_dialog: bool,
     pub polygons_visible: bool,
     cache: HashMap<Uuid, (u64, Vec<usize>, bool)>,
+    geometry: geometry::Cache,
     display: display::Settings,
     grid_initialized: bool,
     connections: connections::Cache,
@@ -118,6 +122,16 @@ pub fn layer_color(id: u16) -> Color32 {
     }
 }
 impl BoardView {
+    pub fn set_preview(&mut self, preview: Option<Board>) {
+        if self.preview.is_none() && preview.is_none() {
+            return;
+        }
+        self.preview_generation = self.preview_generation.wrapping_add(1);
+        self.preview = preview.map(std::sync::Arc::new);
+    }
+    pub fn preview(&self) -> Option<&Board> {
+        self.preview.as_deref()
+    }
     fn begin_frame(&mut self) {
         self.cache.retain(|_, (_, _, used)| std::mem::take(used));
     }
@@ -192,7 +206,7 @@ impl BoardView {
     }
     pub fn clear_pointer(&mut self) {
         self.suppress_primary_until_release = true;
-        self.preview = None;
+        self.set_preview(None);
         self.selection_box = None;
         self.draft_outline.clear();
         self.input = None;
@@ -222,6 +236,12 @@ fn world(camera: &Camera, p: Pos2, rect: Rect) -> Point {
     }
 }
 fn dim(c: Color32, alpha: u8) -> Color32 {
+    if alpha == 255 {
+        return c;
+    }
+    if alpha == 0 {
+        return Color32::TRANSPARENT;
+    }
     let [r, g, b, a] = c.to_srgba_unmultiplied();
     Color32::from_rgba_unmultiplied(r, g, b, (u16::from(a) * u16::from(alpha) / 255) as u8)
 }
@@ -257,13 +277,20 @@ pub fn canvas(ui: &mut egui::Ui, b: &Board, view: &mut View) -> CanvasOutput {
     if view.pcb.display.connections {
         view.pcb.connections.update(
             b,
-            view.pcb.preview.as_ref(),
+            view.pcb.preview.as_deref(),
             view.pcb.three_d.revision,
+            view.pcb.preview_generation,
             ui.ctx(),
         );
     }
-    let scene = view.pcb.preview.as_ref().unwrap_or(b);
-    let outline = scene.outline_points(256);
+    let preview = view.pcb.preview.clone();
+    let scene = preview.as_deref().unwrap_or(b);
+    view.pcb.geometry.prepare(
+        scene,
+        view.pcb.three_d.revision,
+        view.pcb.preview_generation,
+    );
+    let outline = view.pcb.geometry.outline.clone();
     if outline.len() >= 3 && view.pcb.display.board_visible {
         polygon(
             &painter,
@@ -272,7 +299,7 @@ pub fn canvas(ui: &mut egui::Ui, b: &Board, view: &mut View) -> CanvasOutput {
             &outline,
             &[],
             view.pcb.display.board_color,
-            None,
+            Some(&mut view.pcb.geometry.board_triangles),
         );
         // Native arc/line seams can backtrack by a few nanometres. A joined
         // stroked path can produce an unbounded antialias miter at that seam.
@@ -335,7 +362,7 @@ pub fn canvas(ui: &mut egui::Ui, b: &Board, view: &mut View) -> CanvasOutput {
         .filter(|i| {
             view.pcb.is_visible(i)
                 && scene.text_visible(i)
-                && i.bounds().intersects(bounds)
+                && view.pcb.geometry.bounds[&i.id].intersects(bounds)
                 && (view.pcb.single_layer == 0
                     || i.layer != MULTI_LAYER
                     || i.is_drill_only()
@@ -404,7 +431,7 @@ pub fn canvas(ui: &mut egui::Ui, b: &Board, view: &mut View) -> CanvasOutput {
             item,
             view.pcb.active_layer,
             color,
-            &mut view.pcb.cache,
+            &mut view.pcb,
         );
     }
     if view.pcb.display.connections {
@@ -516,7 +543,7 @@ pub fn canvas(ui: &mut egui::Ui, b: &Board, view: &mut View) -> CanvasOutput {
         }
     });
     for item in &order {
-        let drill = item.drill_outline();
+        let drill = view.pcb.geometry.drill(item);
         let show_drill = if matches!(item.shape, Shape::Via { .. }) {
             view.pcb.display.via_holes_visible
         } else {
@@ -525,7 +552,8 @@ pub fn canvas(ui: &mut egui::Ui, b: &Board, view: &mut View) -> CanvasOutput {
         if drill.len() >= 3 && show_drill {
             painter.add(egui::Shape::convex_polygon(
                 drill
-                    .into_iter()
+                    .iter()
+                    .copied()
                     .map(|p| view.camera.screen(p, rect))
                     .collect(),
                 if matches!(item.shape, Shape::Via { .. }) {
@@ -638,9 +666,11 @@ pub fn canvas(ui: &mut egui::Ui, b: &Board, view: &mut View) -> CanvasOutput {
     let mut hits = Vec::new();
     if let Some(p) = raw {
         let tol = 6.0 / view.camera.pixels_per_mm * 1e6;
+        let near = Bounds::points(&[p]).expanded(tol.ceil() as i64);
         let mut candidates: Vec<_> = order
             .iter()
             .rev()
+            .filter(|i| view.pcb.geometry.bounds[&i.id].intersects(near))
             .filter(|i| {
                 if view.cross_probe {
                     view.pcb.is_visible(i)
@@ -783,7 +813,7 @@ pub fn canvas(ui: &mut egui::Ui, b: &Board, view: &mut View) -> CanvasOutput {
         schematic_input: None,
     }
 }
-fn paint_masks(painter: &egui::Painter, board: &Board, view: &View, rect: Rect, active: bool) {
+fn paint_masks(painter: &egui::Painter, board: &Board, view: &mut View, rect: Rect, active: bool) {
     for (layer, kind, bottom) in [
         (35, MaskKind::Paste, false),
         (36, MaskKind::Paste, true),
@@ -801,18 +831,16 @@ fn paint_masks(painter: &egui::Painter, board: &Board, view: &View, rect: Rect, 
             .iter()
             .filter(|i| matches!(i.shape, Shape::Pad { .. } | Shape::Via { .. }))
         {
-            let mut appearance = item.clone();
-            appearance.layer = layer;
-            let alpha = view.pcb.display.alpha(&appearance);
+            let alpha = view.pcb.display.alpha_on_layer(item, layer);
             if alpha == 0 {
                 continue;
             }
-            if let Ok(outline) = item.mask_outline(board, kind, bottom)
-                && outline.len() >= 3
-            {
+            let outline = view.pcb.geometry.mask(board, item, kind, bottom);
+            if outline.len() >= 3 {
                 painter.add(egui::Shape::convex_polygon(
                     outline
-                        .into_iter()
+                        .iter()
+                        .copied()
                         .map(|p| view.camera.screen(p, rect))
                         .collect(),
                     dim(view.pcb.color(layer), alpha),
@@ -915,8 +943,10 @@ fn paint_item(
     item: &Item,
     active: u16,
     color: Color32,
-    cache: &mut HashMap<Uuid, (u64, Vec<usize>, bool)>,
+    view: &mut BoardView,
 ) {
+    let cache = &mut view.cache;
+    let geometry = &mut view.geometry;
     let scale = (camera.pixels_per_mm / 1e6) as f32;
     let screen = |v| camera.screen(v, rect);
     let stroke = |w: i64| Stroke::new((w as f32 * scale).max(0.6), color);
@@ -958,10 +988,10 @@ fn paint_item(
             } else {
                 item.layer
             };
-            let outline = item.pad_outline(layer);
+            let outline = geometry.pad(item, layer);
             if outline.len() >= 3 {
                 p.add(egui::Shape::convex_polygon(
-                    outline.into_iter().map(screen).collect(),
+                    outline.iter().copied().map(screen).collect(),
                     color,
                     Stroke::NONE,
                 ));
@@ -1112,18 +1142,21 @@ fn polygon(
         hole_indices.push(vertices.len());
         vertices.extend(h);
     }
-    let coords: Vec<f64> = vertices
-        .iter()
-        .flat_map(|v| [v.x as f64 / 1e6, v.y as f64 / 1e6])
-        .collect();
+    let triangulate = || {
+        let coords: Vec<f64> = vertices
+            .iter()
+            .flat_map(|v| [v.x as f64 / 1e6, v.y as f64 / 1e6])
+            .collect();
+        earcutr::earcut(&coords, &hole_indices, 2).unwrap_or_default()
+    };
     let own;
     let indices = if let Some(c) = cache {
         if c.is_empty() {
-            *c = earcutr::earcut(&coords, &hole_indices, 2).unwrap_or_default();
+            *c = triangulate();
         }
         c.as_slice()
     } else {
-        own = earcutr::earcut(&coords, &hole_indices, 2).unwrap_or_default();
+        own = triangulate();
         own.as_slice()
     };
     let mut mesh = egui::Mesh::default();
@@ -1386,7 +1419,7 @@ mod tests {
                     &item,
                     TOP,
                     Color32::RED,
-                    &mut view.cache,
+                    &mut view,
                 );
             });
             assert!(view.cache.len() <= 2);

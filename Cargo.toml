@@ -19,3 +19,12 @@ eda-geom = { path = "crates/eda-geom" }
 eda-core = { path = "crates/eda-core" }
 eda-io = { path = "crates/eda-io" }
 eda-render = { path = "crates/eda-render" }
+
+# Interactive geometry and egui tessellation are too expensive at opt-level 0.
+# Keep debug symbols/assertions and incremental builds while exercising real
+# editor performance during normal development on both Windows and Linux.
+[profile.dev]
+opt-level = 2
+
+[profile.dev.package."*"]
+opt-level = 2

@@ -117,6 +117,7 @@ pub(super) struct Editor {
     diagonal_first: bool,
     paused: bool,
     gesture: Option<Gesture>,
+    gesture_preview: Option<(Point, u64)>,
     tool_base: Option<(Board, u64)>,
     draft: Option<Draft>,
     sequence: Option<(Key, f64)>,
@@ -157,6 +158,7 @@ impl Default for Editor {
             diagonal_first: true,
             paused: false,
             gesture: None,
+            gesture_preview: None,
             tool_base: None,
             draft: None,
             sequence: None,
@@ -476,7 +478,7 @@ fn finish_route(doc: &mut OpenDocument, ed: &mut Editor) -> Result<(), String> {
         }
         ed.route_session = None;
         ed.start = None;
-        doc.view.pcb.preview = None;
+        doc.view.pcb.set_preview(None);
     }
     Ok(())
 }
@@ -505,7 +507,7 @@ fn route_layer(doc: &mut OpenDocument, ed: &mut Editor, layer: u16) -> Result<()
                 ed.diameter,
                 ed.drill,
             )?;
-            doc.view.pcb.preview = Some(route.draft.clone());
+            doc.view.pcb.set_preview(Some(route.draft.clone()));
         }
     }
     doc.view.pcb.active_layer = layer;
@@ -653,7 +655,7 @@ fn finish_polygon(doc: &mut OpenDocument, ed: &mut Editor) -> Result<(), String>
         doc.view.pcb.selected = vec![id];
     }
     ed.points.clear();
-    doc.view.pcb.preview = None;
+    doc.view.pcb.set_preview(None);
     doc.view.pcb.draft_outline.clear();
     Ok(())
 }
@@ -701,7 +703,7 @@ fn input(
             ed.start = None;
             ed.points.clear();
             ed.tool_base = None;
-            doc.view.pcb.preview = None;
+            doc.view.pcb.set_preview(None);
         } else {
             ed.cancel(&mut doc.view);
         }
@@ -710,7 +712,7 @@ fn input(
     if let Some(gesture) = &ed.gesture {
         if i.drag_stopped && !i.hovered {
             ed.gesture = None;
-            doc.view.pcb.preview = None;
+            doc.view.pcb.set_preview(None);
             doc.view.pcb.selection_box = None;
             return Ok(());
         }
@@ -726,8 +728,15 @@ fn input(
                 } => {
                     if *revision != doc.history.revision {
                         ed.gesture = None;
-                        doc.view.pcb.preview = None;
+                        doc.view.pcb.set_preview(None);
                         return Err("Document changed during drag; gesture cancelled".into());
+                    }
+                    let preview_key = (p, rotation.to_bits());
+                    if !i.drag_stopped
+                        && ed.gesture_preview == Some(preview_key)
+                        && doc.view.pcb.preview().is_some()
+                    {
+                        return Ok(());
                     }
                     let translation = Point {
                         x: p.x - origin.x,
@@ -747,14 +756,15 @@ fn input(
                         Ok(next) => {
                             if i.drag_stopped {
                                 ed.gesture = None;
-                                doc.view.pcb.preview = None;
+                                doc.view.pcb.set_preview(None);
                                 commit(doc, next)?;
                             } else {
-                                doc.view.pcb.preview = Some(next);
+                                doc.view.pcb.set_preview(Some(next));
+                                ed.gesture_preview = Some(preview_key);
                             }
                         }
                         Err(error) => {
-                            doc.view.pcb.preview = None;
+                            doc.view.pcb.set_preview(None);
                             if i.drag_stopped {
                                 ed.gesture = None;
                             }
@@ -771,20 +781,28 @@ fn input(
                         ed.cancel_pointer(&mut doc.view);
                         return Err("Document changed during handle drag".into());
                     }
+                    let preview_key = (p, 0);
+                    if !i.drag_stopped
+                        && ed.gesture_preview == Some(preview_key)
+                        && doc.view.pcb.preview().is_some()
+                    {
+                        return Ok(());
+                    }
                     match pcb_tools::move_handle(base, *handle, p, true) {
                         Ok(next) => {
                             if i.drag_stopped {
                                 ed.gesture = None;
-                                doc.view.pcb.preview = None;
+                                doc.view.pcb.set_preview(None);
                                 commit(doc, next)?;
                             } else {
-                                doc.view.pcb.preview = Some(next);
+                                doc.view.pcb.set_preview(Some(next));
+                                ed.gesture_preview = Some(preview_key);
                             }
                         }
                         Err(error) => {
                             if i.drag_stopped {
                                 ed.gesture = None;
-                                doc.view.pcb.preview = None;
+                                doc.view.pcb.set_preview(None);
                                 return Err(error);
                             }
                         }
@@ -833,6 +851,7 @@ fn input(
                     revision: doc.history.revision,
                     handle,
                 });
+                ed.gesture_preview = None;
                 return input(
                     doc,
                     ed,
@@ -905,6 +924,7 @@ fn input(
                     connected: (modifiers.ctrl || modifiers.command) && !modifiers.shift,
                     rotation: 0.0,
                 });
+                ed.gesture_preview = None;
             } else {
                 ed.gesture = Some(Gesture::Box {
                     origin,
@@ -976,9 +996,9 @@ fn input(
                 if i.clicked {
                     commit(doc, next)?;
                     doc.view.pcb.selected = selection;
-                    doc.view.pcb.preview = None;
+                    doc.view.pcb.set_preview(None);
                 } else {
-                    doc.view.pcb.preview = Some(next);
+                    doc.view.pcb.set_preview(Some(next));
                 }
             }
         }
@@ -1014,7 +1034,7 @@ fn input(
                     commit(doc, next)?;
                     ed.cancel(&mut doc.view);
                 } else {
-                    doc.view.pcb.preview = Some(next);
+                    doc.view.pcb.set_preview(Some(next));
                 }
             } else if i.clicked {
                 if doc.view.pcb.selected.is_empty() {
@@ -1047,12 +1067,12 @@ fn input(
                 if i.clicked {
                     let finishes = hit.is_some() && end != route.anchor;
                     route.place(end, hit)?;
-                    doc.view.pcb.preview = Some(route.draft.clone());
+                    doc.view.pcb.set_preview(Some(route.draft.clone()));
                     if finishes {
                         finish_route(doc, ed)?;
                     }
                 } else {
-                    doc.view.pcb.preview = Some(route.preview(end)?);
+                    doc.view.pcb.set_preview(Some(route.preview(end)?));
                 }
             } else if i.clicked {
                 let route = RouteSession::begin(
@@ -1073,7 +1093,7 @@ fn input(
                     route
                 };
                 ed.net = route.net;
-                doc.view.pcb.preview = Some(route.draft.clone());
+                doc.view.pcb.set_preview(Some(route.draft.clone()));
                 ed.route_session = Some(route);
             }
         }
@@ -1092,7 +1112,9 @@ fn input(
                 .collect();
             if ed.tool == Tool::Region {
                 if let Some(item) = placement(ed, p, layer) {
-                    doc.view.pcb.preview = Some(board.edited(Edit::Insert(vec![item]))?);
+                    doc.view
+                        .pcb
+                        .set_preview(Some(board.edited(Edit::Insert(vec![item]))?));
                 }
             } else if ed.tool == Tool::Outline && ed.points.len() >= 2 {
                 let mut next = board.clone();
@@ -1107,7 +1129,7 @@ fn input(
                         arc: None,
                     })
                     .collect();
-                doc.view.pcb.preview = Some(next);
+                doc.view.pcb.set_preview(Some(next));
             }
         }
         Tool::Arc => {
@@ -1120,9 +1142,9 @@ fn input(
                 if i.clicked {
                     commit(doc, next)?;
                     ed.points.clear();
-                    doc.view.pcb.preview = None;
+                    doc.view.pcb.set_preview(None);
                 } else {
-                    doc.view.pcb.preview = Some(next);
+                    doc.view.pcb.set_preview(Some(next));
                 }
             }
         }
@@ -1136,12 +1158,12 @@ fn input(
                 let next = board.edited(Edit::Insert(vec![item]))?;
                 if i.clicked {
                     commit(doc, next)?;
-                    doc.view.pcb.preview = None;
+                    doc.view.pcb.set_preview(None);
                     if ed.tool == Tool::Fill {
                         ed.start = None;
                     }
                 } else {
-                    doc.view.pcb.preview = Some(next);
+                    doc.view.pcb.set_preview(Some(next));
                 }
             }
         }
@@ -1328,10 +1350,10 @@ impl PcbCraft {
                     if let Some(route) = &mut ed.route_session {
                         if route.backtrack() {
                             doc.view.pcb.active_layer = route.layer;
-                            doc.view.pcb.preview = Some(route.draft.clone());
+                            doc.view.pcb.set_preview(Some(route.draft.clone()));
                         } else {
                             ed.route_session = None;
-                            doc.view.pcb.preview = None;
+                            doc.view.pcb.set_preview(None);
                         }
                     } else {
                         ed.points.pop();
@@ -2030,7 +2052,7 @@ mod controller_tests {
         input(&mut d, &mut ed, &mut clip, click(0, 0), &ctx).unwrap();
         input(&mut d, &mut ed, &mut clip, click(5, 2), &ctx).unwrap();
         assert_eq!(d.model, original);
-        assert!(d.view.pcb.preview.is_some());
+        assert!(d.view.pcb.preview().is_some());
         input(&mut d, &mut ed, &mut clip, click(10, 0), &ctx).unwrap();
         assert!(ed.route_session.is_none());
         assert!(d.model.pcb.as_ref().unwrap().items.len() > 1);
@@ -2050,7 +2072,7 @@ mod controller_tests {
         ed.cancel(&mut d.view);
         assert_eq!(d.model, original);
         assert!(!d.history.can_undo());
-        assert!(d.view.pcb.preview.is_none());
+        assert!(d.view.pcb.preview().is_none());
     }
     #[test]
     fn save_finishes_a_pending_route_in_one_transaction() {
@@ -2150,7 +2172,7 @@ mod controller_tests {
         );
         assert_eq!(d.history.revision, 1);
         assert!(ed.gesture.is_none());
-        assert!(d.view.pcb.preview.is_none());
+        assert!(d.view.pcb.preview().is_none());
         let after = d.model.clone();
         d.history.undo(&mut d.model);
         assert_eq!(d.model, before);
@@ -2187,12 +2209,12 @@ mod controller_tests {
                 &ctx,
             )
             .unwrap();
-            assert!(d.view.pcb.preview.is_some());
+            assert!(d.view.pcb.preview().is_some());
             input(&mut d, &mut ed, &mut None, stop, &ctx).unwrap();
             assert_eq!(d.model, original);
             assert_eq!(d.history.revision, 0);
             assert!(ed.gesture.is_none());
-            assert!(d.view.pcb.preview.is_none());
+            assert!(d.view.pcb.preview().is_none());
         }
     }
     #[test]
@@ -2348,7 +2370,7 @@ mod controller_tests {
         let preview = d
             .view
             .pcb
-            .preview
+            .preview()
             .as_ref()
             .unwrap()
             .items
@@ -2394,6 +2416,24 @@ mod controller_tests {
             &ctx,
         )
         .unwrap();
+        let preview_address = d.view.pcb.preview().unwrap() as *const Board;
+        input(
+            &mut d,
+            &mut ed,
+            &mut None,
+            Input {
+                point: Some(Point::mm(12, 2)),
+                dragging: true,
+                hovered: true,
+                ..Default::default()
+            },
+            &ctx,
+        )
+        .unwrap();
+        assert_eq!(
+            preview_address,
+            d.view.pcb.preview().unwrap() as *const Board
+        );
         let Some(Gesture::Move { rotation, .. }) = &mut ed.gesture else {
             panic!()
         };
@@ -2414,7 +2454,7 @@ mod controller_tests {
         let preview = d
             .view
             .pcb
-            .preview
+            .preview()
             .as_ref()
             .unwrap()
             .item(id)
