@@ -488,6 +488,19 @@ impl PcbCraft {
     }
 
     fn request_close(&mut self, id: Uuid) {
+        if let Some(manager) = &mut self.layer_stack
+            && manager.session == id
+        {
+            if manager.dirty() {
+                manager.visible = true;
+                self.message(
+                    true,
+                    "Apply or discard stack changes before closing the board",
+                );
+                return;
+            }
+            self.layer_stack = None;
+        }
         if self
             .documents
             .iter()
@@ -500,15 +513,20 @@ impl PcbCraft {
     }
 
     fn run(&mut self, command: Command, ctx: &egui::Context) {
+        if matches!(command, Command::Quit)
+            && let Some(manager) = &mut self.layer_stack
+            && manager.dirty()
+        {
+            manager.visible = true;
+            self.message(true, "Apply or discard stack changes before quitting");
+            return;
+        }
         if self.annotation.is_some() {
             self.message(true, "Close the annotation dialog before another command");
             return;
         }
-        if self.layer_stack.is_some() {
-            self.message(
-                true,
-                "Apply or close Layer Stack Manager before another command",
-            );
+        if self.layer_stack_active() {
+            self.layer_stack_command(command);
             return;
         }
         if !matches!(command, Command::CrossProbe | Command::Fit) {
@@ -697,6 +715,10 @@ impl PcbCraft {
     }
 
     fn menus(&mut self, ctx: &egui::Context) {
+        if self.layer_stack_active() {
+            self.layer_stack_menus(ctx);
+            return;
+        }
         let has_doc = self.active.is_some();
         let undo = self
             .active
@@ -1334,7 +1356,7 @@ impl PcbCraft {
     }
 
     fn workspace(&mut self, ctx: &egui::Context) {
-        if self.layer_stack.is_some() {
+        if self.layer_stack_active() {
             self.layer_stack_workspace(ctx);
             return;
         }
@@ -1596,7 +1618,7 @@ impl PcbCraft {
 
     fn shortcuts(&mut self, ctx: &egui::Context) {
         if self.annotation.is_some()
-            || self.layer_stack.is_some()
+            || self.layer_stack_active()
             || self.pending.is_some()
             || self
                 .active
@@ -1662,7 +1684,7 @@ impl eframe::App for PcbCraft {
         self.title_bar(ctx);
         self.menus(ctx);
         self.status(ctx);
-        let view_configuration = self.layer_stack.is_none()
+        let view_configuration = !self.layer_stack_active()
             && self.active.is_some_and(|i| {
                 self.documents[i].model.pcb.is_some()
                     && self.documents[i].view.pcb.show_layer_dialog
@@ -1672,7 +1694,7 @@ impl eframe::App for PcbCraft {
         } else if self.settings.projects {
             self.projects(ctx);
         }
-        if self.layer_stack.is_none()
+        if !self.layer_stack_active()
             && (self.settings.properties || self.settings.messages || self.settings.components)
         {
             self.right_dock(ctx);

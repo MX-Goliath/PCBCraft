@@ -11,6 +11,7 @@ pub enum LayerKind {
     Core,
     Prepreg,
     SolderMask,
+    Overlay,
 }
 impl LayerKind {
     pub fn copper(self) -> bool {
@@ -27,6 +28,9 @@ pub struct Layer {
     pub material: String,
     pub er: f64,
     pub loss_tangent: f64,
+    /// Fabrication metadata; retained in native PCBCraft documents and history.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub properties: std::collections::BTreeMap<String, String>,
 }
 impl Layer {
     pub fn dielectric() -> Self {
@@ -39,6 +43,7 @@ impl Layer {
             material: "FR-4".into(),
             er: 4.2,
             loss_tangent: 0.02,
+            properties: Default::default(),
         }
     }
 }
@@ -73,6 +78,8 @@ pub struct Impedance {
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Stack {
+    #[serde(default)]
+    pub symmetric: bool,
     pub layers: Vec<Layer>,
     pub vias: Vec<ViaType>,
     pub impedances: Vec<Impedance>,
@@ -101,7 +108,12 @@ impl Stack {
             let cid = raw
                 .and_then(pcb::native_layer)
                 .filter(|id| pcb::copper_layer(*id));
-            let kind = if cid.is_some() {
+            let kind = if raw
+                .and_then(pcb::native_layer)
+                .is_some_and(|id| matches!(id, 33 | 34))
+            {
+                LayerKind::Overlay
+            } else if cid.is_some() {
                 LayerKind::Signal
             } else {
                 match value("DIELTYPE").map(String::as_str) {
@@ -138,6 +150,10 @@ impl Stack {
             l.loss_tangent = value("DIELLOSSTANGENT")
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(0.02);
+            if kind == LayerKind::Overlay {
+                l.thickness = 0;
+                l.material.clear();
+            }
             layers.push(l);
         }
         let mut copper: Vec<_> = board.layers.iter().filter(|l| l.copper).collect();
@@ -171,6 +187,7 @@ impl Stack {
             }
         }
         Self {
+            symmetric: false,
             layers,
             vias: vec![],
             impedances: vec![],
@@ -187,49 +204,22 @@ impl Stack {
             .sum()
     }
     pub fn add_copper(&mut self, after: usize) -> Result<(), String> {
-        let id = (2..32)
-            .find(|id| !self.layers.iter().any(|l| l.copper_id == Some(*id)))
-            .ok_or("All 32 signal layer identities are used")?;
-        let top = self
-            .layers
-            .iter()
-            .position(|l| l.copper_id == Some(TOP))
-            .ok_or("Top layer missing")?;
-        let bottom = self
-            .layers
-            .iter()
-            .position(|l| l.copper_id == Some(BOTTOM))
-            .ok_or("Bottom layer missing")?;
-        let at = (after + 1).clamp(top + 1, bottom);
-        let mut l = Layer::dielectric();
-        l.name = pcb::layer_name(id);
-        l.kind = LayerKind::Signal;
-        l.copper_id = Some(id);
-        l.material = "Copper".into();
-        l.thickness = 35_000;
-        // Split a dielectric when possible; otherwise insert a new dielectric on each side.
-        if !self.layers[at - 1].kind.copper() {
-            let mut d = self.layers[at - 1].clone();
-            d.id = Uuid::new_v4();
-            d.thickness = (d.thickness / 2).max(1);
-            self.layers[at - 1].thickness -= d.thickness;
-            self.layers.splice(at..at, [l, d]);
-        } else {
-            self.layers
-                .splice(at..at, [Layer::dielectric(), l, Layer::dielectric()]);
-        }
-        Ok(())
+        self.insert_copper(after, LayerKind::Signal).map(|_| ())
     }
     pub fn validate(&self) -> Result<(), String> {
         if self.layers.len() > 256 || self.vias.len() > 256 || self.impedances.len() > 256 {
             return Err("Stack table limit is 256 rows".into());
+        }
+        if self.symmetric && !self.is_symmetric() {
+            return Err("Layer stack is not symmetric".into());
         }
         let mut ids = HashSet::new();
         let mut copper = HashSet::new();
         for l in &self.layers {
             if !ids.insert(l.id)
                 || l.name.trim().is_empty()
-                || !(1..=100_000_000).contains(&l.thickness)
+                || !(if l.kind == LayerKind::Overlay { 0 } else { 1 }..=100_000_000)
+                    .contains(&l.thickness)
                 || !l.er.is_finite()
                 || !(1.0..=100.0).contains(&l.er)
                 || !l.loss_tangent.is_finite()
@@ -605,5 +595,44 @@ mod tests {
         p.reference = 12;
         s.impedances.push(p);
         assert!(s.validate().is_err());
+    }
+
+    #[test]
+    fn native_overlay_rows_preserve_identity_without_inventing_thickness() {
+        let mut board = Board::default();
+        for (n, id, name, kind, thickness) in [
+            (0, "16973830", "Top Overlay", "", ""),
+            (1, "16973834", "Top Solder", "3", "0.4mil"),
+            (2, "16777217", "Top Layer", "", "1.4mil"),
+            (3, "17039362", "Dielectric2", "2", "0.7mm"),
+            (4, "16842751", "Bottom Layer", "", "1.4mil"),
+            (5, "16973835", "Bottom Solder", "3", "0.4mil"),
+            (6, "16973831", "Bottom Overlay", "", ""),
+        ] {
+            for (key, value) in [
+                ("LAYERID", id),
+                ("NAME", name),
+                ("DIELTYPE", kind),
+                ("DIELHEIGHT", thickness),
+                ("COPTHICK", thickness),
+            ] {
+                board
+                    .properties
+                    .insert(format!("V9_STACK_LAYER{n}_{key}"), value.into());
+            }
+        }
+        let stack = Stack::from_board(&board);
+        assert_eq!(stack.layers.len(), 7);
+        assert_eq!(stack.layers[0].kind, LayerKind::Overlay);
+        assert_eq!(stack.layers[6].thickness, 0);
+        assert_eq!(stack.thickness(), 771_120);
+        assert_eq!(
+            stack.layers.iter().map(|l| l.thickness).sum::<i64>(),
+            791_440
+        );
+        stack.validate().unwrap();
+        let mut symmetric = stack.clone();
+        symmetric.mirror_half(true).unwrap();
+        assert!(symmetric.is_symmetric());
     }
 }

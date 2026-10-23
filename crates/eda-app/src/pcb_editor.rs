@@ -1211,7 +1211,7 @@ fn input(
 }
 impl PcbCraft {
     pub(super) fn poll_pcb_pours(&mut self, ctx: &egui::Context) {
-        let allow_apply = self.layer_stack.is_none() && self.annotation.is_none();
+        let allow_apply = !self.layer_stack_active() && self.annotation.is_none();
         let mut errors = vec![];
         for doc in &mut self.documents {
             if doc.model.pcb.is_none() {

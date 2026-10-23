@@ -651,3 +651,20 @@ Observation, timing and limitations: docs/pcb-update/INTERACTIVE_ROUTING.md.
 - [x] Windows ReferenceA GUI: DA1 selects on Top, G1 on Bottom; selecting DA1's location on Bottom no longer selects DA1. Source PCB not saved or modified.
 - [x] Workspace tests, fmt check, strict Clippy and Windows dev build pass.
 - Scope: active outer copper layers in component selection mode; full Altium selection preference equivalence remains unverified.
+
+### Layer Stack Manager restoration — 23.10.2026
+
+- [x] Commit and push preceding work: 83f2b7c on origin/main.
+- [x] Review existing manager and official behavior documentation.
+- [x] Implement independent symmetric material edits, paired layer operations and atomic invalid-operation rejection.
+- [x] Add plane insertion, isolated draft Undo/Redo and stack-specific Save/Close command handling.
+- [x] 310 workspace tests, fmt check, strict Clippy and Windows dev build; original ReferenceA hashes unchanged.
+- [x] Live AD 24.4.1 reference after unlock: Stackup, dielectric Properties, Via Types and empty Impedance on original ReferenceA without edits.
+- [x] Colored stack grid, imported overlay rows, total thickness including masks, stack/board tab navigation and contextual menus.
+- [x] Real ReferenceA window: symmetry, paired insertion, Undo, PCB/Stackup switching with retained draft; 311 workspace tests, strict Clippy, fmt and Windows build pass.
+- [ ] Final pixel parity and advanced Layer Stack Manager coverage remain incomplete.
+- [ ] Full restoration remains open: document tabs/workspace behavior, exact layout, material library, native stack interoperability, whole-stack mirroring, backdrill, rigid-flex and solver/rule bindings.
+
+Evidence and limits: docs/pcb-update/LAYER_STACK_MANAGER.md.
+
+- 2026-10-23: Layer Stack Properties follow-up: observed copper/mask fields in AD; added persistent fabrication metadata, type-dependent property panels, collapsible sections and field search; constrained via spans and impedance references. Advanced native import, roughness and populated-profile parity remain partial.

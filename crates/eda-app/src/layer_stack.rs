@@ -1,9 +1,12 @@
 use super::*;
-use eda_core::layer_stack::{Impedance, Layer, LayerKind, Stack, ViaKind, ViaType};
+use eda_core::layer_stack::{Impedance, LayerKind, Stack, ViaKind, ViaType};
 use eda_core::pcb::{BOTTOM, TOP};
+#[path = "layer_stack_ui.rs"]
+mod stack_ui;
 
 pub(super) struct Manager {
-    session: Uuid,
+    pub(super) session: Uuid,
+    pub(super) visible: bool,
     revision: u64,
     stack: Stack,
     original: Stack,
@@ -12,8 +15,14 @@ pub(super) struct Manager {
     error: String,
     mils: bool,
     confirm_close: bool,
+    undo: Vec<Stack>,
+    redo: Vec<Stack>,
+    symmetry_dialog: bool,
 }
 impl Manager {
+    pub(super) fn dirty(&self) -> bool {
+        self.stack != self.original
+    }
     fn commit(&mut self, d: &mut OpenDocument) -> Result<(), String> {
         if d.session_id != self.session || d.history.revision != self.revision {
             return Err(
@@ -43,11 +52,114 @@ impl Manager {
         self.revision = d.history.revision;
         self.original = self.stack.clone();
         self.error.clear();
+        self.undo.clear();
+        self.redo.clear();
         Ok(())
+    }
+    fn undo(&mut self) {
+        if let Some(previous) = self.undo.pop() {
+            self.redo.push(std::mem::replace(&mut self.stack, previous));
+            self.error.clear();
+        }
+    }
+    fn redo(&mut self) {
+        if let Some(next) = self.redo.pop() {
+            self.undo.push(std::mem::replace(&mut self.stack, next));
+            self.error.clear();
+        }
     }
 }
 impl PcbCraft {
+    pub(super) fn layer_stack_menus(&mut self, ctx: &egui::Context) {
+        let undo = self
+            .layer_stack
+            .as_ref()
+            .is_some_and(|m| !m.undo.is_empty());
+        let redo = self
+            .layer_stack
+            .as_ref()
+            .is_some_and(|m| !m.redo.is_empty());
+        egui::TopBottomPanel::top("menu")
+            .exact_height(29.0)
+            .show(ctx, |ui| {
+                egui::MenuBar::new().ui(ui, |ui| {
+                    ui.menu_button("File", |ui| {
+                        self.action(ui, "Save", "Ctrl+S", Command::Save, true);
+                        self.action(ui, "Close", "Ctrl+W", Command::Close, true);
+                    });
+                    ui.menu_button("Edit", |ui| {
+                        self.action(ui, "Undo", "Ctrl+Z", Command::Undo, undo);
+                        self.action(ui, "Redo", "Ctrl+Y", Command::Redo, redo);
+                    });
+                    for label in ["View", "Project"] {
+                        ui.menu_button(label, |ui| {
+                            ui.add_enabled(false, egui::Button::new("Not implemented"));
+                        });
+                    }
+                    ui.menu_button("Tools", |ui| {
+                        self.action(
+                            ui,
+                            "Measurement Units",
+                            "Ctrl+Q",
+                            Command::ToggleUnits,
+                            true,
+                        );
+                        for label in ["Material Library", "Layerstack Visualizer", "Features"] {
+                            ui.add_enabled(false, egui::Button::new(label));
+                        }
+                    });
+                    for label in ["Window", "Help"] {
+                        ui.menu_button(label, |ui| {
+                            ui.add_enabled(false, egui::Button::new("Not implemented"));
+                        });
+                    }
+                });
+            });
+    }
+    pub(super) fn layer_stack_active(&self) -> bool {
+        self.layer_stack.as_ref().is_some_and(|m| m.visible)
+    }
+    pub(super) fn layer_stack_command(&mut self, command: Command) {
+        let Some(mut manager) = self.layer_stack.take() else {
+            return;
+        };
+        let mut close = false;
+        match command {
+            Command::Save => {
+                let result = self
+                    .documents
+                    .iter_mut()
+                    .find(|d| d.session_id == manager.session)
+                    .ok_or_else(|| "Board document was closed".to_string())
+                    .and_then(|d| manager.commit(d));
+                if let Err(e) = result {
+                    manager.error = e;
+                }
+            }
+            Command::Undo => manager.undo(),
+            Command::Redo => manager.redo(),
+            Command::ToggleUnits => manager.mils = !manager.mils,
+            Command::Close => {
+                if manager.stack == manager.original {
+                    close = true;
+                } else {
+                    manager.confirm_close = true;
+                }
+            }
+            _ => self.message(
+                true,
+                "Apply or close Layer Stack Manager before another command",
+            ),
+        }
+        if !close {
+            self.layer_stack = Some(manager);
+        }
+    }
     pub(super) fn open_layer_stack(&mut self) {
+        if let Some(manager) = &mut self.layer_stack {
+            manager.visible = true;
+            return;
+        }
         let Some(i) = self.active else { return };
         let d = &self.documents[i];
         let Some(b) = &d.model.pcb else { return };
@@ -60,6 +172,7 @@ impl PcbCraft {
         }
         let stack = Stack::from_board(b);
         self.layer_stack = Some(Manager {
+            visible: true,
             session: d.session_id,
             revision: d.history.revision,
             original: stack.clone(),
@@ -69,6 +182,9 @@ impl PcbCraft {
             error: String::new(),
             mils: false,
             confirm_close: false,
+            undo: vec![],
+            redo: vec![],
+            symmetry_dialog: false,
         });
     }
     pub(super) fn layer_stack_workspace(&mut self, ctx: &egui::Context) {
@@ -79,390 +195,274 @@ impl PcbCraft {
         let mut close = false;
         let mut use_via = None;
         let mut use_width = None;
-        egui::SidePanel::right("layer_stack_properties")
-            .default_width(316.0)
-            .width_range(260.0..=460.0)
-            .show(ctx, |ui| {
-                ui.heading("Properties");
-                ui.separator();
-                ui.label("Layer Stack Manager");
-                ui.label("Edited stacks are saved with Save As → PCBCraft JSON.");
-                ui.label(format!("{} copper layers", m.stack.copper().len()));
-                ui.label(format!(
-                    "Board thickness: {:.4} mm",
-                    m.stack.thickness() as f64 / 1e6
-                ));
-                ui.checkbox(&mut m.mils, "Display in mils");
-                ui.separator();
-                match m.tab {
-                    0 => {
-                        if let Some(l) = m.stack.layers.get_mut(m.selected) {
-                            ui.label("Layer");
-                            ui.text_edit_singleline(&mut l.name);
-                            let kinds = if l.kind.copper() {
-                                vec![LayerKind::Signal, LayerKind::Plane]
-                            } else {
-                                vec![LayerKind::Core, LayerKind::Prepreg, LayerKind::SolderMask]
-                            };
-                            egui::ComboBox::from_id_salt("stack_kind")
-                                .selected_text(format!("{:?}", l.kind))
-                                .show_ui(ui, |ui| {
-                                    for kind in kinds {
-                                        ui.selectable_value(&mut l.kind, kind, format!("{kind:?}"));
-                                    }
-                                });
-                            ui.label("Material");
-                            ui.text_edit_singleline(&mut l.material);
-                            ui.horizontal(|ui| {
-                                ui.label("Thickness");
-                                length(ui, &mut l.thickness, m.mils);
-                            });
-                            if !l.kind.copper() {
-                                ui.horizontal(|ui| {
-                                    ui.label("Dk");
-                                    ui.add(
-                                        egui::DragValue::new(&mut l.er)
-                                            .speed(0.01)
-                                            .range(1.0..=100.0),
-                                    );
-                                });
-                                ui.horizontal(|ui| {
-                                    ui.label("Df");
-                                    ui.add(
-                                        egui::DragValue::new(&mut l.loss_tangent)
-                                            .speed(0.001)
-                                            .range(0.0..=1.0),
-                                    );
-                                });
-                            }
-                        }
-                    }
-                    1 => {
-                        let copper = copper_names(&m.stack);
-                        if let Some(v) = m.stack.vias.get_mut(m.selected) {
-                            ui.label("Via Type");
-                            ui.text_edit_singleline(&mut v.name);
-                            egui::ComboBox::from_id_salt("via_kind")
-                                .selected_text(format!("{:?}", v.kind))
-                                .show_ui(ui, |ui| {
-                                    for k in
-                                        [ViaKind::Through, ViaKind::BlindBuried, ViaKind::Micro]
-                                    {
-                                        if ui
-                                            .selectable_value(&mut v.kind, k, format!("{k:?}"))
-                                            .changed()
-                                            && k == ViaKind::Through
-                                        {
-                                            v.start = TOP;
-                                            v.end = BOTTOM;
-                                        }
-                                    }
-                                });
-                            ui.add_enabled_ui(v.kind != ViaKind::Through, |ui| {
-                                layer_combo(ui, "First layer", &mut v.start, &copper);
-                                layer_combo(ui, "Last layer", &mut v.end, &copper);
-                            });
-                            ui.horizontal(|ui| {
-                                ui.label("Diameter");
-                                length(ui, &mut v.diameter, m.mils);
-                            });
-                            ui.horizontal(|ui| {
-                                ui.label("Hole size");
-                                length(ui, &mut v.hole, m.mils);
-                            });
-                            if ui.button("Apply and use for placement").clicked() {
-                                apply = true;
-                                use_via = Some(v.clone());
-                            }
-                        }
-                    }
-                    _ => {
-                        let copper = copper_names(&m.stack);
-                        if let Some(p) = m.stack.impedances.get_mut(m.selected) {
-                            ui.label("Impedance Profile");
-                            ui.text_edit_singleline(&mut p.name);
-                            ui.checkbox(&mut p.differential, "Differential pair");
-                            ui.horizontal(|ui| {
-                                ui.label("Target (Ω)");
-                                ui.add(egui::DragValue::new(&mut p.target).range(1.0..=1000.0));
-                            });
-                            ui.horizontal(|ui| {
-                                ui.label("Tolerance (%)");
-                                ui.add(egui::DragValue::new(&mut p.tolerance).range(0.0..=50.0));
-                            });
-                            layer_combo(ui, "Signal layer", &mut p.signal, &copper);
-                            layer_combo(ui, "Reference 1", &mut p.reference, &copper);
-                            let mut two = p.reference2.is_some();
-                            if ui
-                                .checkbox(&mut two, "Stripline (two references)")
-                                .changed()
-                            {
-                                p.reference2 = two.then_some(BOTTOM);
-                            }
-                            if let Some(r) = &mut p.reference2 {
-                                layer_combo(ui, "Reference 2", r, &copper);
-                            }
-                            ui.horizontal(|ui| {
-                                ui.label("Width");
-                                length(ui, &mut p.width, m.mils);
-                            });
-                            if p.differential {
-                                ui.horizontal(|ui| {
-                                    ui.label("Gap");
-                                    length(ui, &mut p.gap, m.mils);
-                                });
-                            }
-                        }
-                        if let Some(p) = m.stack.impedances.get(m.selected).cloned() {
-                            ui.separator();
-                            ui.label("Analytical estimate (not a field solver)");
-                            match m.stack.estimate(&p) {
-                                Ok(z) => {
-                                    ui.label(format!("Estimated impedance: {z:.2} Ω"));
-                                }
-                                Err(e) => {
-                                    ui.label(e);
-                                }
-                            }
-                            if ui.button("Calculate width for target").clicked() {
-                                match m.stack.solve_width(&p) {
-                                    Ok(w) => m.stack.impedances[m.selected].width = w,
-                                    Err(e) => m.error = e,
-                                }
-                            }
-                            if ui
-                                .add_enabled(
-                                    !p.differential,
-                                    egui::Button::new("Apply and use routing width"),
-                                )
-                                .clicked()
-                            {
-                                apply = true;
-                                use_width = Some((p.signal, p.width));
-                            }
-                        }
-                    }
-                }
-            });
-        egui::CentralPanel::default().show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                ui.strong(format!(
-                    "Layer Stack Manager{}",
-                    if m.stack != m.original { " *" } else { "" }
-                ));
-            });
-            ui.separator();
-            ui.horizontal(|ui| {
-                if ui.button("Apply").clicked() {
+        if !ctx.wants_keyboard_input() && !m.confirm_close && !m.symmetry_dialog {
+            ctx.input_mut(|input| {
+                if input.consume_key(egui::Modifiers::CTRL, Key::S) {
                     apply = true;
                 }
-                if ui.button("Close").clicked() {
+                if input.consume_key(egui::Modifiers::CTRL, Key::Q) {
+                    m.mils = !m.mils;
+                }
+                if input.consume_key(egui::Modifiers::CTRL, Key::Z) {
+                    m.undo();
+                }
+                if input.consume_key(egui::Modifiers::CTRL, Key::Y) {
+                    m.redo();
+                }
+                if input.consume_key(egui::Modifiers::CTRL, Key::W) {
                     if m.stack == m.original {
                         close = true;
                     } else {
                         m.confirm_close = true;
                     }
                 }
+            });
+        }
+        let before_frame = m.stack.clone();
+        let before_history = (m.undo.len(), m.redo.len());
+        egui::SidePanel::right("layer_stack_properties")
+            .default_width(366.0)
+            .width_range(260.0..=460.0)
+            .show(ctx, |ui| {
+                ui.label("Properties");
                 ui.separator();
-                match m.tab {
-                    0 => {
-                        if ui.button("Add Layer").clicked()
-                            && let Err(e) = m.stack.add_copper(m.selected)
-                        {
-                            m.error = e;
+                ui.label("Layer Stack Manager");
+                stack_ui::search(ui);
+                egui::ScrollArea::vertical()
+                    .id_salt("stack_properties_scroll")
+                    .show(ui, |ui| {
+                        ui.spacing_mut().item_spacing.y = 2.0;
+                        ui.add_space(22.0);
+                        match m.tab {
+                            0 => stack_ui::layer_properties(ui, &mut m),
+                            1 => stack_ui::via_properties(ui, &mut m, &mut apply, &mut use_via),
+                            _ => stack_ui::impedance_properties(
+                                ui,
+                                &mut m,
+                                &mut apply,
+                                &mut use_width,
+                            ),
                         }
-                        if ui.button("Add Dielectric").clicked() {
-                            let at = (m.selected + 1).min(m.stack.layers.len());
-                            m.stack.layers.insert(at, Layer::dielectric());
-                            m.selected = at;
+                        stack_ui::board_properties(ui, &mut m);
+                        if m.tab != 1 {
+                            stack_ui::other_properties(ui);
                         }
-                        if ui.button("Move Up").clicked()
-                            && m.selected > 0
-                            && m.selected < m.stack.layers.len()
-                        {
-                            m.stack.layers.swap(m.selected, m.selected - 1);
-                            m.selected -= 1;
-                        }
-                        if ui.button("Move Down").clicked() && m.selected + 1 < m.stack.layers.len()
-                        {
-                            m.stack.layers.swap(m.selected, m.selected + 1);
-                            m.selected += 1;
-                        }
-                    }
-                    1 => {
-                        if ui.button("Add Via Type").clicked() {
-                            let n = m.stack.vias.len() + 1;
-                            m.stack.vias.push(ViaType {
-                                id: Uuid::new_v4(),
-                                name: format!("Via {n}"),
-                                kind: ViaKind::Through,
-                                start: TOP,
-                                end: BOTTOM,
-                                diameter: 600_000,
-                                hole: 300_000,
-                            });
-                            m.selected = n - 1;
-                        }
-                    }
-                    _ => {
-                        if ui.button("Add Impedance Profile").clicked() {
-                            let n = m.stack.impedances.len() + 1;
-                            let reference = m
-                                .stack
-                                .copper()
-                                .get(1)
-                                .and_then(|l| l.copper_id)
-                                .unwrap_or(BOTTOM);
-                            m.stack.impedances.push(Impedance {
-                                id: Uuid::new_v4(),
-                                name: format!("S{n}"),
-                                differential: false,
-                                target: 50.0,
-                                tolerance: 10.0,
-                                signal: TOP,
-                                reference,
-                                reference2: None,
-                                width: 200_000,
-                                gap: 200_000,
-                            });
-                            m.selected = n - 1;
-                        }
-                    }
-                }
-                if ui.button("Delete").clicked() {
-                    match m.tab {
-                        0 => {
-                            if let Some(l) = m.stack.layers.get(m.selected) {
-                                if l.copper_id == Some(TOP) || l.copper_id == Some(BOTTOM) {
-                                    m.error = "Outer copper layers cannot be deleted".into();
-                                } else {
-                                    m.stack.layers.remove(m.selected);
-                                }
-                            }
-                        }
-                        1 => {
-                            if m.selected < m.stack.vias.len() {
-                                m.stack.vias.remove(m.selected);
-                            }
-                        }
-                        _ => {
-                            if m.selected < m.stack.impedances.len() {
-                                m.stack.impedances.remove(m.selected);
-                            }
-                        }
-                    }
-                    m.selected = m.selected.saturating_sub(1);
-                }
+                    });
             });
-            if !m.error.is_empty() {
-                ui.colored_label(Color32::from_rgb(245, 150, 110), &m.error);
-            }
-            if let Err(e) = m.stack.validate() {
-                ui.colored_label(Color32::YELLOW, e);
-            }
-            ui.separator();
-            let height = (ui.available_height() - 220.0).max(150.0);
-            egui::ScrollArea::both()
-                .max_height(height)
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    egui::Grid::new(("stack_table", m.tab))
-                        .striped(true)
-                        .min_col_width(70.0)
-                        .show(ui, |ui| match m.tab {
-                            0 => {
-                                for s in ["Layer", "Type", "Material", "Thickness", "Dk", "Df"] {
-                                    ui.strong(s);
-                                }
-                                ui.end_row();
-                                for (i, l) in m.stack.layers.iter_mut().enumerate() {
-                                    if ui.selectable_label(m.selected == i, &l.name).clicked() {
-                                        m.selected = i;
-                                    }
-                                    ui.label(format!("{:?}", l.kind));
-                                    ui.label(&l.material);
-                                    length(ui, &mut l.thickness, m.mils);
-                                    ui.label(format!("{:.3}", l.er));
-                                    ui.label(format!("{:.3}", l.loss_tangent));
-                                    ui.end_row();
-                                }
-                            }
-                            1 => {
-                                let names = copper_names(&m.stack);
-                                for s in [
-                                    "Name",
-                                    "Type",
-                                    "First Layer",
-                                    "Last Layer",
-                                    "Diameter",
-                                    "Hole Size",
-                                ] {
-                                    ui.strong(s);
-                                }
-                                ui.end_row();
-                                for (i, v) in m.stack.vias.iter().enumerate() {
-                                    if ui.selectable_label(m.selected == i, &v.name).clicked() {
-                                        m.selected = i;
-                                    }
-                                    ui.label(format!("{:?}", v.kind));
-                                    ui.label(layer_name(v.start, &names));
-                                    ui.label(layer_name(v.end, &names));
-                                    ui.label(dimension(v.diameter, m.mils));
-                                    ui.label(dimension(v.hole, m.mils));
-                                    ui.end_row();
-                                }
-                            }
-                            _ => {
-                                for s in [
-                                    "Name",
-                                    "Type",
-                                    "Target Ω",
-                                    "Tolerance %",
-                                    "Width",
-                                    "Gap",
-                                    "Estimated Ω",
-                                ] {
-                                    ui.strong(s);
-                                }
-                                ui.end_row();
-                                for (i, p) in m.stack.impedances.iter().enumerate() {
-                                    if ui.selectable_label(m.selected == i, &p.name).clicked() {
-                                        m.selected = i;
-                                    }
-                                    ui.label(if p.differential {
-                                        "Differential"
-                                    } else {
-                                        "Single"
-                                    });
-                                    ui.label(format!("{:.2}", p.target));
-                                    ui.label(format!("{:.1}", p.tolerance));
-                                    ui.label(dimension(p.width, m.mils));
-                                    ui.label(dimension(p.gap, m.mils));
-                                    ui.label(
-                                        m.stack
-                                            .estimate(p)
-                                            .map(|z| format!("{z:.2}"))
-                                            .unwrap_or_else(|_| "—".into()),
-                                    );
-                                    ui.end_row();
-                                }
-                            }
-                        });
-                });
-            ui.separator();
-            preview(ui, &m.stack, m.selected, m.tab);
-            ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
+        egui::CentralPanel::default()
+            .frame(
+                egui::Frame::NONE
+                    .fill(Color32::from_gray(58))
+                    .inner_margin(egui::Margin::symmetric(5, 0)),
+            )
+            .show(ctx, |ui| {
+                let name = self
+                    .documents
+                    .iter()
+                    .find(|d| d.session_id == m.session)
+                    .map(|d| d.model.name.as_str())
+                    .unwrap_or("PCB");
                 ui.horizontal(|ui| {
-                    for (tab, name) in ["Stackup", "Via Types", "Impedance"].iter().enumerate() {
-                        if ui.selectable_label(m.tab == tab, *name).clicked() {
-                            m.tab = tab;
-                            m.selected = 0;
-                            m.error.clear();
-                        }
+                    ui.set_height(26.0);
+                    if ui.button(name).clicked() {
+                        m.visible = false;
+                        self.active = self
+                            .documents
+                            .iter()
+                            .position(|d| d.session_id == m.session);
                     }
+                    ui.add(
+                        egui::Button::new(format!(
+                            "{name} [Stackup]{}",
+                            if m.stack != m.original { " *" } else { "" }
+                        ))
+                        .selected(true),
+                    );
+                    ui.add_enabled(false, egui::Button::new("Home Page"));
+                });
+                ui.separator();
+                stack_ui::toolbar(ui, &mut m, &mut apply, &mut close);
+                if !m.error.is_empty() {
+                    ui.colored_label(Color32::from_rgb(245, 150, 110), &m.error);
+                }
+                if let Err(e) = m.stack.validate() {
+                    ui.colored_label(Color32::YELLOW, e);
+                }
+                ui.separator();
+                let height = (ui.available_height() - 24.0).max(150.0);
+                egui::ScrollArea::both()
+                    .max_height(height)
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        ui.spacing_mut().item_spacing.y = 0.0;
+                        if m.tab == 0 {
+                            stack_ui::table(ui, &mut m);
+                        } else if m.tab == 1 {
+                            stack_ui::via_table(ui, &mut m);
+                        } else {
+                            preview(ui, &m.stack, m.selected, m.tab);
+                            egui::Grid::new(("stack_table", m.tab))
+                                .striped(true)
+                                .min_col_width(70.0)
+                                .show(ui, |ui| match m.tab {
+                                    0 => {
+                                        for s in
+                                            ["Layer", "Type", "Material", "Thickness", "Dk", "Df"]
+                                        {
+                                            ui.strong(s);
+                                        }
+                                        ui.end_row();
+                                        for (i, l) in m.stack.layers.iter_mut().enumerate() {
+                                            if ui
+                                                .selectable_label(m.selected == i, &l.name)
+                                                .clicked()
+                                            {
+                                                m.selected = i;
+                                            }
+                                            ui.label(format!("{:?}", l.kind));
+                                            ui.label(&l.material);
+                                            length(ui, &mut l.thickness, m.mils);
+                                            ui.label(format!("{:.3}", l.er));
+                                            ui.label(format!("{:.3}", l.loss_tangent));
+                                            ui.end_row();
+                                        }
+                                    }
+                                    1 => {
+                                        let names = copper_names(&m.stack);
+                                        for s in [
+                                            "Name",
+                                            "Type",
+                                            "First Layer",
+                                            "Last Layer",
+                                            "Diameter",
+                                            "Hole Size",
+                                        ] {
+                                            ui.strong(s);
+                                        }
+                                        ui.end_row();
+                                        for (i, v) in m.stack.vias.iter().enumerate() {
+                                            if ui
+                                                .selectable_label(m.selected == i, &v.name)
+                                                .clicked()
+                                            {
+                                                m.selected = i;
+                                            }
+                                            ui.label(format!("{:?}", v.kind));
+                                            ui.label(layer_name(v.start, &names));
+                                            ui.label(layer_name(v.end, &names));
+                                            ui.label(dimension(v.diameter, m.mils));
+                                            ui.label(dimension(v.hole, m.mils));
+                                            ui.end_row();
+                                        }
+                                    }
+                                    _ => {
+                                        for s in [
+                                            "Name",
+                                            "Type",
+                                            "Target Ω",
+                                            "Tolerance %",
+                                            "Width",
+                                            "Gap",
+                                            "Estimated Ω",
+                                        ] {
+                                            ui.strong(s);
+                                        }
+                                        ui.end_row();
+                                        for (i, p) in m.stack.impedances.iter().enumerate() {
+                                            if ui
+                                                .selectable_label(m.selected == i, &p.name)
+                                                .clicked()
+                                            {
+                                                m.selected = i;
+                                            }
+                                            ui.label(if p.differential {
+                                                "Differential"
+                                            } else {
+                                                "Single"
+                                            });
+                                            ui.label(format!("{:.2}", p.target));
+                                            ui.label(format!("{:.1}", p.tolerance));
+                                            ui.label(dimension(p.width, m.mils));
+                                            ui.label(dimension(p.gap, m.mils));
+                                            ui.label(
+                                                m.stack
+                                                    .estimate(p)
+                                                    .map(|z| format!("{z:.2}"))
+                                                    .unwrap_or_else(|_| "—".into()),
+                                            );
+                                            ui.end_row();
+                                        }
+                                    }
+                                });
+                        }
+                    });
+                ui.separator();
+
+                ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
+                    ui.horizontal(|ui| {
+                        for (tab, name) in [(0, "Stackup"), (2, "Impedance"), (1, "Via Types")] {
+                            if ui.selectable_label(m.tab == tab, name).clicked() {
+                                m.tab = tab;
+                                m.selected = 0;
+                                m.error.clear();
+                            }
+                        }
+                    });
                 });
             });
-        });
+        if m.symmetry_dialog {
+            egui::Window::new("Stack is not symmetric")
+                .collapsible(false)
+                .resizable(false)
+                .show(ctx, |ui| {
+                    ui.label("Choose which half supplies the paired layer properties.");
+                    for (label, top_down) in [
+                        ("Mirror top half down", true),
+                        ("Mirror bottom half up", false),
+                    ] {
+                        if ui.button(label).clicked() {
+                            match m.stack.mirror_half(top_down) {
+                                Ok(()) => m.symmetry_dialog = false,
+                                Err(e) => m.error = e,
+                            }
+                        }
+                    }
+                    if ui.button("Cancel").clicked() {
+                        m.symmetry_dialog = false;
+                    }
+                });
+        }
+        // Direct cell/property edits also maintain the physical partner. Structural
+        // commands already validate their complete result atomically in eda-core.
+        if before_frame.symmetric
+            && m.stack.symmetric
+            && before_frame.layers.len() == m.stack.layers.len()
+        {
+            let changed = before_frame
+                .layers
+                .iter()
+                .zip(&m.stack.layers)
+                .position(|(a, b)| a != b);
+            if let Some(index) = changed {
+                let layer = m.stack.layers[index].clone();
+                if before_frame.layers[index].id == layer.id {
+                    let mut edited = m.stack.clone();
+                    if let Err(e) = edited.edit_layer(index, layer) {
+                        m.stack = before_frame.clone();
+                        m.error = e;
+                    } else {
+                        m.stack = edited;
+                    }
+                }
+            }
+        }
+        if m.stack != before_frame && before_history == (m.undo.len(), m.redo.len()) {
+            m.undo.push(before_frame);
+            if m.undo.len() > 128 {
+                m.undo.remove(0);
+            }
+            m.redo.clear();
+        }
         if m.confirm_close {
             egui::Window::new("Unapplied stack changes")
                 .collapsible(false)
@@ -514,9 +514,10 @@ impl PcbCraft {
     }
 }
 fn dimension(n: i64, mils: bool) -> String {
+    let value = format!("{:.5}", n as f64 / if mils { 25_400.0 } else { 1e6 });
     format!(
-        "{:.4} {}",
-        n as f64 / if mils { 25_400.0 } else { 1e6 },
+        "{}{}",
+        value.trim_end_matches('0').trim_end_matches('.'),
         if mils { "mil" } else { "mm" }
     )
 }
@@ -548,16 +549,6 @@ fn layer_name(id: u16, names: &[(u16, String)]) -> String {
         .find(|(i, _)| *i == id)
         .map(|(_, n)| n.clone())
         .unwrap_or_else(|| format!("Missing layer {id}"))
-}
-fn layer_combo(ui: &mut egui::Ui, label: &str, value: &mut u16, names: &[(u16, String)]) {
-    ui.label(label);
-    egui::ComboBox::from_id_salt(label)
-        .selected_text(layer_name(*value, names))
-        .show_ui(ui, |ui| {
-            for (id, n) in names {
-                ui.selectable_value(value, *id, n);
-            }
-        });
 }
 fn preview(ui: &mut egui::Ui, stack: &Stack, selected: usize, tab: usize) {
     ui.label("Stack cross-section (thickness not to scale)");
@@ -630,6 +621,7 @@ mod tests {
     fn manager(d: &OpenDocument) -> Manager {
         let stack = Stack::from_board(d.model.pcb.as_ref().unwrap());
         Manager {
+            visible: true,
             session: d.session_id,
             revision: d.history.revision,
             original: stack.clone(),
@@ -639,6 +631,9 @@ mod tests {
             error: String::new(),
             mils: false,
             confirm_close: false,
+            undo: vec![],
+            redo: vec![],
+            symmetry_dialog: false,
         }
     }
     #[test]
@@ -673,6 +668,33 @@ mod tests {
         m.stack.layers[1].thickness += 1;
         m.revision = 99;
         assert!(m.commit(&mut d).is_err());
+        assert_eq!(d.model, before);
+    }
+
+    #[test]
+    fn draft_undo_redo_is_isolated_and_apply_is_one_board_transaction() {
+        let mut d = document();
+        let before = d.model.clone();
+        let mut m = manager(&d);
+        m.undo.push(m.stack.clone());
+        m.stack.mirror_half(true).unwrap();
+        m.stack.insert_copper(1, LayerKind::Signal).unwrap();
+        m.stack.layers[1]
+            .properties
+            .insert("Manufacturer".into(), "Test laminate".into());
+        let edited = m.stack.clone();
+        let json = serde_json::to_string(&edited).unwrap();
+        assert_eq!(serde_json::from_str::<Stack>(&json).unwrap(), edited);
+        m.undo();
+        assert_eq!(m.stack, m.original);
+        assert_eq!(d.model, before);
+        m.redo();
+        assert_eq!(m.stack, edited);
+        m.commit(&mut d).unwrap();
+        assert_eq!(d.history.revision, 1);
+        assert!(m.undo.is_empty());
+        assert!(m.redo.is_empty());
+        d.history.undo(&mut d.model);
         assert_eq!(d.model, before);
     }
 }

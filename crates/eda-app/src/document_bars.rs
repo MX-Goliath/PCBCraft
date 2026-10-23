@@ -183,6 +183,29 @@ impl PcbCraft {
                                 }
                             });
                         }
+                        if let Some(manager) = &mut self.layer_stack {
+                            let name = self
+                                .documents
+                                .iter()
+                                .find(|d| d.session_id == manager.session)
+                                .map(|d| d.model.name.as_str())
+                                .unwrap_or("PCB");
+                            let title = format!(
+                                "{name} [Stackup]{}",
+                                if manager.dirty() { " *" } else { "" }
+                            );
+                            if tab(
+                                ui,
+                                &title,
+                                false,
+                                26.0,
+                                Some(Color32::from_rgb(195, 126, 75)),
+                            )
+                            .clicked()
+                            {
+                                manager.visible = true;
+                            }
+                        }
                         let home = tab(
                             ui,
                             "Home Page",

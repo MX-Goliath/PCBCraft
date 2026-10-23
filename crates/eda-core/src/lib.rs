@@ -236,5 +236,6 @@ mod tests {
 }
 
 pub mod layer_stack;
+mod layer_stack_edit;
 
 pub mod annotation;
