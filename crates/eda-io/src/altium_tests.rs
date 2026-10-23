@@ -399,6 +399,45 @@ fn project_resolves_relative_windows_paths_case_and_missing_references() {
 }
 
 #[test]
+fn project_tree_metadata_keeps_sources_generated_and_variants_separate() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("tree.PrjPcb");
+    std::fs::write(&path, "[Design]\nIsVirtualBomDocumentRemoved=0\n[Document1]\nDocumentPath=main.SchDoc\n[Document2]\nDocumentPath=BOM.OutJob\n[GeneratedDocument1]\nDocumentPath=Outputs\\board.REP\n[GeneratedDocument2]\nDocumentPath=Outputs\\features\n[Variant1]\nDescription=Assembly A\n[Variant2]\nDescription=Assembly B\n[Configuration1]\nVariant=Assembly A\n").unwrap();
+    let before = std::fs::read(&path).unwrap();
+    let p = load_project(&path).unwrap();
+    assert_eq!(p.documents.len(), 2);
+    assert_eq!(p.documents[1].kind, "outjob");
+    assert_eq!(p.generated_documents.len(), 2);
+    assert_eq!(p.generated_documents[0].kind, "rep");
+    assert_eq!(p.variants, ["Assembly A", "Assembly B"]);
+    assert!(p.virtual_bom);
+    assert_eq!(p.warnings.len(), 2); // Missing generated output is not a missing source warning.
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+}
+
+#[test]
+fn project_sheet_tree_reads_references_without_importing_geometry() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("main.SchDoc"),
+        b"|RECORD=15|\n|RECORD=33|OWNERINDEX=0|TEXT=child.SchDoc|\n",
+    )
+    .unwrap();
+    std::fs::write(dir.path().join("child.SchDoc"), b"|RECORD=31|\n").unwrap();
+    let path = dir.path().join("tree.PrjPcb");
+    std::fs::write(
+        &path,
+        "[Design]\n[Document1]\nDocumentPath=main.SchDoc\n[Document2]\nDocumentPath=child.SchDoc\n",
+    )
+    .unwrap();
+    let p = load_project(&path).unwrap();
+    assert_eq!(
+        p.sheet_children[&p.documents[0].path],
+        [p.documents[1].path.clone()]
+    );
+}
+
+#[test]
 fn damaged_framing_owners_numbers_and_coordinates_are_rejected_without_panics() {
     let bytes = compound(ASCII, false);
     assert!(import_schematic(&bytes[..100], "broken.SchDoc").is_err());

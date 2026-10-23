@@ -1,9 +1,41 @@
-//! Interactive manual routing session. No shove, obstacle solver or DRC.
+//! Interactive routing session with bounded obstacle avoidance. No shove or full DRC.
 //! A session owns a draft; cancel never mutates the original document. Completing
 //! the session is one History transaction, including splits and layer-change vias.
 use crate::{pcb::*, pcb_polygon::on_layer};
 use eda_geom::Point;
 use uuid::Uuid;
+#[path = "pcb_route_obstacles.rs"]
+mod obstacles;
+pub use obstacles::Conflict;
+
+/// Resolve an unconditional preferred routing dimension. Unknown higher-priority
+/// scopes stop resolution; they must not silently fall back to a generic rule.
+pub fn preferred_dimension(board: &Board, kind: &str, field: &str) -> Option<i64> {
+    let mut rules: Vec<_> = board
+        .rules
+        .iter()
+        .filter(|r| {
+            r.get("RULEKIND")
+                .is_some_and(|k| k.eq_ignore_ascii_case(kind))
+                && !r
+                    .get("ENABLED")
+                    .is_some_and(|v| v.eq_ignore_ascii_case("FALSE") || v == "0")
+        })
+        .collect();
+    rules.sort_by_key(|r| {
+        r.get("PRIORITY")
+            .and_then(|v| v.parse::<u32>().ok())
+            .unwrap_or(u32::MAX)
+    });
+    let rule = rules.first()?;
+    if !rule
+        .get("SCOPE1EXPRESSION")
+        .is_some_and(|s| s.trim().eq_ignore_ascii_case("All"))
+    {
+        return None;
+    }
+    dimension_nm(rule.get(field)?).ok().filter(|v| *v > 0)
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Corner {
@@ -22,6 +54,9 @@ pub struct RouteSession {
     pub width: i64,
     pub corner: Corner,
     pub diagonal_first: bool,
+    pub conflict: Conflict,
+    pub clearance: i64,
+    obstacles: obstacles::Obstacles,
     checkpoints: Vec<Checkpoint>,
 }
 #[derive(Clone)]
@@ -141,6 +176,9 @@ impl RouteSession {
             width,
             corner: Corner::FortyFive,
             diagonal_first: true,
+            conflict: Conflict::Walkaround,
+            clearance: 200_000,
+            obstacles: obstacles::Obstacles::new(board, layer, net),
             checkpoints: vec![],
         })
     }
@@ -166,39 +204,53 @@ impl RouteSession {
         !self.checkpoints.is_empty()
     }
     pub fn points(&self, end: Point) -> Vec<Point> {
+        if !(1..=100_000_000_000).contains(&self.width)
+            || !(0..=100_000_000_000).contains(&self.clearance)
+        {
+            return vec![self.anchor];
+        }
+        self.obstacles.resolve(self, end)
+    }
+    fn free_points(&self, start: Point, end: Point) -> Vec<Point> {
         match self.corner {
-            Corner::FortyFive => route_points(self.anchor, end, self.diagonal_first),
+            Corner::FortyFive => route_points(start, end, self.diagonal_first),
             Corner::Orthogonal => {
                 let c = if self.diagonal_first {
                     Point {
-                        x: self.anchor.x,
+                        x: start.x,
                         y: end.y,
                     }
                 } else {
                     Point {
                         x: end.x,
-                        y: self.anchor.y,
+                        y: start.y,
                     }
                 };
-                let mut v = vec![self.anchor];
-                if c != self.anchor && c != end {
+                let mut v = vec![start];
+                if c != start && c != end {
                     v.push(c);
                 }
-                if end != self.anchor {
+                if end != start {
                     v.push(end);
                 }
                 v
             }
             Corner::AnyAngle => {
-                if end == self.anchor {
-                    vec![self.anchor]
+                if end == start {
+                    vec![start]
                 } else {
-                    vec![self.anchor, end]
+                    vec![start, end]
                 }
             }
         }
     }
     fn append_to(&self, mut board: Board, end: Point) -> Result<Board, String> {
+        if !(1..=100_000_000_000).contains(&self.width)
+            || !(0..=100_000_000_000).contains(&self.clearance)
+        {
+            return Err("Width must be positive and clearance non-negative".into());
+        }
+        let original_len = board.items.len();
         for pair in self.points(end).windows(2) {
             if pair[0] != pair[1] {
                 board.items.push(Item::new(
@@ -212,7 +264,7 @@ impl RouteSession {
                 ));
             }
         }
-        board.pours_stale |= !board.polygon_pours.is_empty();
+        board.pours_stale |= board.items.len() != original_len && !board.polygon_pours.is_empty();
         board.validate()?;
         Ok(board)
     }
@@ -228,6 +280,10 @@ impl RouteSession {
         {
             return Err("The routing target belongs to a different net".into());
         }
+        if end == self.anchor {
+            return Ok(());
+        }
+        let end = *self.points(end).last().unwrap_or(&self.anchor);
         if end == self.anchor {
             return Ok(());
         }
@@ -247,6 +303,11 @@ impl RouteSession {
         diameter: i64,
         hole: i64,
     ) -> Result<(), String> {
+        if !(1..=100_000_000_000).contains(&self.width)
+            || !(0..=100_000_000_000).contains(&self.clearance)
+        {
+            return Err("Invalid routing width or clearance".into());
+        }
         if !copper_layer(to_layer) || to_layer == self.layer {
             return Err("Choose a different copper layer".into());
         }
@@ -258,8 +319,29 @@ impl RouteSession {
         {
             return Err("Destination layer is not in the layer stack".into());
         }
-        if hole <= 0 || diameter <= hole {
+        if hole <= 0 || diameter <= hole || diameter > 100_000_000_000 {
             return Err("Via diameter must be greater than its positive drill size".into());
+        }
+        if self.points(end).last() != Some(&end) {
+            return Err("Cannot place a via beyond an obstacle".into());
+        }
+        if self.conflict != Conflict::Ignore {
+            let mut layers: Vec<_> = self.draft.layers.iter().filter(|l| l.copper).collect();
+            layers.sort_by_key(|l| l.order);
+            let from = layers
+                .iter()
+                .position(|l| l.id == self.layer)
+                .ok_or("Missing source layer")?;
+            let to = layers
+                .iter()
+                .position(|l| l.id == to_layer)
+                .ok_or("Missing destination layer")?;
+            for layer in &layers[from.min(to)..=from.max(to)] {
+                let obstacles = obstacles::Obstacles::new(&self.draft, layer.id, self.net);
+                if !obstacles.clear(end, end, diameter / 2 + self.clearance) {
+                    return Err("Via violates copper clearance on its layer span".into());
+                }
+            }
         }
         let mut next = self.append_to(self.draft.clone(), end)?;
         let has_via = next.items.iter().any(|i| {
@@ -290,6 +372,7 @@ impl RouteSession {
         self.draft = next;
         self.anchor = end;
         self.layer = to_layer;
+        self.obstacles = obstacles::Obstacles::new(&self.draft, self.layer, self.net);
         Ok(())
     }
     pub fn backtrack(&mut self) -> bool {
@@ -301,6 +384,7 @@ impl RouteSession {
             self.draft.pours_stale = c.pours_stale;
             self.anchor = c.anchor;
             self.layer = c.layer;
+            self.obstacles = obstacles::Obstacles::new(&self.draft, self.layer, self.net);
             true
         } else {
             false
@@ -317,6 +401,165 @@ impl RouteSession {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn empty_preview_keeps_pours_current_and_invalid_settings_do_not_overflow() {
+        let mut b = Board::default();
+        b.polygon_pours.push(crate::pcb_polygon::Polygon {
+            contour: crate::pcb_polygon::straight_contour(&[
+                Point::mm(-1, -1),
+                Point::mm(10, -1),
+                Point::mm(10, 10),
+            ]),
+            ..Default::default()
+        });
+        let mut r = RouteSession::begin(&b, 0, Point::mm(0, 0), TOP, None, 250_000, 0).unwrap();
+        assert!(!r.preview(r.anchor).unwrap().pours_stale);
+        assert!(r.preview(Point::mm(1, 0)).unwrap().pours_stale);
+        r.clearance = i64::MAX;
+        assert_eq!(r.points(Point::mm(1, 0)), vec![r.anchor]);
+        assert!(r.preview(Point::mm(1, 0)).is_err());
+        assert!(r.via(Point::mm(1, 0), BOTTOM, i64::MAX, 1).is_err());
+        assert!(r.via(r.anchor, BOTTOM, 600_000, 300_000).is_err());
+        assert_eq!(r.draft, b);
+    }
+    fn obstacle_board() -> Board {
+        let mut b = Board::default();
+        b.items.push(Item::new(
+            TOP,
+            None,
+            Shape::Track {
+                start: Point::mm(5, -1),
+                end: Point::mm(5, 1),
+                width: 500_000,
+            },
+        ));
+        b
+    }
+    #[test]
+    fn preferred_width_does_not_bypass_unknown_priority_scope() {
+        let mut b = Board::default();
+        b.rules.push(
+            [
+                ("RULEKIND", "Width"),
+                ("SCOPE1EXPRESSION", "All"),
+                ("PRIORITY", "2"),
+                ("PREFEREDWIDTH", "10mil"),
+            ]
+            .into_iter()
+            .map(|(k, v)| (k.into(), v.into()))
+            .collect(),
+        );
+        assert_eq!(
+            preferred_dimension(&b, "Width", "PREFEREDWIDTH"),
+            Some(254_000)
+        );
+        let mut scoped = b.rules[0].clone();
+        scoped.insert("SCOPE1EXPRESSION".into(), "InNet('ANT')".into());
+        scoped.insert("PRIORITY".into(), "1".into());
+        b.rules.push(scoped);
+        assert_eq!(preferred_dimension(&b, "Width", "PREFEREDWIDTH"), None);
+    }
+    #[test]
+    fn polygon_cutout_is_passable_but_board_cutout_and_keepout_block() {
+        let mut b = Board::default();
+        b.items.push(Item::new(
+            TOP,
+            None,
+            Shape::Region {
+                contour: vec![
+                    Point::mm(4, -1),
+                    Point::mm(6, -1),
+                    Point::mm(6, 1),
+                    Point::mm(4, 1),
+                ],
+                holes: vec![],
+                cutout: true,
+            },
+        ));
+        let end = Point::mm(10, 0);
+        let route = RouteSession::begin(&b, 0, Point::mm(0, 0), TOP, None, 100_000, 0).unwrap();
+        assert_eq!(route.points(end).len(), 2);
+        b.items[0]
+            .properties
+            .insert("ISBOARDCUTOUT".into(), "TRUE".into());
+        let mut route = RouteSession::begin(&b, 0, Point::mm(0, 0), TOP, None, 100_000, 0).unwrap();
+        route.conflict = Conflict::Stop;
+        assert!(route.points(end).last().unwrap().x < 4_000_000);
+        b.items[0].properties.clear();
+        b.items[0].keepout = true;
+        let mut route = RouteSession::begin(&b, 0, Point::mm(0, 0), TOP, None, 100_000, 0).unwrap();
+        route.conflict = Conflict::Stop;
+        assert!(route.points(end).last().unwrap().x < 4_000_000);
+    }
+    #[test]
+    fn stop_preview_and_placement_obey_clearance_and_backtrack() {
+        let b = obstacle_board();
+        let mut r = RouteSession::begin(&b, 0, Point::mm(0, 0), TOP, None, 500_000, 0).unwrap();
+        r.conflict = Conflict::Stop;
+        let end = Point::mm(10, 0);
+        let points = r.points(end);
+        let actual = *points.last().unwrap();
+        assert!((4_299_990..=4_300_000).contains(&actual.x));
+        assert_eq!(actual.y, 0);
+        let preview = r.preview(end).unwrap();
+        r.place(end, None).unwrap();
+        assert_eq!(r.anchor, actual);
+        assert_eq!(preview.items.len(), r.draft.items.len());
+        assert!(r.backtrack());
+        assert_eq!(r.draft, b);
+    }
+    #[test]
+    fn walkaround_reaches_target_with_clear_octilinear_segments() {
+        let b = obstacle_board();
+        let r = RouteSession::begin(&b, 0, Point::mm(0, 0), TOP, None, 500_000, 0).unwrap();
+        let end = Point::mm(10, 0);
+        let points = r.points(end);
+        assert_eq!(points.last(), Some(&end));
+        assert!(points.len() > 2);
+        for edge in points.windows(2) {
+            assert!(r.obstacles.clear(edge[0], edge[1], 450_000));
+            let dx = (edge[0].x - edge[1].x).abs();
+            let dy = (edge[0].y - edge[1].y).abs();
+            assert!(dx == 0 || dy == 0 || dx == dy);
+        }
+    }
+    #[test]
+    fn ignore_is_explicit_and_other_layers_do_not_block() {
+        let mut b = obstacle_board();
+        let mut r = RouteSession::begin(&b, 0, Point::mm(0, 0), TOP, None, 500_000, 0).unwrap();
+        r.conflict = Conflict::Ignore;
+        assert_eq!(
+            r.points(Point::mm(10, 0)),
+            vec![Point::mm(0, 0), Point::mm(10, 0)]
+        );
+        b.items[0].layer = BOTTOM;
+        let r = RouteSession::begin(&b, 0, Point::mm(0, 0), TOP, None, 500_000, 0).unwrap();
+        assert_eq!(r.points(Point::mm(10, 0)).len(), 2);
+    }
+    #[test]
+    fn via_checks_destination_clearance_atomically() {
+        let mut b = obstacle_board();
+        b.items[0].layer = BOTTOM;
+        let mut r = RouteSession::begin(&b, 0, Point::mm(0, 0), TOP, None, 500_000, 0).unwrap();
+        let before = r.draft.clone();
+        assert!(r.via(Point::mm(5, 0), BOTTOM, 800_000, 400_000).is_err());
+        assert_eq!(r.draft, before);
+        assert_eq!(r.layer, TOP);
+        assert!(!r.has_segments());
+    }
+    #[test]
+    fn preview_never_crosses_a_thin_obstacle_between_endpoints() {
+        let mut b = obstacle_board();
+        b.items[0].shape = Shape::Track {
+            start: Point::mm(5, -50),
+            end: Point::mm(5, 50),
+            width: 1,
+        };
+        let mut r = RouteSession::begin(&b, 0, Point::mm(0, 0), TOP, None, 100_000, 0).unwrap();
+        r.conflict = Conflict::Stop;
+        r.clearance = 0;
+        assert!(r.points(Point::mm(10, 0)).last().unwrap().x < 5_000_000);
+    }
     #[test]
     fn session_is_isolated_and_backtracks_via_with_its_leg() {
         let b = Board::default();
@@ -347,6 +590,7 @@ mod tests {
         ));
         let h = target(&b, Point::mm(5, 0), TOP, 0).unwrap();
         let mut r = RouteSession::begin(&b, 0, Point::mm(5, 5), TOP, None, 250_000, 0).unwrap();
+        r.conflict = Conflict::Ignore; // This test exercises no-net legacy track splitting.
         r.place(h.point, Some(h)).unwrap();
         assert_eq!(r.draft.items.len(), 3);
         assert_eq!(b.items.len(), 1);

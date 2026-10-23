@@ -1345,13 +1345,231 @@ fn parameters(
             });
     });
 }
+fn routing(
+    ui: &mut egui::Ui,
+    ed: &mut Editor,
+    board: &Board,
+    units: Units,
+    action: &mut Option<Action>,
+    layer: u16,
+) {
+    section(ui, "Net Information", "", |ui| {
+        let name = ed
+            .route_session
+            .as_ref()
+            .and_then(|r| r.net)
+            .and_then(|n| board.nets.iter().find(|x| x.index == n))
+            .map(|n| n.name.as_str())
+            .unwrap_or("N/A");
+        read_row(ui, "Net", name);
+        read_row(ui, "Class", "N/A");
+        ui.separator();
+        let length = ed.route_session.as_ref().map(|r| {
+            r.draft
+                .items
+                .iter()
+                .filter(|i| r.net.is_some() && i.net == r.net)
+                .map(|i| match i.shape {
+                    Shape::Track { start, end, .. } => pcb::distance_sq(start, end).sqrt(),
+                    Shape::Arc {
+                        radius,
+                        start_angle,
+                        end_angle,
+                        ..
+                    } => radius as f64 * pcb::arc_sweep(start_angle, end_angle).to_radians(),
+                    _ => 0.0,
+                })
+                .sum::<f64>()
+        });
+        read_row(
+            ui,
+            "Length",
+            &length
+                .map(|n| format!("{:.3}{}", units.from_nm(n), units.label()))
+                .unwrap_or("N/A".into()),
+        );
+        read_row(ui, "Delay", "N/A");
+    });
+    section(ui, "Properties", "", |ui| {
+        row(ui, "Layer", |ui| {
+            egui::ComboBox::from_id_salt("route_layer")
+                .selected_text(
+                    board
+                        .layers
+                        .iter()
+                        .find(|l| l.id == layer)
+                        .map(|l| l.name.as_str())
+                        .unwrap_or("Copper"),
+                )
+                .show_ui(ui, |ui| {
+                    let mut layers: Vec<_> = board.layers.iter().filter(|l| l.copper).collect();
+                    layers.sort_by_key(|l| l.order);
+                    for l in layers {
+                        if ui.selectable_label(layer == l.id, &l.name).clicked() {
+                            *action = Some(Action::RouteLayer(l.id));
+                        }
+                    }
+                });
+        });
+        ui.small("Num − / Num +");
+        if ui
+            .link(if ed.properties_panel.hide_preview {
+                "Show preview"
+            } else {
+                "Hide preview"
+            })
+            .clicked()
+        {
+            ed.properties_panel.hide_preview = !ed.properties_panel.hide_preview;
+        }
+        ui.horizontal(|ui| {
+            if !ed.properties_panel.hide_preview {
+                let (rect, _) = ui.allocate_exact_size(egui::vec2(105.0, 174.0), Sense::hover());
+                let c = rect.min + egui::vec2(48.0, 60.0);
+                let gold = Color32::from_rgb(212, 184, 73);
+                ui.painter()
+                    .line_segment([c, c + egui::vec2(0.0, 95.0)], Stroke::new(20.0, gold));
+                ui.painter().circle_filled(c, 39.0, gold);
+                ui.painter().circle_filled(c, 19.0, Color32::from_gray(56));
+                ui.painter().line_segment(
+                    [c - egui::vec2(30.0, 18.0), c + egui::vec2(50.0, 28.0)],
+                    Stroke::new(1.0, Color32::WHITE),
+                );
+            }
+            ui.vertical(|ui| {
+                ui.set_width(ui.available_width());
+                ui.label("Via Diameter");
+                numeric(ui, &mut ed.diameter, units);
+                ui.add_space(8.0);
+                ui.label("Via Hole Size");
+                numeric(ui, &mut ed.drill, units);
+                ui.add_space(8.0);
+                ui.label("Width");
+                numeric(ui, &mut ed.width, units);
+            });
+        });
+    });
+    section(ui, "Interactive Routing Options", "", |ui| {
+        ui.small("Shift + R");
+        row(ui, "Conflict Resolution", |ui| {
+            egui::ComboBox::from_id_salt("route_conflict")
+                .selected_text(ed.conflict.label())
+                .show_ui(ui, |ui| {
+                    for mode in [Conflict::Ignore, Conflict::Walkaround] {
+                        ui.selectable_value(&mut ed.conflict, mode, mode.label());
+                    }
+                    for label in ["Push Obstacles", "HugNPush Obstacles"] {
+                        ui.add_enabled(false, egui::Button::new(label))
+                            .on_disabled_hover_text("Topology-preserving shove is not implemented");
+                    }
+                    ui.selectable_value(&mut ed.conflict, Conflict::Stop, Conflict::Stop.label());
+                    for label in ["AutoRoute Current Layer", "AutoRoute Multilayer"] {
+                        ui.add_enabled(false, egui::Button::new(label));
+                    }
+                });
+        });
+        ui.horizontal(|ui| {
+            ui.label("Corner Style");
+            ui.small("Shift + Space");
+        });
+        ui.horizontal(|ui| {
+            for (index, mode) in [Some(1), None, Some(2), Some(0), None]
+                .into_iter()
+                .enumerate()
+            {
+                let (rect, response) = ui.allocate_exact_size(
+                    egui::vec2(
+                        (ui.available_width() / ((5 - index) as f32)).max(20.0) - 3.0,
+                        23.0,
+                    ),
+                    Sense::click(),
+                );
+                let selected = mode == Some(ed.corner_mode);
+                ui.painter().rect_filled(
+                    rect,
+                    1.0,
+                    if selected {
+                        Color32::from_rgb(82, 121, 147)
+                    } else {
+                        Color32::from_gray(72)
+                    },
+                );
+                let c = rect.center();
+                let pts = match mode {
+                    Some(1) => vec![
+                        c + egui::vec2(-7.0, -5.0),
+                        c + egui::vec2(6.0, -5.0),
+                        c + egui::vec2(6.0, 5.0),
+                    ],
+                    Some(2) => vec![c + egui::vec2(-6.0, -5.0), c + egui::vec2(6.0, 5.0)],
+                    _ => vec![
+                        c + egui::vec2(-7.0, -5.0),
+                        c + egui::vec2(0.0, -5.0),
+                        c + egui::vec2(6.0, 1.0),
+                        c + egui::vec2(6.0, 5.0),
+                    ],
+                };
+                ui.painter().add(egui::Shape::line(
+                    pts,
+                    Stroke::new(
+                        1.5,
+                        if mode.is_some() {
+                            Color32::LIGHT_GRAY
+                        } else {
+                            Color32::GRAY
+                        },
+                    ),
+                ));
+                if let Some(mode) = mode {
+                    if response.clicked() {
+                        ed.corner_mode = mode;
+                    }
+                } else {
+                    response.on_hover_text("Arc corners are not implemented");
+                }
+            }
+        });
+        for label in ["Gloss Effort (Routed)", "Gloss Effort (Neighbor)"] {
+            ui.label(label);
+            ui.add_enabled_ui(false, |ui| {
+                ui.horizontal(|ui| {
+                    for text in ["Off", "Weak", "Strong"] {
+                        let _ = ui.selectable_label(text == "Off", text);
+                    }
+                });
+            });
+        }
+        ui.checkbox(&mut ed.auto_terminate, "Automatically Terminate Routing");
+        ui.add_enabled(
+            false,
+            egui::Checkbox::new(&mut false, "Automatically Remove Loops"),
+        );
+        ui.add_enabled(
+            false,
+            egui::Checkbox::new(&mut false, "Remove Loops With Vias"),
+        );
+        numeric_row(ui, "Clearance", &mut ed.clearance, units);
+        ui.small("Manual clearance; scoped design rules are not evaluated.");
+    });
+    if ed.paused {
+        ui.label("Paused — click the canvas to resume");
+    }
+    if let Some(error) = &ed.last_error {
+        ui.colored_label(Color32::LIGHT_RED, error);
+    }
+}
 fn interactive(
     ui: &mut egui::Ui,
     ed: &mut Editor,
     board: &Board,
     units: Units,
     action: &mut Option<Action>,
+    layer: u16,
 ) {
+    if ed.tool == Tool::Route {
+        routing(ui, ed, board, units, action, layer);
+        return;
+    }
     properties::section(ui, "Properties", |ui| {
         if matches!(ed.tool, Tool::Route | Tool::Arc) {
             numeric_row(ui, "Width", &mut ed.width, units);
@@ -1526,7 +1744,14 @@ pub(super) fn show(app: &mut PcbCraft, ui: &mut egui::Ui) -> bool {
             ui.set_min_width(ui.available_width());
             ui.spacing_mut().item_spacing = egui::vec2(4.0, 4.0);
             if ed.tool != Tool::Select {
-                interactive(ui, &mut ed, board, units, &mut action);
+                interactive(
+                    ui,
+                    &mut ed,
+                    board,
+                    units,
+                    &mut action,
+                    doc.view.pcb.active_layer,
+                );
                 return;
             }
             if ed.properties_panel.parameters && matches!(context, "Board" | "Component") {

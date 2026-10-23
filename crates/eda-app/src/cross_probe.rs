@@ -402,6 +402,10 @@ mod tests {
                 path: PathBuf::from(format!("/project-{i}/project.PrjPcb")),
                 name: format!("Project {i}"),
                 warnings: vec![],
+                generated_documents: vec![],
+                variants: vec![],
+                virtual_bom: false,
+                sheet_children: Default::default(),
                 documents: vec![eda_io::altium::ProjectEntry {
                     path: app.documents[i].path.clone().unwrap(),
                     original_path: "design".into(),

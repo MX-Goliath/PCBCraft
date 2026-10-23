@@ -13,12 +13,16 @@ mod chrome;
 mod components;
 #[path = "cross_probe.rs"]
 mod cross_probe;
+#[path = "document_bars.rs"]
+mod document_bars;
 #[path = "layer_stack.rs"]
 mod layer_stack;
 #[path = "pcb_3d.rs"]
 mod pcb_3d;
 #[path = "pcb_editor.rs"]
 mod pcb_editor;
+#[path = "projects.rs"]
+mod projects;
 #[path = "properties.rs"]
 mod properties;
 #[path = "schematic_editor.rs"]
@@ -999,204 +1003,9 @@ impl PcbCraft {
             });
     }
 
-    fn projects(&mut self, ctx: &egui::Context) {
-        let mut open_path = None;
-        let schematic = self
-            .active
-            .is_some_and(|i| self.documents[i].model.kind == DocumentKind::Schematic);
-        egui::SidePanel::left(if schematic {
-            "projects_schematic_v3"
-        } else {
-            "projects_altium_v2"
-        })
-        .default_width(330.0)
-        .width_range(190.0..=500.0)
-        .resizable(true)
-        .show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                ui.label("Projects");
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if theme::icon_button(ui, theme::Icon::Close, false, true)
-                        .on_hover_text("Hide Projects")
-                        .clicked()
-                    {
-                        self.command = Some(Command::ToggleProjects);
-                    }
-                    theme::icon_button(ui, theme::Icon::Pin, false, false);
-                });
-            });
-            ui.separator();
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 9.0;
-                ui.add_space(7.0);
-                for (icon, label, command) in [
-                    (theme::Icon::Save, "Save document", Some(Command::Save)),
-                    (theme::Icon::SaveAll, "Save All", Some(Command::SaveAll)),
-                    (theme::Icon::Open, "Open document", Some(Command::Open)),
-                    (
-                        theme::Icon::Folder,
-                        "Open project",
-                        Some(Command::OpenProject),
-                    ),
-                    (
-                        theme::Icon::Settings,
-                        "Preferences",
-                        Some(Command::Preferences),
-                    ),
-                ] {
-                    if theme::icon_button(ui, icon, false, command.is_some())
-                        .on_hover_text(label)
-                        .clicked()
-                    {
-                        self.command = command;
-                    }
-                }
-            });
-            ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                ui.add_space(10.0);
-                theme::search_field(ui, &mut self.search, ui.available_width() - 8.0);
-            });
-            ui.add_space(13.0);
-            egui::TopBottomPanel::bottom("project_panel_tabs")
-                .exact_height(21.0)
-                .show_inside(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.selectable_label(true, "Projects")
-                            .on_hover_text("Projects panel");
-                        ui.add_enabled(false, egui::Button::new("Navigator").frame(false));
-                    });
-                });
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                egui::CollapsingHeader::new(RichText::new("Project Group 1").strong())
-                    .default_open(true)
-                    .show(ui, |ui| {
-                        for project in &self.projects {
-                            egui::CollapsingHeader::new(RichText::new(&project.name).strong())
-                                .id_salt(&project.path)
-                                .default_open(true)
-                                .show(ui, |ui| {
-                                    egui::CollapsingHeader::new("Source Documents")
-                                        .id_salt((&project.path, "sources"))
-                                        .default_open(true)
-                                        .show(ui, |ui| {
-                                            for entry in &project.documents {
-                                                let filename = entry
-                                                    .path
-                                                    .file_name()
-                                                    .unwrap_or_default()
-                                                    .to_string_lossy();
-                                                if !filename
-                                                    .to_lowercase()
-                                                    .contains(&self.search.to_lowercase())
-                                                {
-                                                    continue;
-                                                }
-                                                let selected = self.active.is_some_and(|i| {
-                                                    self.documents[i].source_path.as_ref()
-                                                        == Some(&entry.path)
-                                                });
-                                                let label = format!(
-                                                    "{} {}{}",
-                                                    if entry.kind == "schdoc" {
-                                                        "SCH"
-                                                    } else if entry.kind == "pcbdoc" {
-                                                        "PCB"
-                                                    } else {
-                                                        "LIB"
-                                                    },
-                                                    filename,
-                                                    if entry.exists { "" } else { " (missing)" }
-                                                );
-                                                let response = ui.add_enabled(
-                                                    entry.exists
-                                                        && matches!(
-                                                            entry.kind.as_str(),
-                                                            "schdoc"
-                                                                | "pcbdoc"
-                                                                | "schlib"
-                                                                | "intlib"
-                                                        ),
-                                                    egui::Button::new(label)
-                                                        .frame(selected)
-                                                        .selected(selected),
-                                                );
-                                                if response.clicked() {
-                                                    open_path = Some(entry.path.clone());
-                                                }
-                                                response.on_disabled_hover_text(if !entry.exists {
-                                                    "Referenced file was not found"
-                                                } else {
-                                                    "This document type is not supported"
-                                                });
-                                            }
-                                        });
-                                });
-                        }
-                        let folder_header = |ui: &mut egui::Ui, label: &str| {
-                            let (rect, _) = ui
-                                .allocate_exact_size(egui::vec2(18.0, 18.0), egui::Sense::hover());
-                            theme::draw_icon(ui.painter(), rect, theme::Icon::Folder, true);
-                            ui.label(label);
-                        };
-                        egui::collapsing_header::CollapsingState::load_with_default_open(
-                            ui.ctx(),
-                            ui.make_persistent_id("free_documents"),
-                            true,
-                        )
-                        .show_header(ui, |ui| folder_header(ui, "Free Documents"))
-                        .body(|ui| {
-                            egui::collapsing_header::CollapsingState::load_with_default_open(
-                                ui.ctx(),
-                                ui.make_persistent_id("source_documents"),
-                                true,
-                            )
-                            .show_header(ui, |ui| folder_header(ui, "Source Documents"))
-                            .body(|ui| {
-                                let query = self.search.to_lowercase();
-                                for (index, doc) in self.documents.iter().enumerate() {
-                                    if doc.source_path.as_ref().is_some_and(|path| {
-                                        self.projects
-                                            .iter()
-                                            .any(|p| p.documents.iter().any(|d| &d.path == path))
-                                    }) {
-                                        continue;
-                                    }
-                                    if !doc.model.name.to_lowercase().contains(&query) {
-                                        continue;
-                                    }
-                                    ui.horizontal(|ui| {
-                                        theme::logo(ui);
-                                        let title = format!(
-                                            "{}{}",
-                                            doc.model.name,
-                                            if doc.dirty() { " *" } else { "" }
-                                        );
-                                        if ui
-                                            .selectable_label(self.active == Some(index), title)
-                                            .clicked()
-                                        {
-                                            self.active = Some(index);
-                                            self.pad_edit = None;
-                                        }
-                                    });
-                                }
-                                if self.documents.is_empty() {
-                                    ui.label(RichText::new("No documents open").color(MUTED));
-                                }
-                            });
-                        });
-                    });
-            });
-        });
-        if let Some(path) = open_path {
-            self.open_path(path);
-        }
-    }
-
     fn status(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::bottom("status")
-            .exact_height(23.0)
+            .exact_height(31.0)
             .show(ctx, |ui| {
                 ui.horizontal_centered(|ui| {
                     let u = self.settings.units;
@@ -1536,73 +1345,14 @@ impl PcbCraft {
                     .inner_margin(egui::Margin::symmetric(5, 0)),
             )
             .show(ctx, |ui| {
-                let mut close = None;
-                egui::Frame::NONE
-                    .fill(Color32::from_rgb(54, 54, 54))
-                    .inner_margin(egui::Margin::symmetric(3, 1))
-                    .show(ui, |ui| {
-                        egui::ScrollArea::horizontal()
-                            .id_salt("document_tabs")
-                            .show(ui, |ui| {
-                                ui.horizontal(|ui| {
-                                    if ui.selectable_label(self.active.is_none(), "Home").clicked()
-                                    {
-                                        self.command = Some(Command::Home);
-                                    }
-                                    ui.separator();
-                                    for (index, doc) in self.documents.iter().enumerate() {
-                                        let title = format!(
-                                            "{}  {}{}",
-                                            if doc.model.kind == DocumentKind::Board {
-                                                "PCB"
-                                            } else {
-                                                "SCH"
-                                            },
-                                            doc.model.name,
-                                            if doc.dirty() { " *" } else { "" }
-                                        );
-                                        if ui
-                                            .selectable_label(self.active == Some(index), title)
-                                            .clicked()
-                                        {
-                                            self.active = Some(index);
-                                            self.pad_edit = None;
-                                        }
-                                        if ui
-                                            .small_button("×")
-                                            .on_hover_text("Close document")
-                                            .clicked()
-                                        {
-                                            close = Some(doc.session_id);
-                                        }
-                                        ui.separator();
-                                    }
-                                });
-                            });
-                    });
-                if let Some(id) = close {
-                    self.request_close(id);
-                }
+                ui.spacing_mut().item_spacing.y = 0.0;
+                self.document_tabs(ui);
                 if let Some(index) = self.active {
                     if self.documents[index].model.kind == DocumentKind::Board {
                         self.pcb_layer_bar(ui, index);
                     }
                     if self.documents[index].model.kind == DocumentKind::Schematic {
-                        egui::TopBottomPanel::bottom("schematic_editor")
-                            .exact_height(24.0)
-                            .frame(egui::Frame::NONE.fill(Color32::from_gray(54)))
-                            .show_inside(ui, |ui| {
-                                ui.horizontal_centered(|ui| {
-                                    ui.selectable_label(true, "Editor")
-                                        .on_hover_text("Schematic editor");
-                                    ui.label(
-                                        self.documents[index]
-                                            .model
-                                            .name
-                                            .trim_end_matches(".SchDoc"),
-                                    );
-                                });
-                            });
+                        self.schematic_bottom_bar(ui, index);
                     }
                     let canvas = ui.available_rect_before_wrap();
                     if self.documents[index].model.kind == DocumentKind::Schematic {

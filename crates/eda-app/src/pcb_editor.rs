@@ -3,7 +3,7 @@ use super::*;
 use eda_core::pcb::{self, Board, Bounds, ContourVertex, Edit, Item, PadShape, Shape};
 use eda_core::{
     pcb_polygon::{self, Connection, Polygon},
-    pcb_route::{self, Corner, RouteSession},
+    pcb_route::{self, Conflict, Corner, RouteSession},
     pcb_tools::{self, Handle},
 };
 use eda_geom::Point;
@@ -116,6 +116,10 @@ pub(super) struct Editor {
     pub net: Option<u32>,
     pub rotation: f64,
     corner_mode: u8,
+    conflict: Conflict,
+    clearance: i64,
+    auto_terminate: bool,
+    routing_initialized: bool,
     diagonal_first: bool,
     paused: bool,
     gesture: Option<Gesture>,
@@ -158,6 +162,10 @@ impl Default for Editor {
             net: None,
             rotation: 0.0,
             corner_mode: 0,
+            conflict: Conflict::Walkaround,
+            clearance: 200_000,
+            auto_terminate: true,
+            routing_initialized: false,
             diagonal_first: true,
             paused: false,
             gesture: None,
@@ -433,7 +441,7 @@ fn box_selection(
     let mut ids = BTreeSet::new();
     let mut components: BTreeMap<u32, Bounds> = BTreeMap::new();
     for i in &board.items {
-        if !view.selectable(i) {
+        if !view.selectable_on_board(board, i) {
             continue;
         }
         if view.component_selection
@@ -475,6 +483,7 @@ fn finish_route(doc: &mut OpenDocument, ed: &mut Editor) -> Result<(), String> {
         }
         ed.route_session = None;
         ed.start = None;
+        ed.paused = false;
         doc.view.pcb.set_preview(None);
     }
     Ok(())
@@ -494,6 +503,9 @@ pub(super) fn prepare_save(doc: &mut OpenDocument) -> Result<(), String> {
 }
 fn route_layer(doc: &mut OpenDocument, ed: &mut Editor, layer: u16) -> Result<(), String> {
     if let Some(route) = &mut ed.route_session {
+        route.width = ed.width;
+        route.clearance = ed.clearance;
+        route.conflict = ed.conflict;
         if route.revision != doc.history.revision {
             return Err("Document changed during routing".into());
         }
@@ -879,7 +891,7 @@ fn input(
             let hit = board
                 .items
                 .iter()
-                .filter(|v| doc.view.pcb.selectable(v))
+                .filter(|v| doc.view.pcb.selectable_on_board(board, v))
                 .map(|v| {
                     (
                         v,
@@ -901,7 +913,12 @@ fn input(
                         Shape::Text { .. } => 2,
                         _ => 3,
                     };
-                    rank(a.0).cmp(&rank(b.0)).then_with(|| a.1.total_cmp(&b.1))
+                    doc.view
+                        .pcb
+                        .pick_layer_rank(a.0)
+                        .cmp(&doc.view.pcb.pick_layer_rank(b.0))
+                        .then(rank(a.0).cmp(&rank(b.0)))
+                        .then_with(|| a.1.total_cmp(&b.1))
                 })
                 .map(|(v, _)| picked(board, &doc.view.pcb, v.id))
                 .or_else(|| {
@@ -1068,17 +1085,23 @@ fn input(
                     return Err("Document changed during routing; cancel and restart".into());
                 }
                 route.width = ed.width;
+                route.conflict = ed.conflict;
+                route.clearance = ed.clearance;
                 route.corner = match ed.corner_mode {
                     0 => Corner::FortyFive,
                     1 => Corner::Orthogonal,
                     _ => Corner::AnyAngle,
                 };
                 route.diagonal_first = ed.diagonal_first;
-                let hit = pcb_route::target(board, i.raw_point.unwrap_or(p), route.layer, tol);
+                let hit = pcb_route::target(board, i.raw_point.unwrap_or(p), route.layer, tol)
+                    .filter(|h| h.net == route.net);
                 let end = hit.map_or(p, |h| h.point);
                 ed.last_point = Some(end);
                 if i.clicked {
-                    let finishes = hit.is_some() && end != route.anchor;
+                    let finishes = ed.auto_terminate
+                        && hit.is_some()
+                        && end != route.anchor
+                        && route.points(end).last() == Some(&end);
                     route.place(end, hit)?;
                     doc.view.pcb.set_preview(Some(route.draft.clone()));
                     if finishes {
@@ -1105,6 +1128,9 @@ fn input(
                 } else {
                     route
                 };
+                let mut route = route;
+                route.conflict = ed.conflict;
+                route.clearance = ed.clearance;
                 ed.net = route.net;
                 doc.view.pcb.set_preview(Some(route.draft.clone()));
                 ed.route_session = Some(route);
@@ -1284,6 +1310,17 @@ impl PcbCraft {
                 Action::Tool(tool) => {
                     finish_route(doc, &mut ed)?;
                     ed.set_tool(tool, &mut doc.view);
+                    if tool == Tool::Route && !ed.routing_initialized {
+                        let board = doc.model.pcb.as_ref().unwrap();
+                        ed.width = pcb_route::preferred_dimension(board, "Width", "PREFEREDWIDTH")
+                            .unwrap_or(ed.width);
+                        ed.diameter = pcb_route::preferred_dimension(board, "RoutingVias", "WIDTH")
+                            .unwrap_or(ed.diameter);
+                        ed.drill =
+                            pcb_route::preferred_dimension(board, "RoutingVias", "HOLEWIDTH")
+                                .unwrap_or(ed.drill);
+                        ed.routing_initialized = true;
+                    }
                 }
                 Action::Layers => doc.view.pcb.show_layer_dialog = true,
                 Action::Grid => doc.view.pcb.show_grid_dialog = true,
@@ -1343,7 +1380,11 @@ impl PcbCraft {
                     let mut selected: BTreeSet<_> = board
                         .items
                         .iter()
-                        .filter(|i| doc.view.pcb.selectable(i))
+                        .filter(|i| {
+                            doc.view
+                                .pcb
+                                .selectable_on_board(doc.model.pcb.as_ref().unwrap(), i)
+                        })
                         .map(|i| picked(board, &doc.view.pcb, i.id))
                         .collect();
                     if doc.view.pcb.filters[7] {
@@ -1634,6 +1675,11 @@ impl PcbCraft {
                 return;
             }
             if input.consume_key(egui::Modifiers::NONE, Key::Escape) {
+                if doc.pcb_editor.tool == Tool::Route && doc.pcb_editor.paused {
+                    doc.pcb_editor.paused = false;
+                    handled = true;
+                    return;
+                }
                 if doc.pcb_editor.route_session.is_some() {
                     action = Some(Action::FinishRoute);
                 } else {
@@ -1655,6 +1701,41 @@ impl PcbCraft {
                 action = Some(Action::RouteVia);
                 handled = true;
                 return;
+            }
+            if doc.pcb_editor.tool == Tool::Route && input.consume_key(shift, Key::R) {
+                doc.pcb_editor.conflict = doc.pcb_editor.conflict.next();
+                handled = true;
+                return;
+            }
+            if doc.pcb_editor.route_session.is_some() {
+                for (key, forward) in [(Key::Plus, true), (Key::Equals, true), (Key::Minus, false)]
+                {
+                    if input.consume_key(egui::Modifiers::NONE, key) {
+                        let mut layers: Vec<_> = doc
+                            .model
+                            .pcb
+                            .as_ref()
+                            .unwrap()
+                            .layers
+                            .iter()
+                            .filter(|l| l.copper)
+                            .collect();
+                        layers.sort_by_key(|l| l.order);
+                        if let Some(current) = layers
+                            .iter()
+                            .position(|l| l.id == doc.view.pcb.active_layer)
+                        {
+                            let next = if forward {
+                                (current + 1) % layers.len()
+                            } else {
+                                (current + layers.len() - 1) % layers.len()
+                            };
+                            action = Some(Action::RouteLayer(layers[next].id));
+                        }
+                        handled = true;
+                        return;
+                    }
+                }
             }
             if input.consume_key(shift, Key::Tab) {
                 if !doc.pcb_editor.last_hits.is_empty() {
@@ -1874,38 +1955,7 @@ impl PcbCraft {
         true
     }
     pub(super) fn pcb_layer_bar(&mut self, ui: &mut egui::Ui, index: usize) {
-        egui::TopBottomPanel::bottom("pcb_layers_v1")
-            .exact_height(25.0)
-            .show_inside(ui, |ui| {
-                egui::ScrollArea::horizontal().show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        let doc = &mut self.documents[index];
-                        let Some(board) = &doc.model.pcb else {
-                            return;
-                        };
-                        doc.view.pcb.initialize(board);
-                        if ui.small_button("Layers").clicked() {
-                            doc.view.pcb.show_layer_dialog = true;
-                        }
-                        for layer in &board.layers {
-                            if !doc.view.pcb.visible.contains(&layer.id) {
-                                continue;
-                            }
-                            let active = doc.view.pcb.active_layer == layer.id;
-                            if ui
-                                .selectable_label(
-                                    active,
-                                    RichText::new(&layer.name).color(doc.view.pcb.color(layer.id)),
-                                )
-                                .clicked()
-                                && doc.view.pcb.active_layer != layer.id
-                            {
-                                self.command = Some(Command::Pcb(Action::RouteLayer(layer.id)));
-                            }
-                        }
-                    });
-                });
-            });
+        self.pcb_bottom_bar(ui, index);
         egui::TopBottomPanel::top("pcb_tools_v1")
             .exact_height(28.0)
             .show_inside(ui, |ui| {
@@ -1934,7 +1984,7 @@ impl PcbCraft {
                     } else if doc.pcb_editor.tool == Tool::CopyReference {
                         "Click clipboard reference point"
                     } else if doc.pcb_editor.tool == Tool::Route {
-                        "Space: elbow · Shift+Space: mode · V: via · Backspace: undo leg"
+                        "Space: elbow · Shift+Space: corner · Shift+R: obstacles · +/-: layer · Tab: pause"
                     } else {
                         "Esc cancels · Shift+click adds"
                     });
@@ -2032,6 +2082,56 @@ mod tests {
 #[cfg(test)]
 mod controller_tests {
     use super::*;
+    #[test]
+    fn overlapping_components_box_and_drag_follow_active_mounting_side() {
+        for active in [pcb::TOP, pcb::BOTTOM] {
+            let mut d = doc();
+            let board = d.model.pcb.as_mut().unwrap();
+            let mut pad = board.items.last().unwrap().clone();
+            board.items.clear();
+            for (index, layer) in [(0, pcb::BOTTOM), (1, pcb::TOP)] {
+                let id = Uuid::new_v4();
+                board.components.push(pcb::Component {
+                    id,
+                    index,
+                    designator: format!("U{index}"),
+                    comment: String::new(),
+                    footprint: String::new(),
+                    position: Point::mm(10, 0),
+                    rotation: 0.0,
+                    layer,
+                    locked: false,
+                    properties: pcb::Fields::new(),
+                });
+                pad.id = Uuid::new_v4();
+                pad.layer = pcb::MULTI_LAYER;
+                pad.component = Some(index);
+                board.items.push(pad.clone());
+            }
+            let expected = board
+                .components
+                .iter()
+                .find(|c| c.layer == active)
+                .unwrap()
+                .id;
+            d.view.pcb.active_layer = active;
+            assert_eq!(
+                box_selection(board, &d.view.pcb, Point::mm(9, -1), Point::mm(11, 1)),
+                vec![expected]
+            );
+            let mut ed = Editor::default();
+            input(
+                &mut d,
+                &mut ed,
+                &mut None,
+                drag_frame(Point::mm(10, 0), Point::mm(11, 0), false),
+                &egui::Context::default(),
+            )
+            .unwrap();
+            assert_eq!(d.view.pcb.selected, vec![expected]);
+            assert!(ed.gesture.is_some());
+        }
+    }
     fn doc() -> OpenDocument {
         let mut model = Document::new(DocumentKind::Board, "controller-test.PcbDoc");
         let mut board = Board::from_legacy(&model);
@@ -2103,6 +2203,36 @@ mod controller_tests {
         assert_eq!(d.model, original);
         assert!(!d.history.can_undo());
         assert!(d.view.pcb.preview().is_none());
+    }
+    #[test]
+    fn blocked_destination_does_not_autofinish_or_commit_a_short() {
+        let mut d = doc();
+        d.model.pcb.as_mut().unwrap().items.push(Item::new(
+            pcb::TOP,
+            None,
+            Shape::Track {
+                start: Point::mm(5, -2),
+                end: Point::mm(5, 2),
+                width: 500_000,
+            },
+        ));
+        let original = d.model.clone();
+        let mut ed = Editor {
+            net: Some(0),
+            conflict: Conflict::Stop,
+            ..Default::default()
+        };
+        ed.set_tool(Tool::Route, &mut d.view);
+        let ctx = egui::Context::default();
+        input(&mut d, &mut ed, &mut None, click(0, 0), &ctx).unwrap();
+        input(&mut d, &mut ed, &mut None, click(10, 0), &ctx).unwrap();
+        assert!(ed.route_session.as_ref().unwrap().anchor.x < 5_000_000);
+        assert_eq!(d.model, original);
+        assert!(!d.history.can_undo());
+        finish_route(&mut d, &mut ed).unwrap();
+        assert_eq!(d.history.revision, 1);
+        d.history.undo(&mut d.model);
+        assert_eq!(d.model, original);
     }
     #[test]
     fn save_finishes_a_pending_route_in_one_transaction() {

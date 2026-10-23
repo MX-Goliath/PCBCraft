@@ -149,14 +149,45 @@ impl BoardView {
         self.initialized = true;
         self.active_layer = TOP;
         self.display = display::Settings::from_board(b);
+        if let Some(range) = b
+            .properties
+            .get("ELECTRICALGRIDRANGE")
+            .and_then(|v| dimension_nm(v).ok())
+            .filter(|v| *v > 0)
+        {
+            self.snap.distance = range;
+        }
+        if b.properties
+            .get("ELECTRICALGRIDENABLED")
+            .is_some_and(|v| v.eq_ignore_ascii_case("FALSE"))
+        {
+            self.snap.mode = SnapLayerMode::Off;
+        } else if let Some(all) = b.properties.get("ELECTRICALGRIDUSEALLLAYERS") {
+            self.snap.mode = if all.eq_ignore_ascii_case("TRUE") {
+                SnapLayerMode::All
+            } else {
+                SnapLayerMode::Current
+            };
+        }
+        for (key, target) in [
+            ("EGSNAPTOARCCENTERS", &mut self.snap.arc_centres),
+            ("EGSNAPTOBOARDOUTLINE", &mut self.snap.board_vertices),
+        ] {
+            if let Some(value) = b.properties.get(key) {
+                *target = value.eq_ignore_ascii_case("TRUE");
+            }
+        }
         self.three_d.read_configuration(b);
         if let Some(raw) = b.properties.get("2DCONFIGURATION") {
             self.single_layer = raw
                 .split('`')
                 .find_map(|s| s.strip_prefix("CFG2D.SINGLELAYERMODESTATE="))
-                .and_then(|s| s.trim().parse().ok())
-                .unwrap_or(0)
-                .min(2);
+                .and_then(|s| s.trim().parse::<u8>().ok())
+                // AD 24.4.1 stores the normal multicolour view as state 3
+                // (observed in ReferenceA). Clamping it to 2 hid every
+                // inactive layer immediately after importing the board.
+                .filter(|state| *state < 3)
+                .unwrap_or(0);
         }
         self.visible = self
             .display
@@ -207,6 +238,39 @@ impl BoardView {
             && (self.select_locked || !i.locked)
             && self.is_visible(i)
     }
+    /// Picking a footprint primitive promotes it to its owning component. Use
+    /// the owner's mounting side, not the primitive's layer (a through-hole pad
+    /// or body projection can otherwise select a component on the far side).
+    pub fn selectable_on_board(&self, board: &Board, item: &Item) -> bool {
+        if !self.selectable(item) {
+            return false;
+        }
+        if self.component_selection
+            && let Some(owner) = item
+                .component
+                .and_then(|index| board.components.iter().find(|c| c.index == index))
+        {
+            if owner.locked && !self.select_locked {
+                return false;
+            }
+            if matches!(self.active_layer, TOP | BOTTOM)
+                && matches!(owner.layer, TOP | BOTTOM)
+                && owner.layer != self.active_layer
+            {
+                return false;
+            }
+        }
+        true
+    }
+    pub fn pick_layer_rank(&self, item: &Item) -> u8 {
+        if item.layer == self.active_layer {
+            0
+        } else if item.layer == MULTI_LAYER {
+            1
+        } else {
+            2
+        }
+    }
     pub fn clear_gesture(&mut self) {
         self.clear_pointer();
         self.tool_active = false;
@@ -226,6 +290,12 @@ pub fn fit(camera: &mut Camera, b: &Board, rect: Rect) {
     fit_bounds(camera, b.bounds(), rect);
 }
 fn fit_bounds(camera: &mut Camera, bounds: Bounds, rect: Rect) {
+    // The first egui sizing pass can leave no canvas after the dock panels.
+    // Defer fitting until a real viewport exists instead of retaining a
+    // minimum-scale view for the rest of the document's lifetime.
+    if !rect.is_finite() || rect.width() <= 60.0 || rect.height() <= 60.0 {
+        return;
+    }
     let w = ((bounds.max.x - bounds.min.x) as f64 / 1e6).max(0.1);
     let h = ((bounds.max.y - bounds.min.y) as f64 / 1e6).max(0.1);
     let c = bounds.centre();
@@ -682,7 +752,7 @@ pub fn canvas(ui: &mut egui::Ui, b: &Board, view: &mut View) -> CanvasOutput {
                 if view.cross_probe {
                     view.pcb.is_visible(i)
                 } else {
-                    view.pcb.selectable(i)
+                    view.pcb.selectable_on_board(scene, i)
                 }
             })
             .filter_map(|i| {
@@ -696,6 +766,7 @@ pub fn canvas(ui: &mut egui::Ui, b: &Board, view: &mut View) -> CanvasOutput {
                 );
                 (d <= tol).then_some((
                     i.id,
+                    view.pcb.pick_layer_rank(i),
                     match i.shape {
                         Shape::Pad { .. } | Shape::Via { .. } => 0,
                         Shape::Track { .. } | Shape::Arc { .. } => 1,
@@ -706,7 +777,11 @@ pub fn canvas(ui: &mut egui::Ui, b: &Board, view: &mut View) -> CanvasOutput {
                 ))
             })
             .collect();
-        candidates.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.2.total_cmp(&b.2)));
+        candidates.sort_by(|a, b| {
+            a.1.cmp(&b.1)
+                .then(a.2.cmp(&b.2))
+                .then_with(|| a.3.total_cmp(&b.3))
+        });
         hits.extend(candidates.into_iter().map(|c| c.0));
         if view.pcb.filters[7] {
             for poly in scene.polygon_pours.iter().rev() {
@@ -1181,6 +1256,193 @@ fn polygon(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn component_selection_uses_mounting_side_even_for_multilayer_pads() {
+        let mut board = Board::default();
+        for (index, layer) in [(0, TOP), (1, BOTTOM)] {
+            board.components.push(Component {
+                id: Uuid::new_v4(),
+                index,
+                designator: format!("U{index}"),
+                comment: String::new(),
+                footprint: String::new(),
+                position: Point::default(),
+                rotation: 0.0,
+                layer,
+                locked: false,
+                properties: Fields::new(),
+            });
+            let mut pad = Item::new(
+                MULTI_LAYER,
+                None,
+                Shape::Pad {
+                    position: Point::default(),
+                    size: Point::mm(2, 2),
+                    rotation: 0.0,
+                    shape: PadShape::Round,
+                    hole: 500_000,
+                    plated: true,
+                    name: "1".into(),
+                    bottom_size: None,
+                    middle_size: None,
+                },
+            );
+            pad.component = Some(index);
+            board.items.push(pad);
+        }
+        let mut view = BoardView::default();
+        view.initialize(&board);
+        for active in [TOP, BOTTOM] {
+            view.active_layer = active;
+            for item in &board.items {
+                assert!(view.is_visible(item));
+                assert_eq!(
+                    view.selectable_on_board(&board, item),
+                    board.components[item.component.unwrap() as usize].layer == active
+                );
+            }
+        }
+        let ctx = egui::Context::default();
+        let mut canvas_view = View::default();
+        canvas_view.camera.fitted = true;
+        canvas_view.camera.pixels_per_mm = 100.0;
+        canvas_view.pcb.initialize(&board);
+        for active in [TOP, BOTTOM] {
+            canvas_view.pcb.active_layer = active;
+            let mut pointer = Pos2::ZERO;
+            let _ = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 600.0))),
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        pointer = canvas_view
+                            .camera
+                            .screen(Point::default(), ui.available_rect_before_wrap());
+                        canvas(ui, &board, &mut canvas_view);
+                    });
+                },
+            );
+            let _ = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 600.0))),
+                    events: vec![egui::Event::PointerMoved(pointer)],
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        canvas(ui, &board, &mut canvas_view);
+                    });
+                },
+            );
+            let expected = board.items[usize::from(active == BOTTOM)].id;
+            assert_eq!(canvas_view.pcb.input.as_ref().unwrap().hits, vec![expected]);
+        }
+        view.component_selection = false;
+        assert!(
+            board
+                .items
+                .iter()
+                .all(|i| view.selectable_on_board(&board, i))
+        );
+        view.component_selection = true;
+        board.components[1].locked = true;
+        view.select_locked = false;
+        assert!(!view.selectable_on_board(&board, &board.items[1]));
+    }
+    #[test]
+    fn startup_fit_waits_for_canvas_after_docks_are_measured() {
+        let board = Board::default();
+        let mut camera = Camera::default();
+        fit(
+            &mut camera,
+            &board,
+            Rect::from_min_size(Pos2::ZERO, Vec2::new(0.0, 500.0)),
+        );
+        assert!(!camera.fitted);
+        let viewport = Rect::from_min_size(Pos2::ZERO, Vec2::new(900.0, 600.0));
+        fit(&mut camera, &board, viewport);
+        assert!(camera.fitted);
+        assert!(camera.pixels_per_mm > 1.0);
+        let scale = camera.pixels_per_mm;
+        fit(&mut camera, &board, Rect::NOTHING);
+        assert_eq!(camera.pixels_per_mm, scale);
+    }
+    #[test]
+    fn native_hotspot_range_and_layer_mode_apply_once_without_editing_board() {
+        let mut board = Board::default();
+        for (key, value) in [
+            ("ELECTRICALGRIDRANGE", "1.9685mil"),
+            ("ELECTRICALGRIDUSEALLLAYERS", "TRUE"),
+            ("ELECTRICALGRIDENABLED", "TRUE"),
+            ("EGSNAPTOBOARDOUTLINE", "TRUE"),
+        ] {
+            board.properties.insert(key.into(), value.into());
+        }
+        board.items.push(Item::new(
+            BOTTOM,
+            None,
+            Shape::Track {
+                start: Point::default(),
+                end: Point::mm(1, 0),
+                width: 100_000,
+            },
+        ));
+        let before = board.clone();
+        let mut view = BoardView::default();
+        view.initialize(&board);
+        assert_eq!(view.snap.distance, 50_000);
+        assert_eq!(view.snap.mode, SnapLayerMode::All);
+        assert!(view.snap.board_vertices);
+        let raw = Point { x: 40_000, y: 0 };
+        assert_eq!(
+            board.snap_with_options(raw, 0, TOP, &view.visible, &view.snap),
+            Point::default()
+        );
+        let outside = Point { x: 100_000, y: 0 };
+        assert_eq!(
+            board.snap_with_options(outside, 0, TOP, &view.visible, &view.snap),
+            outside
+        );
+        view.snap.distance = 10_000;
+        view.snap.mode = SnapLayerMode::Off;
+        view.initialize(&board);
+        assert_eq!(view.snap.distance, 10_000);
+        assert_eq!(view.snap.mode, SnapLayerMode::Off);
+        assert_eq!(board, before);
+    }
+    #[test]
+    fn native_normal_view_does_not_hide_inactive_layers() {
+        let mut board = Board::default();
+        let bottom = Item::new(
+            BOTTOM,
+            None,
+            Shape::Track {
+                start: Point::default(),
+                end: Point::mm(1, 0),
+                width: 100_000,
+            },
+        );
+        for (native, expected, bottom_visible) in [
+            ("3", 0, true),
+            ("2", 2, false),
+            ("1", 1, true),
+            ("0", 0, true),
+            ("invalid", 0, true),
+        ] {
+            board.properties.insert(
+                "2DCONFIGURATION".into(),
+                format!("CFG2D.SINGLELAYERMODESTATE={native}"),
+            );
+            let before = board.clone();
+            let mut view = BoardView::default();
+            view.initialize(&board);
+            assert_eq!(view.single_layer, expected);
+            assert_eq!(view.is_visible(&bottom), bottom_visible);
+            assert_eq!(board, before);
+        }
+    }
     #[test]
     fn dimming_composes_with_object_transparency_without_double_premultiplying_rgb() {
         let original = Color32::from_rgba_unmultiplied(150, 50, 20, 204);

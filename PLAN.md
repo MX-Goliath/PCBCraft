@@ -1,5 +1,22 @@
 # План реализации PCBCraft
 
+### Текущая отладка PCB — ReferenceA, 23.10.2026
+
+По указанию пользователя единственный текущий реальный эталон —
+`private-projects/ReferenceA/ReferenceA.PrjPcb`.
+Сверять с установленным и запущенным Altium Designer Enterprise 24.4.1.
+Исходные файлы не изменять; для сохранения результатов правок использовать копии.
+
+- [x] Подготовлена Windows MSVC-среда Rust 1.90.0, проверены сборка и запуск.
+- [x] Воспроизведён и исправлен отказ импорта региона `V7_LAYER=CONNECT`.
+- [x] Исправлено скрытие слоёв при native `SINGLELAYERMODESTATE=3` (Off).
+- [x] Подключены native range/layer mode/arc centre/board outline для привязки.
+- [x] Добавлено откладывание начальной подгонки к пустому viewport.
+- [ ] Полная визуальная и функциональная эквивалентность PCB-редактора Altium.
+
+Наблюдения, проверки и оставшиеся расхождения:
+`docs/pcb-update/VISUAL_PARITY.md`, `docs/features.json`.
+
 19 октября 2026. Полная программа работ: `ALTIUM_RUST_AGENT_PLAN.md`.
 Этот файл задаёт очередность итераций и состояние текущего этапа.
 
@@ -587,3 +604,50 @@ Measurements, method and limits: docs/pcb-update/PERFORMANCE.md.
       Windows dev build and Linux all-target cross-check.
 - [ ] Full Altium pour algorithm parity and native Linux latency measurements;
       explicit repour/native save rebuilds remain synchronous.
+
+
+### Document tabs and editor bottom strips - 23.10.2026
+
+- [x] Observe live AD 24.4.1 PCB/SCH strips on the original ReferenceA project.
+- [x] Shared 26 px document tabs, file icons, Home Page, guarded context close.
+- [x] 22 px PCB layer strip, swatches, copper ordinals, mechanical order, LS and scroll controls.
+- [x] Schematic Editor/sheet strip; unsupported compiled view disabled.
+- [x] Windows GUI switching documents, active copper layer, LS and scrolling; view-only catalog regressions.
+- [x] 288 workspace tests, fmt check, strict Clippy and Windows dev build.
+- [ ] Exact icon/raster/overflow/DPI parity, custom layer sets, batch close and split windows.
+
+Observation and limitations: docs/interface/document-bars.md.
+
+### Projects panel — 23.10.2026
+
+- [x] Observe live AD 24.4.1 ReferenceA tree, Settings/Output Jobs, Generated, variants and nested sheets.
+- [x] Shared 554 px dock, 16 px tree rows, source file icons and sheet numbering.
+- [x] Source/generated metadata separation, variants/BOM flags and best-effort sheet references.
+- [x] Stable expansion/selection, independent search, guarded document activation/close.
+- [x] Fix zero-sized startup collapsing Projects and retain width across PCB/SCH.
+- [x] Windows GUI on ReferenceA, 292 workspace tests, fmt check, strict Clippy and dev build.
+- [ ] Exact raster/DPI parity, native status/menus, docking and compiled project behavior.
+
+Observation and limitations: docs/interface/projects-panel.md.
+
+### Interactive Routing — 23.10.2026
+
+- [x] Observe live AD 24.4.1 routing panel, Ctrl+W, start/Tab/Escape and conflict list on a separate ReferenceA PCB copy.
+- [x] Independent core Ignore/Stop/bounded Walkaround; analytic track clearance and bounded arc approximation.
+- [x] Atomic via-span checks, Backspace restoring layer/cache, preview/commit geometry agreement.
+- [x] Prevent blocked targets from automatically finishing; preserve pours for empty previews.
+- [x] Native-style routing Properties sections, initial unconditional width/via rule values, Shift+R and keypad layer switching.
+- [x] Windows GUI on NetDA1_34: route leg, via, backtrack, mode, pause, finish and Undo; original source hashes unchanged.
+- [x] 301 workspace tests, strict Clippy, fmt check and Windows dev build.
+- [ ] Full parity: scoped/matrix design rules, shove/HugNPush, arc corners, gloss/loop removal, autocomplete and exact UI/DPI/Linux behavior.
+
+Observation, timing and limitations: docs/pcb-update/INTERACTIVE_ROUTING.md.
+
+### PCB component selection by mounting side — 23.10.2026
+
+- [x] Fix opposite-side component primitives intercepting selection on Top/Bottom; use owner side even for multilayer pads and respect owner locks.
+- [x] Share filtering between click, drag, box selection and Select All; prioritize active-layer geometry in hit ordering.
+- [x] Regression coverage for overlapping top/bottom components through real canvas pointer events and editor box/drag paths.
+- [x] Windows ReferenceA GUI: DA1 selects on Top, G1 on Bottom; selecting DA1's location on Bottom no longer selects DA1. Source PCB not saved or modified.
+- [x] Workspace tests, fmt check, strict Clippy and Windows dev build pass.
+- Scope: active outer copper layers in component selection mode; full Altium selection preference equivalence remains unverified.

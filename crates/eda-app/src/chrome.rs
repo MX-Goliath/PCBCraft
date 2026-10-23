@@ -14,7 +14,7 @@ impl PcbCraft {
             })
             .unwrap_or_else(|| "PCBCraft".into());
         egui::TopBottomPanel::top("window_title")
-            .exact_height(23.0)
+            .exact_height(31.0)
             .frame(egui::Frame::NONE.fill(egui::Color32::from_gray(74)))
             .show(ctx, |ui| {
                 ui.spacing_mut().item_spacing.x = 0.0;
@@ -46,7 +46,7 @@ impl PcbCraft {
                     }
                     let width = (ui.available_width() - 300.0).max(10.0);
                     let (rect, response) = ui.allocate_exact_size(
-                        egui::vec2(width, 23.0),
+                        egui::vec2(width, 31.0),
                         egui::Sense::click_and_drag(),
                     );
                     ui.painter().text(

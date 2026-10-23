@@ -15,12 +15,16 @@ fn frame(tag: u8, blocks: &[&[u8]]) -> Vec<u8> {
     out
 }
 fn region(extended: bool, body: bool) -> Vec<u8> {
+    region_on_layer(
+        extended,
+        body,
+        if body { "MECHANICAL20" } else { "MECHANICAL18" },
+    )
+}
+fn region_on_layer(extended: bool, body: bool, layer: &str) -> Vec<u8> {
     let mut p = header(18);
     p[0] = 72;
-    let f = format!(
-        "V7_LAYER=MECHANICAL{}|KIND=0|ARCRESOLUTION=0.5mil|MODEL.MODELTYPE=1\0",
-        if body { 20 } else { 18 }
-    );
+    let f = format!("V7_LAYER={layer}|KIND=0|ARCRESOLUTION=0.5mil|MODEL.MODELTYPE=1\0");
     p.extend_from_slice(&(f.len() as u32).to_le_bytes());
     p.extend_from_slice(f.as_bytes());
     p.extend_from_slice(&4u32.to_le_bytes());
@@ -77,6 +81,36 @@ fn fixture() -> Vec<u8> {
             .unwrap();
     }
     file.into_inner().into_inner()
+}
+#[test]
+fn connect_layer_regions_do_not_prevent_binary_board_import() {
+    let mut file = cfb::CompoundFile::open(Cursor::new(fixture())).unwrap();
+    for (family, extended) in [("Regions6", false), ("ShapeBasedRegions6", true)] {
+        file.create_stream(format!("/{family}/Data"))
+            .unwrap()
+            .write_all(&region_on_layer(extended, false, "CONNECT"))
+            .unwrap();
+    }
+    let bytes = file.into_inner().into_inner();
+    let doc = import_pcb(&bytes, "connect.PcbDoc").unwrap();
+    let board = doc.pcb.as_ref().unwrap();
+    assert_eq!(board.items.len(), 5);
+    assert_eq!(
+        board.items.iter().filter(|item| item.layer == 75).count(),
+        2
+    );
+    assert!(
+        !board
+            .layers
+            .iter()
+            .find(|layer| layer.id == 75)
+            .unwrap()
+            .copper
+    );
+    assert_eq!(
+        writer::serialize(&doc, writer::Format::Preserve).unwrap(),
+        bytes
+    );
 }
 #[test]
 fn modern_layers_and_body_projections_keep_native_records_when_another_item_changes() {

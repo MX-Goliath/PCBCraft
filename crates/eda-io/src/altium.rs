@@ -28,6 +28,10 @@ pub struct Project {
     pub path: PathBuf,
     pub name: String,
     pub documents: Vec<ProjectEntry>,
+    pub generated_documents: Vec<ProjectEntry>,
+    pub variants: Vec<String>,
+    pub virtual_bom: bool,
+    pub sheet_children: BTreeMap<PathBuf, Vec<PathBuf>>,
     pub warnings: Vec<String>,
 }
 
@@ -84,6 +88,10 @@ fn resolve_path(base: &Path, name: &str) -> PathBuf {
 }
 
 fn project_paths(text: &str) -> Vec<String> {
+    section_paths(text, "document")
+}
+
+fn section_paths(text: &str, prefix: &str) -> Vec<String> {
     let mut in_document = false;
     let mut result = Vec::new();
     for line in text.lines().map(str::trim) {
@@ -91,7 +99,7 @@ fn project_paths(text: &str) -> Vec<String> {
             let section = &line[1..line.len() - 1];
             in_document = section
                 .to_ascii_lowercase()
-                .strip_prefix("document")
+                .strip_prefix(prefix)
                 .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()));
         } else if in_document
             && let Some((k, v)) = line.split_once('=')
@@ -151,8 +159,17 @@ pub fn load_project(path: &Path) -> Result<Project, String> {
         return Err("Project document limit exceeded".into());
     }
     let mut documents = vec![];
+    let mut generated_documents = vec![];
     let mut seen = BTreeSet::new();
-    for original_path in paths {
+    let generated = section_paths(&text, "generateddocument");
+    if paths.len() + generated.len() > 10_000 {
+        return Err("Project document limit exceeded".into());
+    }
+    for (original_path, is_generated) in paths
+        .into_iter()
+        .map(|p| (p, false))
+        .chain(generated.into_iter().map(|p| (p, true)))
+    {
         let path = resolve_path(base, &original_path);
         let path = path.canonicalize().unwrap_or(path);
         if !seen.insert(path.clone()) {
@@ -164,15 +181,59 @@ pub fn load_project(path: &Path) -> Result<Project, String> {
             .to_string_lossy()
             .to_ascii_lowercase();
         let exists = path.is_file();
-        if !exists {
+        if !exists && !is_generated {
             warnings.push(format!("Missing project document: {original_path}"));
         }
-        documents.push(ProjectEntry {
+        let entries = if is_generated {
+            &mut generated_documents
+        } else {
+            &mut documents
+        };
+        entries.push(ProjectEntry {
             original_path,
             path,
             kind,
             exists,
         });
+    }
+    let mut variants = Vec::new();
+    let mut section = String::new();
+    let mut virtual_bom = false;
+    for line in text.lines().map(str::trim) {
+        if line.starts_with('[') && line.ends_with(']') {
+            section = line[1..line.len() - 1].to_ascii_lowercase();
+        } else if let Some((key, value)) = line.split_once('=') {
+            if section == "design" && key.eq_ignore_ascii_case("IsVirtualBomDocumentRemoved") {
+                virtual_bom = value.trim() == "0";
+            }
+            if section
+                .strip_prefix("variant")
+                .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+                && key.eq_ignore_ascii_case("Description")
+                && !value.trim().is_empty()
+            {
+                variants.push(value.trim().to_owned());
+            }
+        }
+    }
+    let mut sheet_children = BTreeMap::new();
+    for entry in documents.iter().filter(|e| e.kind == "schdoc" && e.exists) {
+        if let Ok(names) = sheet_references(&entry.path) {
+            let children: Vec<_> = names
+                .into_iter()
+                .filter_map(|name| {
+                    let child = resolve_path(entry.path.parent().unwrap_or(base), &name);
+                    let child = child.canonicalize().unwrap_or(child);
+                    documents
+                        .iter()
+                        .find(|e| e.kind == "schdoc" && e.path == child)
+                        .map(|e| e.path.clone())
+                })
+                .collect();
+            if !children.is_empty() {
+                sheet_children.insert(entry.path.clone(), children);
+            }
+        }
     }
     Ok(Project {
         path: path.to_owned(),
@@ -182,8 +243,53 @@ pub fn load_project(path: &Path) -> Result<Project, String> {
             .to_string_lossy()
             .into_owned(),
         documents,
+        generated_documents,
+        variants,
+        virtual_bom,
+        sheet_children,
         warnings,
     })
+}
+
+// Read only the schematic record stream: no images, geometry, or editable model.
+fn sheet_references(path: &Path) -> Result<Vec<String>, String> {
+    let bytes = read_bounded(path)?;
+    let mut raw = Vec::new();
+    if bytes.starts_with(&[0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]) {
+        let mut file = cfb::CompoundFile::open(Cursor::new(&bytes)).map_err(|e| e.to_string())?;
+        let mut data = Vec::new();
+        file.open_stream("FileHeader")
+            .map_err(|e| e.to_string())?
+            .take(MAX_FILE as u64 + 1)
+            .read_to_end(&mut data)
+            .map_err(|e| e.to_string())?;
+        if data.len() > MAX_FILE {
+            return Err("Schematic header exceeds limit".into());
+        }
+        framed("FileHeader", &data, &mut raw)?;
+    } else {
+        for line in bytes.split(|b| *b == b'\n').filter(|l| !l.is_empty()) {
+            raw.push(("FileHeader", 0, line.to_vec()));
+            if raw.len() > MAX_RECORDS {
+                return Err("Schematic record limit exceeded".into());
+            }
+        }
+    }
+    let encoding = detect_encoding(&raw);
+    let mut result = Vec::new();
+    for (_, flag, bytes) in raw {
+        if flag != 0 {
+            continue;
+        }
+        let fields = decode_fields(&bytes, encoding)?;
+        if fields.get("RECORD").is_some_and(|r| r == "33") {
+            let name = fields.text("TEXT");
+            if !name.is_empty() {
+                result.push(name);
+            }
+        }
+    }
+    Ok(result)
 }
 
 type Fields = BTreeMap<String, String>;

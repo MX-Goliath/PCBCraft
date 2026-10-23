@@ -189,6 +189,63 @@ impl Settings {
 }
 
 impl super::BoardView {
+    pub fn apply_layer_set(&mut self, set: usize) {
+        self.visible = self
+            .display
+            .panel
+            .catalog
+            .layers
+            .iter()
+            .filter(|l| match set {
+                1 => matches!(l.id, 1..=32),
+                2 => matches!(l.id, 39..=54),
+                3 => !l.copper,
+                4 => super::catalog::mechanical(l.id).is_some(),
+                _ => true,
+            })
+            .map(|l| l.id)
+            .collect();
+    }
+
+    /// Document layers in the editor strip, excluding system display categories.
+    /// Keep the copper stack numbers even when another layer is hidden.
+    pub fn layer_tabs(&self) -> Vec<(u16, String)> {
+        let mut layers: Vec<_> = self
+            .display
+            .panel
+            .catalog
+            .layers
+            .iter()
+            .filter(|l| !matches!(l.id, 75..=82))
+            .collect();
+        layers.sort_by_key(|l| {
+            (
+                if l.copper {
+                    0
+                } else if super::catalog::mechanical(l.id).is_some() {
+                    1
+                } else {
+                    2
+                },
+                l.order,
+                l.id,
+            )
+        });
+        let mut copper = 0;
+        layers
+            .into_iter()
+            .filter_map(|l| {
+                let name = if l.copper {
+                    copper += 1;
+                    format!("[{copper}] {}", l.name)
+                } else {
+                    l.name.clone()
+                };
+                self.visible.contains(&l.id).then_some((l.id, name))
+            })
+            .collect()
+    }
+
     pub fn color(&self, layer: u16) -> egui::Color32 {
         self.display
             .colors
@@ -202,6 +259,66 @@ impl super::BoardView {
 mod tests {
     use super::*;
     use eda_geom::Point;
+    #[test]
+    fn layer_strip_keeps_stack_numbers_and_excludes_system_categories() {
+        let board = Board {
+            layers: [
+                (1, "Top", true, 0),
+                (32, "Bottom", true, 1),
+                (35, "Paste", false, 2),
+                (57, "Mechanical", false, 3),
+                (75, "Connections", false, 4),
+            ]
+            .into_iter()
+            .map(|(id, name, copper, order)| PcbLayer {
+                id,
+                name: name.into(),
+                copper,
+                order,
+            })
+            .collect(),
+            ..Board::default()
+        };
+        let mut view = crate::pcb::BoardView::default();
+        view.initialize(&board);
+        view.visible = [32, 35, 57, 75].into();
+        assert_eq!(
+            view.layer_tabs(),
+            vec![
+                (32, "[2] Bottom".into()),
+                (57, "Mechanical".into()),
+                (35, "Paste".into())
+            ]
+        );
+        let before = board.clone();
+        view.apply_layer_set(1);
+        assert_eq!(view.visible, [1, 32].into());
+        view.apply_layer_set(4);
+        assert_eq!(view.visible, [57].into());
+        assert_eq!(board, before);
+    }
+
+    #[test]
+    fn all_layers_includes_configured_empty_mechanical_layers() {
+        let mut board = Board::default();
+        board.properties.insert(
+            "V9_CACHE_LAYER35_LAYERID".into(),
+            (0x0102_0000u32 + 35).to_string(),
+        );
+        board
+            .properties
+            .insert("V9_CACHE_LAYER35_MECHENABLED".into(), "TRUE".into());
+        board
+            .properties
+            .insert("V9_CACHE_LAYER35_NAME".into(), "Empty mechanical".into());
+        let mut view = crate::pcb::BoardView::default();
+        view.initialize(&board);
+        view.apply_layer_set(0);
+        assert!(
+            view.layer_tabs()
+                .contains(&(101, "Empty mechanical".into()))
+        );
+    }
     #[test]
     fn saved_view_controls_modern_layers_transparency_labels_and_grid() {
         let mut b = Board::default();

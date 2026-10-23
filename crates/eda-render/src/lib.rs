@@ -50,6 +50,9 @@ impl Default for Camera {
 
 impl Camera {
     pub fn fit(&mut self, doc: &Document, rect: Rect) {
+        if !rect.is_finite() || rect.width() <= 120.0 || rect.height() <= 120.0 {
+            return;
+        }
         let width = doc.size.x as f64 / 1e6;
         let height = doc.size.y as f64 / 1e6;
         self.centre_mm = [width / 2.0, height / 2.0];
@@ -572,6 +575,19 @@ mod tests {
         camera.zoom_at(pixel, rect, 2.7);
         let after = camera.world_mm(pixel, rect);
         assert!((world[0] - after[0]).abs() < 1e-9 && (world[1] - after[1]).abs() < 1e-9);
+    }
+    #[test]
+    fn initial_document_fit_waits_for_nonempty_layout() {
+        let mut camera = Camera::default();
+        let doc = Document::example();
+        camera.fit(&doc, Rect::from_min_size(Pos2::ZERO, Vec2::ZERO));
+        assert!(!camera.fitted);
+        camera.fit(
+            &doc,
+            Rect::from_min_size(Pos2::ZERO, Vec2::new(900.0, 600.0)),
+        );
+        assert!(camera.fitted);
+        assert!(camera.pixels_per_mm > 0.05);
     }
     #[test]
     fn bottom_view_mirrors_coordinates_and_keeps_zoom_anchored() {

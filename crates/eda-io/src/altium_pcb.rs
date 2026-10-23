@@ -306,6 +306,14 @@ pub fn layer_id(name: &str) -> Result<u16> {
         "KEEPOUT" | "KEEPOUTLAYER" => KEEP_OUT,
         "DRILLDRAWING" => 73,
         "MULTILAYER" | "MULTI-LAYER" => MULTI_LAYER,
+        "CONNECT" | "CONNECTLAYER" => 75,
+        "BACKGROUND" | "BACKGROUNDLAYER" => 76,
+        "DRCERROR" | "DRCERRORLAYER" => 77,
+        "HIGHLIGHT" | "HIGHLIGHTLAYER" => 78,
+        "GRIDCOLOR1" => 79,
+        "GRIDCOLOR10" => 80,
+        "PADHOLE" | "PADHOLELAYER" => 81,
+        "VIAHOLE" | "VIAHOLELAYER" => 82,
         _ => {
             let invalid = || format!("Unrecognized PCB layer {name}");
             if let Some(n) = s.strip_prefix("MECHANICAL") {
@@ -1514,6 +1522,25 @@ mod tests {
         assert_eq!(layer_id("Mechanical33").unwrap(), 99);
         assert!(layer_id("Mechanical1025").is_err());
         assert!(layer_id("MID-LAYER31").is_err());
+    }
+    #[test]
+    fn system_layer_names_remain_non_copper_and_distinct_from_mechanical_layers() {
+        for (name, id) in [
+            ("CONNECT", 75),
+            ("BACKGROUND", 76),
+            ("DRCERROR", 77),
+            ("HIGHLIGHT", 78),
+            ("GRIDCOLOR1", 79),
+            ("GRIDCOLOR10", 80),
+            ("PADHOLE", 81),
+            ("VIAHOLE", 82),
+        ] {
+            assert_eq!(layer_id(name).unwrap(), id);
+            assert_eq!(layer_id(&layer_name(id)).unwrap(), id);
+            assert!(!copper_layer(id));
+            assert_ne!(mechanical_layer(17), Some(id));
+        }
+        assert!(layer_id("CONNECT_UNKNOWN").is_err());
     }
     #[test]
     fn internal_signal_layer_aliases_respect_native_range() {

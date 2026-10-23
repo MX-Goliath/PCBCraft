@@ -475,30 +475,6 @@ fn install_fonts(ctx: &egui::Context) {
     ctx.set_fonts(fonts);
 }
 
-pub fn logo(ui: &mut egui::Ui) {
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(19.0, 19.0), egui::Sense::hover());
-    let p = ui.painter();
-    p.rect_filled(rect.shrink(2.0), 0.0, Color32::from_rgb(44, 130, 98));
-    p.rect_stroke(
-        rect.shrink(3.0),
-        2.0,
-        Stroke::new(1.0, Color32::from_rgb(157, 211, 193)),
-        egui::StrokeKind::Inside,
-    );
-    p.line_segment(
-        [
-            rect.left_center() + egui::vec2(5.0, 0.0),
-            rect.right_center() - egui::vec2(5.0, 0.0),
-        ],
-        Stroke::new(1.5, ACCENT),
-    );
-    for x in [6.0, 17.0] {
-        for y in [6.0, 13.0] {
-            p.circle_filled(rect.min + egui::vec2(x, y), 2.0, ACCENT);
-        }
-    }
-}
-
 pub fn apply(ctx: &egui::Context) {
     install_fonts(ctx);
     let mut visuals = egui::Visuals::dark();
