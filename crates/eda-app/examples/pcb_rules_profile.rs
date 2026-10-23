@@ -1,0 +1,81 @@
+//! Read-only rule inventory for compatibility research.
+fn main() -> Result<(), String> {
+    let path = std::env::args_os().nth(1).ok_or("Pass a PCB document")?;
+    let document = eda_io::load(std::path::Path::new(&path))?;
+    if std::env::args().any(|a| a == "--roundtrip") {
+        let mut edited = document.clone();
+        let board = edited.pcb.as_mut().ok_or("Not a PCB")?;
+        let mut rules = board.rules.clone();
+        for rule in &mut rules {
+            let kind = eda_core::pcb_rules::text(rule, "RULEKIND");
+            if matches!(
+                kind,
+                "Width"
+                    | "PolygonConnect"
+                    | "MinimumSolderMaskSliver"
+                    | "SilkToSolderMaskClearance"
+            ) {
+                rule.insert(
+                    "COMMENT".into(),
+                    "PCBCraft in-memory roundtrip check".into(),
+                );
+            }
+        }
+        *board = board.with_rules(rules)?;
+        let bytes = eda_io::altium_pcb::writer::serialize(
+            &edited,
+            eda_io::altium_pcb::writer::Format::Preserve,
+        )?;
+        let parsed = eda_io::altium_pcb::import_pcb(&bytes, "roundtrip.PcbDoc")?;
+        if parsed.pcb.as_ref().unwrap().rules != edited.pcb.as_ref().unwrap().rules {
+            return Err("Rules differ after roundtrip".into());
+        }
+        println!(
+            "Native rules roundtrip verified in memory: {} bytes; source not written",
+            bytes.len()
+        );
+        return Ok(());
+    }
+    let board = document.pcb.ok_or("Not a PCB")?;
+    if std::env::args().any(|a| a == "--repour") {
+        let start = std::time::Instant::now();
+        let poured = eda_core::pcb_polygon::repour(&board)?;
+        println!(
+            "Repour in memory: {} polygons, {} generated objects, elapsed={:?}; source not written",
+            poured.polygon_pours.len(),
+            poured.items.iter().filter(|i| i.polygon.is_some()).count(),
+            start.elapsed()
+        );
+        return Ok(());
+    }
+    if std::env::args().any(|a| a == "--check") {
+        let start = std::time::Instant::now();
+        let report = eda_core::pcb_rules::check(&board);
+        println!(
+            "{} items, {} rules, {} violations, truncated={}, elapsed={:?}",
+            board.items.len(),
+            board.rules.len(),
+            report.violations.len(),
+            report.truncated,
+            start.elapsed()
+        );
+        let mut counts = std::collections::BTreeMap::new();
+        for v in report.violations {
+            *counts.entry(v.kind).or_insert(0) += 1;
+        }
+        println!("{counts:?}");
+        for d in report.diagnostics {
+            println!("Unchecked: {d}");
+        }
+        return Ok(());
+    }
+    eprintln!(
+        "Classes: {}",
+        serde_json::to_string_pretty(&board.classes).map_err(|e| e.to_string())?
+    );
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&board.rules).map_err(|e| e.to_string())?
+    );
+    Ok(())
+}

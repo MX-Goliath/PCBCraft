@@ -147,6 +147,25 @@ fn patch_fields(raw: &[u8], changes: &BTreeMap<String, Option<String>>) -> Resul
     out.push(0);
     Ok(out)
 }
+fn rule_source(original: &[Fields], rule: &Fields, index: usize) -> Option<usize> {
+    if let Some(id) = rule.get("UNIQUEID").filter(|s| !s.is_empty()) {
+        return original.iter().position(|r| r.get("UNIQUEID") == Some(id));
+    }
+    original
+        .iter()
+        .position(|r| {
+            r == rule
+                || (r.get("NAME") == rule.get("NAME") && r.get("RULEKIND") == rule.get("RULEKIND"))
+        })
+        .or_else(|| {
+            original
+                .get(index)
+                .filter(|r| {
+                    r.get("UNIQUEID").is_none() && r.get("RULEKIND") == rule.get("RULEKIND")
+                })
+                .map(|_| index)
+        })
+}
 fn map_changes(fields: &Fields) -> BTreeMap<String, Option<String>> {
     fields
         .iter()
@@ -1051,25 +1070,40 @@ fn encode_binary(
             .ok_or("Original native rule stream is absent")?;
         let mut reader = Bytes::new(raw);
         let mut data = Vec::new();
-        let mut index = 0;
+        let mut records = Vec::new();
         while reader.remaining() > 0 {
             let prefix = reader.take(2)?.to_vec();
-            let block = reader.block()?;
-            let rule = board.rules.get(index).ok_or("Rule count changed")?;
-            let patched = if old.rules.get(index) == Some(rule) {
-                block.to_vec()
-            } else {
-                patch_fields(block, &map_changes(rule))?
-            };
-            data.extend(prefix);
-            data.extend_from_slice(&(patched.len() as u32).to_le_bytes());
-            data.extend(patched);
-            index += 1;
+            records.push((prefix, reader.block()?.to_vec()));
         }
-        if index != board.rules.len() {
+        if records.len() != old.rules.len() {
             return Err("Rule count does not match native stream".into());
         }
-        section(&mut c, &streams, "Rules6", &data, index)?;
+        for (index, rule) in board.rules.iter().enumerate() {
+            let source = rule_source(&old.rules, rule, index);
+            let template = source
+                .or_else(|| {
+                    old.rules
+                        .iter()
+                        .position(|r| r.get("RULEKIND") == rule.get("RULEKIND"))
+                })
+                .ok_or("No native template for this rule kind; save in PCBCraft JSON")?;
+            let (prefix, block) = &records[template];
+            let patched = if source.is_some_and(|n| old.rules[n] == *rule) {
+                block.clone()
+            } else {
+                let mut changes = map_changes(rule);
+                if let Some(n) = source {
+                    for key in old.rules[n].keys().filter(|key| !rule.contains_key(*key)) {
+                        changes.insert(key.clone(), None);
+                    }
+                }
+                patch_fields(if source.is_some() { block } else { &[] }, &changes)?
+            };
+            data.extend_from_slice(prefix);
+            data.extend_from_slice(&(patched.len() as u32).to_le_bytes());
+            data.extend(patched);
+        }
+        section(&mut c, &streams, "Rules6", &data, board.rules.len())?;
     }
     let old_boards = streams
         .get("/Board6/Data")
@@ -1606,6 +1640,9 @@ fn encode_ascii(
     Ok(output)
 }
 fn verify_tables(expected: &Board, actual: &Board, maps: Option<&Maps>) -> Result<()> {
+    if expected.rules != actual.rules || expected.classes != actual.classes {
+        return Err("Rule/class table write/read verification failed".into());
+    }
     if expected.nets.len() != actual.nets.len()
         || expected.components.len() != actual.components.len()
         || expected.polygon_pours.len() != actual.polygon_pours.len()
@@ -1916,13 +1953,24 @@ pub fn serialize(doc: &Document, format: Format) -> Result<Vec<u8>> {
         if a == b {
             return Ok(original.unwrap());
         }
+        if a.classes != b.classes {
+            return Err("Native class edits are not supported".into());
+        }
         if a.rules != b.rules {
-            if a.rules.len() != b.rules.len() {
-                return Err("Adding/removing native rules is not supported".into());
+            if !binary && a.rules.len() != b.rules.len() {
+                return Err("Adding/removing ASCII rules requires PCBCraft JSON".into());
             }
             for (n, rule) in a.rules.iter().enumerate() {
-                if rule != &b.rules[n] {
-                    old.replace_mask_rule(n, rule.clone())?;
+                if let Some(source) = rule_source(&b.rules, rule, n) {
+                    if rule != &b.rules[source] {
+                        old.replace_design_rule(source, rule.clone())?;
+                    }
+                } else {
+                    if !eda_core::pcb_rules::supported(eda_core::pcb_rules::text(rule, "RULEKIND"))
+                    {
+                        return Err("Creating this native rule kind is not supported".into());
+                    }
+                    eda_core::pcb_rules::validate_rule(board, rule)?;
                 }
             }
         }

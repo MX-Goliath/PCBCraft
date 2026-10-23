@@ -85,3 +85,18 @@ edge-panning and all Altium selection/drag preference combinations are not
 implemented by this change. Crossing selection still uses item bounds rather
 than exact intersection with arbitrary copper. Exact native fit margins,
 rotation-step preferences and cursor rasterization are not confirmed.
+
+
+## Smooth PCB cursor (2026-10-23)
+
+The painted crosshair now uses the raw screen pointer position. Previously it
+used the snapped document point, so even small mouse motion jumped between grid
+points. Grid/object snapping still controls tool coordinates and previews; pan
+cursor, hover/focus guards and all crosshair styles retain their behavior.
+Regression coverage renders two positions within one coarse grid cell, including
+a mirrored camera, and checks the actual painted cursor lines.
+
+Validation: 313 workspace tests, fmt check, strict Clippy and Windows build pass.
+The new ReferenceA window was checked at adjacent screen positions (850,451) and
+(851,452): the crosshair moved while the snapped status coordinates stayed at
+X=204.000 mm, Y=74.000 mm with a 0.250 mm grid. No board edits were made.

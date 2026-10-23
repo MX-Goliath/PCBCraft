@@ -55,6 +55,7 @@ pub struct BoardView {
     pub show_grid_dialog: bool,
     pub polygons_visible: bool,
     pub repour_pending: bool,
+    pub drc_markers: Vec<(Point, u16)>,
     cache: HashMap<Uuid, (u64, Vec<usize>, bool)>,
     geometry: geometry::Cache,
     display: display::Settings,
@@ -123,8 +124,11 @@ pub fn layer_color(id: u16) -> Color32 {
     }
 }
 impl BoardView {
+    pub fn preview_generation(&self) -> u64 {
+        self.preview_generation
+    }
     pub fn set_preview(&mut self, preview: Option<Board>) {
-        if self.preview.is_none() && preview.is_none() {
+        if self.preview.as_deref() == preview.as_ref() {
             return;
         }
         self.preview_generation = self.preview_generation.wrapping_add(1);
@@ -818,7 +822,17 @@ pub fn canvas(ui: &mut egui::Ui, b: &Board, view: &mut View) -> CanvasOutput {
             }
         });
     }
-    navigation::paint_cursor(ui, &painter, &response, point, view, rect, panning);
+    for (position, layer) in &view.pcb.drc_markers {
+        if *layer == MULTI_LAYER || view.pcb.visible.contains(layer) {
+            let p = view.camera.screen(*position, rect);
+            if rect.contains(p) {
+                let stroke = Stroke::new(1.5, Color32::from_rgb(0, 255, 80));
+                painter.circle_stroke(p, 7.0, stroke);
+                painter.line_segment([p - Vec2::splat(5.0), p + Vec2::splat(5.0)], stroke);
+            }
+        }
+    }
+    navigation::paint_cursor(ui, &painter, &response, pointer, view, rect, panning);
     if scene.pours_stale {
         painter.text(
             rect.left_top() + Vec2::splat(8.0),

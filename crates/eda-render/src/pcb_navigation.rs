@@ -153,7 +153,7 @@ pub(super) fn paint_cursor(
     ui: &egui::Ui,
     painter: &egui::Painter,
     r: &Response,
-    point: Option<Point>,
+    pointer: Option<Pos2>,
     view: &View,
     rect: Rect,
     panning: bool,
@@ -162,9 +162,9 @@ pub(super) fn paint_cursor(
         ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
     } else if r.hovered()
         && ui.input(|i| i.focused)
-        && let Some(p) = point
+        && let Some(at) = pointer
     {
-        let at = view.camera.screen(p, rect);
+        // The visual cursor follows the mouse; tool coordinates snap independently.
         if !rect.contains(at) {
             ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
             return;
@@ -260,6 +260,30 @@ mod tests {
             (a[0] - b[0]).abs() < 1e-8 && (a[1] - b[1]).abs() < 1e-8,
             "{a:?} != {b:?}"
         );
+    }
+    #[test]
+    fn cursor_follows_pixel_motion_inside_one_grid_cell() {
+        let mut h = Harness::new();
+        h.view.grid = true;
+        h.view.grid_nm = 1_000_000;
+        for mirrored in [false, true] {
+            h.view.camera.mirrored_x = mirrored;
+            for pointer in [Pos2::new(251.0, 121.0), Pos2::new(253.0, 123.0)] {
+                h.pointer = pointer;
+                let output = h.frame(vec![], Modifiers::NONE);
+                for expected in cursor_lines(h.view.pcb.navigation.cursor, pointer, Harness::rect())
+                {
+                    assert!(
+                        output.shapes.iter().any(|s| matches!(&s.shape,
+                        egui::Shape::LineSegment { points, stroke }
+                        if *points == expected && stroke.color == Color32::WHITE)),
+                        "Cursor must follow the screen pointer without grid rounding"
+                    );
+                }
+                assert!(h.view.grid);
+                assert_eq!(h.view.grid_nm, 1_000_000);
+            }
+        }
     }
     #[test]
     fn ctrl_wheel_and_pinch_zoom_at_pointer_including_smoothed_tail() {

@@ -1549,7 +1549,7 @@ fn routing(
             egui::Checkbox::new(&mut false, "Remove Loops With Vias"),
         );
         numeric_row(ui, "Clearance", &mut ed.clearance, units);
-        ui.small("Manual clearance; scoped design rules are not evaluated.");
+        ui.small("Fallback clearance; matching design rules take priority.");
     });
     if ed.paused {
         ui.label("Paused — click the canvas to resume");

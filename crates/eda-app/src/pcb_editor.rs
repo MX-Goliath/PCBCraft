@@ -11,7 +11,10 @@ use eda_geom::Point;
 mod pours;
 #[path = "pcb_properties_v2.rs"]
 mod properties_v2;
+#[path = "pcb_rules_ui.rs"]
+mod rules_ui;
 use eda_render::pcb::Input;
+pub(super) use rules_ui::CheckSettings;
 use std::collections::{BTreeMap, BTreeSet};
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) enum Tool {
@@ -45,6 +48,10 @@ pub(super) enum Action {
     Layers,
     Grid,
     Report,
+    Rules,
+    Drc,
+    BrowseViolations,
+    ResetMarkers,
     Repour,
     Shelve,
     Restore,
@@ -137,6 +144,18 @@ pub(super) struct Editor {
     properties_panel: properties_v2::Panel,
     last_error: Option<String>,
     pours: pours::State,
+    rules: rules_ui::State,
+}
+impl Editor {
+    pub(super) fn rule_settings(&self) -> &CheckSettings {
+        &self.rules.settings
+    }
+    pub(super) fn restore_rule_settings(&mut self, settings: CheckSettings) {
+        self.rules.settings = settings;
+    }
+    pub(super) fn rules_open(&self) -> bool {
+        self.rules.editor.is_some() || self.rules.setup.is_some()
+    }
 }
 impl Default for Editor {
     fn default() -> Self {
@@ -183,6 +202,7 @@ impl Default for Editor {
             properties_panel: Default::default(),
             last_error: None,
             pours: Default::default(),
+            rules: Default::default(),
         }
     }
 }
@@ -1129,6 +1149,26 @@ fn input(
                     route
                 };
                 let mut route = route;
+                ed.width = route.width;
+                let via = Item::new(
+                    pcb::MULTI_LAYER,
+                    route.net,
+                    Shape::Via {
+                        position: route.anchor,
+                        diameter: ed.diameter,
+                        hole: ed.drill,
+                        from_layer: layer,
+                        to_layer: if layer == pcb::TOP {
+                            pcb::BOTTOM
+                        } else {
+                            pcb::TOP
+                        },
+                    },
+                );
+                ed.diameter = eda_core::pcb_rules::preferred(board, &via, "RoutingVias", "WIDTH")?
+                    .unwrap_or(ed.diameter);
+                ed.drill = eda_core::pcb_rules::preferred(board, &via, "RoutingVias", "HOLEWIDTH")?
+                    .unwrap_or(ed.drill);
                 route.conflict = ed.conflict;
                 route.clearance = ed.clearance;
                 ed.net = route.net;
@@ -1237,6 +1277,9 @@ impl PcbCraft {
         }
     }
     pub(super) fn pcb_input(&mut self, index: usize, input_: Input, ctx: &egui::Context) {
+        if self.documents[index].pcb_editor.rules_open() {
+            return;
+        }
         if input_.double_clicked {
             self.settings.properties = true;
             self.settings.right_components = false;
@@ -1276,6 +1319,22 @@ impl PcbCraft {
             return;
         }
         let doc = &mut self.documents[index];
+        if matches!(action, Action::Rules) {
+            rules_ui::open(doc);
+            return;
+        }
+        if matches!(action, Action::Drc) {
+            rules_ui::request_check(doc);
+            return;
+        }
+        if matches!(action, Action::BrowseViolations) {
+            rules_ui::browse(doc);
+            return;
+        }
+        if matches!(action, Action::ResetMarkers) {
+            rules_ui::reset_markers(doc);
+            return;
+        }
         let mut ed = std::mem::take(&mut doc.pcb_editor);
         let result = (|| -> Result<(), String> {
             // Switching to another edit must not discard a route already entered.
@@ -1525,7 +1584,11 @@ impl PcbCraft {
                     doc.view.pcb.selected = vec![id];
                 }
                 Action::Fit(target) => doc.view.pcb.requested_fit = Some(target),
-                Action::Report => {}
+                Action::Report
+                | Action::Rules
+                | Action::Drc
+                | Action::BrowseViolations
+                | Action::ResetMarkers => {}
             }
             Ok(())
         })();
@@ -1558,6 +1621,9 @@ impl PcbCraft {
         if self.documents[index].model.pcb.is_none() {
             return false;
         }
+        if self.documents[index].pcb_editor.rules_open() {
+            return true;
+        }
         let mut action = None;
         let mut handled = false;
         let doc = &mut self.documents[index];
@@ -1570,6 +1636,14 @@ impl PcbCraft {
             doc.pcb_editor.sequence = None;
         }
         ctx.input_mut(|input| {
+            if let Some((Key::D, _)) = doc.pcb_editor.sequence
+                && input.consume_key(egui::Modifiers::NONE, Key::R)
+            {
+                action = Some(Action::Rules);
+                handled = true;
+                doc.pcb_editor.sequence = None;
+                return;
+            }
             if let Some((Key::V, _)) = doc.pcb_editor.sequence {
                 for (key, target) in [
                     (Key::F, eda_render::pcb::FitTarget::Board),
@@ -1625,6 +1699,7 @@ impl PcbCraft {
                     Action::Fit(eda_render::pcb::FitTarget::Selection),
                 ),
                 (ctrl, Key::W, Action::Tool(Tool::Route)),
+                (shift, Key::V, Action::BrowseViolations),
                 (ctrl, Key::C, Action::Copy),
                 (ctrl, Key::X, Action::Cut),
                 (ctrl, Key::V, Action::Paste),
@@ -1796,7 +1871,7 @@ impl PcbCraft {
                 handled = true;
                 return;
             }
-            for key in [Key::P, Key::M, Key::V] {
+            for key in [Key::P, Key::M, Key::V, Key::D] {
                 if input.consume_key(egui::Modifiers::NONE, key) {
                     doc.pcb_editor.sequence = Some((key, now));
                     handled = true;
@@ -1900,6 +1975,9 @@ impl PcbCraft {
                 }
             }
             "Design" => {
+                self.action(ui, "Rules…", "D, R", Command::Pcb(Action::Rules), true);
+                ui.add_enabled(false, egui::Button::new("Rule Wizard…"));
+                ui.separator();
                 self.action(
                     ui,
                     "Define Board Shape",
@@ -1915,10 +1993,31 @@ impl PcbCraft {
                     true,
                 );
                 self.action(ui, "Layer Stack Manager", "", Command::LayerStack, true);
-                ui.add_enabled(false, egui::Button::new("Rules…"));
             }
             "Tools" => {
-                ui.add_enabled(false, egui::Button::new("Design Rule Check…"));
+                self.action(
+                    ui,
+                    "Design Rule Check…",
+                    "",
+                    Command::Pcb(Action::Drc),
+                    true,
+                );
+                self.action(
+                    ui,
+                    "Reset Error Markers",
+                    "",
+                    Command::Pcb(Action::ResetMarkers),
+                    true,
+                );
+                ui.separator();
+                self.action(
+                    ui,
+                    "Browse Violations",
+                    "Shift+V",
+                    Command::Pcb(Action::BrowseViolations),
+                    true,
+                );
+                ui.separator();
                 self.action(
                     ui,
                     "Repour All Polygons",
@@ -2021,6 +2120,7 @@ impl PcbCraft {
                 });
         }
         doc.view.pcb.show_grid_dialog = grid;
+        rules_ui::show(doc, ctx);
     }
     pub(super) fn pcb_properties(&mut self, ui: &mut egui::Ui) -> bool {
         properties_v2::show(self, ui)

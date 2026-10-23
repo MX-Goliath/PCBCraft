@@ -407,6 +407,8 @@ pub struct Board {
     #[serde(default)]
     pub rules: Vec<Fields>,
     #[serde(default)]
+    pub classes: Vec<Fields>,
+    #[serde(default)]
     pub polygons: Vec<Fields>,
     #[serde(default)]
     pub polygon_pours: Vec<crate::pcb_polygon::Polygon>,
@@ -440,6 +442,7 @@ impl Default for Board {
             items: vec![],
             properties: Fields::new(),
             rules: vec![],
+            classes: vec![],
             polygons: vec![],
             polygon_pours: vec![],
             polygon_model_version: 1,

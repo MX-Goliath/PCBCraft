@@ -226,6 +226,7 @@ fn snapshot_bytes(doc: &Document) -> usize {
             &b.items,
             &b.outline,
             &b.rules,
+            &b.classes,
             &b.polygons,
             &b.polygon_pours,
             &b.warnings,

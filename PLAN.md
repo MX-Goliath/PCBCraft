@@ -668,3 +668,20 @@ Observation, timing and limitations: docs/pcb-update/INTERACTIVE_ROUTING.md.
 Evidence and limits: docs/pcb-update/LAYER_STACK_MANAGER.md.
 
 - 2026-10-23: Layer Stack Properties follow-up: observed copper/mask fields in AD; added persistent fabrication metadata, type-dependent property panels, collapsible sections and field search; constrained via spans and impedance references. Advanced native import, roughness and populated-profile parity remain partial.
+
+- 2026-10-23: Committed and pushed all Layer Stack work as 91a4110. PCB cursor fix: draw the crosshair at the raw screen pointer, independent of snapped tool coordinates; add rendered-cursor regression for motion inside one grid cell and mirrored view.
+
+
+### PCB Rules and DRC — 23.10.2026
+
+- [x] Observe live AD 24.4.1 Rules and Design Rule Checker on ReferenceA without saving reference changes.
+- [x] Native-field rule drafts, query/priority/matrix resolution, atomic history and safe native roundtrip.
+- [x] Routing width/layer/via/clearance/outline integration and scoped polygon clearances.
+- [x] Background online/batch checks, stale-result rejection, limits, violations and marker navigation.
+- [x] Regression coverage for geometry, scopes, routing, rules/history, UI bounds and native preservation.
+- [ ] Complete rule-family coverage and query language; native checker report/persistence and advanced routing behavior.
+- [ ] Exact UI/DPI/Linux parity; Rule Wizard and Query Builder.
+
+Evidence, validation and explicit remaining scope: docs/pcb-update/RULES.md.
+
+- 2026-10-23 Rules follow-up: native Simple/Advanced polygon connections drive pours; added mask sliver and non-text silk/mask checks, shared cutout clearances, zero-edge crossing, independent routing violations, via manufacturing checks, HTML reports, per-file checker preferences and native new/copy priorities. Full rule-family/query/UI parity remains open; details and validation in docs/pcb-update/RULES.md.

@@ -438,6 +438,7 @@ fn binary(bytes: &[u8], ns: Uuid) -> Result<Board> {
         .map(|e| (e.path().to_string_lossy().replace('\\', "/"), e.len()))
         .collect();
     let known = [
+        "Classes6",
         "Board6",
         "Nets6",
         "Components6",
@@ -489,7 +490,14 @@ fn binary(bytes: &[u8], ns: Uuid) -> Result<Board> {
             );
         }
     }
-    for family in ["Board6", "Nets6", "Components6", "Rules6", "Polygons6"] {
+    for family in [
+        "Board6",
+        "Nets6",
+        "Components6",
+        "Rules6",
+        "Polygons6",
+        "Classes6",
+    ] {
         let Some(data) = streams.get(&format!("/{family}/Data")) else {
             continue;
         };
@@ -515,6 +523,7 @@ fn binary(bytes: &[u8], ns: Uuid) -> Result<Board> {
                 }),
                 "Components6" => board.components.push(component(f, ns, n)?),
                 "Rules6" => board.rules.push(f),
+                "Classes6" => board.classes.push(f),
                 "Polygons6" => board.polygons.push(f),
                 _ => {}
             }
@@ -631,7 +640,7 @@ fn binary(bytes: &[u8], ns: Uuid) -> Result<Board> {
     if !board.rules.is_empty() {
         warn(
             &mut board,
-            "Design rules imported as metadata; the complete Altium rule engine is not implemented",
+            "Design rules imported; PCB Rules/DRC supports a subset of constraints and queries. See unchecked conditions in the DRC report",
         );
     }
     if !board.polygons.is_empty() {

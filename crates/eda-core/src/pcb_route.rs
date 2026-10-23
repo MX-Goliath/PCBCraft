@@ -164,6 +164,12 @@ impl RouteSession {
         let hit = target(board, p, layer, tolerance);
         let anchor = hit.map_or(p, |t| t.point);
         let net = hit.map_or(net, |t| t.net);
+        let probe = crate::pcb_rules::probe(layer, net, anchor, width);
+        let width =
+            crate::pcb_rules::preferred(board, &probe, "Width", "PREFEREDWIDTH")?.unwrap_or(width);
+        crate::pcb_rules::route_check(board, &crate::pcb_rules::probe(layer, net, anchor, width))?;
+        let obstacles = obstacles::Obstacles::new(board, layer, net);
+        obstacles.error()?;
         let mut draft = board.clone();
         split_at(&mut draft, anchor, layer, net)?;
         draft.validate()?;
@@ -178,7 +184,7 @@ impl RouteSession {
             diagonal_first: true,
             conflict: Conflict::Walkaround,
             clearance: 200_000,
-            obstacles: obstacles::Obstacles::new(board, layer, net),
+            obstacles,
             checkpoints: vec![],
         })
     }
@@ -250,6 +256,11 @@ impl RouteSession {
         {
             return Err("Width must be positive and clearance non-negative".into());
         }
+        crate::pcb_rules::route_check(
+            &board,
+            &crate::pcb_rules::probe(self.layer, self.net, self.anchor, self.width),
+        )?;
+        self.obstacles.error()?;
         let original_len = board.items.len();
         for pair in self.points(end).windows(2) {
             if pair[0] != pair[1] {
@@ -322,6 +333,22 @@ impl RouteSession {
         if hole <= 0 || diameter <= hole || diameter > 100_000_000_000 {
             return Err("Via diameter must be greater than its positive drill size".into());
         }
+        let via_probe = Item::new(
+            MULTI_LAYER,
+            self.net,
+            Shape::Via {
+                position: end,
+                diameter,
+                hole,
+                from_layer: self.layer,
+                to_layer,
+            },
+        );
+        crate::pcb_rules::route_check(&self.draft, &via_probe)?;
+        crate::pcb_rules::route_check(
+            &self.draft,
+            &crate::pcb_rules::probe(to_layer, self.net, end, self.width),
+        )?;
         if self.points(end).last() != Some(&end) {
             return Err("Cannot place a via beyond an obstacle".into());
         }
@@ -337,8 +364,8 @@ impl RouteSession {
                 .position(|l| l.id == to_layer)
                 .ok_or("Missing destination layer")?;
             for layer in &layers[from.min(to)..=from.max(to)] {
-                let obstacles = obstacles::Obstacles::new(&self.draft, layer.id, self.net);
-                if !obstacles.clear(end, end, diameter / 2 + self.clearance) {
+                let obstacles = obstacles::Obstacles::for_item(&self.draft, layer.id, &via_probe);
+                if !obstacles.clear(end, end, diameter / 2, self.clearance) {
                     return Err("Via violates copper clearance on its layer span".into());
                 }
             }
@@ -517,7 +544,7 @@ mod tests {
         assert_eq!(points.last(), Some(&end));
         assert!(points.len() > 2);
         for edge in points.windows(2) {
-            assert!(r.obstacles.clear(edge[0], edge[1], 450_000));
+            assert!(r.obstacles.clear(edge[0], edge[1], 450_000, 0));
             let dx = (edge[0].x - edge[1].x).abs();
             let dy = (edge[0].y - edge[1].y).abs();
             assert!(dx == 0 || dy == 0 || dx == dy);

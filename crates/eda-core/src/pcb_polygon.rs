@@ -382,18 +382,23 @@ pub(crate) fn copper(item: &Item, layer: u16) -> MultiPolygon<f64> {
         }
     }
 }
-fn thermals(item: &Item, p: &Polygon, material: &MultiPolygon<f64>) -> MultiPolygon<f64> {
+fn thermals(
+    item: &Item,
+    settings: crate::pcb_rules::PolygonConnection,
+    material: &MultiPolygon<f64>,
+) -> MultiPolygon<f64> {
     let c = item.anchor();
     let b = item.bounds();
-    let length = (b.max.x - b.min.x).max(b.max.y - b.min.y) + 2 * p.thermal_gap + 2 * p.spoke_width;
+    let length = (b.max.x - b.min.x).max(b.max.y - b.min.y) + 2 * settings.gap + 2 * settings.width;
     let mut spokes = empty();
-    for angle in [p.spoke_angle, p.spoke_angle + 90.0] {
+    for n in 0..settings.conductors / 2 {
+        let angle = settings.angle + f64::from(n) * 90.0;
         spokes = spokes.union(&mp(ring_polygon(
             &rectangle(
                 c,
                 Point {
                     x: length,
-                    y: p.spoke_width,
+                    y: settings.width,
                 },
                 angle,
             ),
@@ -401,7 +406,7 @@ fn thermals(item: &Item, p: &Polygon, material: &MultiPolygon<f64>) -> MultiPoly
         )));
     }
     material
-        .buffer(p.thermal_gap as f64 / 1e6)
+        .buffer(settings.gap as f64 / 1e6)
         .difference(&material.union(&spokes))
 }
 /// Prepared derived geometry is applied through History without adding a user
@@ -470,8 +475,22 @@ pub fn repour(board: &Board) -> Result<Board, String> {
             continue;
         }
         let mut material = mp(ring_polygon(&p.points(), &p.holes));
+        let mut probe = Item::new(
+            p.layer,
+            p.net,
+            Shape::Region {
+                contour: p.points(),
+                holes: p.holes.clone(),
+                cutout: false,
+            },
+        );
+        probe.polygon = Some(p.index);
         if let Some(clip) = &board_clip {
-            material = material.intersection(clip);
+            let gap = crate::pcb_rules::resolve(board, "BoardOutlineClearance", &probe, None)?
+                .map(|(_, r)| crate::pcb_rules::gap_objects(r, "Poly", "OutlineEdge"))
+                .transpose()?
+                .unwrap_or(0);
+            material = material.intersection(&clip.buffer(-(gap as f64) / 1e6));
         }
         let mut anchors = empty();
         for item in &base {
@@ -490,26 +509,47 @@ pub fn repour(board: &Board) -> Result<Board, String> {
             let geom = copper(item, p.layer);
             let is_cutout = matches!(item.shape, Shape::Region { cutout: true, .. });
             if is_cutout {
-                material = material.difference(&geom);
+                let gap = if board_cutout {
+                    crate::pcb_rules::cutout_clearance(board, &probe, item)?.unwrap_or(0)
+                } else {
+                    0
+                };
+                material = material.difference(&geom.buffer(gap as f64 / 1e6));
                 continue;
             }
             let same =
                 p.net.is_some() && item.net == p.net && !item.keepout && !item.is_drill_only();
             if same {
-                anchors = anchors.union(&geom);
                 if matches!(item.shape, Shape::Pad { .. } | Shape::Via { .. }) {
-                    match p.connection {
+                    let settings = crate::pcb_rules::polygon_connection(board, item, &probe)?
+                        .unwrap_or(crate::pcb_rules::PolygonConnection {
+                            style: p.connection,
+                            gap: p.thermal_gap,
+                            width: p.spoke_width,
+                            conductors: 4,
+                            angle: p.spoke_angle,
+                        });
+                    if settings.style != Connection::None {
+                        anchors = anchors.union(&geom);
+                    }
+                    match settings.style {
                         Connection::Direct => {}
                         Connection::Thermal => {
-                            material = material.difference(&thermals(item, p, &geom))
+                            material = material.difference(&thermals(item, settings, &geom))
                         }
                         Connection::None => {
-                            material = material.difference(&geom.buffer(p.clearance as f64 / 1e6))
+                            let gap = crate::pcb_rules::clearance(board, &probe, item)?
+                                .unwrap_or(p.clearance);
+                            material = material.difference(&geom.buffer(gap as f64 / 1e6))
                         }
                     }
+                } else {
+                    anchors = anchors.union(&geom);
                 }
             } else {
-                material = material.difference(&geom.buffer(p.clearance as f64 / 1e6));
+                let clearance =
+                    crate::pcb_rules::clearance(board, &probe, item)?.unwrap_or(p.clearance);
+                material = material.difference(&geom.buffer(clearance as f64 / 1e6));
             }
         }
         for (other, geom) in &poured {
@@ -519,8 +559,19 @@ pub fn repour(board: &Board) -> Result<Board, String> {
             if p.net.is_some() && other.net == p.net {
                 anchors = anchors.union(geom);
             } else {
-                material = material
-                    .difference(&geom.buffer(p.clearance.max(other.clearance) as f64 / 1e6));
+                let mut other_probe = Item::new(
+                    other.layer,
+                    other.net,
+                    Shape::Region {
+                        contour: other.points(),
+                        holes: other.holes.clone(),
+                        cutout: false,
+                    },
+                );
+                other_probe.polygon = Some(other.index);
+                let clearance = crate::pcb_rules::clearance(board, &probe, &other_probe)?
+                    .unwrap_or(p.clearance.max(other.clearance));
+                material = material.difference(&geom.buffer(clearance as f64 / 1e6));
             }
         }
         material.0.retain(|poly| {
@@ -594,6 +645,30 @@ mod tests {
             })
             .map(|i| copper(i, TOP).unsigned_area())
             .sum()
+    }
+    #[test]
+    fn scoped_clearance_rules_invalidate_and_change_polygon_copper() {
+        let mut b = board();
+        b.items.push(Item::new(
+            TOP,
+            None,
+            Shape::Track {
+                start: Point::mm(1, 10),
+                end: Point::mm(19, 10),
+                width: 200_000,
+            },
+        ));
+        let original = repour(&b).unwrap();
+        let mut rule = crate::pcb_rules::default_rule("Clearance");
+        rule.insert("GAP".into(), "1mm".into());
+        rule.insert("SCOPE1EXPRESSION".into(), "IsPolygon".into());
+        rule.insert("SCOPE2EXPRESSION".into(), "IsTrack".into());
+        let edited = original.with_rules(vec![rule]).unwrap();
+        assert!(edited.pours_stale);
+        let updated = repour(&edited).unwrap();
+        assert!(!updated.pours_stale);
+        assert!(area(&updated) < area(&original) - 20.0);
+        assert_eq!(area(&repour(&updated).unwrap()), area(&updated));
     }
     #[test]
     fn drill_only_holes_clear_both_copper_layers_even_with_matching_net() {
@@ -704,6 +779,103 @@ mod tests {
         assert!((area(&repour(&b).unwrap()) - 400.0).abs() < 1e-5);
         b.polygon_pours[0].connection = Connection::Thermal;
         assert!(area(&repour(&b).unwrap()) < 400.0);
+    }
+    #[test]
+    fn native_polygon_rule_priority_modes_and_repour_invalidation() {
+        use crate::pcb_rules::*;
+        let mut b = board();
+        b.items.push(Item::new(
+            TOP,
+            Some(0),
+            Shape::Pad {
+                position: Point::mm(10, 10),
+                size: Point::mm(2, 2),
+                rotation: 0.0,
+                shape: PadShape::Rectangle,
+                hole: 0,
+                plated: false,
+                name: "1".into(),
+                bottom_size: None,
+                middle_size: None,
+            },
+        ));
+        let mut r = default_rule("PolygonConnect");
+        r.insert(
+            "SCOPE1EXPRESSION".into(),
+            "IsNamedPolygon('Polygon')".into(),
+        );
+        r.insert("SCOPE2EXPRESSION".into(), "IsSMDPad".into());
+        let mut fallback = default_rule("PolygonConnect");
+        fallback.insert("NAME".into(), "DefaultDirect".into());
+        fallback.insert("PRIORITY".into(), "2".into());
+        fallback.insert("CONNECTSTYLE".into(), "Direct".into());
+        b.rules = vec![r, fallback];
+        let thermal = repour(&b).unwrap();
+        assert!(area(&thermal) < 399.0);
+        assert_eq!(thermal, repour(&thermal).unwrap());
+        let mut changed = thermal.rules.clone();
+        changed[0].insert("RELIEFENTRIES".into(), "2".into());
+        let two = thermal.with_rules(changed).unwrap();
+        assert!(two.pours_stale);
+        assert!(area(&repour(&two).unwrap()) < area(&thermal));
+        let mut changed = thermal.rules.clone();
+        changed[0].insert("ENABLED".into(), "FALSE".into());
+        assert!(
+            (area(&repour(&thermal.with_rules(changed).unwrap()).unwrap()) - 400.0).abs() < 1e-5
+        );
+        let mut changed = thermal.rules.clone();
+        changed[0].insert("CONNECTSTYLE".into(), "NoConnect".into());
+        let mut isolated = thermal.with_rules(changed).unwrap();
+        isolated.polygon_pours[0].remove_islands = true;
+        assert_eq!(
+            area(&repour(&isolated).unwrap()),
+            0.0,
+            "isolated pad must not anchor an island"
+        );
+    }
+    #[test]
+    fn advanced_connections_separate_vias_from_surface_pads_and_reject_unknowns() {
+        use crate::pcb_rules::*;
+        let mut b = board();
+        let mut r = default_rule("PolygonConnect");
+        set_advanced_connection(&mut r, true);
+        r.insert("VIA.CONNECTSTYLE".into(), "Direct".into());
+        b.rules = vec![r];
+        b.items.push(Item::new(
+            TOP,
+            Some(0),
+            Shape::Via {
+                position: Point::mm(10, 10),
+                diameter: 1_000_000,
+                hole: 300_000,
+                from_layer: TOP,
+                to_layer: BOTTOM,
+            },
+        ));
+        assert!((area(&repour(&b).unwrap()) - 400.0).abs() < 1e-5);
+        b.items[0].shape = Shape::Pad {
+            position: Point::mm(10, 10),
+            size: Point::mm(2, 2),
+            rotation: 0.0,
+            shape: PadShape::Rectangle,
+            hole: 0,
+            plated: false,
+            name: "1".into(),
+            bottom_size: None,
+            middle_size: None,
+        };
+        assert!(area(&repour(&b).unwrap()) < 399.0);
+        b.rules[0].insert("SMDPAD.RELIEFENTRIES".into(), "0".into());
+        assert!(repour(&b).unwrap_err().contains("automatic"));
+        assert!(
+            check(&b)
+                .diagnostics
+                .iter()
+                .any(|s| s.contains("automatic"))
+        );
+        b.rules[0].insert("SMDPAD.RELIEFENTRIES".into(), "4".into());
+        b.rules[0].insert("SCOPE1EXPRESSION".into(), "UnknownScope".into());
+        assert!(repour(&b).unwrap_err().contains("Unsupported query"));
     }
     #[test]
     fn priority_prevents_foreign_net_overlap() {

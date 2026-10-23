@@ -123,104 +123,7 @@ fn percentage(fields: &Fields) -> Result<f64, String> {
     }
     Ok(value)
 }
-// Unknown predicates deliberately propagate; a higher-priority unknown rule
-// must not silently be replaced with a lower-priority All rule.
-fn scope(board: &Board, item: &Item, s: &str, depth: usize) -> Option<bool> {
-    if depth > 32 || s.len() > 8192 {
-        return None;
-    }
-    let mut s = s.trim();
-    if s.starts_with('(') && s.ends_with(')') {
-        let mut level = 0;
-        let mut quoted = false;
-        let mut closes = false;
-        for (n, c) in s.char_indices() {
-            if c == '\'' {
-                quoted = !quoted;
-            }
-            if !quoted {
-                if c == '(' {
-                    level += 1;
-                }
-                if c == ')' {
-                    level -= 1;
-                    if level == 0 && n != s.len() - 1 {
-                        closes = true;
-                        break;
-                    }
-                }
-            }
-        }
-        if !closes {
-            s = &s[1..s.len() - 1];
-        }
-    }
-    let upper = s.to_ascii_uppercase();
-    for op in [" OR ", " AND "] {
-        let mut level = 0;
-        let mut quoted = false;
-        for (n, c) in s.char_indices() {
-            if c == '\'' {
-                quoted = !quoted;
-            }
-            if quoted {
-                continue;
-            }
-            if c == '(' {
-                level += 1;
-            } else if c == ')' {
-                level -= 1;
-            }
-            if level == 0 && upper[n..].starts_with(op) {
-                let a = scope(board, item, &s[..n], depth + 1);
-                let b = scope(board, item, &s[n + op.len()..], depth + 1);
-                return if op == " AND " {
-                    if a == Some(false) || b == Some(false) {
-                        Some(false)
-                    } else {
-                        a.zip(b).map(|(a, b)| a && b)
-                    }
-                } else if a == Some(true) || b == Some(true) {
-                    Some(true)
-                } else {
-                    a.zip(b).map(|(a, b)| a || b)
-                };
-            }
-        }
-    }
-    if upper.starts_with("NOT ") {
-        return scope(board, item, &s[4..], depth + 1).map(|v| !v);
-    }
-    match upper.as_str() {
-        "ALL" | "TRUE" => return Some(true),
-        "FALSE" => return Some(false),
-        "ISPAD" => return Some(matches!(item.shape, Shape::Pad { .. })),
-        "ISVIA" => return Some(matches!(item.shape, Shape::Via { .. })),
-        "ISTRACK" => return Some(matches!(item.shape, Shape::Track { .. })),
-        "ISARC" => return Some(matches!(item.shape, Shape::Arc { .. })),
-        "ISSMDPAD" => return Some(matches!(item.shape, Shape::Pad { hole: 0, .. })),
-        _ => {}
-    }
-    for name in ["INNET", "INCOMPONENT", "HASFOOTPRINT"] {
-        if let Some(arg) = upper.strip_prefix(&format!("{name}("))
-            && arg.ends_with(')')
-        {
-            let raw = s[name.len() + 1..s.len() - 1].trim();
-            let value = raw.strip_prefix('\'')?.strip_suffix('\'')?;
-            let component = item
-                .component
-                .and_then(|index| board.components.iter().find(|c| c.index == index));
-            return Some(match name {
-                "INNET" => board.net_name(item.net).eq_ignore_ascii_case(value),
-                "INCOMPONENT" => {
-                    component.is_some_and(|c| c.designator.eq_ignore_ascii_case(value))
-                }
-                _ => component.is_some_and(|c| c.footprint.eq_ignore_ascii_case(value)),
-            });
-        }
-    }
-    None
-}
+use crate::pcb_rules::scope;
 impl Board {
     pub fn resolve_mask(
         &self,
@@ -308,6 +211,7 @@ impl Board {
                 && !matches!(
                     key.as_str(),
                     "NAME"
+                        | "COMMENT"
                         | "PRIORITY"
                         | "ENABLED"
                         | "SCOPE1EXPRESSION"

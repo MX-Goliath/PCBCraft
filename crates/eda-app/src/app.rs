@@ -97,6 +97,7 @@ struct Settings {
     grid_nm: i64,
     right_messages: bool,
     pcb_navigation: eda_render::pcb::NavigationOptions,
+    pcb_drc: std::collections::BTreeMap<PathBuf, pcb_editor::CheckSettings>,
 }
 
 impl Default for Settings {
@@ -114,6 +115,7 @@ impl Default for Settings {
             grid_nm: 1_000_000,
             right_messages: false,
             pcb_navigation: Default::default(),
+            pcb_drc: Default::default(),
         }
     }
 }
@@ -257,6 +259,13 @@ impl PcbCraft {
     fn add_document(&mut self, mut doc: Document, path: Option<PathBuf>) {
         eda_core::pcb::Board::ensure_document(&mut doc);
         let mut opened = OpenDocument::new(doc, path);
+        if let Some(settings) = opened
+            .path
+            .as_ref()
+            .and_then(|p| self.settings.pcb_drc.get(p))
+        {
+            opened.pcb_editor.restore_rule_settings(settings.clone());
+        }
         opened.view.grid = self.settings.show_grid;
         opened.view.grid_nm = self.settings.grid_nm;
         if let Some(s) = &opened.model.schematic {
@@ -488,6 +497,14 @@ impl PcbCraft {
     }
 
     fn request_close(&mut self, id: Uuid) {
+        if self
+            .documents
+            .iter()
+            .any(|d| d.session_id == id && d.pcb_editor.rules_open())
+        {
+            self.message(true, "Apply or cancel Rules before closing the board");
+            return;
+        }
         if let Some(manager) = &mut self.layer_stack
             && manager.session == id
         {
@@ -513,6 +530,10 @@ impl PcbCraft {
     }
 
     fn run(&mut self, command: Command, ctx: &egui::Context) {
+        if self.documents.iter().any(|d| d.pcb_editor.rules_open()) {
+            self.message(true, "Apply or cancel Rules before another command");
+            return;
+        }
         if matches!(command, Command::Quit)
             && let Some(manager) = &mut self.layer_stack
             && manager.dirty()
@@ -1714,6 +1735,16 @@ impl eframe::App for PcbCraft {
             self.run(command, ctx);
         }
         self.poll_pcb_pours(ctx);
+        for doc in &self.documents {
+            if doc.model.pcb.is_some()
+                && let Some(path) = &doc.path
+            {
+                let settings = doc.pcb_editor.rule_settings();
+                if self.settings.pcb_drc.get(path) != Some(settings) {
+                    self.settings.pcb_drc.insert(path.clone(), settings.clone());
+                }
+            }
+        }
         let title = self
             .active
             .map(|i| {
