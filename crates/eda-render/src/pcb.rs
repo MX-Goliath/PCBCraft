@@ -23,6 +23,7 @@ mod gpu;
 #[path = "pcb_paint_cache.rs"]
 mod paint_cache;
 pub use gpu::enable_gpu;
+pub(crate) use gpu::format as gpu_format;
 #[path = "pcb_navigation.rs"]
 mod navigation;
 #[path = "pcb_text.rs"]
@@ -379,12 +380,41 @@ pub fn canvas(ui: &mut egui::Ui, b: &Board, view: &mut View) -> CanvasOutput {
     );
     let key = paint_cache::key(scene, view, ui.ctx());
     let mut artwork = std::mem::take(&mut view.pcb.paint_cache);
-    if !artwork.valid(key, &view.camera, rect) {
+    if !artwork.valid(key) {
+        let start = std::time::Instant::now();
         let mut scene_painter = painter.clone();
-        scene_painter.set_clip_rect(rect.expand(256.));
+        // Capture offscreen objects as well. Translation only changes the GPU
+        // camera uniform; it must never synchronously rebuild the whole PCB.
+        scene_painter.set_clip_rect(Rect::EVERYTHING);
         let mut builder = paint_cache::Builder::new(&scene_painter);
-        paint_scene(&scene_painter, scene, view, rect, &mut builder);
-        artwork.finish(builder, &scene_painter, key, &view.camera, rect);
+        // A fixed document anchor also makes pixel rounding independent of the
+        // camera position at the moment a scene happens to be rebuilt.
+        let anchor = Bounds::points(&view.pcb.geometry.outline).centre();
+        let camera = Camera {
+            centre_mm: [anchor.x as f64 / 1e6, anchor.y as f64 / 1e6],
+            ..view.camera.clone()
+        };
+        let capture_rect = Rect::from_center_size(Pos2::ZERO, Vec2::splat(2.));
+        paint_scene(
+            &scene_painter,
+            scene,
+            &camera,
+            view,
+            capture_rect,
+            &mut builder,
+        );
+        artwork.finish(builder, &scene_painter, key, &camera, capture_rect);
+        if std::env::var_os("PCBCRAFT_FRAME_PROFILE").is_some() {
+            eprintln!(
+                "pcb_artwork_build n={} cpu_ms={:.2} zoom={:.6} dpi={} revision={} preview={}",
+                artwork.builds,
+                start.elapsed().as_secs_f64() * 1000.,
+                view.camera.pixels_per_mm,
+                ui.ctx().pixels_per_point(),
+                view.pcb.three_d.revision,
+                view.pcb.preview_generation,
+            );
+        }
     }
     artwork.paint(&painter, scene, view, rect);
     view.pcb.paint_cache = artwork;
@@ -623,6 +653,7 @@ fn paint_order(i: &Item, active: u16) -> (u8, u16, u8) {
 fn paint_scene(
     painter: &egui::Painter,
     scene: &Board,
+    camera: &Camera,
     view: &mut View,
     rect: Rect,
     builder: &mut paint_cache::Builder,
@@ -632,7 +663,7 @@ fn paint_scene(
     if outline.len() >= 3 && view.pcb.display.board_visible {
         polygon(
             painter,
-            &view.camera,
+            camera,
             rect,
             &outline,
             &[],
@@ -646,66 +677,21 @@ fn paint_scene(
             .zip(outline.iter().cycle().skip(1))
             .take(outline.len())
         {
-            let a = view.camera.screen(*a, rect);
-            let z = view.camera.screen(*z, rect);
+            let a = camera.screen(*a, rect);
+            let z = camera.screen(*z, rect);
             if a.distance(z) > 0.001 {
                 painter.line_segment([a, z], Stroke::new(1.0, view.pcb.display.board_line));
             }
         }
     }
-    if view.grid {
-        let mut step = view.grid_nm.max(1) as f64 / 1e6;
-        while step * view.camera.pixels_per_mm < 14.0 {
-            step *= 5.0;
-        }
-        let a = view
-            .camera
-            .world_mm(painter.clip_rect().left_bottom(), rect);
-        let b = view.camera.world_mm(painter.clip_rect().right_top(), rect);
-        let min = [a[0].min(b[0]), a[1].min(b[1])];
-        let max = [a[0].max(b[0]), a[1].max(b[1])];
-        let sx = (min[0] / step).floor() * step;
-        let sy = (min[1] / step).floor() * step;
-        let cols = ((max[0] - min[0]) / step).ceil() as usize + 2;
-        let rows = ((max[1] - min[1]) / step).ceil() as usize + 2;
-        for x in 0..cols.min(500) {
-            for y in 0..rows.min(500) {
-                let at = Point {
-                    x: ((sx + x as f64 * step) * 1e6) as i64,
-                    y: ((sy + y as f64 * step) * 1e6) as i64,
-                };
-                if !point_in_polygon(at, &outline) {
-                    continue;
-                }
-                painter.circle_filled(
-                    view.camera.screen(
-                        Point {
-                            x: ((sx + x as f64 * step) * 1e6) as i64,
-                            y: ((sy + y as f64 * step) * 1e6) as i64,
-                        },
-                        rect,
-                    ),
-                    0.65,
-                    view.pcb.display.grid_color,
-                );
-            }
-        }
-    }
+    builder.grid(painter);
     let selected = scene.resolve_selection(&view.pcb.selected);
-    let bounds = Bounds::points(&[
-        world(&view.camera, painter.clip_rect().left_bottom(), rect),
-        world(&view.camera, painter.clip_rect().right_top(), rect),
-    ]);
-    let mut order: Vec<_> = view
-        .pcb
-        .geometry
-        .query(bounds)
-        .into_iter()
-        .map(|index| &scene.items[index])
+    let mut order: Vec<_> = scene
+        .items
+        .iter()
         .filter(|i| {
             view.pcb.is_visible(i)
                 && scene.text_visible(i)
-                && view.pcb.geometry.bounds[&i.id].intersects(bounds)
                 && (view.pcb.single_layer == 0
                     || i.layer != MULTI_LAYER
                     || i.is_drill_only()
@@ -713,7 +699,7 @@ fn paint_scene(
         })
         .collect();
     order.sort_by_key(|i| paint_order(i, view.pcb.active_layer));
-    paint_masks(painter, scene, view, rect, false);
+    paint_masks(painter, scene, camera, view, rect, false);
     for item in &order {
         let mut color = dim(view.pcb.color(item.layer), view.pcb.display.alpha(item));
         if view.pcb.single_layer == 1
@@ -739,14 +725,7 @@ fn paint_scene(
             color = dim(color, view.pcb.display.dim);
         }
         if view.pcb.display.draft[display::Settings::kind(item)]
-            && paint_draft(
-                painter,
-                &view.camera,
-                rect,
-                item,
-                view.pcb.active_layer,
-                color,
-            )
+            && paint_draft(painter, camera, rect, item, view.pcb.active_layer, color)
         {
             continue;
         }
@@ -759,7 +738,7 @@ fn paint_scene(
         }
         paint_item(
             painter,
-            &view.camera,
+            camera,
             rect,
             item,
             view.pcb.active_layer,
@@ -794,8 +773,8 @@ fn paint_scene(
             };
             painter.line_segment(
                 [
-                    view.camera.screen(connection.start, rect),
-                    view.camera.screen(connection.end, rect),
+                    camera.screen(connection.start, rect),
+                    camera.screen(connection.end, rect),
                 ],
                 Stroke::new(1.0, color),
             );
@@ -817,24 +796,21 @@ fn paint_scene(
         let points = poly.points();
         if points.len() > 2 {
             painter.add(egui::Shape::closed_line(
-                points
-                    .iter()
-                    .map(|p| view.camera.screen(*p, rect))
-                    .collect(),
+                points.iter().map(|p| camera.screen(*p, rect)).collect(),
                 Stroke::new(if selected { 2.0 } else { 0.7 }, color),
             ));
         }
         if selected {
             for hole in &poly.holes {
                 painter.add(egui::Shape::closed_line(
-                    hole.iter().map(|p| view.camera.screen(*p, rect)).collect(),
+                    hole.iter().map(|p| camera.screen(*p, rect)).collect(),
                     Stroke::new(1.5, color),
                 ));
             }
         }
     }
     builder.tools(painter);
-    paint_masks(painter, scene, view, rect, true);
+    paint_masks(painter, scene, camera, view, rect, true);
     for item in &order {
         let drill = view.pcb.geometry.drill(item);
         let show_drill = if matches!(item.shape, Shape::Via { .. }) {
@@ -847,7 +823,7 @@ fn paint_scene(
                 drill
                     .iter()
                     .copied()
-                    .map(|p| view.camera.screen(p, rect))
+                    .map(|p| camera.screen(p, rect))
                     .collect(),
                 if matches!(item.shape, Shape::Via { .. }) {
                     view.pcb.display.via_hole_color
@@ -866,7 +842,7 @@ fn paint_scene(
             } if (view.pcb.display.pad_numbers || view.pcb.display.pad_nets)
                 && (item.layer == view.pcb.active_layer || item.layer == MULTI_LAYER) =>
             {
-                let height = (size.x.min(size.y) as f64 / 1e6 * view.camera.pixels_per_mm) as f32;
+                let height = (size.x.min(size.y) as f64 / 1e6 * camera.pixels_per_mm) as f32;
                 let net = if view.pcb.display.pad_nets {
                     b.net_name(item.net)
                 } else {
@@ -878,7 +854,7 @@ fn paint_scene(
                     net
                 };
                 let both = view.pcb.display.pad_numbers && !net.is_empty();
-                let center = view.camera.screen(*position, rect);
+                let center = camera.screen(*position, rect);
                 if both {
                     text::label(
                         painter,
@@ -901,10 +877,10 @@ fn paint_scene(
             Shape::Via {
                 position, diameter, ..
             } if view.pcb.display.via_nets => {
-                let height = (*diameter as f64 / 1e6 * view.camera.pixels_per_mm) as f32;
+                let height = (*diameter as f64 / 1e6 * camera.pixels_per_mm) as f32;
                 text::label(
                     painter,
-                    view.camera.screen(*position, rect),
+                    camera.screen(*position, rect),
                     b.net_name(item.net),
                     height * 0.55,
                     height * 0.9,
@@ -914,9 +890,9 @@ fn paint_scene(
             Shape::Track { start, end, width }
                 if view.pcb.display.track_names && item.net.is_some() =>
             {
-                let a = view.camera.screen(*start, rect);
-                let z = view.camera.screen(*end, rect);
-                let height = (*width as f64 / 1e6 * view.camera.pixels_per_mm) as f32;
+                let a = camera.screen(*start, rect);
+                let z = camera.screen(*end, rect);
+                let height = (*width as f64 / 1e6 * camera.pixels_per_mm) as f32;
                 if a.distance(z) > 45.0 && height > 4.0 {
                     text::track_labels(
                         painter,
@@ -931,6 +907,9 @@ fn paint_scene(
             _ => {}
         }
     }
+    builder.origin(painter);
+}
+fn paint_origin(painter: &egui::Painter, scene: &Board, view: &View, rect: Rect) {
     if view.pcb.display.origin_visible {
         let coordinate = |key| {
             scene
@@ -946,7 +925,7 @@ fn paint_scene(
             },
             rect,
         );
-        if rect.contains(c) {
+        if rect.expand(14.).contains(c) {
             painter.circle_stroke(c, 9.0, Stroke::new(0.7, view.pcb.display.origin_color));
             for d in [Vec2::new(14.0, 0.0), Vec2::new(0.0, 14.0)] {
                 painter.line_segment(
@@ -956,6 +935,52 @@ fn paint_scene(
             }
         }
     }
+}
+fn paint_grid(painter: &egui::Painter, view: &View, rect: Rect) {
+    if !view.grid {
+        return;
+    }
+    let mut step = view.grid_nm.max(1) as f64 / 1e6;
+    while step * view.camera.pixels_per_mm < 14.0 {
+        step *= 5.0;
+    }
+    let clip = painter.clip_rect().expand(1.);
+    let a = view.camera.world_mm(clip.left_bottom(), rect);
+    let b = view.camera.world_mm(clip.right_top(), rect);
+    let min = [a[0].min(b[0]), a[1].min(b[1])];
+    let max = [a[0].max(b[0]), a[1].max(b[1])];
+    let sx = (min[0] / step).floor() * step;
+    let sy = (min[1] / step).floor() * step;
+    let cols = ((max[0] - min[0]) / step).ceil() as usize + 2;
+    let rows = ((max[1] - min[1]) / step).ceil() as usize + 2;
+    let outline = &view.pcb.geometry.outline;
+    for row in 0..rows.min(500) {
+        let y = ((sy + row as f64 * step) * 1e6) as i64;
+        // Intersect the outline once per row, rather than scanning every edge
+        // for every grid dot. Keep the same even/odd rule as point_in_polygon.
+        let crossings = grid_crossings(outline, y);
+        for col in 0..cols.min(500) {
+            let x = ((sx + col as f64 * step) * 1e6) as i64;
+            if crossings.partition_point(|crossing| *crossing <= x as f64) % 2 == 1 {
+                painter.circle_filled(
+                    view.camera.screen(Point { x, y }, rect),
+                    0.65,
+                    view.pcb.display.grid_color,
+                );
+            }
+        }
+    }
+}
+fn grid_crossings(outline: &[Point], y: i64) -> Vec<f64> {
+    let mut crossings: Vec<_> = outline
+        .iter()
+        .zip(outline.iter().cycle().skip(1))
+        .take(outline.len())
+        .filter(|(a, b)| (a.y > y) != (b.y > y))
+        .map(|(a, b)| (b.x - a.x) as f64 * (y - a.y) as f64 / (b.y - a.y) as f64 + a.x as f64)
+        .collect();
+    crossings.sort_by(f64::total_cmp);
+    crossings
 }
 fn paint_tools(painter: &egui::Painter, scene: &Board, view: &View, rect: Rect) {
     for (_, point) in eda_core::pcb_tools::handles(scene, &view.pcb.selected) {
@@ -984,7 +1009,14 @@ fn paint_tools(painter: &egui::Painter, scene: &Board, view: &View, rect: Rect) 
         painter.rect_stroke(r, 0.0, Stroke::new(1.0, color), StrokeKind::Inside);
     }
 }
-fn paint_masks(painter: &egui::Painter, board: &Board, view: &mut View, rect: Rect, active: bool) {
+fn paint_masks(
+    painter: &egui::Painter,
+    board: &Board,
+    camera: &Camera,
+    view: &mut View,
+    rect: Rect,
+    active: bool,
+) {
     for (layer, kind, bottom) in [
         (35, MaskKind::Paste, false),
         (36, MaskKind::Paste, true),
@@ -1012,7 +1044,7 @@ fn paint_masks(painter: &egui::Painter, board: &Board, view: &mut View, rect: Re
                     outline
                         .iter()
                         .copied()
-                        .map(|p| view.camera.screen(p, rect))
+                        .map(|p| camera.screen(p, rect))
                         .collect(),
                     dim(view.pcb.color(layer), alpha),
                     Stroke::NONE,

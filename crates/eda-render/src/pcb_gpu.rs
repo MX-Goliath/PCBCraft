@@ -9,7 +9,7 @@ use wgpu::util::DeviceExt;
 pub fn enable_gpu(ctx: &Context, format: wgpu::TextureFormat) {
     ctx.data_mut(|data| data.insert_temp(egui::Id::new("pcb-gpu-format"), format));
 }
-pub(super) fn format(ctx: &Context) -> Option<wgpu::TextureFormat> {
+pub(crate) fn format(ctx: &Context) -> Option<wgpu::TextureFormat> {
     ctx.data_mut(|data| data.get_temp(egui::Id::new("pcb-gpu-format")))
 }
 pub(super) struct Scene {
@@ -437,9 +437,18 @@ mod tests {
         // Exercise the full canvas/cache handoff too. The callback must receive
         // the meshes built this frame, including interleaved live hatch passes.
         use crate::{View, pcb};
-        use eda_core::pcb::{Board, Item, Shape, TOP, rectangle};
+        use eda_core::pcb::{Board, ContourVertex, Item, Shape, TOP, rectangle};
         use eda_geom::Point;
-        let mut board = Board::default();
+        let mut board = Board {
+            outline: rectangle(Point::mm(100, 0), Point::mm(440, 20), 0.)
+                .into_iter()
+                .map(|position| ContourVertex {
+                    position,
+                    arc: None,
+                })
+                .collect(),
+            ..Default::default()
+        };
         board.items.push(Item::new(
             TOP,
             None,
@@ -461,6 +470,16 @@ mod tests {
         body.properties
             .insert("PCBCRAFT_BODY_PROJECTION".into(), "TRUE".into());
         board.items.push(body);
+        board.items.push(Item::new(
+            TOP,
+            None,
+            Shape::Track {
+                start: Point::mm(194, 0),
+                end: Point::mm(206, 0),
+                width: 2_000_000,
+            },
+        ));
+        board.properties.insert("ORIGINX".into(), "200mm".into());
         let mut pictures = vec![];
         for resident in [false, true] {
             let ctx = Context::default();
@@ -476,7 +495,12 @@ mod tests {
             view.pcb.display.connections = false;
             view.pcb.visible.insert(57);
             let mut frames = vec![];
-            for offset in [0., 0.5, 1.] {
+            for offset in [0., 0.5, 1., 200., -200., 0.] {
+                if !resident {
+                    // A fresh scene at the destination is the reference for a
+                    // resident scene translated from far outside the viewport.
+                    view.pcb.paint_cache = Default::default();
+                }
                 view.camera.centre_mm[0] = offset;
                 let output = ctx.run(
                     egui::RawInput {
@@ -501,18 +525,20 @@ mod tests {
                     wgpu::TextureFormat::Rgba8Unorm,
                     1.,
                 ));
+                if resident {
+                    assert_eq!(view.pcb.paint_cache.builds, 1);
+                }
             }
             pictures.push(frames);
         }
-        for (cpu, gpu) in pictures[0].iter().zip(&pictures[1]) {
-            assert!(
-                cpu.iter()
-                    .zip(gpu)
-                    .map(|(a, b)| a.abs_diff(*b))
-                    .max()
-                    .unwrap()
-                    <= 1
-            );
+        for (index, (cpu, gpu)) in pictures[0].iter().zip(&pictures[1]).enumerate() {
+            let maximum = cpu
+                .iter()
+                .zip(gpu)
+                .map(|(a, b)| a.abs_diff(*b))
+                .max()
+                .unwrap();
+            assert!(maximum <= 1, "frame={index}, maximum={maximum}");
         }
     }
 }

@@ -1,4 +1,4 @@
-//! Cached full-board software 3D viewport with per-pixel depth and object picking.
+//! Full-board 3D viewport with resident GPU geometry and a software fallback.
 use crate::{
     CanvasOutput, View,
     pcb::Input,
@@ -12,8 +12,13 @@ use std::{
     sync::{Arc, Mutex, mpsc},
 };
 use uuid::Uuid;
+#[path = "pcb_3d_gpu.rs"]
+mod gpu;
+pub use gpu::enable_gpu;
 #[path = "pcb_3d_text.rs"]
 mod lettering;
+#[path = "pcb_3d_pick.rs"]
+mod picking;
 
 #[derive(Clone)]
 struct Face {
@@ -29,6 +34,8 @@ struct Scene {
     centre: [f32; 3],
     radius: f32,
     thickness: f32,
+    geometry: gpu::Geometry,
+    picking: picking::Index,
 }
 #[derive(Clone, PartialEq)]
 pub struct Presentation {
@@ -132,6 +139,7 @@ pub struct State {
     raster_key: Option<u64>,
     ids: Arc<Vec<u32>>,
     size: [usize; 2],
+    gpu: Option<Arc<gpu::Renderer>>,
 }
 impl Default for State {
     fn default() -> Self {
@@ -158,6 +166,7 @@ impl Default for State {
             raster_key: None,
             ids: Arc::default(),
             size: [1, 1],
+            gpu: None,
         }
     }
 }
@@ -339,6 +348,13 @@ impl State {
             match received {
                 Ok(scene) => {
                     if job.key == key {
+                        if std::env::var_os("PCBCRAFT_FRAME_PROFILE").is_some() {
+                            eprintln!(
+                                "pcb_3d_scene triangles={} styles={}",
+                                scene.faces.len(),
+                                scene.geometry.styles.len()
+                            );
+                        }
                         self.scene = Arc::new(scene);
                         self.built_key = Some(key);
                         self.raster_key = None;
@@ -731,6 +747,8 @@ fn build(board: &Board, components: bool) -> Scene {
             .sqrt()
             * 0.5;
     }
+    scene.geometry = gpu::Geometry::new(&scene);
+    scene.picking = picking::Index::new(&scene.faces);
     scene
 }
 fn planar(
@@ -1122,13 +1140,6 @@ pub fn canvas(ui: &mut egui::Ui, board: &Board, view: &mut View) -> CanvasOutput
         (rect.height() * dpi).ceil().clamp(1., 1400.) as usize,
     ];
     let mut hash = std::collections::hash_map::DefaultHasher::new();
-    size.hash(&mut hash);
-    rect.width().to_bits().hash(&mut hash);
-    rect.height().to_bits().hash(&mut hash);
-    for v in [state.yaw, state.pitch, state.zoom, state.pan.x, state.pan.y] {
-        v.to_bits().hash(&mut hash);
-    }
-    state.focus.map(|p| p.map(f32::to_bits)).hash(&mut hash);
     view.pcb.selected.hash(&mut hash);
     state.revision.hash(&mut hash);
     state.show_components.hash(&mut hash);
@@ -1154,43 +1165,78 @@ pub fn canvas(ui: &mut egui::Ui, board: &Board, view: &mut View) -> CanvasOutput
         k.hash(&mut hash);
         c.to_array().hash(&mut hash);
     }
-    let key = hash.finish();
-    state.render(key, &view.pcb.selected, rect.size(), size, ui.ctx());
-    if let Some(texture) = &state.texture {
-        ui.painter().image(
-            texture.id(),
-            rect,
-            Rect::from_min_max(Pos2::ZERO, Pos2::new(1., 1.)),
-            Color32::WHITE,
-        );
-    } else {
-        ui.painter()
-            .rect_filled(rect, 0., state.presentation.background[0]);
-        ui.painter().text(
-            rect.center(),
-            egui::Align2::CENTER_CENTER,
-            if state.failed_raster == Some(key) {
-                "Could not render 3D view"
-            } else {
-                "Rendering 3D view…"
-            },
-            egui::FontId::proportional(14.),
-            Color32::WHITE,
-        );
+    let style_key = hash.finish();
+    size.hash(&mut hash);
+    rect.width().to_bits().hash(&mut hash);
+    rect.height().to_bits().hash(&mut hash);
+    for v in [state.yaw, state.pitch, state.zoom, state.pan.x, state.pan.y] {
+        v.to_bits().hash(&mut hash);
     }
-    // The displayed image may lag while orbiting. Never pick using a depth
-    // buffer belonging to a different camera, selection, size or document.
-    let interactive = state.raster_key == Some(key);
-    let hit = response.hover_pos().filter(|_| interactive).and_then(|p| {
-        let x = (((p.x - rect.min.x) / rect.width()) * size[0] as f32) as usize;
-        let y = (((p.y - rect.min.y) / rect.height()) * size[1] as f32) as usize;
-        state
-            .ids
-            .get(y.min(size[1] - 1) * size[0] + x.min(size[0] - 1))
-            .and_then(|n| n.checked_sub(1))
-            .and_then(|n| state.scene.faces.get(n as usize))
-            .and_then(|f| f.owner)
-    });
+    state.focus.map(|p| p.map(f32::to_bits)).hash(&mut hash);
+    let key = hash.finish();
+    let interactive;
+    let hit;
+    if let Some(format) =
+        crate::pcb::gpu_format(ui.ctx()).filter(|_| gpu::supported(ui.ctx(), &state.scene))
+    {
+        let renderer = state
+            .gpu
+            .get_or_insert_with(|| Arc::new(gpu::Renderer::default()))
+            .clone();
+        ui.painter().add(renderer.callback(
+            state,
+            &view.pcb.selected,
+            rect,
+            size,
+            [key, style_key],
+            format,
+        ));
+        interactive = true;
+        hit = response.hover_pos().filter(|_| !drag).and_then(|p| {
+            state
+                .scene
+                .picking
+                .hit(state, p - rect.min, rect.size())
+                .and_then(|n| state.scene.faces[n].owner)
+        });
+    } else {
+        state.render(key, &view.pcb.selected, rect.size(), size, ui.ctx());
+        if let Some(texture) = &state.texture {
+            ui.painter().image(
+                texture.id(),
+                rect,
+                Rect::from_min_max(Pos2::ZERO, Pos2::new(1., 1.)),
+                Color32::WHITE,
+            );
+        } else {
+            ui.painter()
+                .rect_filled(rect, 0., state.presentation.background[0]);
+            ui.painter().text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                if state.failed_raster == Some(key) {
+                    "Could not render 3D view"
+                } else {
+                    "Rendering 3D view…"
+                },
+                egui::FontId::proportional(14.),
+                Color32::WHITE,
+            );
+        }
+        // The displayed image may lag while orbiting. Never pick using a depth
+        // buffer belonging to a different camera, selection, size or document.
+        interactive = state.raster_key == Some(key);
+        hit = response.hover_pos().filter(|_| interactive).and_then(|p| {
+            let x = (((p.x - rect.min.x) / rect.width()) * size[0] as f32) as usize;
+            let y = (((p.y - rect.min.y) / rect.height()) * size[1] as f32) as usize;
+            state
+                .ids
+                .get(y.min(size[1] - 1) * size[0] + x.min(size[0] - 1))
+                .and_then(|n| n.checked_sub(1))
+                .and_then(|n| state.scene.faces.get(n as usize))
+                .and_then(|f| f.owner)
+        });
+    }
     if hit.is_some() && !drag {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
@@ -1439,6 +1485,81 @@ mod tests {
         state.bottom();
         let (_, ids) = raster(&state, &[], Vec2::splat(100.), [100, 100]);
         assert_eq!(ids[5050], 1);
+    }
+    #[test]
+    fn gpu_canvas_reuses_scene_and_renderer_during_navigation_without_raster_jobs() {
+        let board = Board::from_legacy(&eda_core::Document::new(
+            eda_core::DocumentKind::Board,
+            "GPU 3D",
+        ));
+        let ctx = egui::Context::default();
+        crate::pcb::enable_gpu(&ctx, egui_wgpu::wgpu::TextureFormat::Rgba8Unorm);
+        ctx.data_mut(|data| {
+            data.insert_temp(
+                egui::Id::new("pcb-3d-gpu-limits"),
+                egui_wgpu::wgpu::Limits::default(),
+            )
+        });
+        let mut view = View::default();
+        view.pcb.three_d.enabled = true;
+        let frame = |view: &mut View| {
+            ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(500., 400.))),
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        crate::pcb::canvas(ui, &board, view);
+                    });
+                },
+            )
+        };
+        frame(&mut view);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while view.pcb.three_d.preparing() {
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(std::time::Duration::from_millis(1));
+            frame(&mut view);
+        }
+        let scene = view.pcb.three_d.scene.clone();
+        let renderer = view.pcb.three_d.gpu.clone().unwrap();
+        for n in 0..10 {
+            view.pcb.three_d.yaw += 0.1;
+            view.pcb.three_d.pan.x += 1.;
+            view.pcb.three_d.zoom = 1. + n as f32 * 0.1;
+            let output = frame(&mut view);
+            assert!(
+                output
+                    .shapes
+                    .iter()
+                    .any(|s| matches!(s.shape, egui::Shape::Callback(_)))
+            );
+            assert!(Arc::ptr_eq(&scene, &view.pcb.three_d.scene));
+            assert!(Arc::ptr_eq(
+                &renderer,
+                view.pcb.three_d.gpu.as_ref().unwrap()
+            ));
+            assert!(view.pcb.three_d.raster_job.is_none());
+            assert!(view.pcb.three_d.texture.is_none());
+        }
+        let small = egui_wgpu::wgpu::Limits {
+            max_buffer_size: 16,
+            ..Default::default()
+        };
+        ctx.data_mut(|data| data.insert_temp(egui::Id::new("pcb-3d-gpu-limits"), small));
+        assert!(!gpu::supported(&ctx, &view.pcb.three_d.scene));
+        ctx.data_mut(|data| {
+            data.insert_temp(
+                egui::Id::new("pcb-3d-gpu-limits"),
+                egui_wgpu::wgpu::Limits::downlevel_webgl2_defaults(),
+            )
+        });
+        frame(&mut view);
+        assert!(
+            view.pcb.three_d.raster_job.is_some(),
+            "Unsupported device must retain software rendering"
+        );
     }
     #[test]
     fn viewport_caches_scene_texture_and_leaves_two_d_camera_untouched() {

@@ -765,7 +765,47 @@ Evidence and limits: docs/pcb-update/PERFORMANCE.md.
 - [x] Real Linux window: Fit Board, cursor movement and middle-button pan.
   Warm CPU frame medians ~6–11 ms / ~5–7 ms under concurrent CPU load;
   callback submission probe ~2.8 / ~2.5 ms. Rebuild the AppImage.
-- [ ] Cache rebuild spikes on zoom/configuration/content changes or long pans,
+- [ ] Cache rebuild spikes on zoom/configuration/content changes,
   editing-preview costs, presentation FPS, Windows runtime and Altium parity.
+
+Measurements and limitations: docs/pcb-update/PERFORMANCE.md.
+
+### ReferenceM 3D orbit performance, 24.10.2026
+
+- [x] Reproduce slow software refresh after an orbit change: ~782 ms on ReferenceM.
+- [x] Resident wgpu 3D vertices/styles, hardware depth and cached image target;
+  pan/zoom update the camera, opaque faces need no sorting. Sort translucent
+  faces with stable linear radix passes on orientation/thickness changes.
+- [x] Current-camera BVH ray picking, with perspective/flip/thickness and hidden
+  material checks; retain selection of parent components and material styling.
+- [x] GPU pixel comparisons vs software, buffer reuse, full-canvas handoff,
+  stable depth ties and BVH-vs-raster regression checks.
+- [x] Read-only completed-GPU probe on 2.18M triangles: orbit median 6.12/p95
+  8.18 ms, pan 0.55/zoom 1.44 ms; native eframe automatic navigation probe.
+- [x] Inspect the native application's own captured GPU frame; run 376 workspace
+  tests, fmt/strict all-target Clippy and rebuild the Linux AppImage.
+- [ ] First-scene latency (~3.7 s), arbitrary-board memory budgets, presentation
+  FPS on other hardware/Windows and full native pixel/STEP support parity.
+
+Measurements and limitations: docs/pcb-update/PERFORMANCE.md.
+
+### ReferenceM intermittent pan stalls, 24.10.2026
+
+- [x] Reproduce long-pan boundary stalls: 16/360 CPU frames >33 ms, maximum 158 ms.
+- [x] Keep complete visible-layer artwork at a fixed document anchor; all camera
+  translations reuse meshes/GPU buffers. Keep grid and origin live, with grid
+  outline intersections computed per row. Cull offscreen hatch generation.
+- [x] Invalidate glyphs on font-definition changes, rather than egui UI-atlas
+  replacement; preserve the artwork's private atlas and DPI invalidation.
+- [x] Regressions: offscreen objects revealed by long pans vs fresh GPU images,
+  live grid/origin, atlas replacement/font changes and scanline boundary rules.
+- [x] Release sweep at 15/150/1500 px/mm: no CPU frames >33 ms after initial build.
+  Real XWayland long-pan batches: CPU medians ~1–2.7 ms, maximum 7.75 ms;
+  no artwork rebuilds during short or long pan. Sampled GUI RSS ~672 MiB.
+- [x] Workspace tests, strict all-target Clippy and formatting; rebuild and
+  launch the AppImage. Package through a temporary file so a running old image
+  does not prevent replacing the artifact.
+- [ ] Cold scene construction on zoom/content/display changes, whole-scene
+  memory at extreme zoom, editing previews, presentation FPS and Windows runtime.
 
 Measurements and limitations: docs/pcb-update/PERFORMANCE.md.

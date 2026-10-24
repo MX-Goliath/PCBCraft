@@ -7,10 +7,20 @@ fn main() -> Result<(), String> {
     let mut args = std::env::args_os().skip(1);
     let path = PathBuf::from(
         args.next()
-            .ok_or("Usage: pcb_frame_profile INPUT.PcbDoc [--3d] [--gpu]")?,
+            .ok_or("Usage: pcb_frame_profile INPUT.PcbDoc [--3d] [--gpu] [--zoom PX_PER_MM]")?,
     );
     let args: Vec<_> = args.collect();
     let three_d = args.iter().any(|a| a == "--3d");
+    let zoom = args
+        .windows(2)
+        .find(|pair| pair[0] == "--zoom")
+        .map(|pair| pair[1].to_string_lossy().parse::<f64>())
+        .transpose()
+        .map_err(|e| e.to_string())?
+        .unwrap_or(15.);
+    if !zoom.is_finite() || !(0.001..=100_000.).contains(&zoom) {
+        return Err("--zoom must be finite and between 0.001 and 100000 px/mm".into());
+    }
     let loading = Instant::now();
     let doc = eda_io::load(&path)?;
     let board = doc.pcb.as_ref().ok_or("Not a PCB document")?;
@@ -53,7 +63,7 @@ fn main() -> Result<(), String> {
     };
     let mut view = eda_render::View::default();
     view.camera.centre_mm = [centre.x as f64 / 1e6, centre.y as f64 / 1e6];
-    view.camera.pixels_per_mm = 15.;
+    view.camera.pixels_per_mm = zoom;
     view.camera.fitted = true;
     println!("items={} layers={}", board.items.len(), board.layers.len());
     let frame = |view: &mut eda_render::View, point: Pos2| {
@@ -92,20 +102,31 @@ fn main() -> Result<(), String> {
             start.elapsed().as_secs_f64() * 1000.,
         )
     };
-    for (name, n) in [("cold", 1), ("cursor", 10), ("pan", 10)] {
+    for (name, n) in [("cold", 1), ("cursor", 10), ("pan", 10), ("long-pan", 360)] {
         let mut times = vec![];
         for i in 0..n {
             if name == "pan" {
                 view.camera.centre_mm[0] += 0.1;
+            } else if name == "long-pan" {
+                // Sweep more than two view widths, then return. Small-pan means
+                // hide the expensive frames at viewport-cache boundaries.
+                let offset = (i as f64 / 359. * std::f64::consts::TAU).sin() * 1200. / zoom;
+                view.camera.centre_mm[0] = centre.x as f64 / 1e6 + offset;
             }
             times.push(frame(&mut view, Pos2::new(500. + i as f32, 400.)));
         }
         let mean =
             |k: fn(&(f64, f64)) -> f64| times.iter().map(k).sum::<f64>() / times.len() as f64;
+        let mut total: Vec<_> = times.iter().map(|t| t.1).collect();
+        total.sort_by(f64::total_cmp);
         println!(
-            "{name}: paint_ms={:.2} paint+tessellate_ms={:.2}",
+            "{name}: paint_ms={:.2} paint+tessellate_ms={:.2} p95_ms={:.2} max_ms={:.2} frames_over_33ms={}/{}",
             mean(|t| t.0),
-            mean(|t| t.1)
+            mean(|t| t.1),
+            total[(total.len() - 1) * 95 / 100],
+            total.last().unwrap(),
+            total.iter().filter(|t| **t > 33.).count(),
+            total.len()
         );
     }
     if three_d {

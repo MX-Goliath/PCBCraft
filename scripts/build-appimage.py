@@ -133,11 +133,17 @@ def main():
         command += ["--no-appstream", "--comp", "zstd"]
         if args.runtime_file:
             command += ["--runtime-file", str(args.runtime_file.resolve())]
-        command += [str(appdir), str(output)]
-        run(*command, env={**os.environ, "ARCH": "x86_64", "VERSION": version})
-    output.chmod(0o755)
-    with output.open("rb") as handle:
-        digest = hashlib.file_digest(handle, "sha256").hexdigest()
+        # The previous image may still be running. Build on the destination
+        # filesystem, then replace its directory entry without overwriting the
+        # executable inode or exposing a partially packaged file.
+        with tempfile.TemporaryDirectory(prefix=".build-", dir=output_dir) as package_dir:
+            packaged = Path(package_dir) / output.name
+            command += [str(appdir), str(packaged)]
+            run(*command, env={**os.environ, "ARCH": "x86_64", "VERSION": version})
+            packaged.chmod(0o755)
+            with packaged.open("rb") as handle:
+                digest = hashlib.file_digest(handle, "sha256").hexdigest()
+            packaged.replace(output)
     output.with_suffix(".AppImage.sha256").write_text(f"{digest}  {output.name}\n")
     print(f"Built {output}\nSHA256 {digest}")
 

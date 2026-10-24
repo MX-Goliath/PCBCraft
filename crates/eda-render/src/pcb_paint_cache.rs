@@ -1,4 +1,4 @@
-//! Reuse tessellated PCB artwork between pointer frames and short camera pans.
+//! Reuse the complete tessellated PCB artwork across camera translations.
 //! Screen-anchored hatching stays in its original draw order and is drawn live.
 use super::*;
 use egui::{
@@ -10,13 +10,17 @@ use std::sync::Arc;
 #[derive(Clone)]
 enum Part {
     Mesh(Arc<Mesh>),
+    Grid,
     Hatch(Uuid, Color32),
     Tools,
+    Origin,
 }
 enum Capture {
     Shapes(egui::layers::PaintList),
+    Grid,
     Hatch(Uuid, Color32),
     Tools,
+    Origin,
 }
 pub(super) struct Builder {
     layer: LayerId,
@@ -48,13 +52,20 @@ impl Builder {
         self.flush(painter.ctx());
         self.captured.push(Capture::Tools);
     }
+    pub fn grid(&mut self, painter: &egui::Painter) {
+        self.flush(painter.ctx());
+        self.captured.push(Capture::Grid);
+    }
+    pub fn origin(&mut self, painter: &egui::Painter) {
+        self.flush(painter.ctx());
+        self.captured.push(Capture::Origin);
+    }
 }
 
 #[derive(Clone)]
 pub(super) struct Cache {
     key: Option<u64>,
     origin: Pos2,
-    coverage: Rect,
     parts: Vec<Part>,
     atlas: Option<TextureHandle>,
     gpu: Option<Arc<gpu::Scene>>,
@@ -65,7 +76,6 @@ impl Default for Cache {
         Self {
             key: None,
             origin: Pos2::ZERO,
-            coverage: Rect::NOTHING,
             parts: vec![],
             atlas: None,
             gpu: None,
@@ -74,13 +84,8 @@ impl Default for Cache {
     }
 }
 impl Cache {
-    pub fn valid(&self, key: u64, camera: &Camera, rect: Rect) -> bool {
-        let delta = camera.screen(Point::default(), rect) - self.origin;
+    pub fn valid(&self, key: u64) -> bool {
         self.key == Some(key)
-            && self
-                .coverage
-                .translate(delta)
-                .contains_rect(rect.expand(1.))
     }
     pub fn finish(
         &mut self,
@@ -109,8 +114,10 @@ impl Cache {
         let texture = self.atlas.as_ref().unwrap().id();
         for captured in builder.captured {
             match captured {
+                Capture::Grid => self.parts.push(Part::Grid),
                 Capture::Hatch(item, color) => self.parts.push(Part::Hatch(item, color)),
                 Capture::Tools => self.parts.push(Part::Tools),
+                Capture::Origin => self.parts.push(Part::Origin),
                 Capture::Shapes(shapes) => {
                     let shapes = shapes.all_entries().cloned().collect();
                     for ClippedPrimitive { primitive, .. } in
@@ -139,12 +146,15 @@ impl Cache {
             )
         });
         self.origin = camera.screen(Point::default(), rect);
-        self.coverage = painter.clip_rect();
         self.key = Some(key);
         self.builds += 1;
     }
     pub fn paint(&self, painter: &egui::Painter, board: &Board, view: &mut View, rect: Rect) {
         let delta = view.camera.screen(Point::default(), rect) - self.origin;
+        let visible = Bounds::points(&[
+            world(&view.camera, rect.expand(2.).left_bottom(), rect),
+            world(&view.camera, rect.expand(2.).right_top(), rect),
+        ]);
         let mut mesh_index = 0;
         for part in &self.parts {
             match part {
@@ -164,6 +174,9 @@ impl Cache {
                     painter.add(egui::Shape::Mesh(mesh));
                 }
                 Part::Hatch(id, color) => {
+                    if !view.pcb.geometry.bounds[id].intersects(visible) {
+                        continue;
+                    }
                     let item = &board.items[view.pcb.geometry.indices[id]];
                     paint_item(
                         painter,
@@ -176,6 +189,8 @@ impl Cache {
                     );
                 }
                 Part::Tools => paint_tools(painter, board, view, rect),
+                Part::Grid => paint_grid(painter, view, rect),
+                Part::Origin => paint_origin(painter, board, view, rect),
             }
         }
     }
@@ -193,8 +208,18 @@ pub(super) fn key(board: &Board, view: &View, ctx: &egui::Context) -> u64 {
         ctx.pixels_per_point().to_bits(),
     )
         .hash(&mut hash);
-    ctx.fonts(|f| Arc::as_ptr(&f.texture_atlas()) as usize)
-        .hash(&mut hash);
+    // A full UI atlas is periodically replaced by egui. Artwork owns its atlas,
+    // so that replacement must not trigger a board rebuild. Font definitions,
+    // unlike atlas allocations, do affect the cached glyphs.
+    ctx.fonts(|f| {
+        let fonts = f.lock();
+        let definitions = fonts.fonts.definitions();
+        for (name, data) in &definitions.font_data {
+            name.hash(&mut hash);
+            (Arc::as_ptr(data) as usize).hash(&mut hash);
+        }
+        definitions.families.hash(&mut hash);
+    });
     gpu::format(ctx).hash(&mut hash);
     (
         view.grid,
@@ -216,9 +241,19 @@ pub(super) fn key(board: &Board, view: &View, ctx: &egui::Context) -> u64 {
 mod tests {
     use super::*;
     fn frame(ctx: &egui::Context, board: &Board, view: &mut View, point: Pos2) {
+        frame_with_texture_limit(ctx, board, view, point, 2048);
+    }
+    fn frame_with_texture_limit(
+        ctx: &egui::Context,
+        board: &Board,
+        view: &mut View,
+        point: Pos2,
+        limit: usize,
+    ) {
         let output = ctx.run(
             egui::RawInput {
                 screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(800., 600.))),
+                max_texture_side: Some(limit),
                 focused: true,
                 events: vec![egui::Event::PointerMoved(point)],
                 ..Default::default()
@@ -285,7 +320,55 @@ mod tests {
         assert_eq!(view.pcb.paint_cache.builds, builds + 5);
         view.camera.centre_mm[0] += 100.;
         frame(&ctx, &board, &mut view, Pos2::new(400., 300.));
-        assert_eq!(view.pcb.paint_cache.builds, builds + 6);
+        assert_eq!(view.pcb.paint_cache.builds, builds + 5);
+    }
+    #[test]
+    fn replacing_ui_atlas_reuses_artwork_but_changing_font_definitions_expires_it() {
+        let ctx = egui::Context::default();
+        let board = Board::default();
+        let mut view = View::default();
+        view.camera.fitted = true;
+        view.pcb.initialize(&board);
+        view.pcb.display.connections = false;
+        let point = Pos2::new(400., 300.);
+        frame_with_texture_limit(&ctx, &board, &mut view, point, 2048);
+        let builds = view.pcb.paint_cache.builds;
+        let atlas = ctx.fonts(|f| f.texture_atlas());
+        frame_with_texture_limit(&ctx, &board, &mut view, point, 4096);
+        assert!(!Arc::ptr_eq(&atlas, &ctx.fonts(|f| f.texture_atlas())));
+        assert_eq!(view.pcb.paint_cache.builds, builds);
+        let mut fonts = ctx.fonts(|f| f.lock().fonts.definitions().clone());
+        fonts
+            .families
+            .get_mut(&egui::FontFamily::Proportional)
+            .unwrap()
+            .reverse();
+        ctx.set_fonts(fonts);
+        frame_with_texture_limit(&ctx, &board, &mut view, point, 4096);
+        assert_eq!(view.pcb.paint_cache.builds, builds + 1);
+    }
+    #[test]
+    fn grid_scanlines_match_point_in_polygon_at_vertices_edges_and_concave_rows() {
+        let outline = [
+            Point::mm(-5, -4),
+            Point::mm(5, -4),
+            Point::mm(5, 4),
+            Point::mm(1, 1),
+            Point::mm(-1, 4),
+            Point::mm(-5, 4),
+        ];
+        for y in -10..=10 {
+            let y = y * 500_000;
+            let crossings = grid_crossings(&outline, y);
+            for x in -12..=12 {
+                let x = x * 500_000;
+                assert_eq!(
+                    crossings.partition_point(|crossing| *crossing <= x as f64) % 2 == 1,
+                    point_in_polygon(Point { x, y }, &outline),
+                    "x={x}, y={y}"
+                );
+            }
+        }
     }
     #[test]
     fn preview_with_inserted_items_keeps_snapping_to_the_original_board() {

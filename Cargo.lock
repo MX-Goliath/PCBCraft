@@ -996,6 +996,8 @@ dependencies = [
  "eframe",
  "egui",
  "fontdb",
+ "image",
+ "pollster",
  "rfd",
  "serde",
  "serde_json",

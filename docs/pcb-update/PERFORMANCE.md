@@ -1,6 +1,134 @@
 # PCB editor performance — 22.10.2026
 
+## ReferenceM 3D orbit latency, 24.10.2026
+
+The 3D viewport still used a CPU rasterizer after the 2D fixes. A read-only
+release reproduction on ReferenceM measured 782 ms to refresh the image after one
+orbit change. Moving that work to a background thread kept the UI responsive,
+but left the picture approximately a second behind the camera.
+
+The app's wgpu integration now uses resident 3D vertex buffers, a 128-byte camera
+uniform, hardware depth and a cached offscreen color/depth target. Material and
+selection changes update a shared style table; pan/zoom do not rebuild geometry
+or upload vertices. Opaque triangles use the depth buffer without CPU sorting.
+Only translucent triangles need back-to-front ordering when orientation or
+thickness changes. A stable four-pass radix sort replaces comparison sorting;
+cached triangle centres retain the piecewise board-thickness transform. The
+renderer retains premultiplied gamma colors, per-face lighting, native material
+opacity/colors, layer dimming, highlighting and parent-component selection.
+Pointer picking traverses a revision-bound triangle BVH and tests the current
+camera ray, including perspective, bottom view and thickness scaling. It does
+not wait for a software image or use a depth image from an old camera.
+
+The same source produces 2,183,154 triangles and 17,510 shared styles, with
+1,852,098 opaque and 298,824 translucent triangles in its saved configuration.
+On the local AMD Radeon RX 7900 XTX / RADV Vulkan adapter, the new release
+1000×800 offscreen probe submits work and waits for actual GPU completion:
+
+| Case, 120 completed frames | Median | p95 | Maximum |
+|---|---:|---:|---:|
+| Cached camera | 0.76 ms | 0.90 ms | 2.02 ms |
+| Continuous orbit | 6.12 ms | 8.18 ms | 9.67 ms |
+| Continuous pan | 0.55 ms | 1.27 ms | 1.53 ms |
+| Continuous zoom | 1.44 ms | 2.98 ms | 4.27 ms |
+
+The orbit CPU median was 5.34 ms, including transparency ordering. Before radix
+sorting it was 13.11 ms. Scene preparation plus the first GPU frame still took
+about 3.7 seconds; the scene remains built in a bounded background worker. The
+final build with device-capability checks repeated orbit at median 6.59/p95
+8.52 ms, pan 0.56/zoom 1.55 ms. A
+native eframe window probe also ran automatic orbit/pan/zoom without GPU errors;
+sampled RSS was about 693 MiB. Initial GPU preparation was about 39 ms. Offscreen
+completed-frame times and native CPU timings are not presentation FPS, and
+performance on other GPUs/Windows is not established.
+
+The native frame was captured directly from the application's own framebuffer
+and inspected. The native probe animates its own read-only camera; manual
+desktop input testing was unavailable. Workspace tests, strict all-target
+Clippy and formatting pass, and the Linux AppImage is rebuilt.
+
+Reproduce without changing the board:
+
+```sh
+rtk bash scripts/dev.sh run --locked --release -p eda-app --example pcb_3d_frame_profile -- INPUT.PcbDoc
+rtk bash scripts/dev.sh run --locked --release -p eda-app --example pcb_3d_frame_profile -- INPUT.PcbDoc --window --capture /tmp/pcbcraft-3d.png
+```
+
+GPU tests compare interior pixels against the previous CPU rasterizer for
+orthographic/perspective, top/bottom, thickness, hidden/translucent/opaque
+materials and selection, within 3/255 per channel. They check vertex-buffer
+reuse; the full canvas test checks scene/renderer reuse and absence of software
+raster jobs during navigation. BVH picking is compared with raster depth through
+flips, oblique views, perspective, pan/zoom, thickness and material visibility.
+Radix ordering is checked against stable numeric sorting with equal depths.
+The asynchronous software renderer remains available for integrations without
+the wgpu callback, devices without vertex storage buffers, and scenes exceeding
+the device's buffer limits. Its orbit latency is unchanged. Arbitrary-scene memory
+budgets, first-scene latency, antialiasing/specular effects, exact native pixel
+parity and support for the previously rejected STEP models remain open.
+
+## Intermittent pan stalls on ReferenceM, 24.10.2026
+
+The initial viewport cache below removed the continuous low FPS but rebuilt the
+entire scene synchronously whenever a pan crossed its 256-point margin. A new
+360-frame sweep spanning 2,400 logical points reproduced 16 frames over 33 ms,
+with a maximum CPU paint+tessellation time of 158 ms. A ten-frame short-pan mean
+did not expose those stalls. The frame probe now reports p95, maximum and the
+number of frames over 33 ms, and accepts `--zoom PX_PER_MM`.
+
+The cache now captures all visible-layer artwork, including objects initially
+outside the viewport, at a fixed document anchor. A camera translation or canvas
+resize reuses the same meshes and GPU buffers regardless of distance. The fixed
+anchor also keeps egui's pixel rounding independent of the camera position when
+the scene was built. The grid and origin marker stay live in their original draw
+order, alongside tools and screen-anchored hatching. Grid clipping intersects the
+board outline once per row instead of testing every edge for every grid point.
+Offscreen hatch regions are rejected before generating their screen pattern.
+
+A second unnecessary invalidation used the identity of egui's shared font atlas,
+which egui replaces when it fills up. Cached PCB glyphs already own a private
+atlas snapshot. The key now tracks font definitions rather than shared atlas
+allocation, while retaining DPI invalidation. A regression explicitly replaces
+the UI atlas, checks that the artwork is reused, then changes font definitions
+and checks that the artwork rebuilds.
+
+On the same read-only 41,475-item PCB, release GPU-callback CPU submission at
+15 px/mm produced zero frames over 33 ms in the 360-frame sweep. One isolated
+development run had a maximum of 2.34 ms; a later run alongside compilation and
+native GUI QA had p95 5.20 ms and maximum 8.05 ms. At 150 and 1,500 px/mm the same
+screen-distance sweep also had zero frames over 33 ms. These probes exclude GPU
+execution and presentation. Peak headless RSS in those successive child runs was
+about 322 / 482 / 877 MiB respectively: whole-scene memory and cold build cost
+increase with zoom and displayed detail. This change does not establish bounded
+memory for arbitrary boards or extreme zoom.
+
+The actual 1440×900 XWayland window was exercised with 360 cursor movements,
+360 short-pan movements and 720 long-pan movements made as repeated middle-button
+drags. No artwork rebuild was logged during either pan phase. Warm short-pan CPU
+frame batch medians were 2.4–2.7 ms, maxima below 4 ms; long-pan batch medians were
+about 1–2.7 ms, with a maximum of 7.75 ms. Sampled GUI RSS was about 672 MiB.
+Startup and explicit Fit Board rebuilds are excluded from those warm figures;
+the startup batch included a 414 ms frame. These are CPU costs, not measured FPS.
+The source project was not edited or saved.
+
+GPU image comparisons now include large pans that reveal initially offscreen
+artwork, a live grid and an origin initially outside the viewport. A fresh scene
+at each destination is compared with the translated resident scene, with at most
+1/255 difference per pixel channel. Cache tests cover long translation without
+rebuilds and grid scanline agreement with the model's even/odd rule at vertices,
+edges and concave rows. Zoom, display/content changes and editing previews still
+require synchronous scene construction; Windows runtime and full Altium
+visual/performance parity remain unverified.
+
+Packaging also exposed `Text file busy` when overwriting the currently running
+AppImage. The builder now packages a temporary file on the destination filesystem
+and atomically replaces the output only after success. The running instance keeps
+its old executable until restarted. The rebuilt image passes a Wayland launch
+smoke check and its SHA256 sidecar matches.
+
 ## ReferenceM cursor and pan frame cost, 24.10.2026
+
+This first fix used a viewport border cache; the follow-up above replaces it.
 
 The opening fix below did not fix continuous 2D frame rendering. The unchanged
 41,475-item PCB reproduced about 59 ms for cursor frames and 49 ms for pans in

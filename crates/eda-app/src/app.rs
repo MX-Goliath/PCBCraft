@@ -216,6 +216,7 @@ impl PcbCraft {
         theme::apply(&cc.egui_ctx);
         if let Some(render) = &cc.wgpu_render_state {
             eda_render::pcb::enable_gpu(&cc.egui_ctx, render.target_format);
+            eda_render::pcb_3d::enable_gpu(&cc.egui_ctx, &render.device);
         }
         let mut settings: Settings = cc
             .storage
@@ -1793,10 +1794,13 @@ impl eframe::App for PcbCraft {
                     samples[60],
                     samples[113],
                     samples.iter().sum::<f64>() / samples.len() as f64,
+                    samples[119],
                 ))
             });
-            if let Some((median, p95, mean)) = report {
-                eprintln!("frame_cpu_ms median={median:.2} p95={p95:.2} mean={mean:.2} n=120");
+            if let Some((median, p95, mean, maximum)) = report {
+                eprintln!(
+                    "frame_cpu_ms median={median:.2} p95={p95:.2} mean={mean:.2} max={maximum:.2} n=120"
+                );
             }
         }
         if ctx.input(|i| i.viewport().close_requested()) && !self.allow_exit {
