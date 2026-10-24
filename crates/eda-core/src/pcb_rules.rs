@@ -5,6 +5,8 @@ use uuid::Uuid;
 #[path = "pcb_drc.rs"]
 mod drc;
 pub use drc::{CheckOptions, Report, Violation, check, check_with_options};
+#[path = "pcb_rules_query.rs"]
+mod membership;
 #[path = "pcb_rules_polygon.rs"]
 mod polygon;
 pub use polygon::{
@@ -588,6 +590,9 @@ pub(crate) fn scope(board: &Board, item: &Item, s: &str, depth: usize) -> Option
         "ISFILL" => return Some(matches!(item.shape, Shape::Fill { .. })),
         "ISREGION" => return Some(matches!(item.shape, Shape::Region { .. })),
         "ISPOLYGON" => return Some(item.polygon.is_some()),
+        "INPOLY" | "INPOLYGON" => {
+            return Some(item.polygon.is_some() && (1..=32).contains(&item.layer));
+        }
         "ISTHRUPAD" => return Some(matches!(item.shape,Shape::Pad {hole,..} if hole>0)),
         "ISSMDPAD" => return Some(matches!(item.shape, Shape::Pad { hole: 0, .. })),
         _ => {}
@@ -600,6 +605,8 @@ pub(crate) fn scope(board: &Board, item: &Item, s: &str, depth: usize) -> Option
         "INPADCLASS",
         "INNETCLASS",
         "INCOMPONENTCLASS",
+        "INLAYERCLASS",
+        "WITHINROOM",
         "INNAMEDPOLYGON",
         "ISNAMEDPOLYGON",
     ] {
@@ -636,6 +643,17 @@ pub(crate) fn scope(board: &Board, item: &Item, s: &str, depth: usize) -> Option
                     _ => return None,
                 }
             }
+            if matches!(name, "INLAYERCLASS" | "WITHINROOM") {
+                let mut result = false;
+                for value in &values {
+                    result |= if name == "INLAYERCLASS" {
+                        membership::in_layer_class(board, item.layer, value)?
+                    } else {
+                        membership::within_room(board, item, value)?
+                    };
+                }
+                return Some(result);
+            }
             let component = item
                 .component
                 .and_then(|n| board.components.iter().find(|c| c.index == n));
@@ -654,10 +672,7 @@ pub(crate) fn scope(board: &Board, item: &Item, s: &str, depth: usize) -> Option
                             .iter()
                             .any(|p| p.index == index && p.name.eq_ignore_ascii_case(value))
                     }),
-                    "ONLAYER" => board
-                        .layers
-                        .iter()
-                        .any(|l| l.id == item.layer && l.name.eq_ignore_ascii_case(value)),
+                    "ONLAYER" => membership::layer_matches(board, item.layer, value),
                     _ => board
                         .classes
                         .iter()

@@ -71,6 +71,8 @@ pub struct BoardView {
 }
 #[derive(Clone, Default)]
 pub struct Input {
+    /// Apply through the editor's layer-change command, including route vias.
+    pub requested_layer: Option<u16>,
     pub point: Option<Point>,
     pub raw_point: Option<Point>,
     pub press_origin: Option<Point>,
@@ -611,6 +613,7 @@ pub fn canvas(ui: &mut egui::Ui, b: &Board, view: &mut View) -> CanvasOutput {
         view.pcb.primary_dragging = false;
     }
     view.pcb.input = Some(Input {
+        requested_layer: navigation::requested_layer(ui, &response, &view.pcb),
         point,
         raw_point: raw,
         press_origin: origin,

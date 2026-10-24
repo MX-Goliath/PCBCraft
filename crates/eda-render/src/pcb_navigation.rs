@@ -58,6 +58,45 @@ fn fit_target(camera: &mut Camera, board: &Board, view: &BoardView, rect: Rect, 
         fit_bounds(camera, bounds, rect);
     }
 }
+pub(super) fn requested_layer(ui: &egui::Ui, r: &Response, view: &BoardView) -> Option<u16> {
+    if !ui.is_enabled() || !r.contains_pointer() {
+        return None;
+    }
+    let step: isize = ui.input(|i| {
+        if !i.focused {
+            return 0;
+        }
+        i.events
+            .iter()
+            .filter_map(|event| match event {
+                egui::Event::PointerButton {
+                    pos,
+                    button,
+                    pressed: true,
+                    ..
+                } if r.rect.contains(*pos) => match button {
+                    egui::PointerButton::Extra1 => Some(-1), // Back
+                    egui::PointerButton::Extra2 => Some(1),  // Forward
+                    _ => None,
+                },
+                _ => None,
+            })
+            .sum()
+    });
+    if step == 0 {
+        return None;
+    }
+    let layers = view.layer_tabs();
+    if layers.is_empty() {
+        return None;
+    }
+    let index = layers
+        .iter()
+        .position(|(id, _)| *id == view.active_layer)
+        .map_or(if step > 0 { -1 } else { 0 }, |n| n as isize);
+    let layer = layers[(index + step).rem_euclid(layers.len() as isize) as usize].0;
+    (layer != view.active_layer).then_some(layer)
+}
 pub(super) fn navigate(
     ui: &egui::Ui,
     r: &Response,
@@ -185,6 +224,8 @@ mod tests {
         board: Board,
         view: View,
         pointer: Pos2,
+        focused: bool,
+        modal: bool,
     }
     impl Harness {
         fn new() -> Self {
@@ -197,6 +238,8 @@ mod tests {
                 board: Board::default(),
                 view,
                 pointer: Pos2::new(250.0, 120.0),
+                focused: true,
+                modal: false,
             };
             h.frame(vec![], Modifiers::NONE);
             h
@@ -209,7 +252,7 @@ mod tests {
             self.ctx.run(
                 egui::RawInput {
                     screen_rect: Some(Self::rect()),
-                    focused: true,
+                    focused: self.focused,
                     events,
                     modifiers,
                     ..Default::default()
@@ -220,6 +263,11 @@ mod tests {
                         .show(ctx, |ui| {
                             canvas(ui, &self.board, &mut self.view);
                         });
+                    if self.modal {
+                        egui::Modal::new(egui::Id::new("navigation_test_modal")).show(ctx, |ui| {
+                            ui.label("Modal dialog");
+                        });
+                    }
                 },
             )
         }
@@ -260,6 +308,139 @@ mod tests {
             (a[0] - b[0]).abs() < 1e-8 && (a[1] - b[1]).abs() < 1e-8,
             "{a:?} != {b:?}"
         );
+    }
+    fn layer_harness() -> Harness {
+        let mut h = Harness::new();
+        h.board.layers = [
+            (1, "Top", true, 0),
+            (2, "Hidden inner", true, 1),
+            (32, "Bottom", true, 2),
+            (35, "Paste", false, 3),
+            (57, "Mechanical", false, 4),
+            (75, "Connections", false, 5),
+        ]
+        .into_iter()
+        .map(|(id, name, copper, order)| PcbLayer {
+            id,
+            name: name.into(),
+            copper,
+            order,
+        })
+        .collect();
+        h.view.pcb = BoardView::default();
+        h.frame(vec![], Modifiers::NONE);
+        h.view.pcb.visible = [1, 32, 35, 57, 75].into();
+        h
+    }
+    fn side_button(pos: Pos2, button: PointerButton, pressed: bool) -> Event {
+        Event::PointerButton {
+            pos,
+            button,
+            pressed,
+            modifiers: Modifiers::NONE,
+        }
+    }
+    #[test]
+    fn side_buttons_request_visible_layers_in_strip_order_with_wraparound() {
+        let mut h = layer_harness();
+        let board = h.board.clone();
+        let visible = h.view.pcb.visible.clone();
+        for (active, button, expected) in [
+            (1, PointerButton::Extra2, 32),
+            (32, PointerButton::Extra2, 57),
+            (57, PointerButton::Extra2, 35),
+            (35, PointerButton::Extra2, 1),
+            (1, PointerButton::Extra1, 35),
+            (35, PointerButton::Extra1, 57),
+            (57, PointerButton::Extra1, 32),
+            (32, PointerButton::Extra1, 1),
+        ] {
+            h.view.pcb.active_layer = active;
+            h.frame(
+                vec![
+                    side_button(h.pointer, button, true),
+                    side_button(h.pointer, button, false),
+                ],
+                Modifiers::NONE,
+            );
+            let input = h.view.pcb.input.as_ref().unwrap();
+            assert_eq!(input.requested_layer, Some(expected));
+            assert!(!input.clicked && !input.secondary_clicked && !input.drag_started);
+            assert_eq!(
+                h.view.pcb.active_layer, active,
+                "Editor must apply the request"
+            );
+            assert_eq!(h.view.pcb.visible, visible);
+            assert_eq!(h.board, board);
+        }
+    }
+    #[test]
+    fn layer_cycle_reads_live_visibility_and_handles_hidden_active_or_empty_strip() {
+        let mut h = layer_harness();
+        for (visible, active, button, expected) in [
+            (vec![1, 57, 35, 75], 1, PointerButton::Extra2, Some(57)),
+            (vec![32, 35], 1, PointerButton::Extra2, Some(32)),
+            (vec![32, 35], 1, PointerButton::Extra1, Some(35)),
+            (vec![32], 32, PointerButton::Extra2, None),
+            (vec![32], 1, PointerButton::Extra2, Some(32)),
+            (vec![75], 1, PointerButton::Extra2, None),
+            (vec![], 1, PointerButton::Extra1, None),
+        ] {
+            h.view.pcb.visible = visible.into_iter().collect();
+            h.view.pcb.active_layer = active;
+            h.frame(vec![side_button(h.pointer, button, true)], Modifiers::NONE);
+            assert_eq!(h.view.pcb.input.as_ref().unwrap().requested_layer, expected);
+        }
+    }
+    #[test]
+    fn layer_cycle_uses_presses_once_and_keeps_multiple_presses_in_one_frame() {
+        let mut h = layer_harness();
+        h.frame(
+            vec![side_button(h.pointer, PointerButton::Extra2, true)],
+            Modifiers::NONE,
+        );
+        assert_eq!(h.view.pcb.input.as_ref().unwrap().requested_layer, Some(32));
+        h.frame(vec![], Modifiers::NONE);
+        assert!(h.view.pcb.input.as_ref().unwrap().requested_layer.is_none());
+        h.frame(
+            vec![side_button(h.pointer, PointerButton::Extra2, false)],
+            Modifiers::NONE,
+        );
+        assert!(h.view.pcb.input.as_ref().unwrap().requested_layer.is_none());
+        h.frame(
+            vec![
+                side_button(h.pointer, PointerButton::Extra2, true),
+                side_button(h.pointer, PointerButton::Extra2, false),
+                side_button(h.pointer, PointerButton::Extra2, true),
+            ],
+            Modifiers::NONE,
+        );
+        assert_eq!(h.view.pcb.input.as_ref().unwrap().requested_layer, Some(57));
+    }
+    #[test]
+    fn side_buttons_ignore_outside_canvas_unfocused_window_and_modal_dialogs() {
+        let mut h = layer_harness();
+        h.pointer = Pos2::new(-10.0, -10.0);
+        h.frame(
+            vec![side_button(h.pointer, PointerButton::Extra2, true)],
+            Modifiers::NONE,
+        );
+        assert!(h.view.pcb.input.as_ref().unwrap().requested_layer.is_none());
+        h.pointer = Pos2::new(250.0, 120.0);
+        h.focused = false;
+        h.frame(
+            vec![side_button(h.pointer, PointerButton::Extra2, true)],
+            Modifiers::NONE,
+        );
+        assert!(h.view.pcb.input.as_ref().unwrap().requested_layer.is_none());
+        h.focused = true;
+        h.modal = true;
+        h.frame(vec![], Modifiers::NONE);
+        h.frame(
+            vec![side_button(h.pointer, PointerButton::Extra2, true)],
+            Modifiers::NONE,
+        );
+        assert!(h.view.pcb.input.as_ref().unwrap().requested_layer.is_none());
     }
     #[test]
     fn cursor_follows_pixel_motion_inside_one_grid_cell() {

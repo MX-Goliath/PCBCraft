@@ -14,6 +14,7 @@ native modal interaction still need matched-window/DPI verification.
 | Wheel | Vertical scroll by default |
 | Shift + wheel | Horizontal scroll |
 | Right or middle button drag | Pan, including dragging beyond canvas |
+| Mouse Back / Forward buttons | Previous / next visible PCB layer, wrapping in layer-strip order |
 | PgUp / PgDn | Zoom in / out at pointer |
 | Home | Centre the view at pointer |
 | Ctrl + PgDn or V,D | Fit all document objects |
@@ -32,6 +33,19 @@ routes it into zoom_delta. The canvas now uses both streams without applying a
 Ctrl-wheel event twice. Pinch and residual zoom frames after releasing Ctrl use
 the same pointer anchor. Navigation is limited to the canvas; fields retain
 keyboard navigation. Camera scale remains within 0.001–100000 logical px/mm.
+
+Mouse side buttons act on press over the focused 2D PCB canvas. The cycle uses
+the current visible layer tabs, including mechanical and overlay layers, and
+excludes system display categories. Hidden layers are skipped immediately after
+visibility changes. If the active layer is hidden, Forward selects the first
+visible tab and Back selects the last. An empty strip does nothing. Holding or
+releasing a side button does not repeat the switch. Panels and modal dialogs do
+not switch the PCB layer.
+
+Layer changes use the same controller path as clicking a layer tab. During an
+interactive route, the existing via and destination-layer checks apply. A rejected
+change keeps the active route layer. Outside routing, switching layers does not
+edit the board or add history.
 
 ## Editing gestures
 
@@ -67,6 +81,9 @@ fit targets, cursor bounds and fast release. Controller tests cover fast move,
 Undo/Redo, cancellation, box direction, grid-off positions, picking for Move/Drag,
 connected endpoints, rotated paste and rotating an active mouse drag. Settings
 round-trip and shortcuts/tab-switch cleanup are also covered.
+Side-button regressions cover live visibility, tab order, wraparound, hidden
+active layers, empty/single-layer strips, press/release/hold, multiple presses,
+focus/modal isolation and route via validation with Undo.
 
 Validation on Linux/Xvfb used a focused real window: Ctrl-wheel zoom in/out
 returned the canvas to the same image (one raster pixel differed), right-drag
@@ -100,3 +117,13 @@ Validation: 313 workspace tests, fmt check, strict Clippy and Windows build pass
 The new ReferenceA window was checked at adjacent screen positions (850,451) and
 (851,452): the crosshair moved while the snapped status coordinates stayed at
 X=204.000 mm, Y=74.000 mm with a 0.250 mm grid. No board edits were made.
+
+## Mouse side-button layer switching, 2026-10-24
+
+A native eframe window loaded ReferenceM read-only. Application-local Back/Forward
+pointer events switched Top to L2, back to Top, wrapped backward to L3 and forward
+to Top. After hiding L2, Forward selected L3. Each step verified the active layer,
+history revision zero and unchanged saved content. The application's own GPU
+screenshot showed only Top/L3 tabs, with L3 active and no unsaved marker. This
+checks native UI/controller integration using synthetic events. Physical mouse
+side-button input was not exercised in this session.

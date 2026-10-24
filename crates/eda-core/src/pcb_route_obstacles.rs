@@ -31,6 +31,8 @@ impl Conflict {
 struct Obstacle {
     bounds: Bounds,
     gap: Result<Option<i64>, String>,
+    gap_bound: i64,
+    item: Option<usize>,
     copper: Geometry,
 }
 #[derive(Clone)]
@@ -52,14 +54,17 @@ impl Geometry {
     }
 }
 #[derive(Clone)]
-pub(super) struct Obstacles(Vec<Obstacle>);
+pub(super) struct Obstacles {
+    objects: Vec<Obstacle>,
+    spatial: bool,
+}
 impl Obstacles {
     pub fn new(board: &Board, layer: u16, net: Option<u32>) -> Self {
         let probe = crate::pcb_rules::probe(layer, net, Point::default(), 1);
         Self::for_item(board, layer, &probe)
     }
     pub fn error(&self) -> Result<(), String> {
-        for o in &self.0 {
+        for o in &self.objects {
             if let Err(e) = &o.gap {
                 return Err(e.clone());
             }
@@ -68,10 +73,26 @@ impl Obstacles {
     }
     pub fn for_item(board: &Board, layer: u16, probe: &Item) -> Self {
         let net = probe.net;
+        // Room membership changes as the route moves. Cache the geometry, but
+        // resolve these pair clearances against each proposed segment.
+        let spatial = matches!(probe.shape, Shape::Track { .. })
+            && board.rules.iter().any(|r| {
+                crate::pcb_rules::enabled(r)
+                    && matches!(
+                        crate::pcb_rules::text(r, "RULEKIND"),
+                        "Clearance" | "BoardOutlineClearance"
+                    )
+                    && ["SCOPE1EXPRESSION", "SCOPE2EXPRESSION"].iter().any(|key| {
+                        crate::pcb_rules::text(r, key)
+                            .to_ascii_uppercase()
+                            .contains("WITHINROOM(")
+                    })
+            });
         let mut obstacles: Vec<Obstacle> = board
             .items
             .iter()
-            .filter(|i| {
+            .enumerate()
+            .filter(|(_, i)| {
                 let board_cutout = i
                     .properties
                     .get("ISBOARDCUTOUT")
@@ -95,8 +116,19 @@ impl Obstacles {
                         || i.layer == KEEP_OUT
                         || i.is_drill_only())
             })
-            .map(|i| Obstacle {
+            .map(|(index, i)| Obstacle {
                 bounds: i.bounds(),
+                item: Some(index),
+                gap_bound: if spatial {
+                    maximum_gap(
+                        board,
+                        probe,
+                        crate::pcb_rules::object_kind(i),
+                        text_is_board_cutout(i),
+                    )
+                } else {
+                    0
+                },
                 gap: if text_is_board_cutout(i) {
                     crate::pcb_rules::cutout_clearance(board, probe, i)
                 } else {
@@ -143,7 +175,13 @@ impl Obstacles {
         let outline = board.outline_points(256);
         if outline.len() >= 3 {
             let rule = crate::pcb_rules::resolve(board, "BoardOutlineClearance", probe, None);
-            if !matches!(rule, Ok(None)) {
+            if !matches!(rule, Ok(None))
+                || spatial
+                    && board.rules.iter().any(|r| {
+                        crate::pcb_rules::enabled(r)
+                            && crate::pcb_rules::text(r, "RULEKIND") == "BoardOutlineClearance"
+                    })
+            {
                 let gap = rule.and_then(|r| {
                     r.map(|(_, r)| {
                         crate::pcb_rules::gap_objects(
@@ -155,8 +193,11 @@ impl Obstacles {
                     .transpose()
                 });
                 // An explicit zero edge clearance permits objects to cross that edge.
-                if matches!(gap, Ok(Some(0))) {
-                    return Self(obstacles);
+                if matches!(gap, Ok(Some(0))) && !spatial {
+                    return Self {
+                        objects: obstacles,
+                        spatial,
+                    };
                 }
                 let exterior = vec![
                     (-100_001.0, -100_001.0),
@@ -175,6 +216,12 @@ impl Obstacles {
                         Point::mm(100_001, 100_001),
                     ]),
                     gap,
+                    item: None,
+                    gap_bound: if spatial {
+                        maximum_gap(board, probe, "OutlineEdge", true)
+                    } else {
+                        0
+                    },
                     copper: Geometry::Polygon(MultiPolygon(vec![geo::Polygon::new(
                         exterior.into(),
                         vec![interior.into()],
@@ -182,39 +229,105 @@ impl Obstacles {
                 });
             }
         }
-        Self(obstacles)
+        Self {
+            objects: obstacles,
+            spatial,
+        }
     }
-    fn blocker(&self, a: Point, b: Point, radius: i64, clearance: i64) -> Option<usize> {
+    fn blocker(
+        &self,
+        a: Point,
+        b: Point,
+        radius: i64,
+        clearance: i64,
+        route: Option<&RouteSession>,
+    ) -> Option<usize> {
         let bounds = Bounds::points(&[a, b]);
         let line = Line::new(
             (a.x as f64 / 1e6, a.y as f64 / 1e6),
             (b.x as f64 / 1e6, b.y as f64 / 1e6),
         );
-        self.0.iter().position(|o| {
+        let probe = route.filter(|_| self.spatial).map(|r| {
+            Item::new(
+                r.layer,
+                r.net,
+                Shape::Track {
+                    start: a,
+                    end: b,
+                    width: r.width,
+                },
+            )
+        });
+        self.objects.iter().position(|o| {
             let Ok(gap) = o.gap else {
                 return true;
             };
-            let radius = radius + gap.unwrap_or(clearance);
-            let bounds = bounds.expanded(radius);
-            bounds.min.x <= o.bounds.max.x
+            let broad_radius = radius
+                + if probe.is_some() {
+                    o.gap_bound.max(clearance)
+                } else {
+                    gap.unwrap_or(clearance)
+                };
+            let bounds = bounds.expanded(broad_radius);
+            if !(bounds.min.x <= o.bounds.max.x
                 && bounds.max.x >= o.bounds.min.x
                 && bounds.min.y <= o.bounds.max.y
-                && bounds.max.y >= o.bounds.min.y
-                && o.copper.distance(&line) < radius as f64 / 1e6 + 0.000001
+                && bounds.max.y >= o.bounds.min.y)
+            {
+                return false;
+            }
+            let gap = if let (Some(route), Some(probe)) = (route, &probe) {
+                let board = &route.draft;
+                let result = if let Some(index) = o.item {
+                    let item = &board.items[index];
+                    if text_is_board_cutout(item) {
+                        crate::pcb_rules::cutout_clearance(board, probe, item)
+                    } else {
+                        crate::pcb_rules::clearance(board, probe, item)
+                    }
+                } else {
+                    crate::pcb_rules::resolve(board, "BoardOutlineClearance", probe, None).and_then(
+                        |r| {
+                            r.map(|(_, r)| crate::pcb_rules::gap_objects(r, "Track", "OutlineEdge"))
+                                .transpose()
+                        },
+                    )
+                };
+                match result {
+                    Ok(gap) => gap,
+                    Err(_) => return true,
+                }
+            } else {
+                gap
+            };
+            if o.item.is_none() && gap.is_none_or(|gap| gap == 0) {
+                return false; // No applicable edge constraint, or explicit crossing permission.
+            }
+            o.copper.distance(&line) < (radius + gap.unwrap_or(clearance)) as f64 / 1e6 + 0.000001
         })
     }
     pub fn clear(&self, a: Point, b: Point, radius: i64, clearance: i64) -> bool {
-        self.blocker(a, b, radius, clearance).is_none()
+        self.blocker(a, b, radius, clearance, None).is_none()
     }
-    fn stop(&self, points: &[Point], radius: i64, clearance: i64) -> Vec<Point> {
+    fn stop(&self, points: &[Point], route: &RouteSession) -> Vec<Point> {
+        let clear = |a, b| {
+            self.blocker(
+                a,
+                b,
+                route.width.max(1) / 2,
+                route.clearance.max(0),
+                Some(route),
+            )
+            .is_none()
+        };
         let mut result = vec![points[0]];
         for edge in points.windows(2) {
             let (a, b) = (edge[0], edge[1]);
-            if self.clear(a, b, radius, clearance) {
+            if clear(a, b) {
                 result.push(b);
                 continue;
             }
-            if !self.clear(a, a, radius, clearance) {
+            if !clear(a, a) {
                 break;
             }
             let interpolate = |t: f64| Point {
@@ -224,14 +337,14 @@ impl Obstacles {
             let (mut lo, mut hi) = (0.0, 1.0);
             for _ in 0..40 {
                 let mid = (lo + hi) / 2.0;
-                if self.clear(a, interpolate(mid), radius, clearance) {
+                if clear(a, interpolate(mid)) {
                     lo = mid;
                 } else {
                     hi = mid;
                 }
             }
             let p = interpolate(lo);
-            if p != a && self.clear(a, p, radius, clearance) {
+            if p != a && clear(a, p) {
                 result.push(p);
             }
             break;
@@ -242,17 +355,12 @@ impl Obstacles {
         let direct = route.free_points(route.anchor, end);
         let radius = route.width.max(1) / 2;
         let clearance = route.clearance.max(0);
-        if route.conflict == Conflict::Ignore
-            || direct
-                .windows(2)
-                .all(|e| self.clear(e[0], e[1], radius, clearance))
-        {
+        let clear = |a, b| self.blocker(a, b, radius, clearance, Some(route)).is_none();
+        if route.conflict == Conflict::Ignore || direct.windows(2).all(|e| clear(e[0], e[1])) {
             return direct;
         }
-        if route.conflict == Conflict::Stop
-            || !self.clear(route.anchor, route.anchor, radius, clearance)
-        {
-            return self.stop(&direct, radius, clearance);
+        if route.conflict == Conflict::Stop || !clear(route.anchor, route.anchor) {
+            return self.stop(&direct, route);
         }
         // Best-first detours around the first obstruction. Explicit budgets keep
         // mouse interaction bounded; on exhaustion retain the valid prefix.
@@ -274,7 +382,7 @@ impl Obstacles {
             let leg = route.free_points(start, end);
             let obstruction = leg
                 .windows(2)
-                .find_map(|e| self.blocker(e[0], e[1], radius, clearance));
+                .find_map(|e| self.blocker(e[0], e[1], radius, clearance, Some(route)));
             let Some(index) = obstruction else {
                 let mut result = path;
                 result.extend_from_slice(&leg[1..]);
@@ -283,15 +391,20 @@ impl Obstacles {
             if path.len() > 24 {
                 continue;
             }
-            let bounds = self.0[index].bounds.expanded(
+            let bounds = self.objects[index].bounds.expanded(
                 radius
-                    + self.0[index]
+                    + self.objects[index]
                         .gap
                         .as_ref()
                         .ok()
                         .copied()
                         .flatten()
                         .unwrap_or(clearance)
+                        .max(if self.spatial {
+                            self.objects[index].gap_bound
+                        } else {
+                            0
+                        })
                     + 10,
             );
             for point in [
@@ -310,18 +423,38 @@ impl Obstacles {
                     continue;
                 }
                 let detour = route.free_points(start, point);
-                if detour
-                    .windows(2)
-                    .all(|e| self.clear(e[0], e[1], radius, clearance))
-                {
+                if detour.windows(2).all(|e| clear(e[0], e[1])) {
                     let mut next = path.clone();
                     next.extend_from_slice(&detour[1..]);
                     queue.push(next);
                 }
             }
         }
-        self.stop(&direct, radius, clearance)
+        self.stop(&direct, route)
     }
+}
+fn maximum_gap(board: &Board, probe: &Item, other_kind: &str, edge: bool) -> i64 {
+    board
+        .rules
+        .iter()
+        .filter(|r| {
+            crate::pcb_rules::enabled(r)
+                && (crate::pcb_rules::text(r, "RULEKIND") == "Clearance"
+                    || edge && crate::pcb_rules::text(r, "RULEKIND") == "BoardOutlineClearance")
+        })
+        .map(|r| {
+            let other_kind = if crate::pcb_rules::text(r, "RULEKIND") == "BoardOutlineClearance"
+                && other_kind != "OutlineEdge"
+            {
+                "CutoutEdge"
+            } else {
+                other_kind
+            };
+            crate::pcb_rules::gap_objects(r, crate::pcb_rules::object_kind(probe), other_kind)
+                .unwrap_or(100_000_000_000)
+        })
+        .max()
+        .unwrap_or(0)
 }
 fn text_is_board_cutout(i: &Item) -> bool {
     matches!(i.shape, Shape::Region { cutout: true, .. })

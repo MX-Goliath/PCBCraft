@@ -828,3 +828,42 @@ Measurements and limitations: docs/pcb-update/PERFORMANCE.md.
   transparency, antialiasing and full native pixel parity remain limited.
 
 Measurements and limitations: docs/pcb-update/PERFORMANCE.md.
+
+### PCB visible-layer cycling with mouse side buttons, 24.10.2026
+
+- [x] Back/Forward presses over the focused 2D canvas select the previous/next
+  visible layer in tab order, with wraparound and live visibility changes.
+- [x] Skip system display categories; handle hidden active layers and empty or
+  single-layer strips. Ignore releases, holds, panels and modal dialogs.
+- [x] Send layer requests through the editor's existing route-layer handler,
+  preserving via checks, previews and Undo. Normal switching only changes view.
+- [x] Real egui input and controller regressions; native ReferenceM window with
+  application-local synthetic pointer events and inspection of its GPU capture.
+- [x] Formatting, strict workspace/all-target Clippy and 382 workspace tests.
+- [x] Rebuild the Linux AppImage, verify its checksum and launch ReferenceM without
+  renderer errors. Reference PCB/project hashes remain unchanged.
+- [ ] Physical side-button input and matched Altium/Windows runtime comparison.
+
+Controls and validation: docs/pcb-update/CONTROLS.md.
+
+### ReferenceM routing startup failure, 24.10.2026
+
+- [x] Reproduce route startup abort on `InLayerClass('L3_L4')`; inventory the
+  board's clearance scopes, layer classes and native RoomDefinition contours.
+- [x] Support layer-class membership, native layer aliases, straight room
+  containment and InPoly/InPolygon; retain errors for unknown predicates and
+  unsupported room geometry. Normalize native retraced room closing edges.
+- [x] Resolve room-dependent clearance for the proposed segment, with cached
+  obstacle geometry and conservative bounds covering matrix clearances.
+- [x] Query/geometry and post-placement room/matrix regressions; read-only
+  ReferenceM preview/place/finish/Undo probe on AR_QSPI_CS, 0.254 mm width.
+- [x] Full native window with application-local synthetic mouse events: start,
+  copper preview, placement/completion in one transaction and exact Undo;
+  inspect the application's GPU screenshot. No source file writes.
+- [x] Formatting, strict workspace/all-target Clippy and 389 workspace tests.
+- [x] Rebuild the Linux AppImage, verify its checksum and launch ReferenceM without
+  renderer errors; reference project/PCB hashes remain unchanged.
+- [ ] Curved room scopes, complete query language/DRC, physical input and new
+  Altium/Windows runtime comparison remain outside verified coverage.
+
+Cause, implementation and validation: docs/pcb-update/INTERACTIVE_ROUTING.md.

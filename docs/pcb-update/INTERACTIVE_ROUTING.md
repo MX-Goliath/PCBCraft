@@ -67,10 +67,64 @@ or Altium solver parity. Final build/test/GUI results are recorded in PLAN.md.
 Full interactive-routing parity is not achieved. Push/HugNPush, multi-layer
 routing search, rounded/arc corners, gloss, loop removal, hug/posture continuity,
 auto-complete, width/via favorites and full preference/shortcut parity remain
-open. The solver does not compile scoped/matrix clearance rules, board-edge
-clearance, neck-down or impedance rules, and is not a full DRC engine. Native
+open. Supported scoped/matrix clearance and board-edge rules are evaluated;
+general query compilation, neck-down and impedance rules remain incomplete.
+The solver is not a full DRC engine. Native
 text/custom shapes retain existing geometry approximations. No-net starts on
 existing no-net copper can be blocked by that copper. Obstacle geometry is cached
 per route/layer; already-existing illegal starting clearances stop the route.
 Net class/delay are N/A; length is a geometric sum, not an electrical topology
 measurement. Exact glyph/raster/DPI and Linux runtime parity remain unverified.
+
+## ReferenceM routing startup, 2026-10-24
+
+The read-only probe reproduced a startup failure on the 41,475-item ReferenceM
+board: `Unsupported query: InLayerClass('L3_L4')`. Its clearance rules also use
+`WithinRoom(...)`, `InPolygon` and the `InPoly` alias. Unsupported scopes abort
+obstacle preparation, so the initial click never created a route session.
+
+The shared rule evaluator now handles native layer classes and their `M#` or
+`MEMBER#` entries, known built-in layer classes, configured layer names and native
+Top/Bottom aliases. Missing named classes have no members; their names are not
+used to guess a layer set. ReferenceM references L3_L4/L2_L5/layers classes whose
+definitions are absent in its Classes6 records.
+
+Straight-edge RoomDefinition contours support `WithinRoom`. Tracks and other
+copper shapes must fit inside the actual filled outline, including concave
+rooms. Pad/via membership uses the centre. Native retraced closing edges are
+normalized with even/odd fill; ReferenceM's COUPLE contour needs this normalization.
+Malformed and curved rooms remain explicit unsupported scopes. Unrecognized
+predicates still fail instead of silently selecting a lower-priority rule.
+The polygon aliases match generated signal-layer pour copper.
+
+Room-scoped clearance is resolved for each proposed route segment, after a
+conservative bounds check. The cached probe at document origin cannot decide
+the room membership of a later segment. Obstacle geometry remains cached, and
+matrix/scoped rules retain their priority. This also applies after placing a
+leg, changing layer or backtracking. General query compilation and full DRC
+remain outside the implemented coverage.
+
+The query semantics were checked against Altium's
+[membership checks](https://www.altium.com/documentation/altium-designer/pcb/query-functions/membership-checks)
+and [attribute checks](https://www.altium.com/documentation/altium-designer/pcb/query-functions/attribute-checks).
+There was no new live Altium comparison.
+
+Core regressions cover layer-class kinds/members, native layer aliases, missing
+classes, concave-room containment, pad/via centres, retraced closing edges,
+unsupported room shapes, polygon aliases and clearance changes after entering
+a room. The native-file probe now checks preview, placement, completion and Undo
+in memory. On ReferenceM, AR_QSPI_CS starts with the native 0.254 mm preferred
+width; preparation took about 413 ms and the three sampled solves 5–8 ms.
+These timings exclude GPU painting and do not establish presentation FPS.
+
+A native eframe window exercised the full application with application-local
+synthetic primary-button clicks on that pad and a nearby free endpoint. The
+first click started the session; moving the pointer created visible preview
+copper without changing the document. Placement and Finish Route committed one
+history entry. A capture of the application's GPU framebuffer was inspected,
+then Undo restored the saved document exactly. The source file was never saved.
+This verifies the native canvas/controller path, not physical mouse input or a
+new Altium comparison.
+
+Validation: 389 workspace tests, formatting and strict all-target Clippy passed.
+ReferenceM PcbDoc/PrjPcb hashes remained unchanged.

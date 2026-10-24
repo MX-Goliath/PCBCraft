@@ -429,6 +429,97 @@ impl RouteSession {
 mod tests {
     use super::*;
     #[test]
+    fn spatial_board_edge_rule_is_found_away_from_origin_and_zero_permits_crossing() {
+        let mut board = Board {
+            outline: crate::pcb_polygon::straight_contour(&[
+                Point::mm(0, 0),
+                Point::mm(10, 0),
+                Point::mm(10, 10),
+                Point::mm(0, 10),
+            ]),
+            ..Default::default()
+        };
+        let mut room = Fields::from([
+            ("RULEKIND".into(), "RoomDefinition".into()),
+            ("NAME".into(), "East".into()),
+        ]);
+        for (n, (x, y)) in [(5, -5), (15, -5), (15, 15), (5, 15)]
+            .into_iter()
+            .enumerate()
+        {
+            room.insert(format!("VX{n}"), format!("{x}mm"));
+            room.insert(format!("VY{n}"), format!("{y}mm"));
+        }
+        let mut edge = crate::pcb_rules::default_rule("BoardOutlineClearance");
+        edge.insert("SCOPE1EXPRESSION".into(), "WithinRoom('East')".into());
+        edge.insert("GAP".into(), "1mm".into());
+        board.rules = vec![room, edge];
+        let route = |board: &Board, start| {
+            let mut route = RouteSession::begin(board, 0, start, TOP, None, 200_000, 0).unwrap();
+            route.corner = Corner::AnyAngle;
+            route.conflict = Conflict::Stop;
+            route
+        };
+        let r = route(&board, Point::mm(8, 5));
+        assert!(r.points(Point::mm(12, 5)).last().unwrap().x < 9_000_000);
+        let r = route(&board, Point::mm(2, 5));
+        assert_eq!(r.points(Point::mm(-2, 5)).last(), Some(&Point::mm(-2, 5)));
+        board.rules[1].insert("GAP".into(), "0mm".into());
+        let r = route(&board, Point::mm(8, 5));
+        assert_eq!(r.points(Point::mm(12, 5)).last(), Some(&Point::mm(12, 5)));
+    }
+    #[test]
+    fn room_clearance_follows_the_proposed_segment_after_placing_a_leg() {
+        let mut board = Board::default();
+        board.items.push(Item::new(
+            TOP,
+            None,
+            Shape::Track {
+                start: Point { x: 0, y: 500_000 },
+                end: Point {
+                    x: 3_000_000,
+                    y: 500_000,
+                },
+                width: 200_000,
+            },
+        ));
+        let mut room = Fields::from([
+            ("RULEKIND".into(), "RoomDefinition".into()),
+            ("NAME".into(), "DUT".into()),
+        ]);
+        for (n, (x, y)) in [(0, 1), (10, 1), (10, 10), (0, 10)].into_iter().enumerate() {
+            room.insert(format!("VX{n}"), format!("{x}mm"));
+            room.insert(format!("VY{n}"), format!("{y}mm"));
+        }
+        let mut scoped = crate::pcb_rules::default_rule("Clearance");
+        scoped.insert("SCOPE1EXPRESSION".into(), "WithinRoom('DUT')".into());
+        scoped.insert("GAP".into(), "0.1mm".into());
+        scoped.insert(
+            "OBJECTCLEARANCES".into(),
+            "ClearanceObj_Track-ClearanceObj_Track:393701".into(),
+        );
+        let mut fallback = crate::pcb_rules::default_rule("Clearance");
+        fallback.insert("PRIORITY".into(), "2".into());
+        fallback.insert("GAP".into(), "0.1mm".into());
+        board.rules = vec![room, scoped, fallback];
+        let mut r =
+            RouteSession::begin(&board, 0, Point::mm(8, -1), TOP, None, 200_000, 0).unwrap();
+        r.corner = Corner::AnyAngle;
+        r.conflict = Conflict::Stop;
+        // The original clearance probe at (0,0) lies outside DUT. A subsequent
+        // segment inside DUT must nevertheless use its larger scoped gap.
+        r.place(Point::mm(8, 2), None).unwrap();
+        let target = Point {
+            x: 1_000_000,
+            y: 1_200_000,
+        };
+        assert_ne!(r.points(target).last(), Some(&target));
+        assert!(r.points(target).last().unwrap().x > target.x);
+        r.place(Point::mm(8, -1), None).unwrap();
+        assert_eq!(r.points(Point::mm(1, -1)).last(), Some(&Point::mm(1, -1)));
+        assert_eq!(board.items.len(), 1);
+    }
+    #[test]
     fn empty_preview_keeps_pours_current_and_invalid_settings_do_not_overflow() {
         let mut b = Board::default();
         b.polygon_pours.push(crate::pcb_polygon::Polygon {

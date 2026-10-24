@@ -711,6 +711,10 @@ fn input(
     if let Some(p) = i.point {
         ed.last_point = Some(p);
     }
+    if let Some(layer) = i.requested_layer {
+        route_layer(doc, ed, layer)?;
+        ctx.request_repaint();
+    }
     let modifiers = ctx.input(|s| s.modifiers);
     if ed.paused {
         if i.clicked {
@@ -2284,6 +2288,64 @@ mod controller_tests {
             hovered: true,
             ..Default::default()
         }
+    }
+    #[test]
+    fn canvas_layer_request_changes_view_without_editing_document_or_history() {
+        let mut d = doc();
+        let original = d.model.clone();
+        let mut ed = Editor::default();
+        input(
+            &mut d,
+            &mut ed,
+            &mut None,
+            Input {
+                requested_layer: Some(pcb::BOTTOM),
+                ..Default::default()
+            },
+            &egui::Context::default(),
+        )
+        .unwrap();
+        assert_eq!(d.view.pcb.active_layer, pcb::BOTTOM);
+        assert_eq!(d.model, original);
+        assert_eq!(d.history.revision, 0);
+        assert!(!d.history.can_undo());
+    }
+    #[test]
+    fn canvas_layer_request_preserves_route_vias_validation_and_undo() {
+        let mut d = doc();
+        let original = d.model.clone();
+        let mut ed = Editor::default();
+        ed.set_tool(Tool::Route, &mut d.view);
+        let ctx = egui::Context::default();
+        input(&mut d, &mut ed, &mut None, click(0, 0), &ctx).unwrap();
+        let request = |layer| Input {
+            requested_layer: Some(layer),
+            point: Some(Point::mm(2, 1)),
+            hovered: true,
+            ..Default::default()
+        };
+        input(&mut d, &mut ed, &mut None, request(pcb::BOTTOM), &ctx).unwrap();
+        assert_eq!(d.view.pcb.active_layer, pcb::BOTTOM);
+        let route = ed.route_session.as_ref().unwrap();
+        assert_eq!(route.layer, pcb::BOTTOM);
+        assert!(route.draft.items.iter().any(|item| matches!(
+            item.shape,
+            Shape::Via {
+                position,
+                from_layer: pcb::TOP,
+                to_layer: pcb::BOTTOM,
+                ..
+            } if position == Point::mm(2, 1)
+        )));
+        assert!(input(&mut d, &mut ed, &mut None, request(pcb::TOP_OVERLAY), &ctx).is_err());
+        assert_eq!(d.view.pcb.active_layer, pcb::BOTTOM);
+        assert_eq!(ed.route_session.as_ref().unwrap().layer, pcb::BOTTOM);
+        assert_eq!(d.model, original);
+        assert!(!d.history.can_undo());
+        finish_route(&mut d, &mut ed).unwrap();
+        assert_eq!(d.history.revision, 1);
+        d.history.undo(&mut d.model);
+        assert_eq!(d.model, original);
     }
     #[test]
     fn routing_preview_is_not_committed_until_finished() {
