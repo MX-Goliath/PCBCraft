@@ -41,10 +41,29 @@ struct Vertex {
         f32((packed >> 16u) & 255u), f32((packed >> 24u) & 255u)) / 255.;
     return out;
 }
-@fragment fn fragment(in: Vertex) -> @location(0) vec4<f32> {
+fn shaded(in: Vertex) -> vec4<f32> {
     let n = cross(dpdx(in.point), dpdy(in.point));
     let light = clamp(0.35 + 0.65 * abs(dot(n, vec3<f32>(0.3, -0.45, 0.84))) / max(length(n), 1e-8), 0.25, 1.);
     return vec4<f32>(round(in.color.rgb * light * 255.) / 255., in.color.a);
+}
+@fragment fn fragment(in: Vertex) -> @location(0) vec4<f32> { return shaded(in); }
+@group(2) @binding(0) var opaque_depth: texture_depth_2d;
+@group(2) @binding(1) var previous_depth: texture_depth_2d;
+@fragment fn peel_first(in: Vertex) -> @location(0) vec4<f32> {
+    let color = shaded(in);
+    if in.position.z <= textureLoad(opaque_depth, vec2<i32>(in.position.xy), 0) { discard; }
+    return color;
+}
+@fragment fn peel_next(in: Vertex) -> @location(0) vec4<f32> {
+    let color = shaded(in);
+    let pixel = vec2<i32>(in.position.xy);
+    let previous = textureLoad(previous_depth, pixel, 0);
+    // Leave two float ULPs between peels so the same plane is never blended
+    // again through interpolation roundoff. PCB layer spacing is much larger.
+    let bits = bitcast<u32>(previous);
+    let limit = bitcast<f32>(bits - min(bits, 2u));
+    if in.position.z >= limit || in.position.z <= textureLoad(opaque_depth, pixel, 0) { discard; }
+    return color;
 }
 struct Quad { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> };
 @vertex fn quad(@builtin(vertex_index) index: u32) -> Quad {

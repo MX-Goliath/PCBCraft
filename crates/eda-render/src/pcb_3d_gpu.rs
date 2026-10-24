@@ -1,4 +1,4 @@
-//! Resident triangle buffers, hardware depth and back-to-front transparency.
+//! Resident geometry and per-pixel transparent layers, peeled front to back.
 use super::*;
 use egui_wgpu::{Callback, CallbackResources, CallbackTrait, ScreenDescriptor, wgpu};
 use wgpu::util::DeviceExt;
@@ -58,8 +58,19 @@ struct Target {
     color: wgpu::TextureView,
     depth: wgpu::TextureView,
     binding: wgpu::BindGroup,
+    peel: PeelTarget,
     #[cfg(test)]
     texture: wgpu::Texture,
+}
+// Bound transparency work per pixel; reuse the same targets for every layer.
+const TRANSPARENT_LAYERS: usize = 8;
+struct PeelTarget {
+    depth: [wgpu::TextureView; 2],
+    color: wgpu::TextureView,
+    accumulated: wgpu::TextureView,
+    depth_bindings: [wgpu::BindGroup; 2],
+    color_binding: wgpu::BindGroup,
+    accumulated_binding: wgpu::BindGroup,
 }
 struct Buffers {
     scene: Arc<Scene>,
@@ -70,16 +81,18 @@ struct Buffers {
     opaque: wgpu::Buffer,
     opaque_count: u32,
     transparent: wgpu::Buffer,
-    transparent_faces: Vec<(usize, [f32; 4])>,
+    transparent_indices: Vec<u32>,
     transparent_count: u32,
-    order: Vec<(usize, u32)>,
-    sort_scratch: Vec<(usize, u32)>,
     indices: Vec<u32>,
     style: Option<u64>,
-    rotation: Option<[u32; 3]>,
     rendered: Option<u64>,
     solid_pipeline: wgpu::RenderPipeline,
-    transparent_pipeline: wgpu::RenderPipeline,
+    peel_first_pipeline: wgpu::RenderPipeline,
+    peel_next_pipeline: wgpu::RenderPipeline,
+    accumulate_pipeline: wgpu::RenderPipeline,
+    merge_pipeline: wgpu::RenderPipeline,
+    peel_layout: wgpu::BindGroupLayout,
+    empty_binding: wgpu::BindGroup,
     background_pipeline: wgpu::RenderPipeline,
     image_pipeline: wgpu::RenderPipeline,
     image_layout: wgpu::BindGroupLayout,
@@ -207,6 +220,33 @@ impl Buffers {
             bind_group_layouts: &[&layout, &image_layout],
             push_constant_ranges: &[],
         });
+        let empty_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: None,
+            entries: &[],
+        });
+        let empty_binding = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &empty_layout,
+            entries: &[],
+        });
+        let peel_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("PCB transparent depth"),
+            entries: &[0, 1].map(|binding| wgpu::BindGroupLayoutEntry {
+                binding,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Depth,
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            }),
+        });
+        let peel_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: None,
+            bind_group_layouts: &[&layout, &empty_layout, &peel_layout],
+            push_constant_ranges: &[],
+        });
         let pipeline = |vertex,
                         fragment,
                         buffer_layout: &[wgpu::VertexBufferLayout<'_>],
@@ -268,13 +308,48 @@ impl Buffers {
             Some(true),
             None,
         );
-        let transparent_pipeline = pipeline(
+        let peel_first_pipeline = pipeline(
             "vertex",
-            "fragment",
+            "peel_first",
             &vertex_layout,
-            &scene_layout,
+            &peel_pipeline_layout,
             wgpu::TextureFormat::Rgba8Unorm,
-            Some(false),
+            Some(true),
+            None,
+        );
+        let peel_next_pipeline = pipeline(
+            "vertex",
+            "peel_next",
+            &vertex_layout,
+            &peel_pipeline_layout,
+            wgpu::TextureFormat::Rgba8Unorm,
+            Some(true),
+            None,
+        );
+        let front_to_back = wgpu::BlendComponent {
+            src_factor: wgpu::BlendFactor::OneMinusDstAlpha,
+            dst_factor: wgpu::BlendFactor::One,
+            operation: wgpu::BlendOperation::Add,
+        };
+        let accumulate_pipeline = pipeline(
+            "quad",
+            "gamma_image",
+            &[],
+            &quad_layout,
+            wgpu::TextureFormat::Rgba16Float,
+            None,
+            Some(wgpu::BlendState {
+                color: front_to_back,
+                alpha: front_to_back,
+            }),
+        );
+        let merge_pipeline = pipeline(
+            "quad",
+            "gamma_image",
+            &[],
+            &quad_layout,
+            wgpu::TextureFormat::Rgba8Unorm,
+            None,
             Some(blend()),
         );
         let background_pipeline = pipeline(
@@ -308,16 +383,18 @@ impl Buffers {
             opaque,
             opaque_count: 0,
             transparent,
-            transparent_faces: vec![],
+            transparent_indices: vec![],
             transparent_count: 0,
-            order: vec![],
-            sort_scratch: vec![],
             indices: vec![],
             style: None,
-            rotation: None,
             rendered: None,
             solid_pipeline,
-            transparent_pipeline,
+            peel_first_pipeline,
+            peel_next_pipeline,
+            accumulate_pipeline,
+            merge_pipeline,
+            peel_layout,
+            empty_binding,
             background_pipeline,
             image_pipeline,
             image_layout,
@@ -356,7 +433,7 @@ impl Buffers {
         let depth = texture(
             "PCB 3D depth",
             wgpu::TextureFormat::Depth32Float,
-            wgpu::TextureUsages::RENDER_ATTACHMENT,
+            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
         )
         .create_view(&Default::default());
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -378,11 +455,72 @@ impl Buffers {
                 },
             ],
         });
+        let peel_depth = std::array::from_fn(|_| {
+            texture(
+                "PCB transparent depth",
+                wgpu::TextureFormat::Depth32Float,
+                wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            )
+            .create_view(&Default::default())
+        });
+        let peel_color = texture(
+            "PCB transparent layer",
+            wgpu::TextureFormat::Rgba8Unorm,
+            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+        )
+        .create_view(&Default::default());
+        let accumulated = texture(
+            "PCB transparent accumulation",
+            wgpu::TextureFormat::Rgba16Float,
+            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+        )
+        .create_view(&Default::default());
+        let depth_bindings = std::array::from_fn(|current| {
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("PCB transparent depth input"),
+                layout: &self.peel_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&depth),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(&peel_depth[1 - current]),
+                    },
+                ],
+            })
+        });
+        let image_binding = |view: &wgpu::TextureView| {
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("PCB transparent image"),
+                layout: &self.image_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(&sampler),
+                    },
+                ],
+            })
+        };
+        let peel = PeelTarget {
+            color_binding: image_binding(&peel_color),
+            accumulated_binding: image_binding(&accumulated),
+            depth: peel_depth,
+            color: peel_color,
+            accumulated,
+            depth_bindings,
+        };
         self.target = Some(Target {
             size,
             color,
             depth,
             binding,
+            peel,
             #[cfg(test)]
             texture: color_texture,
         });
@@ -424,36 +562,31 @@ impl Buffers {
             queue.write_buffer(&self.colors, 0, bytemuck::cast_slice(&packed));
         }
         self.indices.clear();
-        self.transparent_faces.clear();
+        self.transparent_indices.clear();
         for (index, &style) in self.scene.geometry.face_styles.iter().enumerate() {
             match colors[style].a() {
                 0 => {}
                 255 => self
                     .indices
                     .extend((index as u32 * 3)..(index as u32 * 3 + 3)),
-                _ => {
-                    let v = self.scene.faces[index].triangle.v;
-                    self.transparent_faces.push((
-                        index,
-                        [
-                            v.iter().map(|p| p[0]).sum(),
-                            v.iter().map(|p| p[1]).sum(),
-                            v.iter().map(|p| p[2]).sum(),
-                            v.iter()
-                                .map(|p| p[2].clamp(-self.scene.thickness, 0.))
-                                .sum(),
-                        ],
-                    ));
-                }
+                _ => self
+                    .transparent_indices
+                    .extend((index as u32 * 3)..(index as u32 * 3 + 3)),
             }
         }
         self.opaque_count = self.indices.len() as u32;
-        self.transparent_count = self.transparent_faces.len() as u32 * 3;
+        self.transparent_count = self.transparent_indices.len() as u32;
         if !self.indices.is_empty() {
             queue.write_buffer(&self.opaque, 0, bytemuck::cast_slice(&self.indices));
         }
+        if !self.transparent_indices.is_empty() {
+            queue.write_buffer(
+                &self.transparent,
+                0,
+                bytemuck::cast_slice(&self.transparent_indices),
+            );
+        }
         self.style = Some(key);
-        self.rotation = None;
         self.rendered = None;
         if std::env::var_os("PCBCRAFT_FRAME_PROFILE").is_some() {
             eprintln!(
@@ -463,40 +596,6 @@ impl Buffers {
                 self.transparent_count / 3
             );
         }
-    }
-    fn order(&mut self, state: &State, queue: &wgpu::Queue) {
-        let rotation = [
-            state.yaw.to_bits(),
-            state.pitch.to_bits(),
-            state.presentation.thickness_scale.to_bits(),
-        ];
-        if self.rotation == Some(rotation) {
-            return;
-        }
-        let (sy, cy) = state.yaw.sin_cos();
-        let (sp, cp) = state.pitch.sin_cos();
-        self.order.clear();
-        for &(index, p) in &self.transparent_faces {
-            let depth = -(p[0] * sy + p[1] * cy) * cp
-                + (p[2] + p[3] * (state.presentation.thickness_scale - 1.)) * sp;
-            let bits = depth.to_bits();
-            let key = if bits & 0x8000_0000 == 0 {
-                bits ^ 0x8000_0000
-            } else {
-                !bits
-            };
-            self.order.push((index, key));
-        }
-        radix_sort(&mut self.order, &mut self.sort_scratch);
-        self.indices.clear();
-        for &(index, _) in &self.order {
-            self.indices
-                .extend((index as u32 * 3)..(index as u32 * 3 + 3));
-        }
-        if !self.indices.is_empty() {
-            queue.write_buffer(&self.transparent, 0, bytemuck::cast_slice(&self.indices));
-        }
-        self.rotation = Some(rotation);
     }
     fn render(
         &mut self,
@@ -577,12 +676,89 @@ impl Buffers {
             pass.set_index_buffer(self.opaque.slice(..), wgpu::IndexFormat::Uint32);
             pass.draw_indexed(0..self.opaque_count, 0, 0..1);
         }
+        drop(pass);
         if self.transparent_count > 0 {
-            pass.set_pipeline(&self.transparent_pipeline);
-            pass.set_index_buffer(self.transparent.slice(..), wgpu::IndexFormat::Uint32);
-            pass.draw_indexed(0..self.transparent_count, 0, 0..1);
+            self.transparency(encoder);
         }
         self.rendered = Some(key);
+    }
+    fn transparency(&self, encoder: &mut wgpu::CommandEncoder) {
+        let target = self.target.as_ref().unwrap();
+        let peel = &target.peel;
+        for layer in 0..TRANSPARENT_LAYERS {
+            let current = layer % 2;
+            {
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("PCB transparent peel"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &peel.color,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                        view: &peel.depth[current],
+                        depth_ops: Some(wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(0.),
+                            store: wgpu::StoreOp::Store,
+                        }),
+                        stencil_ops: None,
+                    }),
+                    ..Default::default()
+                });
+                pass.set_pipeline(if layer == 0 {
+                    &self.peel_first_pipeline
+                } else {
+                    &self.peel_next_pipeline
+                });
+                pass.set_bind_group(0, &self.binding, &[]);
+                pass.set_bind_group(1, &self.empty_binding, &[]);
+                pass.set_bind_group(2, &peel.depth_bindings[current], &[]);
+                pass.set_vertex_buffer(0, self.vertices.slice(..));
+                pass.set_index_buffer(self.transparent.slice(..), wgpu::IndexFormat::Uint32);
+                pass.draw_indexed(0..self.transparent_count, 0, 0..1);
+            }
+            {
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("PCB transparent accumulation"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &peel.accumulated,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: if layer == 0 {
+                                wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT)
+                            } else {
+                                wgpu::LoadOp::Load
+                            },
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    ..Default::default()
+                });
+                pass.set_pipeline(&self.accumulate_pipeline);
+                pass.set_bind_group(0, &self.binding, &[]);
+                pass.set_bind_group(1, &peel.color_binding, &[]);
+                pass.draw(0..3, 0..1);
+            }
+        }
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("PCB transparent composite"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &target.color,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            ..Default::default()
+        });
+        pass.set_pipeline(&self.merge_pipeline);
+        pass.set_bind_group(0, &self.binding, &[]);
+        pass.set_bind_group(1, &peel.accumulated_binding, &[]);
+        pass.draw(0..3, 0..1);
     }
 }
 fn distance(a: [f32; 3], b: [f32; 3]) -> f32 {
@@ -591,29 +767,6 @@ fn distance(a: [f32; 3], b: [f32; 3]) -> f32 {
         .map(|(a, b)| (a - b).powi(2))
         .sum::<f32>()
         .sqrt()
-}
-// Stable numeric depth order in four linear passes. Equal depths retain source
-// triangle order, as in the software renderer; camera translation needs no sort.
-fn radix_sort(order: &mut Vec<(usize, u32)>, scratch: &mut Vec<(usize, u32)>) {
-    scratch.resize(order.len(), (0, 0));
-    for shift in [0, 8, 16, 24] {
-        let mut offsets = [0usize; 256];
-        for &(_, key) in order.iter() {
-            offsets[((key >> shift) & 255) as usize] += 1;
-        }
-        let mut start = 0;
-        for count in &mut offsets {
-            let n = *count;
-            *count = start;
-            start += n;
-        }
-        for &entry in order.iter() {
-            let slot = &mut offsets[((entry.1 >> shift) & 255) as usize];
-            scratch[*slot] = entry;
-            *slot += 1;
-        }
-        std::mem::swap(order, scratch);
-    }
 }
 impl Renderer {
     pub fn callback(
@@ -671,7 +824,6 @@ impl CallbackTrait for Draw {
         let changed = b.rendered != Some(self.key);
         b.target(device, self.size);
         b.styles(&self.state, &self.selected, self.style, queue);
-        b.order(&self.state, queue);
         b.render(&self.state, self.rect.size(), self.key, queue, encoder);
         if changed
             && std::env::var_os("PCBCRAFT_FRAME_PROFILE").is_some()
@@ -703,6 +855,95 @@ impl CallbackTrait for Draw {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn tilted_transparent_sheets_composite_in_pixel_depth_order_across_triangle_seams() {
+        let instance = wgpu::Instance::default();
+        let Ok(adapter) = pollster::block_on(instance.request_adapter(&Default::default())) else {
+            return;
+        };
+        let (device, queue) =
+            pollster::block_on(adapter.request_device(&Default::default())).unwrap();
+        let mut scene = Scene {
+            radius: 3.,
+            thickness: 1.,
+            ..Default::default()
+        };
+        for (z, color, material, diagonal) in [
+            (-0.03, Color32::RED, 0, false),
+            (0.03, Color32::GREEN, 1, true),
+        ] {
+            let p = [[-2., -2., z], [2., -2., z], [2., 2., z], [-2., 2., z]];
+            let triangles = if diagonal {
+                [[0, 1, 3], [1, 2, 3]]
+            } else {
+                [[0, 1, 2], [0, 2, 3]]
+            };
+            for triangle in triangles {
+                scene.faces.push(Face {
+                    triangle: Triangle {
+                        v: triangle.map(|n| p[n]),
+                        color,
+                    },
+                    owner: None,
+                    material,
+                    layer: TOP,
+                });
+            }
+        }
+        scene.geometry = Geometry::new(&scene);
+        let mut state = State {
+            scene: Arc::new(scene),
+            yaw: 0.6,
+            pitch: 0.35,
+            ..Default::default()
+        };
+        state.presentation.opacity[0] = 128;
+        state.presentation.opacity[1] = 128;
+        let mut buffers = Buffers::new(
+            state.scene.clone(),
+            &device,
+            wgpu::TextureFormat::Rgba8Unorm,
+        );
+        buffers.target(&device, [64, 64]);
+        for (key, perspective) in [(1, false), (2, true)] {
+            state.presentation.perspective = perspective;
+            buffers.styles(&state, &[], key, &queue);
+            let mut encoder = device.create_command_encoder(&Default::default());
+            buffers.render(&state, Vec2::splat(64.), key, &queue, &mut encoder);
+            queue.submit([encoder.finish()]);
+            let actual = read_image(&device, &queue, &buffers);
+            let mut expected = state.presentation.background[0];
+            for n in [0, 2] {
+                let face = &state.scene.faces[n];
+                let c = shade(&Triangle {
+                    v: face.triangle.v.map(|p| camera_point(p, &state)),
+                    color: material_color(face, &state),
+                });
+                let inv = 255 - u16::from(c.a());
+                let channel =
+                    |a: u8, b: u8| (u16::from(a) + u16::from(b) * inv / 255).min(255) as u8;
+                expected = Color32::from_rgb(
+                    channel(c.r(), expected.r()),
+                    channel(c.g(), expected.g()),
+                    channel(c.b(), expected.b()),
+                );
+            }
+            for y in 31..34 {
+                for x in 29..36 {
+                    let maximum = actual[(y * 64 + x) * 4..(y * 64 + x) * 4 + 4]
+                        .iter()
+                        .zip(expected.to_array())
+                        .map(|(a, b)| a.abs_diff(b))
+                        .max()
+                        .unwrap();
+                    assert!(
+                        maximum <= 3,
+                        "incorrect transparent sheet order: pixel={x},{y}, perspective={perspective}, difference={maximum}"
+                    );
+                }
+            }
+        }
+    }
     fn read_image(device: &wgpu::Device, queue: &wgpu::Queue, buffers: &Buffers) -> Vec<u8> {
         let target = buffers.target.as_ref().unwrap();
         let readback = device.create_buffer(&wgpu::BufferDescriptor {
@@ -796,7 +1037,6 @@ mod tests {
                             state.presentation.thickness_scale = 2.;
                             let selected = if selected { vec![owner] } else { vec![] };
                             buffers.styles(&state, &selected, key, &queue);
-                            buffers.order(&state, &queue);
                             let mut encoder = device.create_command_encoder(&Default::default());
                             buffers.render(&state, Vec2::splat(64.), key, &queue, &mut encoder);
                             queue.submit([encoder.finish()]);
@@ -826,26 +1066,5 @@ mod tests {
                 }
             }
         }
-    }
-    #[test]
-    fn radix_depth_sort_matches_stable_numeric_order_and_ties() {
-        let mut order: Vec<_> = (0..10000)
-            .map(|n| {
-                let v = ((n * 977) % 137) as f32 - 68.;
-                let bits = v.to_bits();
-                (
-                    n,
-                    if bits & 0x8000_0000 == 0 {
-                        bits ^ 0x8000_0000
-                    } else {
-                        !bits
-                    },
-                )
-            })
-            .collect();
-        let mut expected = order.clone();
-        expected.sort_by_key(|v| v.1);
-        radix_sort(&mut order, &mut vec![]);
-        assert_eq!(order, expected);
     }
 }

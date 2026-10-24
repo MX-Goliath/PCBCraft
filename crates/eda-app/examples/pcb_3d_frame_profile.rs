@@ -189,6 +189,13 @@ fn window(board: eda_core::pcb::Board, capture: Option<PathBuf>) -> Result<(), S
                 } else {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
+                if self.capture.is_some() {
+                    // A reproducible oblique pose for before/after image QA.
+                    state.yaw = 0.6;
+                    state.pitch = 0.55;
+                    state.zoom = 1.4;
+                    state.pan = Vec2::ZERO;
+                }
                 if let Some(cpu) = frame.info().cpu_usage
                     && cpu > 0.033
                 {

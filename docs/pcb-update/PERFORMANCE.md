@@ -1,6 +1,52 @@
 # PCB editor performance — 22.10.2026
 
+## Oblique 3D transparency artifacts, 24.10.2026
+
+The user screenshot showed stripes and large triangular color patches across
+ReferenceM under an oblique camera. Ordering transparent triangles by the depth of
+their centres cannot order overlapping, differently triangulated planes at each
+pixel. The earlier radix-sort optimization retained that approximation. A new
+GPU regression with two parallel translucent sheets and opposite diagonals
+reproduced a 28/255 channel error under orthographic projection before the fix.
+The CPU reference rasterizer uses the same centroid ordering, so matching it on
+simple single-translucent-layer tests did not establish correct multilayer
+transparency.
+
+The GPU renderer now peels translucent surfaces by pixel depth. Each pass rejects
+opaque occluders and previously peeled depths, writes the nearest remaining
+surface, then accumulates its premultiplied color front to back. Two depth targets
+alternate and reuse one layer-color target; accumulation uses RGBA16Float. Two
+float ULPs separate passes to prevent the same surface from blending again through
+depth interpolation roundoff. Opaque geometry still renders once with hardware
+depth. Transparent indices upload on styling/selection changes, and camera
+movement no longer sorts or re-uploads those indices on the CPU.
+
+The pass count is bounded to eight transparent depth layers per pixel. This fixes
+the reproduced PCB masks/substrate ordering; arbitrary stacks with more than
+eight translucent surfaces are not fully represented. At 1800×1400 the extra
+targets require about 48 MiB of GPU storage. Memory is bounded by viewport size,
+not the number of transparent triangles. Antialiasing and native material/pixel
+parity remain separate limitations.
+
+The regression checks correct compositing through triangle seams in orthographic
+and perspective projections, against the known physical sheet order rather than
+the faulty centroid-sort reference. Existing depth, opacity, selection, picking
+and buffer-reuse regressions continue to pass. The read-only native eframe probe
+captures a fixed oblique pose for reproducible visual inspection; ReferenceM no
+longer shows the large stripe/triangle patches in that capture.
+
+Release 1000×800 completed-GPU probe, RX 7900 XTX / RADV Vulkan, same 2,183,154
+triangles, alongside native capture: orbit median 3.66/p95 4.20/max 6.12 ms;
+pan median 1.63/p95 3.10 ms; zoom median 5.07/p95 6.02 ms. These are completed
+offscreen frames, not measured presentation FPS. Peak child RSS was about 656 MiB;
+initial scene plus first GPU frame was about 3.8 seconds. Workspace tests,
+strict all-target Clippy, formatting and rebuilt AppImage verification complete
+the check; the source PCB/project are not edited.
+
 ## ReferenceM 3D orbit latency, 24.10.2026
+
+The centroid/radix transparency order described below was replaced by the
+per-pixel depth peeling follow-up above.
 
 The 3D viewport still used a CPU rasterizer after the 2D fixes. A read-only
 release reproduction on ReferenceM measured 782 ms to refresh the image after one

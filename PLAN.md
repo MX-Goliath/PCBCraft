@@ -809,3 +809,22 @@ Measurements and limitations: docs/pcb-update/PERFORMANCE.md.
   memory at extreme zoom, editing previews, presentation FPS and Windows runtime.
 
 Measurements and limitations: docs/pcb-update/PERFORMANCE.md.
+
+### Oblique 3D transparency stripes, 24.10.2026
+
+- [x] Reproduce incorrect blending of two tilted translucent sheets with
+  opposite triangle diagonals; centroid ordering failed by 28/255 per channel.
+- [x] Replace CPU triangle ordering with per-pixel front-to-back depth peeling,
+  opaque depth rejection and RGBA16Float accumulation; retain resident geometry.
+- [x] Reuse two depth targets and one layer image, with eight depth layers per
+  pixel and a two-ULP separation between layers to avoid self-blending.
+- [x] Check sheet ordering across triangle seams in orthographic/perspective
+  cameras; retain material, opacity, selection, picking and cache regressions.
+- [x] Capture and inspect ReferenceM at a fixed oblique angle in a native window;
+  the large stripe/triangle patches disappear. Completed GPU orbit median 3.66/
+  p95 4.20 ms, zoom median 5.07 ms on the local RX 7900 XTX.
+- [x] Workspace tests, strict all-target Clippy/fmt and rebuilt Linux AppImage.
+- [ ] More than eight translucent layers per pixel, software-fallback centroid
+  transparency, antialiasing and full native pixel parity remain limited.
+
+Measurements and limitations: docs/pcb-update/PERFORMANCE.md.
