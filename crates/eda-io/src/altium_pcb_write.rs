@@ -106,6 +106,14 @@ fn encoded_pair(k: &str, v: &str) -> Result<Vec<u8>> {
     if bad {
         b.extend_from_slice(format!("|%UTF8%{k}={v}").as_bytes());
     }
+    if !v.is_ascii() {
+        let units = v
+            .encode_utf16()
+            .map(|word| word.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        b.extend_from_slice(format!("|UNICODE=EXISTS|UNICODE__{k}={units}").as_bytes());
+    }
     Ok(b)
 }
 /// Preserve unrelated fields, their order, duplicate keys, bytes and spelling.
@@ -121,9 +129,11 @@ fn patch_fields(raw: &[u8], changes: &BTreeMap<String, Option<String>>) -> Resul
             .position(|b| *b == b'=')
             .and_then(|n| std::str::from_utf8(&segment[..n]).ok())
             .map(|s| s.to_ascii_uppercase());
-        let lookup = key
-            .as_deref()
-            .map(|s| s.strip_prefix("%UTF8%").unwrap_or(s));
+        let lookup = key.as_deref().map(|s| {
+            s.strip_prefix("%UTF8%")
+                .or_else(|| s.strip_prefix("UNICODE__"))
+                .unwrap_or(s)
+        });
         if let Some(k) = lookup
             && let Some(value) = changes.get(k)
         {
@@ -147,11 +157,38 @@ fn patch_fields(raw: &[u8], changes: &BTreeMap<String, Option<String>>) -> Resul
     out.push(0);
     Ok(out)
 }
-fn rule_source(original: &[Fields], rule: &Fields, index: usize) -> Option<usize> {
-    if let Some(id) = rule.get("UNIQUEID").filter(|s| !s.is_empty()) {
-        return original.iter().position(|r| r.get("UNIQUEID") == Some(id));
+fn rule_source(original: &[Fields], rule: &Fields, index: usize) -> Result<Option<usize>> {
+    // Native files can contain duplicate UNIQUEIDs. An untouched record at its
+    // original ordinal must keep its own opaque prefix, even in those files.
+    if original.get(index) == Some(rule) {
+        return Ok(Some(index));
     }
-    original
+    if let Some(index) = original.iter().position(|r| r == rule) {
+        return Ok(Some(index));
+    }
+    if let Some(id) = rule.get("UNIQUEID").filter(|s| !s.is_empty()) {
+        let candidates: Vec<_> = original
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| {
+                r.get("UNIQUEID") == Some(id) && r.get("RULEKIND") == rule.get("RULEKIND")
+            })
+            .map(|(i, _)| i)
+            .collect();
+        if candidates.len() <= 1 {
+            return Ok(candidates.first().copied());
+        }
+        let named: Vec<_> = candidates
+            .into_iter()
+            .filter(|i| original[*i].get("NAME") == rule.get("NAME"))
+            .collect();
+        return if named.len() == 1 {
+            Ok(Some(named[0]))
+        } else {
+            Err("Native rule identity is ambiguous: duplicate UNIQUEID and changed name; keep edits in JSON".into())
+        };
+    }
+    Ok(original
         .iter()
         .position(|r| {
             r == rule
@@ -164,7 +201,7 @@ fn rule_source(original: &[Fields], rule: &Fields, index: usize) -> Option<usize
                     r.get("UNIQUEID").is_none() && r.get("RULEKIND") == rule.get("RULEKIND")
                 })
                 .map(|_| index)
-        })
+        }))
 }
 fn map_changes(fields: &Fields) -> BTreeMap<String, Option<String>> {
     fields
@@ -1079,7 +1116,7 @@ fn encode_binary(
             return Err("Rule count does not match native stream".into());
         }
         for (index, rule) in board.rules.iter().enumerate() {
-            let source = rule_source(&old.rules, rule, index);
+            let source = rule_source(&old.rules, rule, index)?;
             let template = source
                 .or_else(|| {
                     old.rules
@@ -1961,7 +1998,7 @@ pub fn serialize(doc: &Document, format: Format) -> Result<Vec<u8>> {
                 return Err("Adding/removing ASCII rules requires PCBCraft JSON".into());
             }
             for (n, rule) in a.rules.iter().enumerate() {
-                if let Some(source) = rule_source(&b.rules, rule, n) {
+                if let Some(source) = rule_source(&b.rules, rule, n)? {
                     if rule != &b.rules[source] {
                         old.replace_design_rule(source, rule.clone())?;
                     }
@@ -2072,6 +2109,44 @@ pub fn save(path: &Path, doc: &Document, format: Format) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn native_unicode_rule_comments_are_canonical_and_old_shadows_cannot_override_edits() {
+        let raw = b"|COMMENT=legacy|UNICODE=EXISTS|UNICODE__COMMENT=1056,1072,1079,1084,1077,1088|OPAQUE=keep\0";
+        let before = fields(raw).unwrap();
+        assert_eq!(before["COMMENT"], "Размер");
+        assert!(!before.contains_key("UNICODE__COMMENT"));
+        let mut changes = BTreeMap::new();
+        changes.insert("COMMENT".into(), Some("Отверстие 🟡".into()));
+        let output = patch_fields(raw, &changes).unwrap();
+        let after = fields(&output).unwrap();
+        assert_eq!(after["COMMENT"], "Отверстие 🟡");
+        assert_eq!(after["OPAQUE"], "keep");
+        changes.insert("COMMENT".into(), Some("Hole".into()));
+        let output = patch_fields(&output, &changes).unwrap();
+        assert_eq!(fields(&output).unwrap()["COMMENT"], "Hole");
+        assert!(!output.windows(16).any(|s| s == b"UNICODE__COMMENT"));
+    }
+    #[test]
+    fn duplicate_native_rule_ids_preserve_untouched_and_named_sources() {
+        let mut a = eda_core::pcb_rules::default_rule("Width");
+        a.insert("UNIQUEID".into(), "DUPLICATE".into());
+        let mut b = a.clone();
+        b.insert("NAME".into(), "Another Width".into());
+        b.insert("PREFEREDWIDTH".into(), "0.35mm".into());
+        let original = vec![a.clone(), b.clone()];
+        assert_eq!(rule_source(&original, &b, 1).unwrap(), Some(1));
+        assert_eq!(rule_source(&original, &b, 0).unwrap(), Some(1));
+        b.insert("COMMENT".into(), "Edited".into());
+        assert_eq!(rule_source(&original, &b, 0).unwrap(), Some(1));
+        b.insert("NAME".into(), "Renamed".into());
+        assert!(rule_source(&original, &b, 1).is_err());
+        let mut other = eda_core::pcb_rules::default_rule("Clearance");
+        other.insert("UNIQUEID".into(), "DUPLICATE".into());
+        other.insert("COMMENT".into(), "Edited".into());
+        let original = vec![a, other.clone()];
+        other.insert("GAP".into(), "0.3mm".into());
+        assert_eq!(rule_source(&original, &other, 0).unwrap(), Some(1));
+    }
     fn doc() -> Document {
         let mut d = Document::new(DocumentKind::Board, "test.PcbDoc");
         let mut b = Board::from_legacy(&d);

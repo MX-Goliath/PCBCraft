@@ -221,15 +221,28 @@ pub fn probe(layer: u16, net: Option<u32>, position: Point, width: i64) -> Item 
 }
 pub fn preferred(board: &Board, item: &Item, kind: &str, key: &str) -> Result<Option<i64>, String> {
     resolve(board, kind, item, None)?
-        .map(|(_, r)| dimension(r, key))
+        .map(|(_, r)| {
+            let layer_key = format!("{}_PREFWIDTH", width_layer_prefix(item.layer));
+            dimension(
+                r,
+                if kind == "Width" && key == "PREFEREDWIDTH" && r.contains_key(&layer_key) {
+                    &layer_key
+                } else {
+                    key
+                },
+            )
+        })
         .transpose()
 }
-pub fn width_limits(r: &Fields, layer: u16) -> Result<(i64, i64), String> {
-    let prefix = match layer {
-        TOP => "TOPLAYER".to_owned(),
-        BOTTOM => "BOTTOMLAYER".to_owned(),
+fn width_layer_prefix(layer: u16) -> String {
+    match layer {
+        TOP => "TOPLAYER".into(),
+        BOTTOM => "BOTTOMLAYER".into(),
         n => format!("MIDLAYER{}", n.saturating_sub(1)),
-    };
+    }
+}
+pub fn width_limits(r: &Fields, layer: u16) -> Result<(i64, i64), String> {
+    let prefix = width_layer_prefix(layer);
     let min = format!("{prefix}_MINWIDTH");
     let max = format!("{prefix}_MAXWIDTH");
     Ok((
@@ -403,6 +416,13 @@ pub fn validate_rule(board: &Board, r: &Fields) -> Result<(), String> {
             let (min, max) = width_limits(r, layer.id)?;
             if min <= 0 || min > max {
                 return Err(format!("Invalid width range on {}", layer.name));
+            }
+            let key = format!("{}_PREFWIDTH", width_layer_prefix(layer.id));
+            if r.contains_key(&key) {
+                let preferred = dimension(r, &key)?;
+                if !(min..=max).contains(&preferred) {
+                    return Err(format!("Invalid preferred width on {}", layer.name));
+                }
             }
         }
     }
@@ -642,9 +662,33 @@ pub(crate) fn scope(board: &Board, item: &Item, s: &str, depth: usize) -> Option
                         .classes
                         .iter()
                         .filter(|c| text(c, "NAME").eq_ignore_ascii_case(value))
+                        .filter(|c| {
+                            let expected = match name {
+                                "INNETCLASS" => "0",
+                                "INCOMPONENTCLASS" => "1",
+                                _ => "3",
+                            };
+                            text(c, "KIND").is_empty() || text(c, "KIND") == expected
+                        })
                         .any(|class| {
-                            class.iter().filter(|(k, _)| k.starts_with("MEMBER")).any(
-                                |(_, member)| match name {
+                            if text(class, "SUPERCLASS") == "TRUE" {
+                                return match name {
+                                    "INNETCLASS" => item.net.is_some(),
+                                    "INCOMPONENTCLASS" => component.is_some(),
+                                    _ => matches!(item.shape, Shape::Pad { .. }),
+                                };
+                            }
+                            class
+                                .iter()
+                                .filter(|(k, _)| {
+                                    k.strip_prefix("MEMBER")
+                                        .or_else(|| k.strip_prefix('M'))
+                                        .is_some_and(|suffix| {
+                                            !suffix.is_empty()
+                                                && suffix.bytes().all(|b| b.is_ascii_digit())
+                                        })
+                                })
+                                .any(|(_, member)| match name {
                                     "INNETCLASS" => {
                                         board.net_name(item.net).eq_ignore_ascii_case(member)
                                     }
@@ -660,8 +704,7 @@ pub(crate) fn scope(board: &Board, item: &Item, s: &str, depth: usize) -> Option
                                             false
                                         }
                                     }
-                                },
-                            )
+                                })
                         }),
                 }
             }));
@@ -749,7 +792,9 @@ impl Board {
                 || (text(old, "RULEKIND") == "RoutingLayers" && key.ends_with("_V5"))
                 || (text(old, "RULEKIND") == "PolygonConnect" && polygon::connection_field(key))
                 || (text(old, "RULEKIND") == "Width"
-                    && (key.ends_with("_MINWIDTH") || key.ends_with("_MAXWIDTH")));
+                    && (key.ends_with("_MINWIDTH")
+                        || key.ends_with("_MAXWIDTH")
+                        || key.ends_with("_PREFWIDTH")));
             if !allowed {
                 return Err(format!("Unsupported native rule field: {key}"));
             }
@@ -764,6 +809,64 @@ impl Board {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn native_class_members_use_numeric_m_fields_and_respect_class_kind() {
+        let mut b = board();
+        let i = track(0, 0, 200_000);
+        b.classes = vec![Fields::from([
+            ("NAME".into(), "A'B".into()),
+            ("KIND".into(), "0".into()),
+            ("M0".into(), "A".into()),
+            ("MODEL".into(), "B".into()),
+        ])];
+        assert_eq!(query(&b, &i, "InNetClass('A''B')"), Ok(true));
+        assert_eq!(query(&b, &track(1, 0, 1), "InNetClass('A''B')"), Ok(false));
+        b.classes[0].insert("KIND".into(), "1".into());
+        assert_eq!(query(&b, &i, "InNetClass('A''B')"), Ok(false));
+        b.classes[0].remove("KIND");
+        b.classes[0].remove("M0");
+        b.classes[0].insert("MEMBER0".into(), "A".into());
+        assert_eq!(query(&b, &i, "InNetClass('A''B')"), Ok(true));
+        b.classes[0].clear();
+        b.classes[0].extend(Fields::from([
+            ("NAME".into(), "All Nets".into()),
+            ("KIND".into(), "0".into()),
+            ("SUPERCLASS".into(), "TRUE".into()),
+        ]));
+        assert_eq!(query(&b, &i, "InNetClass('All Nets')"), Ok(true));
+        assert_eq!(
+            query(
+                &b,
+                &probe(TOP, None, Point::default(), 1),
+                "InNetClass('All Nets')"
+            ),
+            Ok(false)
+        );
+    }
+    #[test]
+    fn preferred_route_width_uses_layer_override_and_validates_its_range() {
+        let mut b = board();
+        b.rules = vec![default_rule("Width")];
+        b.rules[0].insert("TOPLAYER_PREFWIDTH".into(), "0.4mm".into());
+        assert_eq!(
+            preferred(&b, &track(0, 0, 1), "Width", "PREFEREDWIDTH"),
+            Ok(Some(400_000))
+        );
+        let bottom = probe(BOTTOM, Some(0), Point::default(), 1);
+        assert_eq!(
+            preferred(&b, &bottom, "Width", "PREFEREDWIDTH"),
+            dimension(&b.rules[0], "PREFEREDWIDTH").map(Some)
+        );
+        b.layers = vec![PcbLayer {
+            id: TOP,
+            name: "Top Layer".into(),
+            copper: true,
+            order: 0,
+        }];
+        let mut next = b.rules[0].clone();
+        next.insert("TOPLAYER_PREFWIDTH".into(), "50mm".into());
+        assert!(b.replace_design_rule(0, next).is_err());
+    }
     #[test]
     fn exported_report_escapes_document_and_rule_data_and_preserves_incomplete_status() {
         let mut b = Board {

@@ -49,6 +49,7 @@ pub(super) enum Action {
     Grid,
     Report,
     Rules,
+    RuleWizard,
     Drc,
     BrowseViolations,
     ResetMarkers,
@@ -1319,8 +1320,11 @@ impl PcbCraft {
             return;
         }
         let doc = &mut self.documents[index];
-        if matches!(action, Action::Rules) {
+        if matches!(action, Action::Rules | Action::RuleWizard) {
             rules_ui::open(doc);
+            if matches!(action, Action::RuleWizard) {
+                rules_ui::open_wizard(doc);
+            }
             return;
         }
         if matches!(action, Action::Drc) {
@@ -1586,6 +1590,7 @@ impl PcbCraft {
                 Action::Fit(target) => doc.view.pcb.requested_fit = Some(target),
                 Action::Report
                 | Action::Rules
+                | Action::RuleWizard
                 | Action::Drc
                 | Action::BrowseViolations
                 | Action::ResetMarkers => {}
@@ -1976,7 +1981,13 @@ impl PcbCraft {
             }
             "Design" => {
                 self.action(ui, "Rules…", "D, R", Command::Pcb(Action::Rules), true);
-                ui.add_enabled(false, egui::Button::new("Rule Wizard…"));
+                self.action(
+                    ui,
+                    "Rule Wizard…",
+                    "",
+                    Command::Pcb(Action::RuleWizard),
+                    true,
+                );
                 ui.separator();
                 self.action(
                     ui,

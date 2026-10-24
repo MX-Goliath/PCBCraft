@@ -2,24 +2,39 @@
 fn main() -> Result<(), String> {
     let path = std::env::args_os().nth(1).ok_or("Pass a PCB document")?;
     let document = eda_io::load(std::path::Path::new(&path))?;
-    if std::env::args().any(|a| a == "--roundtrip") {
+    let layer_width_only = std::env::args().any(|a| a == "--roundtrip-layer-width");
+    if layer_width_only || std::env::args().any(|a| a == "--roundtrip") {
         let mut edited = document.clone();
         let board = edited.pcb.as_mut().ok_or("Not a PCB")?;
         let mut rules = board.rules.clone();
         for rule in &mut rules {
             let kind = eda_core::pcb_rules::text(rule, "RULEKIND");
-            if matches!(
-                kind,
-                "Width"
-                    | "PolygonConnect"
-                    | "MinimumSolderMaskSliver"
-                    | "SilkToSolderMaskClearance"
-            ) {
+            if !layer_width_only
+                && matches!(
+                    kind,
+                    "Width"
+                        | "PolygonConnect"
+                        | "MinimumSolderMaskSliver"
+                        | "SilkToSolderMaskClearance"
+                )
+            {
                 rule.insert(
                     "COMMENT".into(),
                     "PCBCraft in-memory roundtrip check".into(),
                 );
             }
+        }
+        // Exercise the field edited by the per-layer Width grid, in addition
+        // to metadata. The source PCB is never written by this probe.
+        if let Some(rule) = rules.iter_mut().find(|r| {
+            eda_core::pcb_rules::text(r, "RULEKIND") == "Width"
+                && eda_core::pcb_rules::text(r, "SCOPE1EXPRESSION").eq_ignore_ascii_case("All")
+        }) {
+            let (minimum, _) = eda_core::pcb_rules::width_limits(rule, eda_core::pcb::TOP)?;
+            rule.insert(
+                "TOPLAYER_PREFWIDTH".into(),
+                format!("{}mm", minimum as f64 / 1e6),
+            );
         }
         *board = board.with_rules(rules)?;
         let bytes = eda_io::altium_pcb::writer::serialize(

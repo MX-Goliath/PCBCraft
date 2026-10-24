@@ -225,12 +225,40 @@ fn fields(b: &[u8]) -> Result<Fields> {
             f.insert(k, s);
         }
     }
-    let unicode: Vec<_> = f
+    let utf8: Vec<_> = f
         .iter()
         .filter_map(|(k, v)| k.strip_prefix("%UTF8%").map(|k| (k.to_owned(), v.clone())))
         .collect();
-    for (k, v) in unicode {
+    let unicode: Vec<_> = f
+        .iter()
+        .filter_map(|(k, v)| {
+            k.strip_prefix("UNICODE__")
+                .map(|key| (k.clone(), key.to_owned(), v.clone()))
+        })
+        .collect();
+    for (shadow, key, value) in unicode {
+        let words: Vec<u16> = value
+            .split(',')
+            .filter(|s| !s.trim().is_empty())
+            .map(|s| {
+                s.trim()
+                    .parse::<u16>()
+                    .map_err(|_| "Invalid PCB Unicode property code unit".to_owned())
+            })
+            .collect::<Result<_>>()?;
+        let end = words.iter().position(|w| *w == 0).unwrap_or(words.len());
+        let decoded =
+            String::from_utf16(&words[..end]).map_err(|_| "Invalid UTF-16 PCB property")?;
+        f.insert(key, decoded);
+        f.remove(&shadow);
+    }
+    for (k, v) in utf8 {
+        f.remove(&format!("%UTF8%{k}"));
         f.insert(k, v);
+    }
+    // Encoding shadows remain in the archived source, not in the semantic map.
+    if f.get("UNICODE").is_some_and(|v| v == "EXISTS") {
+        f.remove("UNICODE");
     }
     Ok(f)
 }

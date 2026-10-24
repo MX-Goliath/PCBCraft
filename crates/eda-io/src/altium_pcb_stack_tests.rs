@@ -190,7 +190,7 @@ fn native_width_rules_can_be_edited_duplicated_deleted_and_reordered_losslessly(
     let bytes = serialize(&d, Format::Binary).unwrap();
     let mut c = cfb::CompoundFile::open(Cursor::new(bytes)).unwrap();
     c.create_storage_all("/Rules6").unwrap();
-    let records=[b"|RULEKIND=Width|NAME=Width|UNIQUEID=WIDTHID|PRIORITY=1|MINLIMIT=0.2mm|PREFEREDWIDTH=0.3mm|MAXLIMIT=1mm|SCOPE1EXPRESSION=All|OPAQUE=keep\0".as_slice(),b"|RULEKIND=UnknownRule|NAME=unknown|UNIQUEID=OPAQUEID|OPAQUE=other\0".as_slice()];
+    let records=[b"|RULEKIND=Width|NAME=Width|UNIQUEID=WIDTHID|PRIORITY=1|MINLIMIT=0.2mm|PREFEREDWIDTH=0.3mm|MAXLIMIT=1mm|SCOPE1EXPRESSION=All|OPAQUE=keep\0".as_slice(),b"|RULEKIND=UnknownRule|NAME=unknown|UNIQUEID=OPAQUEID|OPAQUE=other\0".as_slice(),b"|RULEKIND=UnknownRule|NAME=another|UNIQUEID=OPAQUEID|OPAQUE=second\0".as_slice()];
     let mut data = vec![];
     for (n, r) in records.iter().enumerate() {
         data.extend([n as u8, 0x03]);
@@ -203,7 +203,7 @@ fn native_width_rules_can_be_edited_duplicated_deleted_and_reordered_losslessly(
         .unwrap();
     c.create_stream("/Rules6/Header")
         .unwrap()
-        .write_all(&2u32.to_le_bytes())
+        .write_all(&(records.len() as u32).to_le_bytes())
         .unwrap();
     let mut doc = import_pcb(&c.into_inner().into_inner(), "rules.PcbDoc").unwrap();
     let original = doc.pcb.as_ref().unwrap().rules.clone();
@@ -212,7 +212,12 @@ fn native_width_rules_can_be_edited_duplicated_deleted_and_reordered_losslessly(
     let mut copied = updated.clone();
     copied.insert("UNIQUEID".into(), "COPYID".into());
     copied.insert("NAME".into(), "Width_Copy".into());
-    doc.pcb.as_mut().unwrap().rules = vec![original[1].clone(), updated, copied.clone()];
+    doc.pcb.as_mut().unwrap().rules = vec![
+        original[2].clone(),
+        original[1].clone(),
+        updated,
+        copied.clone(),
+    ];
     let bytes = serialize(&doc, Format::Preserve).unwrap();
     let mut c = cfb::CompoundFile::open(Cursor::new(bytes.clone())).unwrap();
     let mut raw = vec![];
@@ -220,15 +225,19 @@ fn native_width_rules_can_be_edited_duplicated_deleted_and_reordered_losslessly(
         .unwrap()
         .read_to_end(&mut raw)
         .unwrap();
-    assert_eq!(&raw[..2], &[1, 3]);
+    assert_eq!(&raw[..2], &[2, 3]);
     assert!(raw.windows(records[1].len()).any(|s| s == records[1]));
+    assert!(raw.windows(records[2].len()).any(|s| s == records[2]));
     let mut parsed = import_pcb(&bytes, "rules.PcbDoc").unwrap();
     assert_eq!(
         parsed.pcb.as_ref().unwrap().rules,
         doc.pcb.as_ref().unwrap().rules
     );
-    parsed.pcb.as_mut().unwrap().rules.remove(1);
+    parsed.pcb.as_mut().unwrap().rules.remove(2);
     let bytes = serialize(&parsed, Format::Preserve).unwrap();
     let saved = import_pcb(&bytes, "rules.PcbDoc").unwrap().pcb.unwrap();
-    assert_eq!(saved.rules, vec![original[1].clone(), copied]);
+    assert_eq!(
+        saved.rules,
+        vec![original[2].clone(), original[1].clone(), copied]
+    );
 }

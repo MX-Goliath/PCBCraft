@@ -685,3 +685,22 @@ Evidence and limits: docs/pcb-update/LAYER_STACK_MANAGER.md.
 Evidence, validation and explicit remaining scope: docs/pcb-update/RULES.md.
 
 - 2026-10-23 Rules follow-up: native Simple/Advanced polygon connections drive pours; added mask sliver and non-text silk/mask checks, shared cutout clearances, zero-edge crossing, independent routing violations, via manufacturing checks, HTML reports, per-file checker preferences and native new/copy priorities. Full rule-family/query/UI parity remains open; details and validation in docs/pcb-update/RULES.md.
+
+
+### PCB Rules visual follow-up — 24.10.2026 (in progress)
+
+- [x] Pull the configured upstream/main updates; no origin remote is configured.
+- [x] Observe live AD 24.4.1 ReferenceB rule summaries, priorities, Query Builder/Helper,
+  Wizard, checker and supported constraint forms; further exploration uses a copy.
+- [x] Implement bounded query/wizard drafts, native catalogue order, summary pages,
+  fixed dialog regions, per-layer preferred widths and imported numeric class members.
+- [x] Fix numeric input buffering, child widget IDs, duplicate native rule identities
+  and Unicode encoding shadows; original PCB hash remains unchanged.
+- [x] Linux all-target compilation.
+- [ ] Complete equal-size/DPI visual comparison and all related Rules surfaces.
+- [x] 352 workspace tests, strict all-target Clippy, fmt check and Windows bins/examples build.
+- [ ] Resume live comparison: after manual closure of the Panels popup,
+  Computer Use reported a physical Escape stop. Latest drag/ID/Unicode GUI
+  verification remains pending; no completion claim.
+
+Evidence, exact implemented scope and remaining differences: docs/pcb-update/RULES.md.
