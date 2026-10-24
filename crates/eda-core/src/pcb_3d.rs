@@ -4,6 +4,111 @@ use eda_geom::Point;
 use geo::{BooleanOps, Coord, LineString, Polygon, unary_union};
 use uuid::Uuid;
 
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ModelTriangle {
+    pub vertices: [[f64; 3]; 3],
+    pub color: [u8; 4],
+}
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Model {
+    pub name: String,
+    pub triangles: Vec<ModelTriangle>,
+}
+impl Model {
+    pub fn valid(&self) -> bool {
+        !self.triangles.is_empty()
+            && self.triangles.len() <= 1_000_000
+            && self.triangles.iter().all(|t| {
+                t.vertices
+                    .iter()
+                    .flatten()
+                    .all(|x| x.is_finite() && x.abs() <= 100_000.0)
+            })
+    }
+}
+
+/// Native MODEL.2D is an absolute board origin. MODEL.3D Euler rotations
+/// precede the mounting-side reflection; component rotation is already baked
+/// into the body record and must not be applied a second time.
+pub fn model_point(board: &Board, item: &Item, mut p: [f64; 3]) -> Option<[f64; 3]> {
+    let f = &item.properties;
+    for (key, a, b) in [
+        ("MODEL.3D.ROTX", 1, 2),
+        ("MODEL.3D.ROTY", 2, 0),
+        ("MODEL.3D.ROTZ", 0, 1),
+    ] {
+        let angle = f
+            .get(key)
+            .map_or(Some(0.0), |v| v.trim().parse::<f64>().ok())?;
+        if !angle.is_finite() {
+            return None;
+        }
+        let (s, c) = angle.to_radians().sin_cos();
+        let (x, y) = (p[a], p[b]);
+        p[a] = x * c - y * s;
+        p[b] = x * s + y * c;
+    }
+    let read = |key: &str| {
+        dimension_nm(f.get(key).map_or("0", String::as_str))
+            .ok()
+            .map(|v| v as f64 / 1e6)
+    };
+    let bottom = item
+        .component
+        .and_then(|index| board.components.iter().find(|c| c.index == index))
+        .is_some_and(|c| c.layer == BOTTOM);
+    if bottom {
+        p[1] = -p[1];
+    }
+    p[0] += read("MODEL.2D.X")?;
+    p[1] += read("MODEL.2D.Y")?;
+    p[2] += read("MODEL.3D.DZ")?;
+    if bottom {
+        p[2] = -board.stack_thickness_nm() as f64 / 1e6 - p[2];
+    }
+    Some(p)
+}
+
+pub(crate) fn transform_model(
+    item: &mut Item,
+    pivot: Point,
+    delta: Point,
+    angle: f64,
+    flip: bool,
+    bottom: bool,
+) -> Result<(), String> {
+    if !item.properties.contains_key("MODELID") {
+        return Ok(());
+    }
+    let f = &mut item.properties;
+    let p = Point {
+        x: dimension_nm(f.get("MODEL.2D.X").map_or("0", String::as_str))?,
+        y: dimension_nm(f.get("MODEL.2D.Y").map_or("0", String::as_str))?,
+    };
+    let p = if flip {
+        Point {
+            x: 2 * pivot.x - p.x,
+            y: p.y,
+        }
+    } else {
+        transform_point(p, pivot, delta, angle)?
+    };
+    let rotation = f
+        .get("MODEL.3D.ROTZ")
+        .map_or(Ok(0.), |v| v.parse::<f64>())
+        .map_err(|_| "Invalid 3D model rotation")?;
+    let rotation = if flip {
+        rotation + 180.
+    } else {
+        rotation + if bottom { -angle } else { angle }
+    }
+    .rem_euclid(360.);
+    f.insert("MODEL.2D.X".into(), format!("{}mm", p.x as f64 / 1e6));
+    f.insert("MODEL.2D.Y".into(), format!("{}mm", p.y as f64 / 1e6));
+    f.insert("MODEL.3D.ROTZ".into(), rotation.to_string());
+    Ok(())
+}
+
 #[derive(Clone, Debug)]
 pub struct Body {
     pub component: Uuid,
@@ -30,8 +135,20 @@ pub fn bodies(board: &Board) -> Vec<Body> {
     for c in &board.components {
         let mut found = false;
         for item in board.items.iter().filter(|i| {
-            i.component == Some(c.index) && i.properties.contains_key("PCBCRAFT_BODY_PROJECTION")
+            i.component == Some(c.index)
+                && i.properties.contains_key("PCBCRAFT_BODY_PROJECTION")
+                && !i
+                    .properties
+                    .contains_key("PCBCRAFT_LEGACY_REGION_DUPLICATE")
         }) {
+            if item
+                .properties
+                .get("MODELID")
+                .is_some_and(|id| board.models.contains_key(id))
+            {
+                found = true;
+                continue;
+            }
             if let Shape::Region { contour, holes, .. } = &item.shape
                 && contour.len() >= 3
             {
@@ -61,6 +178,9 @@ pub fn bodies(board: &Board) -> Vec<Body> {
             }
         }
         if found {
+            continue;
+        }
+        if board.source.is_some() {
             continue;
         }
         let mut bounds = Bounds::empty();
@@ -124,6 +244,15 @@ fn polygon(points: &[Point]) -> Polygon<f64> {
     }
     Polygon::new(LineString::new(p), vec![])
 }
+fn physical_cutout(item: &Item) -> bool {
+    item.properties
+        .get("ISBOARDCUTOUT")
+        .is_some_and(|v| v.eq_ignore_ascii_case("TRUE"))
+        && !item.properties.contains_key("PCBCRAFT_BODY_PROJECTION")
+        && !item
+            .properties
+            .contains_key("PCBCRAFT_LEGACY_REGION_DUPLICATE")
+}
 /// Actual routed board cutouts and through drills, unioned before subtraction so
 /// overlapping holes and edge slots do not create invalid triangulation rings.
 pub fn substrate(board: &Board) -> Vec<StackSurface> {
@@ -156,7 +285,7 @@ pub fn substrate(board: &Board) -> Vec<StackSurface> {
             cutout: true,
             ..
         } = &item.shape
-            && !item.properties.contains_key("PCBCRAFT_BODY_PROJECTION")
+            && physical_cutout(item)
             && contour.len() >= 3
         {
             cuts.push(polygon(contour));
@@ -192,6 +321,7 @@ pub fn substrate(board: &Board) -> Vec<StackSurface> {
 /// Bounds reject unrelated drills before any polygon boolean operation.
 pub struct Cuts {
     polygons: Vec<(Bounds, Polygon<f64>)>,
+    board: Polygon<f64>,
 }
 impl Cuts {
     pub fn new(board: &Board) -> Self {
@@ -220,13 +350,16 @@ impl Cuts {
                 cutout: true,
                 ..
             } = &item.shape
-                && !item.properties.contains_key("PCBCRAFT_BODY_PROJECTION")
+                && physical_cutout(item)
                 && contour.len() >= 3
             {
                 polygons.push((Bounds::points(contour), polygon(contour)));
             }
         }
-        Self { polygons }
+        Self {
+            polygons,
+            board: polygon(&board.outline_points(256)),
+        }
     }
     pub fn surface(&self, outer: &[Point], holes: &[Vec<Point>]) -> Vec<StackSurface> {
         let bounds = Bounds::points(outer);
@@ -242,12 +375,6 @@ impl Cuts {
             })
             .map(|(_, p)| p)
             .collect();
-        if cuts.is_empty() {
-            return vec![StackSurface {
-                outline: outer.to_vec(),
-                holes: holes.to_vec(),
-            }];
-        }
         let p = polygon(outer);
         let p = Polygon::new(
             p.exterior().clone(),
@@ -256,7 +383,7 @@ impl Cuts {
                 .map(|h| polygon(h).exterior().clone())
                 .collect(),
         );
-        let result = p.difference(&unary_union(cuts));
+        let result = p.intersection(&self.board).difference(&unary_union(cuts));
         let ring = |line: &LineString<f64>| {
             line.0
                 .iter()
@@ -276,6 +403,157 @@ impl Cuts {
             })
             .collect()
     }
+}
+
+/// Solder resist is a physical film above copper, with the union of all pad,
+/// via and explicitly drawn mask openings removed. It is not the board core.
+pub fn solder_mask(board: &Board, bottom: bool) -> Vec<StackSurface> {
+    let mut apertures = Vec::new();
+    for item in &board.items {
+        if item.keepout
+            || item
+                .properties
+                .contains_key("PCBCRAFT_LEGACY_REGION_DUPLICATE")
+        {
+            continue;
+        }
+        if matches!(item.shape, Shape::Pad { .. } | Shape::Via { .. }) {
+            if let Ok(points) = item.mask_outline(board, MaskKind::Solder, bottom)
+                && points.len() >= 3
+            {
+                apertures.push(polygon(&points));
+            }
+        } else if item.layer == if bottom { 38 } else { 37 } {
+            for surface in planar_outline(item) {
+                let p = polygon(&surface.outline);
+                apertures.push(Polygon::new(
+                    p.exterior().clone(),
+                    surface
+                        .holes
+                        .iter()
+                        .map(|h| polygon(h).exterior().clone())
+                        .collect(),
+                ));
+            }
+        }
+    }
+    let cuts = unary_union(apertures.iter());
+    let mut result = Vec::new();
+    for s in substrate(board) {
+        let p = polygon(&s.outline);
+        let p = Polygon::new(
+            p.exterior().clone(),
+            s.holes
+                .iter()
+                .map(|h| polygon(h).exterior().clone())
+                .collect(),
+        );
+        for p in p.difference(&cuts) {
+            let ring = |line: &LineString<f64>| {
+                line.0
+                    .iter()
+                    .take(line.0.len().saturating_sub(1))
+                    .map(|p| Point {
+                        x: (p.x * 1e6).round() as i64,
+                        y: (p.y * 1e6).round() as i64,
+                    })
+                    .collect()
+            };
+            result.push(StackSurface {
+                outline: ring(p.exterior()),
+                holes: p.interiors().iter().map(ring).collect(),
+            });
+        }
+    }
+    result
+}
+
+/// Document-space planar artwork, shared by physical mask and copper geometry.
+pub fn planar_outline(item: &Item) -> Vec<StackSurface> {
+    let outline = match &item.shape {
+        Shape::Track { start, end, width } => crate::pcb_polygon::pad_outline_radius(
+            midpoint(*start, *end),
+            Point {
+                x: (((end.x - start.x) as f64).hypot((end.y - start.y) as f64) as i64) + width,
+                y: *width,
+            },
+            ((end.y - start.y) as f64)
+                .atan2((end.x - start.x) as f64)
+                .to_degrees(),
+            PadShape::Round,
+            100,
+        ),
+        Shape::Arc {
+            centre,
+            radius,
+            start_angle,
+            end_angle,
+            width,
+        } => {
+            let half = (*width / 2).max(1);
+            let outer = arc_points(*centre, radius + half, *start_angle, *end_angle, 128);
+            let mut inner = if *radius > half {
+                arc_points(*centre, radius - half, *start_angle, *end_angle, 128)
+            } else {
+                vec![*centre]
+            };
+            inner.reverse();
+            if arc_sweep(*start_angle, *end_angle) >= 360. - 1e-8 {
+                return vec![StackSurface {
+                    outline: outer,
+                    holes: if inner.len() >= 3 {
+                        vec![inner]
+                    } else {
+                        vec![]
+                    },
+                }];
+            }
+            let axis = arc_points(*centre, *radius, *start_angle, *end_angle, 128);
+            let end = *start_angle + arc_sweep(*start_angle, *end_angle);
+            let mut outline = outer;
+            outline.extend(arc_points(*axis.last().unwrap(), half, end, end + 180., 32));
+            outline.extend(inner);
+            outline.extend(arc_points(
+                axis[0],
+                half,
+                *start_angle + 180.,
+                *start_angle + 360.,
+                32,
+            ));
+            outline.dedup();
+            return vec![StackSurface {
+                outline,
+                holes: vec![],
+            }];
+        }
+        Shape::Fill {
+            start,
+            end,
+            rotation,
+        } => rectangle(
+            midpoint(*start, *end),
+            Point {
+                x: (end.x - start.x).abs(),
+                y: (end.y - start.y).abs(),
+            },
+            *rotation,
+        ),
+        Shape::Region {
+            contour,
+            holes,
+            cutout: false,
+        } => {
+            return vec![StackSurface {
+                outline: contour.clone(),
+                holes: holes.clone(),
+            }];
+        }
+        _ => return vec![],
+    };
+    vec![StackSurface {
+        outline,
+        holes: vec![],
+    }]
 }
 
 #[cfg(test)]
@@ -298,6 +576,187 @@ mod tests {
             locked: false,
             properties: Fields::from([("HEIGHT".into(), "2mm".into())]),
         }
+    }
+    fn contains(surfaces: &[StackSurface], p: Point) -> bool {
+        surfaces.iter().any(|s| {
+            point_in_polygon(p, &s.outline) && !s.holes.iter().any(|h| point_in_polygon(p, h))
+        })
+    }
+    #[test]
+    fn curved_artwork_is_a_bounded_band_with_round_caps_and_a_true_ring_counter() {
+        let mut arc = Item::new(
+            TOP,
+            None,
+            Shape::Arc {
+                centre: Point::mm(10, 10),
+                radius: 5_000_000,
+                start_angle: 0.,
+                end_angle: 90.,
+                width: 2_000_000,
+            },
+        );
+        let partial = planar_outline(&arc);
+        assert_eq!(partial.len(), 1);
+        assert!(partial[0].outline.len() < 200);
+        assert!(contains(
+            &partial,
+            Point {
+                x: 15_500_000,
+                y: 9_700_000
+            }
+        ));
+        assert!(!contains(&partial, Point::mm(10, 10)));
+        if let Shape::Arc { end_angle, .. } = &mut arc.shape {
+            *end_angle = 360.;
+        }
+        let circle = planar_outline(&arc);
+        assert_eq!(circle[0].holes.len(), 1);
+        assert!(!contains(&circle, Point::mm(10, 10)));
+        assert!(contains(&circle, Point::mm(15, 10)));
+    }
+    #[test]
+    fn copper_polygon_cutouts_never_drill_the_board_or_other_copper() {
+        let mut b = board();
+        let mut cut = Item::new(
+            TOP,
+            None,
+            Shape::Region {
+                contour: rectangle(Point::mm(10, 10), Point::mm(4, 4), 0.),
+                holes: vec![],
+                cutout: true,
+            },
+        );
+        cut.properties.insert("KIND".into(), "1".into());
+        b.items.push(cut);
+        let p = Point::mm(10, 10);
+        assert!(contains(&substrate(&b), p));
+        let copper = rectangle(p, Point::mm(8, 8), 0.);
+        assert!(contains(&Cuts::new(&b).surface(&copper, &[]), p));
+        b.items[0]
+            .properties
+            .insert("ISBOARDCUTOUT".into(), "TRUE".into());
+        assert!(!contains(&substrate(&b), p));
+        assert!(!contains(&Cuts::new(&b).surface(&copper, &[]), p));
+    }
+    #[test]
+    fn mask_unions_explicit_openings_tenting_and_does_not_change_source() {
+        let mut b = board();
+        let mut via = Item::new(
+            MULTI_LAYER,
+            None,
+            Shape::Via {
+                position: Point::mm(10, 10),
+                diameter: 2_000_000,
+                hole: 500_000,
+                from_layer: TOP,
+                to_layer: BOTTOM,
+            },
+        );
+        let mut settings = MaskSettings::for_item(&via);
+        settings.solder[0].tented = true;
+        via.masks = Some(Box::new(settings));
+        b.items.push(via);
+        b.items.push(Item::new(
+            37,
+            None,
+            Shape::Fill {
+                start: Point::mm(14, 14),
+                end: Point::mm(18, 18),
+                rotation: 0.,
+            },
+        ));
+        let before = b.clone();
+        assert!(contains(
+            &solder_mask(&b, false),
+            Point {
+                x: 10_700_000,
+                y: 10_000_000
+            }
+        ));
+        assert!(!contains(
+            &solder_mask(&b, true),
+            Point {
+                x: 10_700_000,
+                y: 10_000_000
+            }
+        ));
+        assert!(!contains(&solder_mask(&b, false), Point::mm(16, 16)));
+        assert!(contains(&solder_mask(&b, true), Point::mm(16, 16)));
+        assert_eq!(b, before);
+    }
+    #[test]
+    fn native_mesh_follows_rotation_translation_flip_and_undo_with_shared_geometry() {
+        let mut b = board();
+        b.components.push(component());
+        let mut item = Item::new(
+            57,
+            None,
+            Shape::Region {
+                contour: rectangle(Point::mm(10, 10), Point::mm(2, 2), 0.),
+                holes: vec![],
+                cutout: false,
+            },
+        );
+        item.component = Some(0);
+        item.properties = Fields::from([
+            ("MODELID".into(), "model".into()),
+            ("PCBCRAFT_BODY_PROJECTION".into(), "TRUE".into()),
+            ("MODEL.2D.X".into(), "10mm".into()),
+            ("MODEL.2D.Y".into(), "10mm".into()),
+            ("MODEL.3D.ROTZ".into(), "30".into()),
+        ]);
+        b.models.insert(
+            "model".into(),
+            std::sync::Arc::new(Model {
+                name: "native".into(),
+                triangles: vec![ModelTriangle {
+                    vertices: [[0., 0., 0.], [1., 0., 0.], [0., 1., 2.]],
+                    color: [255; 4],
+                }],
+            }),
+        );
+        b.items.push(item);
+        let p = [0.3, 0.8, 1.];
+        let original = model_point(&b, &b.items[0], p).unwrap();
+        let moved = b
+            .edited(Edit::Transform {
+                selection: vec![b.components[0].id],
+                pivot: Point::mm(10, 10),
+                translation: Point::mm(2, 3),
+                angle: 90.,
+            })
+            .unwrap();
+        let q = model_point(&moved, &moved.items[0], p).unwrap();
+        assert!((q[0] - (12. - (original[1] - 10.))).abs() < 1e-6);
+        assert!((q[1] - (13. + (original[0] - 10.))).abs() < 1e-6);
+        assert!(std::sync::Arc::ptr_eq(
+            &b.models["model"],
+            &moved.models["model"]
+        ));
+        let flipped = crate::pcb_tools::flip_component(&b, b.components[0].id).unwrap();
+        let q = model_point(&flipped, &flipped.items[0], p).unwrap();
+        assert!((q[0] - (20. - original[0])).abs() < 1e-6);
+        assert!((q[1] - original[1]).abs() < 1e-6);
+        assert!((q[2] + b.stack_thickness_nm() as f64 / 1e6 + original[2]).abs() < 1e-6);
+        let moved_bottom = flipped
+            .edited(Edit::Transform {
+                selection: vec![flipped.components[0].id],
+                pivot: Point::mm(10, 10),
+                translation: Point::mm(2, 3),
+                angle: 90.,
+            })
+            .unwrap();
+        let r = model_point(&moved_bottom, &moved_bottom.items[0], p).unwrap();
+        assert!((r[0] - (12. - (q[1] - 10.))).abs() < 1e-6);
+        assert!((r[1] - (13. + (q[0] - 10.))).abs() < 1e-6);
+        let mut doc = Document::new(DocumentKind::Board, "mesh");
+        doc.pcb = Some(b.clone());
+        let before = doc.clone();
+        let mut history = crate::history::History::default();
+        history.commit_pcb(&mut doc, moved).unwrap();
+        history.undo(&mut doc);
+        assert_eq!(doc, before);
+        assert!(bodies(&b).is_empty());
     }
     #[test]
     fn native_body_height_standoff_bottom_and_rotation_do_not_edit_source() {

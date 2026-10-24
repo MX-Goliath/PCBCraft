@@ -48,6 +48,30 @@ impl PcbCraft {
             self.set_pcb_3d(enabled);
             return true;
         }
+        if let Some(index) = self.active
+            && self.documents[index].view.pcb.three_d.enabled
+        {
+            use eda_render::pcb_3d::CameraCommand::*;
+            let command = ctx.input_mut(|i| {
+                if i.consume_key(egui::Modifiers::CTRL, Key::Num0) {
+                    Some(FlippedIsometric)
+                } else if i.consume_key(egui::Modifiers::NONE, Key::Num0) {
+                    Some(Isometric)
+                } else if i.consume_key(egui::Modifiers::NONE, Key::Num9) {
+                    Some(QuarterTurn)
+                } else {
+                    None
+                }
+            });
+            if let Some(command) = command {
+                self.documents[index]
+                    .view
+                    .pcb
+                    .three_d
+                    .camera_command(command);
+                return true;
+            }
+        }
         false
     }
     pub(super) fn pcb_3d_input(

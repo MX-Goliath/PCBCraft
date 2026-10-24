@@ -135,6 +135,14 @@ pub fn flip_component(board: &Board, id: Uuid) -> Result<Board, String> {
         .iter_mut()
         .filter(|i| i.component == Some(c.index))
     {
+        crate::pcb_3d::transform_model(
+            item,
+            c.position,
+            Point::default(),
+            0.,
+            true,
+            c.layer == BOTTOM,
+        )?;
         item.layer = opposite_layer(board, item.layer);
         match &mut item.shape {
             Shape::Track { start, end, .. } => {

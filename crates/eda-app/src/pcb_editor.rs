@@ -1720,7 +1720,11 @@ impl PcbCraft {
                 }
             }
             if input.consume_key(ctrl, Key::F) {
-                doc.view.camera.mirrored_x = !doc.view.camera.mirrored_x;
+                if doc.view.pcb.three_d.enabled {
+                    doc.view.pcb.three_d.flip();
+                } else {
+                    doc.view.camera.mirrored_x = !doc.view.camera.mirrored_x;
+                }
                 handled = true;
                 return;
             }

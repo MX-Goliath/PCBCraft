@@ -23,6 +23,7 @@ pub fn load(path: &Path) -> Result<Document, String> {
         serde_json::from_reader(file).map_err(|e| format!("Invalid PCBCraft document: {e}"))?;
     if let Some(board) = &mut doc.pcb {
         altium_pcb::upgrade_polygons(board, doc.id)?;
+        altium_pcb::upgrade_models(board);
     }
     doc.validate()?;
     Ok(doc)

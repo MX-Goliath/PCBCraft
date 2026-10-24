@@ -923,7 +923,7 @@ fn supported_dependency_guard(
                     .is_some_and(|b| !b.is_empty())
             })
     {
-        return Err("Native save refused: moved/deleted components have an unmodelled 3D-body stream. Keep the edit in PCBCraft JSON; 3D-body transforms need implementation before lossless native saving of this change.".into());
+        return Err("Native save refused: moved/deleted components require writing native 3D-body transforms. Keep the edit in PCBCraft JSON; mesh viewing does not yet implement lossless native writing of this change.".into());
     }
     if reindexed {
         // These sections can refer to primitive/table indexes that cannot safely be

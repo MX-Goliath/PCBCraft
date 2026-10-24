@@ -58,3 +58,17 @@ by shape byte, X/Y sizes and radius percentage) and the top solder tenting flag.
 These are format observations; no reader source or Altium executable code is
 bundled. The 3D mesh generation and bounded mask scope evaluator are PCBCraft
 implementations using the existing geo/earcutr/egui dependencies.
+
+## Embedded STEP meshes — October 24, 2026
+
+Truck (Apache-2.0) and ruststep (Apache-2.0) supply independent Rust STEP/B-rep
+parsing and tessellation, through truck-stepio 0.3 and truck-meshalgo 0.4:
+https://github.com/ricosjp/truck
+https://docs.rs/crate/truck-stepio/0.3.0/source/examples/step-to-mesh.rs
+https://github.com/ricosjp/ruststep
+
+The physical lettering uses ttf-parser (Apache-2.0 OR MIT) and the existing bundled
+Liberation Sans fonts under their existing font license in assets/fonts/liberation.
+No Altium or KiCad implementation code is used. The only committed STEP file is
+the PCBCraft-authored synthetic coloured-face test; user board/model archives are
+neither redistributed nor uploaded by this workflow.

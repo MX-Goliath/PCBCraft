@@ -296,6 +296,7 @@ impl Item {
                 y: anchor.y - old.y,
             },
             0.0,
+            false,
         )?;
         Ok(next)
     }
@@ -395,6 +396,10 @@ impl Item {
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Board {
+    /// Shared, read-only meshes in model-local millimetres; native placement is
+    /// retained on body records and transformed only when building a scene.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub models: BTreeMap<String, std::sync::Arc<crate::pcb_3d::Model>>,
     #[serde(default)]
     pub layer_stack: Option<crate::layer_stack::Stack>,
     pub outline: Vec<ContourVertex>,
@@ -425,6 +430,7 @@ pub struct Board {
 impl Default for Board {
     fn default() -> Self {
         Self {
+            models: BTreeMap::new(),
             layer_stack: None,
             outline: vec![],
             layers: [TOP, BOTTOM, TOP_OVERLAY, BOTTOM_OVERLAY, MULTI_LAYER]
@@ -553,6 +559,9 @@ impl Board {
             {
                 return Err("Invalid component".into());
             }
+        }
+        if self.models.len() > 10_000 || self.models.values().any(|m| !m.valid()) {
+            return Err("Invalid PCB 3D model geometry".into());
         }
         for v in &self.outline {
             if !valid_point(v.position) {
@@ -865,7 +874,11 @@ impl Board {
                     return Err("Selection contains locked objects".into());
                 }
                 for item in next.items.iter_mut().filter(|i| ids.contains(&i.id)) {
-                    transform_item(item, pivot, translation, angle)?;
+                    let bottom = item
+                        .component
+                        .and_then(|i| self.components.iter().find(|c| c.index == i))
+                        .is_some_and(|c| c.layer == BOTTOM);
+                    transform_item(item, pivot, translation, angle, bottom)?;
                 }
                 for poly in next
                     .polygon_pours
@@ -1149,7 +1162,9 @@ pub(crate) fn transform_item(
     pivot: Point,
     delta: Point,
     angle: f64,
+    model_bottom: bool,
 ) -> Result<(), String> {
+    crate::pcb_3d::transform_model(item, pivot, delta, angle, false, model_bottom)?;
     let p = |v| transform_point(v, pivot, delta, angle);
     match &mut item.shape {
         Shape::Track { start, end, .. } => {

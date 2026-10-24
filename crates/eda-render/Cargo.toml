@@ -13,3 +13,4 @@ eda-geom.workspace = true
 egui.workspace = true
 serde.workspace = true
 uuid.workspace = true
+ttf-parser = "0.25"

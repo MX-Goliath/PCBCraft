@@ -467,6 +467,21 @@ fn three_d_mode_shortcuts_selection_rotation_and_return_preserve_history_and_cam
         },
     );
     assert!(app.documents[0].view.pcb.three_d.enabled);
+    for key in [Key::Num0, Key::Num9] {
+        let old = app.documents[0].view.pcb.three_d.yaw;
+        let _ = ctx.run(
+            egui::RawInput {
+                events: vec![event(key)],
+                ..Default::default()
+            },
+            |ctx| {
+                assert!(app.pcb_view_shortcuts(ctx));
+            },
+        );
+        assert_ne!(app.documents[0].view.pcb.three_d.yaw, old);
+        assert!(!app.documents[0].dirty());
+        assert_eq!(app.documents[0].history.revision, 0);
+    }
     app.pcb_input(
         0,
         Input {

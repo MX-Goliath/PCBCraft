@@ -704,3 +704,32 @@ Evidence, validation and explicit remaining scope: docs/pcb-update/RULES.md.
   verification remains pending; no completion claim.
 
 Evidence, exact implemented scope and remaining differences: docs/pcb-update/RULES.md.
+
+### ReferenceB adaptive PCB 3D correction — 24.10.2026
+
+- [x] Reproduce the user's ReferenceBBoard.PcbDoc in Windows and inspect the same
+  source in AD Enterprise 24.4.1, including both sides, bodies, materials and
+  native 3D View Control commands; source never saved in either editor.
+- [x] Correct solder-mask/copper/paste depth and apertures; copper polygon
+  cutouts no longer drill the laminate. Remove legacy duplicate geometry from 3D.
+- [x] Read embedded STEP using independent Rust Truck/ruststep, preserve AP214
+  face colours and share meshes. Native Y/Z mounting reflection fixes the large
+  asymmetric bottom connector; validated move/rotate/flip follow history.
+- [x] Render planar text, correct bottom camera/Flip, perspective depth,
+  translucent shared edges and camera-space lighting. Add native-order camera
+  menu commands; unsupported Fold/Unfold stays disabled.
+- [x] Read-only reference audit: 16 models / 10,293 triangles / 62 placements,
+  no missing meshes, maximum saved-projection XY bound error 0.000122 mm.
+- [x] 361 workspace tests, strict all-target Clippy, formatting, Windows dev
+  build and Linux GNU all-target compilation. Original source SHA-256 unchanged.
+- [x] Live Windows top/bottom/flipped-isometric/model picking and locked-object
+  protection checked after changes.
+- [x] Unlocked bottom component Space/Undo in the live 3D window; native source
+  never saved. Existing unsupported InPad repour query remains outside this fix.
+- [ ] Exact pixel parity: native lighting/specular/antialiasing, font metrics,
+  exact camera/Fit values, equal viewport/chrome/docks and Linux runtime GUI.
+- [ ] Parasolid/textures/transformed assemblies, section/collision/rigid-flex
+  and native writing of changed imported 3D placements remain unsupported.
+
+Evidence, independent dependencies, regression coverage and explicit limitations:
+docs/pcb-update/3D_VIEW.md and docs/pcb-update/THIRD_PARTY_NOTICES.md.

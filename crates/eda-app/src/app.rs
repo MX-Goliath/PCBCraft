@@ -124,6 +124,7 @@ impl Default for Settings {
 enum Command {
     CrossProbe,
     Pcb3d(bool),
+    Pcb3dCamera(eda_render::pcb_3d::CameraCommand),
     LayerStack,
     Annotate,
     ShowComponents,
@@ -653,6 +654,17 @@ impl PcbCraft {
                     }
                 }
             }
+            Command::Pcb3dCamera(command) => {
+                if let Some(index) = self.active
+                    && self.documents[index].view.pcb.three_d.enabled
+                {
+                    self.documents[index]
+                        .view
+                        .pcb
+                        .three_d
+                        .camera_command(command);
+                }
+            }
             Command::Home => self.active = None,
             Command::ToggleProjects => self.settings.projects = !self.settings.projects,
             Command::ToggleProperties => {
@@ -884,6 +896,55 @@ impl PcbCraft {
                                 )),
                                 true,
                             );
+                            let three_d = self
+                                .active
+                                .is_some_and(|i| self.documents[i].view.pcb.three_d.enabled);
+                            if three_d {
+                                use eda_render::pcb_3d::CameraCommand::*;
+                                self.action(
+                                    ui,
+                                    "Flip Board",
+                                    "Ctrl+F",
+                                    Command::Pcb3dCamera(Flip),
+                                    true,
+                                );
+                                ui.menu_button("3D View Control", |ui| {
+                                    for (label, shortcut, command) in [
+                                        ("Top Side", "", Top),
+                                        ("Bottom Side", "", Bottom),
+                                        ("Front Side", "", Front),
+                                        ("Back Side", "", Back),
+                                        ("Left Edge", "", Left),
+                                        ("Right Edge", "", Right),
+                                        ("Rotate Left", "", RotateLeft),
+                                        ("Rotate Right", "", RotateRight),
+                                        ("Rotate Up", "", RotateUp),
+                                        ("Rotate Down", "", RotateDown),
+                                        ("Move Left", "", MoveLeft),
+                                        ("Move Right", "", MoveRight),
+                                        ("Move Up", "", MoveUp),
+                                        ("Move Down", "", MoveDown),
+                                        ("Isometric View", "0", Isometric),
+                                        ("Flipped Isometric View", "Ctrl+0", FlippedIsometric),
+                                    ] {
+                                        self.action(
+                                            ui,
+                                            label,
+                                            shortcut,
+                                            Command::Pcb3dCamera(command),
+                                            true,
+                                        );
+                                    }
+                                    ui.add_enabled(false, egui::Button::new("Fold/Unfold"));
+                                    self.action(
+                                        ui,
+                                        "90 Degree Rotation",
+                                        "9",
+                                        Command::Pcb3dCamera(QuarterTurn),
+                                        true,
+                                    );
+                                });
+                            }
                         }
                         self.action(ui, "Home Page", "", Command::Home, true);
                         ui.separator();

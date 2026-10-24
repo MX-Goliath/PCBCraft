@@ -23,6 +23,8 @@ pub mod writer;
 
 #[path = "altium_pcb_stack.rs"]
 mod stack_io;
+#[path = "pcb_step.rs"]
+mod step_io;
 
 const LIMIT: usize = 128 * 1024 * 1024;
 const MAX_BLOCK: usize = 16 * 1024 * 1024;
@@ -34,6 +36,50 @@ pub fn load_pcb(path: &Path) -> Result<Document> {
         &bytes,
         &path.file_name().unwrap_or_default().to_string_lossy(),
     )
+}
+/// Older PCBCraft JSON archives retained embedded STEP bytes but no meshes.
+/// Recover only the model library; preserve the current edited PCB primitives.
+pub(crate) fn upgrade_models(board: &mut Board) {
+    if !board.models.is_empty()
+        || !board
+            .items
+            .iter()
+            .any(|i| i.properties.contains_key("MODELID"))
+    {
+        return;
+    }
+    let Some(source) = &board.source else { return };
+    if source.bytes_base64.len() > LIMIT * 4 / 3 + 8 {
+        return;
+    }
+    let Ok(bytes) = STANDARD.decode(&source.bytes_base64) else {
+        return;
+    };
+    let Ok(mut cfb) = cfb::CompoundFile::open(Cursor::new(bytes)) else {
+        return;
+    };
+    let paths: Vec<_> = cfb
+        .walk()
+        .filter(|e| e.is_stream() && e.path().starts_with("/Models") && e.len() <= MAX_BLOCK as u64)
+        .map(|e| e.path().to_owned())
+        .collect();
+    let mut streams = BTreeMap::new();
+    let mut total = 0;
+    for path in paths {
+        let Ok(mut stream) = cfb.open_stream(&path) else {
+            continue;
+        };
+        let mut data = vec![];
+        if stream.read_to_end(&mut data).is_err() {
+            continue;
+        }
+        total += data.len();
+        if total > LIMIT {
+            return;
+        }
+        streams.insert(path.to_string_lossy().replace('\\', "/"), data);
+    }
+    step_io::read_models(&streams, board);
 }
 pub fn import_pcb(bytes: &[u8], name: &str) -> Result<Document> {
     if bytes.len() > LIMIT {
@@ -483,6 +529,7 @@ fn binary(bytes: &[u8], ns: Uuid) -> Result<Board> {
         "ComponentBodies6",
         "ShapeBasedComponentBodies6",
         "WideStrings6",
+        "Models",
     ];
     let mut streams = BTreeMap::new();
     let mut expanded = 0usize;
@@ -671,6 +718,7 @@ fn binary(bytes: &[u8], ns: Uuid) -> Result<Board> {
             "Design rules imported; PCB Rules/DRC supports a subset of constraints and queries. See unchecked conditions in the DRC report",
         );
     }
+    step_io::read_models(&streams, &mut board);
     if !board.polygons.is_empty() {
         warn(
             &mut board,

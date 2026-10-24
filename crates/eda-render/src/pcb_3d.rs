@@ -12,6 +12,8 @@ use std::{
     sync::{Arc, Mutex, mpsc},
 };
 use uuid::Uuid;
+#[path = "pcb_3d_text.rs"]
+mod lettering;
 
 #[derive(Clone)]
 struct Face {
@@ -75,6 +77,27 @@ impl Default for Presentation {
     }
 }
 type SceneKey = (u64, bool, u64);
+#[derive(Clone, Copy)]
+pub enum CameraCommand {
+    Top,
+    Bottom,
+    Front,
+    Back,
+    Left,
+    Right,
+    RotateLeft,
+    RotateRight,
+    RotateUp,
+    RotateDown,
+    MoveLeft,
+    MoveRight,
+    MoveUp,
+    MoveDown,
+    Isometric,
+    FlippedIsometric,
+    QuarterTurn,
+    Flip,
+}
 struct SceneJob {
     key: SceneKey,
     receiver: Mutex<mpsc::Receiver<Scene>>,
@@ -116,8 +139,8 @@ impl Default for State {
             enabled: false,
             presentation: Default::default(),
             revision: 0,
-            yaw: -0.5,
-            pitch: 0.85,
+            yaw: 0.,
+            pitch: std::f32::consts::FRAC_PI_2,
             zoom: 1.,
             pan: Vec2::ZERO,
             highlighted: None,
@@ -139,6 +162,42 @@ impl Default for State {
     }
 }
 impl State {
+    pub fn camera_command(&mut self, command: CameraCommand) {
+        use CameraCommand::*;
+        let step = std::f32::consts::PI / 18.;
+        match command {
+            Top => self.top(),
+            Bottom => self.bottom(),
+            Flip => self.flip(),
+            Front | Back | Left | Right => {
+                self.pitch = 0.;
+                self.yaw = match command {
+                    Back => std::f32::consts::PI,
+                    Left => -std::f32::consts::FRAC_PI_2,
+                    Right => std::f32::consts::FRAC_PI_2,
+                    _ => 0.,
+                };
+                self.fit();
+            }
+            Isometric | FlippedIsometric => {
+                self.yaw = std::f32::consts::FRAC_PI_4;
+                self.pitch = std::f32::consts::FRAC_PI_4;
+                self.fit();
+                if matches!(command, FlippedIsometric) {
+                    self.flip();
+                }
+            }
+            RotateLeft => self.yaw += step,
+            RotateRight => self.yaw -= step,
+            RotateUp => self.pitch = (self.pitch + step).min(std::f32::consts::FRAC_PI_2),
+            RotateDown => self.pitch = (self.pitch - step).max(-std::f32::consts::FRAC_PI_2),
+            MoveLeft => self.pan.x -= 20.,
+            MoveRight => self.pan.x += 20.,
+            MoveUp => self.pan.y -= 20.,
+            MoveDown => self.pan.y += 20.,
+            QuarterTurn => self.yaw += std::f32::consts::FRAC_PI_2,
+        }
+    }
     pub fn read_configuration(&mut self, board: &Board) {
         let fields: std::collections::BTreeMap<_, _> = board
             .properties
@@ -322,9 +381,13 @@ impl State {
         self.fit();
     }
     pub fn bottom(&mut self) {
-        self.yaw = 0.;
+        self.yaw = std::f32::consts::PI;
         self.pitch = -std::f32::consts::FRAC_PI_2;
         self.fit();
+    }
+    pub fn flip(&mut self) {
+        self.yaw = (std::f32::consts::PI - self.yaw).rem_euclid(std::f32::consts::TAU);
+        self.pitch = -self.pitch;
     }
 }
 fn rings(faces: &mut Vec<Triangle>, outer: &[Point], holes: &[Vec<Point>], z: f32, color: Color32) {
@@ -371,10 +434,6 @@ fn build(board: &Board, components: bool) -> Scene {
     };
     for region in pcb_3d::substrate(board) {
         let mut faces = vec![];
-        rings(&mut faces, &region.outline, &region.holes, 0., mask);
-        add(std::mem::take(&mut faces), None, 4, TOP);
-        rings(&mut faces, &region.outline, &region.holes, -thickness, mask);
-        add(std::mem::take(&mut faces), None, 5, BOTTOM);
         rings(
             &mut faces,
             &region.outline,
@@ -409,30 +468,49 @@ fn build(board: &Board, components: bool) -> Scene {
         }
         add(faces, None, 1, MULTI_LAYER);
     }
+    for (bottom, z, material, layer) in
+        [(false, 0.04, 4, TOP), (true, -thickness - 0.04, 5, BOTTOM)]
+    {
+        for region in pcb_3d::solder_mask(board, bottom) {
+            let mut faces = vec![];
+            rings(&mut faces, &region.outline, &region.holes, z, mask);
+            add(faces, None, material, layer);
+        }
+    }
     for item in &board.items {
         if item.keepout
             || item.properties.contains_key("PCBCRAFT_BODY_PROJECTION")
-            || (item.component.is_none() && !point_in_polygon(item.anchor(), &board_outline))
+            || item
+                .properties
+                .contains_key("PCBCRAFT_LEGACY_REGION_DUPLICATE")
+            || !board.text_visible(item)
         {
             continue;
         }
-        for (layer, z) in [(TOP, 0.015), (BOTTOM, -thickness - 0.015)] {
+        for (layer, mut z) in [(TOP, 0.015), (BOTTOM, -thickness - 0.015)] {
+            let overlay = if layer == TOP {
+                TOP_OVERLAY
+            } else {
+                BOTTOM_OVERLAY
+            };
+            let paste_layer = if layer == TOP { 35 } else { 36 };
             if item.layer != layer
                 && item.layer != MULTI_LAYER
-                && item.layer
-                    != if layer == TOP {
-                        TOP_OVERLAY
-                    } else {
-                        BOTTOM_OVERLAY
-                    }
+                && item.layer != overlay
+                && item.layer != paste_layer
             {
                 continue;
+            }
+            if item.layer == overlay || item.layer == paste_layer {
+                z += if layer == TOP { 0.06 } else { -0.06 };
             }
             let mut faces = vec![];
             let copper = if item.layer == TOP_OVERLAY || item.layer == BOTTOM_OVERLAY {
                 Color32::from_rgb(224, 222, 193)
+            } else if item.layer == 35 || item.layer == 36 {
+                Color32::GRAY
             } else {
-                Color32::from_rgb(44, 122, 72)
+                Color32::from_rgb(193, 177, 113)
             };
             match &item.shape {
                 Shape::Pad { .. } | Shape::Via { .. } => {
@@ -440,29 +518,21 @@ fn build(board: &Board, components: bool) -> Scene {
                         continue;
                     }
                     let points = item.pad_outline(layer);
-                    surface(
+                    planar(
                         &mut faces,
                         &points,
-                        &item.drill_outline(),
+                        &[],
                         z,
                         Color32::from_rgb(193, 177, 113),
-                        origin,
+                        &cuts,
                     );
                 }
                 Shape::Track { start, end, width } => {
                     segment(&mut faces, *start, *end, *width, z, copper, &cuts)
                 }
-                Shape::Arc {
-                    centre,
-                    radius,
-                    start_angle,
-                    end_angle,
-                    width,
-                } => {
-                    for edge in
-                        arc_points(*centre, *radius, *start_angle, *end_angle, 64).windows(2)
-                    {
-                        segment(&mut faces, edge[0], edge[1], *width, z, copper, &cuts);
+                Shape::Arc { .. } => {
+                    for shape in pcb_3d::planar_outline(item) {
+                        planar(&mut faces, &shape.outline, &shape.holes, z, copper, &cuts);
                     }
                 }
                 Shape::Fill {
@@ -489,6 +559,18 @@ fn build(board: &Board, components: bool) -> Scene {
                     holes,
                     cutout: false,
                 } => planar(&mut faces, contour, holes, z, copper, &cuts),
+                Shape::Text { .. } => {
+                    for outline in lettering::outlines(item) {
+                        planar(
+                            &mut faces,
+                            &outline.outline,
+                            &outline.holes,
+                            z,
+                            copper,
+                            &cuts,
+                        );
+                    }
+                }
                 _ => {}
             }
             if let Some(parent) = item
@@ -504,6 +586,10 @@ fn build(board: &Board, components: bool) -> Scene {
                     2
                 } else if item.layer == BOTTOM_OVERLAY {
                     3
+                } else if item.layer == 35 {
+                    6
+                } else if item.layer == 36 {
+                    7
                 } else {
                     0
                 },
@@ -517,7 +603,7 @@ fn build(board: &Board, components: bool) -> Scene {
                         &mut paste,
                         &outline,
                         &item.drill_outline(),
-                        z + if bottom { -0.02 } else { 0.02 },
+                        z + if bottom { -0.05 } else { 0.05 },
                         Color32::GRAY,
                         origin,
                     );
@@ -530,8 +616,79 @@ fn build(board: &Board, components: bool) -> Scene {
                 }
             }
         }
+        if matches!(
+            item.shape,
+            Shape::Via {
+                from_layer: TOP,
+                to_layer: BOTTOM,
+                ..
+            } | Shape::Via {
+                from_layer: BOTTOM,
+                to_layer: TOP,
+                ..
+            } | Shape::Pad {
+                plated: true,
+                hole: 1..,
+                ..
+            }
+        ) {
+            let mut faces = vec![];
+            wall(
+                &mut faces,
+                &item.drill_outline(),
+                -thickness,
+                0.,
+                Color32::from_rgb(193, 177, 113),
+                origin,
+            );
+            add(faces, Some(item.id), 0, MULTI_LAYER);
+        }
     }
     if components {
+        for item in board.items.iter().filter(|i| {
+            i.properties.contains_key("PCBCRAFT_BODY_PROJECTION")
+                && !i
+                    .properties
+                    .contains_key("PCBCRAFT_LEGACY_REGION_DUPLICATE")
+        }) {
+            let Some(model) = item
+                .properties
+                .get("MODELID")
+                .and_then(|id| board.models.get(id))
+            else {
+                continue;
+            };
+            let owner = item
+                .component
+                .and_then(|i| board.components.iter().find(|c| c.index == i))
+                .map(|c| c.id);
+            let opacity = item
+                .properties
+                .get("BODYOPACITY3D")
+                .and_then(|v| v.parse::<f32>().ok())
+                .unwrap_or(1.)
+                .clamp(0., 1.);
+            let faces = model
+                .triangles
+                .iter()
+                .filter_map(|t| {
+                    let mut v = [[0.; 3]; 3];
+                    for (vertex, p) in v.iter_mut().zip(t.vertices) {
+                        *vertex = pcb_3d::model_point(board, item, p)?.map(|x| x as f32);
+                    }
+                    Some(Triangle {
+                        v,
+                        color: Color32::from_rgba_unmultiplied(
+                            t.color[0],
+                            t.color[1],
+                            t.color[2],
+                            (f32::from(t.color[3]) * opacity) as u8,
+                        ),
+                    })
+                })
+                .collect();
+            add(faces, owner, 8, MULTI_LAYER);
+        }
         for body in pcb_3d::bodies(board) {
             let mut faces = vec![];
             let color = Color32::from_rgb(65, 68, 73);
@@ -597,25 +754,19 @@ fn segment(
     color: Color32,
     cuts: &pcb_3d::Cuts,
 ) {
-    let length = ((b.x - a.x) as f64).hypot((b.y - a.y) as f64) as i64;
-    let angle = ((b.y - a.y) as f64).atan2((b.x - a.x) as f64).to_degrees();
-    planar(
-        faces,
-        &rectangle(
-            midpoint(a, b),
-            Point {
-                x: length.max(width),
-                y: width,
-            },
-            angle,
-        ),
-        &[],
-        z,
-        color,
-        cuts,
-    );
+    for shape in pcb_3d::planar_outline(&Item::new(
+        TOP,
+        None,
+        Shape::Track {
+            start: a,
+            end: b,
+            width,
+        },
+    )) {
+        planar(faces, &shape.outline, &shape.holes, z, color, cuts);
+    }
 }
-fn project(v: [f32; 3], state: &State) -> [f32; 3] {
+fn camera_point(v: [f32; 3], state: &State) -> [f32; 3] {
     let centre = state.focus.unwrap_or(state.scene.centre);
     let scale_z = |z: f32| {
         z + z.clamp(-state.scene.thickness, 0.0) * (state.presentation.thickness_scale - 1.0)
@@ -631,6 +782,10 @@ fn project(v: [f32; 3], state: &State) -> [f32; 3] {
     let (s, c) = state.pitch.sin_cos();
     let y = y * s + v[2] * c;
     let depth = -(v[0] * state.yaw.sin() + v[1] * state.yaw.cos()) * c + v[2] * s;
+    [x, y, depth]
+}
+fn project(v: [f32; 3], state: &State) -> [f32; 3] {
+    let [x, y, depth] = camera_point(v, state);
     let perspective = if state.presentation.perspective {
         let d = state.scene.radius.max(0.1) * 4.0;
         d / (d - depth).max(d * 0.1)
@@ -645,7 +800,7 @@ fn material_color(face: &Face, state: &State) -> Color32 {
     let mut alpha = if face.material < 8 {
         p.opacity[face.material]
     } else {
-        255
+        face.triangle.color.a()
     };
     let mut color = if face.material >= 8 {
         face.triangle.color
@@ -687,9 +842,9 @@ fn raster(
         let t = y as f32 / h.saturating_sub(1).max(1) as f32;
         let [a, b] = state.presentation.background;
         let c = Color32::from_rgb(
-            egui::lerp(f32::from(a.r())..=f32::from(b.r()), t) as u8,
-            egui::lerp(f32::from(a.g())..=f32::from(b.g()), t) as u8,
-            egui::lerp(f32::from(a.b())..=f32::from(b.b()), t) as u8,
+            egui::lerp(f32::from(a.r())..=f32::from(b.r()), t).round() as u8,
+            egui::lerp(f32::from(a.g())..=f32::from(b.g()), t).round() as u8,
+            egui::lerp(f32::from(a.b())..=f32::from(b.b()), t).round() as u8,
         );
         image.pixels[y * w..(y + 1) * w].fill(c);
     }
@@ -720,7 +875,7 @@ fn raster(
         bb.cmp(&aa).then_with(|| a.4.total_cmp(&b.4))
     });
     for (n, face, material, projected, _) in order {
-        let v = projected.map(|v| {
+        let mut v = projected.map(|v| {
             [
                 (v[0] * scale + logical.x / 2. + state.pan.x) * w as f32 / logical.x,
                 (-v[1] * scale + logical.y / 2. + state.pan.y) * h as f32 / logical.y,
@@ -730,9 +885,13 @@ fn raster(
         if !v.iter().flatten().all(|v| v.is_finite()) {
             continue;
         }
-        let area = edge(v[0], v[1], v[2][0], v[2][1]);
+        let mut area = edge(v[0], v[1], v[2][0], v[2][1]);
         if area.abs() < 1e-6 {
             continue;
+        }
+        if area < 0. {
+            v.swap(1, 2);
+            area = -area;
         }
         let min = |k: usize, limit: usize| {
             v.iter()
@@ -761,18 +920,30 @@ fn raster(
             material
         };
         let color = shade(&Triangle {
-            v: projected,
+            v: face.triangle.v.map(|v| camera_point(v, state)),
             color,
         });
+        // Half-open triangle edges: a shared diagonal belongs to one triangle.
+        // Inclusive barycentric tolerances blend translucent surfaces twice.
+        let inclusive = |a: [f32; 3], b: [f32; 3]| b[1] < a[1] || (b[1] == a[1] && b[0] > a[0]);
+        let covers = |value: f32, a, b| value > 0. || (value == 0. && inclusive(a, b));
         for y in min(1, h)..=max(1, h) {
             for x in min(0, w)..=max(0, w) {
-                let a = edge(v[1], v[2], x as f32 + 0.5, y as f32 + 0.5) / area;
-                let b = edge(v[2], v[0], x as f32 + 0.5, y as f32 + 0.5) / area;
-                let c = 1. - a - b;
-                if a < -1e-5 || b < -1e-5 || c < -1e-5 {
+                let a = edge(v[1], v[2], x as f32 + 0.5, y as f32 + 0.5);
+                let b = edge(v[2], v[0], x as f32 + 0.5, y as f32 + 0.5);
+                let c = edge(v[0], v[1], x as f32 + 0.5, y as f32 + 0.5);
+                if !covers(a, v[1], v[2]) || !covers(b, v[2], v[0]) || !covers(c, v[0], v[1]) {
                     continue;
                 }
-                let z = a * v[0][2] + b * v[1][2] + c * v[2][2];
+                let z = if state.presentation.perspective {
+                    let d = state.scene.radius.max(0.1) * 4.;
+                    d - area
+                        / (a / (d - v[0][2]).max(d * 0.1)
+                            + b / (d - v[1][2]).max(d * 0.1)
+                            + c / (d - v[2][2]).max(d * 0.1))
+                } else {
+                    (a * v[0][2] + b * v[1][2] + c * v[2][2]) / area
+                };
                 let index = y * w + x;
                 if z > depth[index] {
                     if color.a() == 255 {
@@ -945,9 +1116,10 @@ pub fn canvas(ui: &mut egui::Ui, board: &Board, view: &mut View) -> CanvasOutput
             schematic_input: None,
         };
     }
+    let dpi = ui.ctx().pixels_per_point();
     let size = [
-        rect.width().ceil().clamp(1., 1200.) as usize,
-        rect.height().ceil().clamp(1., 1000.) as usize,
+        (rect.width() * dpi).ceil().clamp(1., 1800.) as usize,
+        (rect.height() * dpi).ceil().clamp(1., 1400.) as usize,
     ];
     let mut hash = std::collections::hash_map::DefaultHasher::new();
     size.hash(&mut hash);
@@ -1029,8 +1201,19 @@ pub fn canvas(ui: &mut egui::Ui, board: &Board, view: &mut View) -> CanvasOutput
             .find(|c| c.id == id || state.scene.parents.get(&id) == Some(&c.id))
     }) {
         response.clone().on_hover_text(format!(
-            "{} · {}\n{}\nSimplified body · click to select, double-click for Properties",
-            c.designator, c.comment, c.footprint
+            "{} · {}\n{}\n{} · click to select, double-click for Properties",
+            c.designator,
+            c.comment,
+            c.footprint,
+            if board.items.iter().any(|i| i.component == Some(c.index)
+                && i.properties
+                    .get("MODELID")
+                    .is_some_and(|id| board.models.contains_key(id)))
+            {
+                "STEP model"
+            } else {
+                "Simplified body"
+            }
         ));
     }
     view.pcb.input = Some(Input {
@@ -1052,6 +1235,53 @@ pub fn canvas(ui: &mut egui::Ui, board: &Board, view: &mut View) -> CanvasOutput
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn bottom_view_mirrors_x_and_preserves_y_like_the_native_flip() {
+        let mut s = State::default();
+        s.top();
+        let top = project([1., 2., 0.], &s);
+        s.bottom();
+        let bottom = project([1., 2., 0.], &s);
+        assert!((top[0] + bottom[0]).abs() < 1e-5);
+        assert!((top[1] - bottom[1]).abs() < 1e-5);
+        s.flip();
+        let back = project([1., 2., 0.], &s);
+        assert!((back[0] - top[0]).abs() < 1e-5);
+        assert!((back[1] - top[1]).abs() < 1e-5);
+    }
+    #[test]
+    fn transparent_quad_has_no_double_blended_diagonal() {
+        let face = |v| Face {
+            triangle: Triangle {
+                v,
+                color: Color32::RED,
+            },
+            owner: None,
+            material: 0,
+            layer: TOP,
+        };
+        let mut s = State {
+            scene: Arc::new(Scene {
+                radius: 2.,
+                faces: vec![
+                    face([[-1., -1., 0.], [1., -1., 0.], [1., 1., 0.]]),
+                    face([[-1., -1., 0.], [1., 1., 0.], [-1., 1., 0.]]),
+                ],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        s.top();
+        s.presentation.opacity[0] = 128;
+        s.presentation.background = [Color32::from_rgb(51, 55, 62); 2];
+        let (image, _) = raster(&s, &[], Vec2::splat(100.), [100, 100]);
+        let color = image.pixels[5050];
+        for y in 35..65 {
+            for x in 35..65 {
+                assert_eq!(image.pixels[y * 100 + x], color, "pixel {x},{y}");
+            }
+        }
+    }
     #[test]
     fn single_layer_and_highlight_mask_compose_with_material_opacity() {
         let owner = Uuid::new_v4();
