@@ -46,6 +46,21 @@ impl Board {
         visible: &BTreeSet<u16>,
         options: &SnapOptions,
     ) -> Point {
+        self.snap_with_items(raw, grid, layer, visible, options, self.items.iter())
+    }
+
+    /// Same exact snapping rules with a conservative spatial candidate set.
+    /// Callers must include every item within the snap distance, in document
+    /// order, including all pad-stack lands and arc/component centres.
+    pub fn snap_with_items<'a>(
+        &self,
+        raw: Point,
+        grid: i64,
+        layer: u16,
+        visible: &BTreeSet<u16>,
+        options: &SnapOptions,
+        items: impl IntoIterator<Item = &'a Item>,
+    ) -> Point {
         let mut result = Point {
             x: snap_coord(raw.x, grid),
             y: snap_coord(raw.y, grid),
@@ -61,7 +76,7 @@ impl Board {
                 result = p;
             }
         };
-        for item in &self.items {
+        for item in items {
             if !visible.contains(&item.layer)
                 || (options.mode == SnapLayerMode::Current
                     && !crate::pcb_polygon::on_layer(self, item, layer))

@@ -11,6 +11,12 @@ image = { version = "0.25", default-features = false, features = ["png","jpeg","
 eda-core.workspace = true
 eda-geom.workspace = true
 egui.workspace = true
+egui-wgpu.workspace = true
+bytemuck = "1.24"
 serde.workspace = true
 uuid.workspace = true
 ttf-parser = "0.25"
+
+[dev-dependencies]
+pollster = "0.4"
+wgpu.workspace = true

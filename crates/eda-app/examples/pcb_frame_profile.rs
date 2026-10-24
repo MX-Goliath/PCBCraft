@@ -7,12 +7,31 @@ fn main() -> Result<(), String> {
     let mut args = std::env::args_os().skip(1);
     let path = PathBuf::from(
         args.next()
-            .ok_or("Usage: pcb_frame_profile INPUT.PcbDoc [--3d]")?,
+            .ok_or("Usage: pcb_frame_profile INPUT.PcbDoc [--3d] [--gpu]")?,
     );
-    let three_d = args.any(|a| a == "--3d");
+    let args: Vec<_> = args.collect();
+    let three_d = args.iter().any(|a| a == "--3d");
+    let loading = Instant::now();
     let doc = eda_io::load(&path)?;
     let board = doc.pcb.as_ref().ok_or("Not a PCB document")?;
+    println!("load_ms={:.2}", loading.elapsed().as_secs_f64() * 1000.);
+    let saved = doc.clone();
+    let compare = Instant::now();
+    for _ in 0..20 {
+        std::hint::black_box(std::hint::black_box(&doc) == std::hint::black_box(&saved));
+    }
+    println!(
+        "saved_compare_ms={:.2}",
+        compare.elapsed().as_secs_f64() * 1000. / 20.
+    );
+    for warning in board.warnings.iter().filter(|w| w.starts_with("3D")) {
+        println!("{warning}");
+    }
     let ctx = egui::Context::default();
+    if args.iter().any(|a| a == "--gpu") {
+        eda_render::pcb::enable_gpu(&ctx, eframe::wgpu::TextureFormat::Rgba8Unorm);
+        println!("GPU callbacks: CPU submission timings only; no GPU execution in this probe");
+    }
     let mut fonts = egui::FontDefinitions::default();
     for name in [
         "sch-sans",
@@ -53,7 +72,21 @@ fn main() -> Result<(), String> {
             },
         );
         let paint = start.elapsed();
-        let _ = ctx.tessellate(output.shapes, output.pixels_per_point);
+        let shapes = output.shapes.len();
+        let meshes = ctx.tessellate(output.shapes, output.pixels_per_point);
+        if std::env::var_os("PCBCRAFT_FRAME_PROFILE").is_some() {
+            let vertices: usize = meshes
+                .iter()
+                .map(|m| match &m.primitive {
+                    egui::epaint::Primitive::Mesh(m) => m.vertices.len(),
+                    _ => 0,
+                })
+                .sum();
+            eprintln!(
+                "shapes={shapes} meshes={} vertices={vertices}",
+                meshes.len()
+            );
+        }
         (
             paint.as_secs_f64() * 1000.,
             start.elapsed().as_secs_f64() * 1000.,

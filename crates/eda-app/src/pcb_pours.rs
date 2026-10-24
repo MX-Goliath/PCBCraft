@@ -40,11 +40,11 @@ impl State {
                                 // Saving a stale JSON is safe: it retains the stale
                                 // flag and is rebuilt on open. A cache refresh must
                                 // not dirty a document saved during the calculation.
-                                let clean = doc.saved.as_ref() == Some(&doc.model);
+                                let clean = !doc.content_is_dirty();
                                 match doc.history.apply_pcb_pour(&mut doc.model, result) {
                                     Ok(true) => {
                                         if clean {
-                                            doc.saved = Some(doc.model.clone());
+                                            doc.mark_saved();
                                         }
                                         ctx.request_repaint();
                                     }
@@ -209,7 +209,7 @@ mod tests {
     #[test]
     fn saving_during_calculation_stays_clean_after_derived_refresh() {
         let mut doc = doc();
-        doc.saved = Some(doc.model.clone());
+        doc.mark_saved();
         let (mut state, sender) = waiting(0);
         assert!(sender.send(Ok(prepared(&doc))).is_ok());
         state

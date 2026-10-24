@@ -63,6 +63,47 @@ fn layer_key(layer: u16) -> String {
     }
 }
 impl Settings {
+    pub fn paint_hash(&self, hash: &mut impl std::hash::Hasher) {
+        use std::hash::Hash;
+        (
+            &self.opacity,
+            &self.colors,
+            self.hidden,
+            self.draft,
+            self.highlight_dim,
+            self.masked_dim,
+            self.selection_color,
+            self.highlight_color,
+            self.background_end,
+            self.board_line,
+        )
+            .hash(hash);
+        (
+            self.via_hole_color,
+            self.origin_color,
+            self.origin_visible,
+            self.board_visible,
+            self.pad_holes_visible,
+            self.via_holes_visible,
+            self.all_connections,
+            self.layer_connections,
+            self.track_names,
+            self.connections,
+        )
+            .hash(hash);
+        (
+            self.connection_color,
+            self.dim,
+            self.background,
+            self.board_color,
+            self.grid_color,
+            self.hole_color,
+            self.pad_numbers,
+            self.pad_nets,
+            self.via_nets,
+        )
+            .hash(hash);
+    }
     pub fn from_board(board: &Board) -> Self {
         let raw = board
             .properties

@@ -118,7 +118,7 @@ fn save_commits_focused_properties_and_pending_values_protect_close() {
     let item = track();
     let id = item.id;
     doc.model.pcb.as_mut().unwrap().items.push(item.clone());
-    doc.saved = Some(doc.model.clone());
+    doc.mark_saved();
     doc.view.pcb.selected = vec![id];
     assert!(!doc.dirty());
     let mut changed = item;
@@ -141,7 +141,7 @@ fn save_commits_focused_properties_and_pending_values_protect_close() {
     assert_eq!(doc.model.pcb.as_ref().unwrap().item(id), Some(&changed));
     prepare_save(doc).unwrap();
     assert_eq!(doc.history.revision, 1);
-    doc.saved = Some(doc.model.clone());
+    doc.mark_saved();
     assert!(!doc.dirty());
 }
 #[test]
@@ -355,7 +355,7 @@ fn numeric_fields_commit_on_enter_and_escape_reverts_in_mm_and_mils() {
 #[test]
 fn pcb_shortcut_sequences_and_inactive_drag_cleanup_are_routed_to_active_document() {
     let mut app = app();
-    app.documents[0].saved = Some(app.documents[0].model.clone());
+    app.documents[0].mark_saved();
     let ctx = egui::Context::default();
     fn press(app: &mut PcbCraft, ctx: &egui::Context, key: Key, mods: egui::Modifiers) {
         let _ = ctx.run(
@@ -447,7 +447,7 @@ fn three_d_mode_shortcuts_selection_rotation_and_return_preserve_history_and_cam
             locked: false,
             properties: Default::default(),
         });
-    d.saved = Some(d.model.clone());
+    d.mark_saved();
     d.view.camera.centre_mm = [12., 34.];
     d.view.camera.pixels_per_mm = 7.;
     let event = |key| egui::Event::Key {

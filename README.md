@@ -47,6 +47,47 @@ cargo run --locked -p eda-app
 Windows-скрипт `scripts/dev.ps1` для Linux не нужен. CI настроен для обеих ОС,
 но фактический локальный запуск пока проверяется только на Windows.
 
+### AppImage на Linux x86_64
+
+В этом рабочем каталоге Rust 1.90.0, rustfmt и clippy установлены локально
+в `.tools`. Linux-обёртка автоматически выбирает этот toolchain:
+
+```bash
+bash scripts/dev.sh build --locked --release -p eda-app
+bash scripts/dev.sh fmt --all -- --check
+bash scripts/dev.sh clippy --locked --workspace --all-targets -- -D warnings
+bash scripts/dev.sh test --locked --workspace
+python3 scripts/build-appimage.py
+```
+
+Для повторной упаковки готового release-бинарника:
+`python3 scripts/build-appimage.py --no-build`.
+Результат и SHA256 находятся в `dist/PCBCraft-0.1.0-x86_64.AppImage`
+и `dist/PCBCraft-0.1.0-x86_64.AppImage.sha256`.
+
+Упаковке нужны Python 3.11+, `appimagetool`, `binutils`, `ldconfig`
+и оконные библиотеки, включая `libxkbcommon-x11` и `libX11-xcb`.
+Путь к appimagetool можно передать через `--appimagetool` или `APPIMAGETOOL`.
+Инструмент скачивает AppImage runtime при упаковке; для работы без сети
+передайте заранее скачанный runtime через `--runtime-file`.
+Системный FUSE для упаковки не требуется.
+
+AppImage содержит приложение, встроенные шрифты и библиотеки X11/Wayland.
+glibc, графический драйвер и Vulkan/OpenGL loader используются из системы.
+Сборка на современной Arch Linux не гарантирует совместимость со старыми
+дистрибутивами. Для такого выпуска нужно собирать на самом старом
+поддерживаемом дистрибутиве и проверять результат на целевых системах.
+Диалоги открытия/сохранения требуют работающего desktop portal.
+
+Запуск без FUSE:
+
+```bash
+./dist/PCBCraft-0.1.0-x86_64.AppImage --appimage-extract-and-run
+```
+
+На новой машине установите Rust 1.90.0 через rustup согласно
+`rust-toolchain.toml`. Без локального `.tools` обёртка использует Cargo из PATH.
+
 ## Возможности первой итерации
 
 - Меню и toolbar, вкладки, Projects, Properties, Messages, статус и слои.

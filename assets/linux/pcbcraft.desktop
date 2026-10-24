@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=PCBCraft
+Comment=Schematic and PCB editor
+Exec=pcbcraft %F
+Icon=pcbcraft
+Terminal=false
+Categories=Development;Engineering;Electronics;
+StartupWMClass=pcbcraft

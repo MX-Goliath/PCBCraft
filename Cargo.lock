@@ -1046,14 +1046,18 @@ name = "eda-render"
 version = "0.1.0"
 dependencies = [
  "base64",
+ "bytemuck",
  "earcutr",
  "eda-core",
  "eda-geom",
  "egui",
+ "egui-wgpu",
  "image",
+ "pollster",
  "serde",
  "ttf-parser",
  "uuid",
+ "wgpu",
 ]
 
 [[package]]

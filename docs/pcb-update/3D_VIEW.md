@@ -44,6 +44,13 @@ and use the simplified projection fallback. STEP geometry is stored once per
 model in shared Arc data in eda-core; no GUI/GPU dependency is added to the model.
 Old JSON files recover missing meshes from their retained original archive.
 
+STEP processing also occurs on ordinary 2D PCB import. Non-finite converted
+surface coordinates are checked before trimming; boundary-curve subdivision is
+bounded by depth and per-edge/model evaluation budgets. Rejected models emit
+warnings and use the simplified projection fallback. The original embedded STEP
+bytes remain in the source archive. The ReferenceMHardware opening-hang reproduction,
+Linux measurements and remaining limits are in [PERFORMANCE.md](PERFORMANCE.md).
+
 Native MODEL.3D Euler rotations precede the bottom-side Y/Z reflection and
 MODEL.2D board translation. Component rotation must not be applied twice.
 Validated move/rotate/flip and Undo update placements while sharing mesh data.

@@ -18,6 +18,11 @@ mod connections;
 mod display;
 #[path = "pcb_geometry_cache.rs"]
 mod geometry;
+#[path = "pcb_gpu.rs"]
+mod gpu;
+#[path = "pcb_paint_cache.rs"]
+mod paint_cache;
+pub use gpu::enable_gpu;
 #[path = "pcb_navigation.rs"]
 mod navigation;
 #[path = "pcb_text.rs"]
@@ -61,6 +66,7 @@ pub struct BoardView {
     display: display::Settings,
     grid_initialized: bool,
     connections: connections::Cache,
+    paint_cache: paint_cache::Cache,
 }
 #[derive(Clone, Default)]
 pub struct Input {
@@ -371,249 +377,24 @@ pub fn canvas(ui: &mut egui::Ui, b: &Board, view: &mut View) -> CanvasOutput {
         view.pcb.three_d.revision,
         view.pcb.preview_generation,
     );
-    let outline = view.pcb.geometry.outline.clone();
-    if outline.len() >= 3 && view.pcb.display.board_visible {
-        polygon(
-            &painter,
-            &view.camera,
-            rect,
-            &outline,
-            &[],
-            view.pcb.display.board_color,
-            Some(&mut view.pcb.geometry.board_triangles),
-        );
-        // Native arc/line seams can backtrack by a few nanometres. A joined
-        // stroked path can produce an unbounded antialias miter at that seam.
-        for (a, z) in outline
-            .iter()
-            .zip(outline.iter().cycle().skip(1))
-            .take(outline.len())
-        {
-            let a = view.camera.screen(*a, rect);
-            let z = view.camera.screen(*z, rect);
-            if a.distance(z) > 0.001 {
-                painter.line_segment([a, z], Stroke::new(1.0, view.pcb.display.board_line));
-            }
-        }
+    let key = paint_cache::key(scene, view, ui.ctx());
+    let mut artwork = std::mem::take(&mut view.pcb.paint_cache);
+    if !artwork.valid(key, &view.camera, rect) {
+        let mut scene_painter = painter.clone();
+        scene_painter.set_clip_rect(rect.expand(256.));
+        let mut builder = paint_cache::Builder::new(&scene_painter);
+        paint_scene(&scene_painter, scene, view, rect, &mut builder);
+        artwork.finish(builder, &scene_painter, key, &view.camera, rect);
     }
-    if view.grid {
-        let mut step = view.grid_nm.max(1) as f64 / 1e6;
-        while step * view.camera.pixels_per_mm < 14.0 {
-            step *= 5.0;
-        }
-        let a = view.camera.world_mm(rect.left_bottom(), rect);
-        let b = view.camera.world_mm(rect.right_top(), rect);
-        let min = [a[0].min(b[0]), a[1].min(b[1])];
-        let max = [a[0].max(b[0]), a[1].max(b[1])];
-        let sx = (min[0] / step).floor() * step;
-        let sy = (min[1] / step).floor() * step;
-        let cols = ((max[0] - min[0]) / step).ceil() as usize + 2;
-        let rows = ((max[1] - min[1]) / step).ceil() as usize + 2;
-        for x in 0..cols.min(500) {
-            for y in 0..rows.min(500) {
-                let at = Point {
-                    x: ((sx + x as f64 * step) * 1e6) as i64,
-                    y: ((sy + y as f64 * step) * 1e6) as i64,
-                };
-                if !point_in_polygon(at, &outline) {
-                    continue;
-                }
-                painter.circle_filled(
-                    view.camera.screen(
-                        Point {
-                            x: ((sx + x as f64 * step) * 1e6) as i64,
-                            y: ((sy + y as f64 * step) * 1e6) as i64,
-                        },
-                        rect,
-                    ),
-                    0.65,
-                    view.pcb.display.grid_color,
-                );
-            }
-        }
-    }
-    let selected = scene.resolve_selection(&view.pcb.selected);
-    let bounds = Bounds::points(&[
-        world(&view.camera, rect.left_bottom(), rect),
-        world(&view.camera, rect.right_top(), rect),
-    ]);
-    let mut order: Vec<_> = scene
-        .items
-        .iter()
-        .filter(|i| {
-            view.pcb.is_visible(i)
-                && scene.text_visible(i)
-                && view.pcb.geometry.bounds[&i.id].intersects(bounds)
-                && (view.pcb.single_layer == 0
-                    || i.layer != MULTI_LAYER
-                    || i.is_drill_only()
-                    || eda_core::pcb_polygon::on_layer(scene, i, view.pcb.active_layer))
-        })
-        .collect();
-    order.sort_by_key(|i| {
-        (
-            if i.layer == view.pcb.active_layer {
-                1
-            } else if i.layer == MULTI_LAYER {
-                2
-            } else if i.layer == TOP_OVERLAY || i.layer == BOTTOM_OVERLAY {
-                3
-            } else {
-                0
-            },
-            i.layer,
-            match i.shape {
-                Shape::Region { .. } | Shape::Fill { .. } => 0,
-                _ => 1,
-            },
-        )
-    });
-    paint_masks(&painter, scene, view, rect, false);
-    for item in &order {
-        let mut color = dim(view.pcb.color(item.layer), view.pcb.display.alpha(item));
-        if view.pcb.single_layer == 1
-            && item.layer != view.pcb.active_layer
-            && item.layer != MULTI_LAYER
-        {
-            color = dim(color, view.pcb.display.dim);
-        }
-        if let Some(net) = view.pcb.highlight_net {
-            color = if item.net == Some(net) {
-                dim(
-                    view.pcb.display.highlight_color,
-                    view.pcb.display.highlight_dim,
-                )
-            } else {
-                dim(color, view.pcb.display.masked_dim)
-            };
-        }
-        if selected.contains(&item.id) {
-            color = view.pcb.display.selection_color;
-        }
-        if scene.pours_stale && item.polygon.is_some() {
-            color = dim(color, view.pcb.display.dim);
-        }
-        if view.pcb.display.draft[display::Settings::kind(item)]
-            && paint_draft(
-                &painter,
-                &view.camera,
-                rect,
-                item,
-                view.pcb.active_layer,
-                color,
-            )
-        {
-            continue;
-        }
-        paint_item(
-            &painter,
-            &view.camera,
-            rect,
-            item,
-            view.pcb.active_layer,
-            color,
-            &mut view.pcb,
-        );
-    }
-    if view.pcb.display.connections {
-        let active_nets: BTreeSet<_> = scene
-            .items
-            .iter()
-            .filter(|i| i.layer == view.pcb.active_layer || i.layer == MULTI_LAYER)
-            .filter_map(|i| i.net)
-            .collect();
-        for connection in view.pcb.connections.lines.iter() {
-            if view.pcb.single_layer != 0
-                && !view.pcb.display.all_connections
-                && !active_nets.contains(&connection.net)
-            {
-                continue;
-            }
-            let color = if view
-                .pcb
-                .highlight_net
-                .is_some_and(|net| net != connection.net)
-            {
-                dim(view.pcb.display.connection_color, view.pcb.display.dim)
-            } else if view.pcb.display.layer_connections {
-                view.pcb.color(view.pcb.active_layer)
-            } else {
-                view.pcb.display.connection_color
-            };
-            painter.line_segment(
-                [
-                    view.camera.screen(connection.start, rect),
-                    view.camera.screen(connection.end, rect),
-                ],
-                Stroke::new(1.0, color),
-            );
-        }
-    }
-    for poly in &scene.polygon_pours {
-        if !view.pcb.polygon_visible(poly.layer) {
-            continue;
-        }
-        let selected = view.pcb.selected.contains(&poly.id);
-        let color = if selected {
-            Color32::WHITE
-        } else {
-            dim(
-                view.pcb.color(poly.layer),
-                if poly.shelved { 80 } else { 140 },
-            )
-        };
-        let points = poly.points();
-        if points.len() > 2 {
-            painter.add(egui::Shape::closed_line(
-                points
-                    .iter()
-                    .map(|p| view.camera.screen(*p, rect))
-                    .collect(),
-                Stroke::new(if selected { 2.0 } else { 0.7 }, color),
-            ));
-        }
-        if selected {
-            for hole in &poly.holes {
-                painter.add(egui::Shape::closed_line(
-                    hole.iter().map(|p| view.camera.screen(*p, rect)).collect(),
-                    Stroke::new(1.5, color),
-                ));
-            }
-        }
-    }
-    for (_, point) in eda_core::pcb_tools::handles(scene, &view.pcb.selected) {
-        let r = Rect::from_center_size(view.camera.screen(point, rect), Vec2::splat(7.0));
-        painter.rect_filled(r, 0.0, Color32::BLACK);
-        painter.rect_stroke(r, 0.0, Stroke::new(1.0, Color32::WHITE), StrokeKind::Inside);
-    }
-    if view.pcb.draft_outline.len() > 1 {
-        painter.add(egui::Shape::line(
-            view.pcb
-                .draft_outline
-                .iter()
-                .map(|p| view.camera.screen(*p, rect))
-                .collect(),
-            Stroke::new(1.5, Color32::WHITE),
-        ));
-    }
-    if let Some((a, z)) = view.pcb.selection_box {
-        let r = Rect::from_two_pos(view.camera.screen(a, rect), view.camera.screen(z, rect));
-        let color = if z.x >= a.x {
-            Color32::LIGHT_BLUE
-        } else {
-            Color32::LIGHT_GREEN
-        };
-        painter.rect_filled(r, 0.0, dim(color, 25));
-        painter.rect_stroke(r, 0.0, Stroke::new(1.0, color), StrokeKind::Inside);
-    }
-    paint_masks(&painter, scene, view, rect, true);
+    artwork.paint(&painter, scene, view, rect);
+    view.pcb.paint_cache = artwork;
     let pointer = response.hover_pos();
     let raw = pointer.map(|p| world(&view.camera, p, rect));
     let bypass = ui.input(|i| i.modifiers.ctrl && i.modifiers.shift);
     let point = raw.map(|p| {
         if bypass {
             p
-        } else {
+        } else if preview.is_some() {
             b.snap_with_options(
                 p,
                 if view.grid { view.grid_nm } else { 0 },
@@ -621,136 +402,43 @@ pub fn canvas(ui: &mut egui::Ui, b: &Board, view: &mut View) -> CanvasOutput {
                 &view.pcb.visible,
                 &view.pcb.snap,
             )
+        } else {
+            let near = Bounds::points(&[p]).expanded(view.pcb.snap.distance.max(0));
+            let candidates = view.pcb.geometry.query(near);
+            b.snap_with_items(
+                p,
+                if view.grid { view.grid_nm } else { 0 },
+                view.pcb.active_layer,
+                &view.pcb.visible,
+                &view.pcb.snap,
+                candidates.into_iter().map(|index| &b.items[index]),
+            )
         }
     });
-    for item in &order {
-        let drill = view.pcb.geometry.drill(item);
-        let show_drill = if matches!(item.shape, Shape::Via { .. }) {
-            view.pcb.display.via_holes_visible
-        } else {
-            view.pcb.display.pad_holes_visible
-        };
-        if drill.len() >= 3 && show_drill {
-            painter.add(egui::Shape::convex_polygon(
-                drill
-                    .iter()
-                    .copied()
-                    .map(|p| view.camera.screen(p, rect))
-                    .collect(),
-                if matches!(item.shape, Shape::Via { .. }) {
-                    view.pcb.display.via_hole_color
-                } else {
-                    view.pcb.display.hole_color
-                },
-                Stroke::NONE,
-            ));
-        }
-        match &item.shape {
-            Shape::Pad {
-                position,
-                size,
-                name,
-                ..
-            } if (view.pcb.display.pad_numbers || view.pcb.display.pad_nets)
-                && (item.layer == view.pcb.active_layer || item.layer == MULTI_LAYER) =>
-            {
-                let height = (size.x.min(size.y) as f64 / 1e6 * view.camera.pixels_per_mm) as f32;
-                let net = if view.pcb.display.pad_nets {
-                    b.net_name(item.net)
-                } else {
-                    ""
-                };
-                let value = if view.pcb.display.pad_numbers {
-                    name.as_str()
-                } else {
-                    net
-                };
-                let both = view.pcb.display.pad_numbers && !net.is_empty();
-                let center = view.camera.screen(*position, rect);
-                if both {
-                    text::label(
-                        &painter,
-                        center + Vec2::new(0.0, height * 0.23),
-                        net,
-                        height * 0.35,
-                        height * 0.9,
-                        Color32::from_rgb(255, 255, 200),
-                    );
-                }
-                text::label(
-                    &painter,
-                    center - Vec2::new(0.0, if both { height * 0.23 } else { 0.0 }),
-                    value,
-                    height * if both { 0.35 } else { 0.7 },
-                    height * 0.9,
-                    Color32::from_rgb(255, 255, 200),
-                );
-            }
-            Shape::Via {
-                position, diameter, ..
-            } if view.pcb.display.via_nets => {
-                let height = (*diameter as f64 / 1e6 * view.camera.pixels_per_mm) as f32;
-                text::label(
-                    &painter,
-                    view.camera.screen(*position, rect),
-                    b.net_name(item.net),
-                    height * 0.55,
-                    height * 0.9,
-                    Color32::from_rgb(255, 255, 200),
-                );
-            }
-            Shape::Track { start, end, width }
-                if view.pcb.display.track_names && item.net.is_some() =>
-            {
-                let a = view.camera.screen(*start, rect);
-                let z = view.camera.screen(*end, rect);
-                let height = (*width as f64 / 1e6 * view.camera.pixels_per_mm) as f32;
-                if a.distance(z) > 45.0 && height > 4.0 {
-                    text::track_labels(
-                        &painter,
-                        a,
-                        z,
-                        b.net_name(item.net),
-                        height * 0.6,
-                        view.pcb.display.highlight_color,
-                    );
-                }
-            }
-            _ => {}
-        }
-    }
-    if view.pcb.display.origin_visible {
-        let coordinate = |key| {
-            scene
-                .properties
-                .get(key)
-                .and_then(|v| dimension_nm(v).ok())
-                .unwrap_or(0)
-        };
-        let c = view.camera.screen(
-            Point {
-                x: coordinate("ORIGINX"),
-                y: coordinate("ORIGINY"),
-            },
-            rect,
-        );
-        if rect.contains(c) {
-            painter.circle_stroke(c, 9.0, Stroke::new(0.7, view.pcb.display.origin_color));
-            for d in [Vec2::new(14.0, 0.0), Vec2::new(0.0, 14.0)] {
-                painter.line_segment(
-                    [c - d, c + d],
-                    Stroke::new(0.7, view.pcb.display.origin_color),
-                );
-            }
-        }
-    }
     let mut hits = Vec::new();
     if let Some(p) = raw {
         let tol = 6.0 / view.camera.pixels_per_mm * 1e6;
         let near = Bounds::points(&[p]).expanded(tol.ceil() as i64);
-        let mut candidates: Vec<_> = order
-            .iter()
+        let mut near_items = view.pcb.geometry.query(near);
+        near_items.retain(|&index| {
+            let i = &scene.items[index];
+            view.pcb.is_visible(i)
+                && scene.text_visible(i)
+                && (view.pcb.single_layer == 0
+                    || i.layer != MULTI_LAYER
+                    || i.is_drill_only()
+                    || eda_core::pcb_polygon::on_layer(scene, i, view.pcb.active_layer))
+        });
+        near_items.sort_by_key(|&index| {
+            (
+                paint_order(&scene.items[index], view.pcb.active_layer),
+                index,
+            )
+        });
+        let mut candidates: Vec<_> = near_items
+            .into_iter()
             .rev()
+            .map(|index| &scene.items[index])
             .filter(|i| view.pcb.geometry.bounds[&i.id].intersects(near))
             .filter(|i| {
                 if view.cross_probe {
@@ -911,6 +599,389 @@ pub fn canvas(ui: &mut egui::Ui, b: &Board, view: &mut View) -> CanvasOutput {
     CanvasOutput {
         cursor_mm: point.map(|p| [p.x as f64 / 1e6, p.y as f64 / 1e6]),
         schematic_input: None,
+    }
+}
+fn paint_order(i: &Item, active: u16) -> (u8, u16, u8) {
+    (
+        if i.layer == active {
+            1
+        } else if i.layer == MULTI_LAYER {
+            2
+        } else if i.layer == TOP_OVERLAY || i.layer == BOTTOM_OVERLAY {
+            3
+        } else {
+            0
+        },
+        i.layer,
+        if matches!(i.shape, Shape::Region { .. } | Shape::Fill { .. }) {
+            0
+        } else {
+            1
+        },
+    )
+}
+fn paint_scene(
+    painter: &egui::Painter,
+    scene: &Board,
+    view: &mut View,
+    rect: Rect,
+    builder: &mut paint_cache::Builder,
+) {
+    let b = scene;
+    let outline = view.pcb.geometry.outline.clone();
+    if outline.len() >= 3 && view.pcb.display.board_visible {
+        polygon(
+            painter,
+            &view.camera,
+            rect,
+            &outline,
+            &[],
+            view.pcb.display.board_color,
+            Some(&mut view.pcb.geometry.board_triangles),
+        );
+        // Native arc/line seams can backtrack by a few nanometres. A joined
+        // stroked path can produce an unbounded antialias miter at that seam.
+        for (a, z) in outline
+            .iter()
+            .zip(outline.iter().cycle().skip(1))
+            .take(outline.len())
+        {
+            let a = view.camera.screen(*a, rect);
+            let z = view.camera.screen(*z, rect);
+            if a.distance(z) > 0.001 {
+                painter.line_segment([a, z], Stroke::new(1.0, view.pcb.display.board_line));
+            }
+        }
+    }
+    if view.grid {
+        let mut step = view.grid_nm.max(1) as f64 / 1e6;
+        while step * view.camera.pixels_per_mm < 14.0 {
+            step *= 5.0;
+        }
+        let a = view
+            .camera
+            .world_mm(painter.clip_rect().left_bottom(), rect);
+        let b = view.camera.world_mm(painter.clip_rect().right_top(), rect);
+        let min = [a[0].min(b[0]), a[1].min(b[1])];
+        let max = [a[0].max(b[0]), a[1].max(b[1])];
+        let sx = (min[0] / step).floor() * step;
+        let sy = (min[1] / step).floor() * step;
+        let cols = ((max[0] - min[0]) / step).ceil() as usize + 2;
+        let rows = ((max[1] - min[1]) / step).ceil() as usize + 2;
+        for x in 0..cols.min(500) {
+            for y in 0..rows.min(500) {
+                let at = Point {
+                    x: ((sx + x as f64 * step) * 1e6) as i64,
+                    y: ((sy + y as f64 * step) * 1e6) as i64,
+                };
+                if !point_in_polygon(at, &outline) {
+                    continue;
+                }
+                painter.circle_filled(
+                    view.camera.screen(
+                        Point {
+                            x: ((sx + x as f64 * step) * 1e6) as i64,
+                            y: ((sy + y as f64 * step) * 1e6) as i64,
+                        },
+                        rect,
+                    ),
+                    0.65,
+                    view.pcb.display.grid_color,
+                );
+            }
+        }
+    }
+    let selected = scene.resolve_selection(&view.pcb.selected);
+    let bounds = Bounds::points(&[
+        world(&view.camera, painter.clip_rect().left_bottom(), rect),
+        world(&view.camera, painter.clip_rect().right_top(), rect),
+    ]);
+    let mut order: Vec<_> = view
+        .pcb
+        .geometry
+        .query(bounds)
+        .into_iter()
+        .map(|index| &scene.items[index])
+        .filter(|i| {
+            view.pcb.is_visible(i)
+                && scene.text_visible(i)
+                && view.pcb.geometry.bounds[&i.id].intersects(bounds)
+                && (view.pcb.single_layer == 0
+                    || i.layer != MULTI_LAYER
+                    || i.is_drill_only()
+                    || eda_core::pcb_polygon::on_layer(scene, i, view.pcb.active_layer))
+        })
+        .collect();
+    order.sort_by_key(|i| paint_order(i, view.pcb.active_layer));
+    paint_masks(painter, scene, view, rect, false);
+    for item in &order {
+        let mut color = dim(view.pcb.color(item.layer), view.pcb.display.alpha(item));
+        if view.pcb.single_layer == 1
+            && item.layer != view.pcb.active_layer
+            && item.layer != MULTI_LAYER
+        {
+            color = dim(color, view.pcb.display.dim);
+        }
+        if let Some(net) = view.pcb.highlight_net {
+            color = if item.net == Some(net) {
+                dim(
+                    view.pcb.display.highlight_color,
+                    view.pcb.display.highlight_dim,
+                )
+            } else {
+                dim(color, view.pcb.display.masked_dim)
+            };
+        }
+        if selected.contains(&item.id) {
+            color = view.pcb.display.selection_color;
+        }
+        if scene.pours_stale && item.polygon.is_some() {
+            color = dim(color, view.pcb.display.dim);
+        }
+        if view.pcb.display.draft[display::Settings::kind(item)]
+            && paint_draft(
+                painter,
+                &view.camera,
+                rect,
+                item,
+                view.pcb.active_layer,
+                color,
+            )
+        {
+            continue;
+        }
+        if matches!(item.shape, Shape::Region { cutout: true, .. })
+            || (matches!(item.shape, Shape::Region { .. })
+                && (item.keepout || item.properties.contains_key("PCBCRAFT_BODY_PROJECTION")))
+        {
+            builder.hatch(painter, item.id, color);
+            continue;
+        }
+        paint_item(
+            painter,
+            &view.camera,
+            rect,
+            item,
+            view.pcb.active_layer,
+            color,
+            &mut view.pcb,
+        );
+    }
+    if view.pcb.display.connections {
+        let active_nets: BTreeSet<_> = scene
+            .items
+            .iter()
+            .filter(|i| i.layer == view.pcb.active_layer || i.layer == MULTI_LAYER)
+            .filter_map(|i| i.net)
+            .collect();
+        for connection in view.pcb.connections.lines.iter() {
+            if view.pcb.single_layer != 0
+                && !view.pcb.display.all_connections
+                && !active_nets.contains(&connection.net)
+            {
+                continue;
+            }
+            let color = if view
+                .pcb
+                .highlight_net
+                .is_some_and(|net| net != connection.net)
+            {
+                dim(view.pcb.display.connection_color, view.pcb.display.dim)
+            } else if view.pcb.display.layer_connections {
+                view.pcb.color(view.pcb.active_layer)
+            } else {
+                view.pcb.display.connection_color
+            };
+            painter.line_segment(
+                [
+                    view.camera.screen(connection.start, rect),
+                    view.camera.screen(connection.end, rect),
+                ],
+                Stroke::new(1.0, color),
+            );
+        }
+    }
+    for poly in &scene.polygon_pours {
+        if !view.pcb.polygon_visible(poly.layer) {
+            continue;
+        }
+        let selected = view.pcb.selected.contains(&poly.id);
+        let color = if selected {
+            Color32::WHITE
+        } else {
+            dim(
+                view.pcb.color(poly.layer),
+                if poly.shelved { 80 } else { 140 },
+            )
+        };
+        let points = poly.points();
+        if points.len() > 2 {
+            painter.add(egui::Shape::closed_line(
+                points
+                    .iter()
+                    .map(|p| view.camera.screen(*p, rect))
+                    .collect(),
+                Stroke::new(if selected { 2.0 } else { 0.7 }, color),
+            ));
+        }
+        if selected {
+            for hole in &poly.holes {
+                painter.add(egui::Shape::closed_line(
+                    hole.iter().map(|p| view.camera.screen(*p, rect)).collect(),
+                    Stroke::new(1.5, color),
+                ));
+            }
+        }
+    }
+    builder.tools(painter);
+    paint_masks(painter, scene, view, rect, true);
+    for item in &order {
+        let drill = view.pcb.geometry.drill(item);
+        let show_drill = if matches!(item.shape, Shape::Via { .. }) {
+            view.pcb.display.via_holes_visible
+        } else {
+            view.pcb.display.pad_holes_visible
+        };
+        if drill.len() >= 3 && show_drill {
+            painter.add(egui::Shape::convex_polygon(
+                drill
+                    .iter()
+                    .copied()
+                    .map(|p| view.camera.screen(p, rect))
+                    .collect(),
+                if matches!(item.shape, Shape::Via { .. }) {
+                    view.pcb.display.via_hole_color
+                } else {
+                    view.pcb.display.hole_color
+                },
+                Stroke::NONE,
+            ));
+        }
+        match &item.shape {
+            Shape::Pad {
+                position,
+                size,
+                name,
+                ..
+            } if (view.pcb.display.pad_numbers || view.pcb.display.pad_nets)
+                && (item.layer == view.pcb.active_layer || item.layer == MULTI_LAYER) =>
+            {
+                let height = (size.x.min(size.y) as f64 / 1e6 * view.camera.pixels_per_mm) as f32;
+                let net = if view.pcb.display.pad_nets {
+                    b.net_name(item.net)
+                } else {
+                    ""
+                };
+                let value = if view.pcb.display.pad_numbers {
+                    name.as_str()
+                } else {
+                    net
+                };
+                let both = view.pcb.display.pad_numbers && !net.is_empty();
+                let center = view.camera.screen(*position, rect);
+                if both {
+                    text::label(
+                        painter,
+                        center + Vec2::new(0.0, height * 0.23),
+                        net,
+                        height * 0.35,
+                        height * 0.9,
+                        Color32::from_rgb(255, 255, 200),
+                    );
+                }
+                text::label(
+                    painter,
+                    center - Vec2::new(0.0, if both { height * 0.23 } else { 0.0 }),
+                    value,
+                    height * if both { 0.35 } else { 0.7 },
+                    height * 0.9,
+                    Color32::from_rgb(255, 255, 200),
+                );
+            }
+            Shape::Via {
+                position, diameter, ..
+            } if view.pcb.display.via_nets => {
+                let height = (*diameter as f64 / 1e6 * view.camera.pixels_per_mm) as f32;
+                text::label(
+                    painter,
+                    view.camera.screen(*position, rect),
+                    b.net_name(item.net),
+                    height * 0.55,
+                    height * 0.9,
+                    Color32::from_rgb(255, 255, 200),
+                );
+            }
+            Shape::Track { start, end, width }
+                if view.pcb.display.track_names && item.net.is_some() =>
+            {
+                let a = view.camera.screen(*start, rect);
+                let z = view.camera.screen(*end, rect);
+                let height = (*width as f64 / 1e6 * view.camera.pixels_per_mm) as f32;
+                if a.distance(z) > 45.0 && height > 4.0 {
+                    text::track_labels(
+                        painter,
+                        a,
+                        z,
+                        b.net_name(item.net),
+                        height * 0.6,
+                        view.pcb.display.highlight_color,
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+    if view.pcb.display.origin_visible {
+        let coordinate = |key| {
+            scene
+                .properties
+                .get(key)
+                .and_then(|v| dimension_nm(v).ok())
+                .unwrap_or(0)
+        };
+        let c = view.camera.screen(
+            Point {
+                x: coordinate("ORIGINX"),
+                y: coordinate("ORIGINY"),
+            },
+            rect,
+        );
+        if rect.contains(c) {
+            painter.circle_stroke(c, 9.0, Stroke::new(0.7, view.pcb.display.origin_color));
+            for d in [Vec2::new(14.0, 0.0), Vec2::new(0.0, 14.0)] {
+                painter.line_segment(
+                    [c - d, c + d],
+                    Stroke::new(0.7, view.pcb.display.origin_color),
+                );
+            }
+        }
+    }
+}
+fn paint_tools(painter: &egui::Painter, scene: &Board, view: &View, rect: Rect) {
+    for (_, point) in eda_core::pcb_tools::handles(scene, &view.pcb.selected) {
+        let r = Rect::from_center_size(view.camera.screen(point, rect), Vec2::splat(7.0));
+        painter.rect_filled(r, 0.0, Color32::BLACK);
+        painter.rect_stroke(r, 0.0, Stroke::new(1.0, Color32::WHITE), StrokeKind::Inside);
+    }
+    if view.pcb.draft_outline.len() > 1 {
+        painter.add(egui::Shape::line(
+            view.pcb
+                .draft_outline
+                .iter()
+                .map(|p| view.camera.screen(*p, rect))
+                .collect(),
+            Stroke::new(1.5, Color32::WHITE),
+        ));
+    }
+    if let Some((a, z)) = view.pcb.selection_box {
+        let r = Rect::from_two_pos(view.camera.screen(a, rect), view.camera.screen(z, rect));
+        let color = if z.x >= a.x {
+            Color32::LIGHT_BLUE
+        } else {
+            Color32::LIGHT_GREEN
+        };
+        painter.rect_filled(r, 0.0, dim(color, 25));
+        painter.rect_stroke(r, 0.0, Stroke::new(1.0, color), StrokeKind::Inside);
     }
 }
 fn paint_masks(painter: &egui::Painter, board: &Board, view: &mut View, rect: Rect, active: bool) {

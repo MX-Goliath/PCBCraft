@@ -733,3 +733,39 @@ Evidence, exact implemented scope and remaining differences: docs/pcb-update/RUL
 
 Evidence, independent dependencies, regression coverage and explicit limitations:
 docs/pcb-update/3D_VIEW.md and docs/pcb-update/THIRD_PARTY_NOTICES.md.
+
+### ReferenceM PCB opening hang, 24.10.2026
+
+- [x] Reproduce the reported 2D PCB opening hang with a memory-limited read-only
+  release probe; GDB identifies unbounded STEP trimming-curve subdivision on NaN.
+- [x] Reject non-finite converted surfaces before tessellation and bound boundary
+  curve subdivision/evaluations. Preserve source archives and warn on fallback.
+- [x] Accept native unassigned `POURINDEX=-1` using stable source order, while
+  retaining the exact property and rejecting other invalid unsigned indices.
+- [x] Regression tests, workspace tests, strict all-target Clippy and fmt check.
+- [x] Unchanged ReferenceM: 41,475 items, load ~0.9 s, headless peak ~270 MiB;
+  rebuilt AppImage rendered the board in the real Linux KDE/Wayland window.
+- [ ] General STEP conversion coverage, complete resource isolation for arbitrary
+  CAD inputs and full-frame large-board performance remain open.
+
+Evidence and limits: docs/pcb-update/PERFORMANCE.md.
+
+### ReferenceM 2D cursor and pan performance, 24.10.2026
+
+- [x] Separate 2D paint/tessellation from loading and GUI document comparisons:
+  ~92,000 shapes / 1.37M vertices per frame, ~11 ms per saved-content comparison.
+- [x] Cache saved-content checks by History revision; explicitly refresh on Save
+  and retain live pending-edit checks. Stop sending unchanged window titles.
+- [x] Cache tessellated artwork and keep wgpu buffers resident for camera pans;
+  preserve screen-anchored hatching, live tools, clipping and font-atlas ownership.
+- [x] Spatial candidates for exact picking/snapping, including internal pad lands
+  and original-board snapping during previews.
+- [x] Real GPU image comparison against egui; cache/invalidation, preview,
+  spatial snapping and saved-state regressions; fmt/Clippy/workspace checks.
+- [x] Real Linux window: Fit Board, cursor movement and middle-button pan.
+  Warm CPU frame medians ~6–11 ms / ~5–7 ms under concurrent CPU load;
+  callback submission probe ~2.8 / ~2.5 ms. Rebuild the AppImage.
+- [ ] Cache rebuild spikes on zoom/configuration/content changes or long pans,
+  editing-preview costs, presentation FPS, Windows runtime and Altium parity.
+
+Measurements and limitations: docs/pcb-update/PERFORMANCE.md.

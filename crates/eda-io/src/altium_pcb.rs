@@ -1479,7 +1479,14 @@ pub fn upgrade_polygons(board: &mut Board, namespace: Uuid) -> Result<()> {
             thermal_gap: f.dim("PCBCRAFT_THERMALGAP", 250_000)?,
             spoke_width: f.dim("PCBCRAFT_SPOKEWIDTH", 300_000)?,
             spoke_angle: f.num("PCBCRAFT_SPOKEANGLE", 45.0)?,
-            priority: unsigned_property(f, "POURINDEX", n as u32)?,
+            // Native -1 means no assigned pour order, not a negative ID.
+            // Use the stable source order, as for a missing POURINDEX, while
+            // retaining the exact native value in the archived properties.
+            priority: if f.num("POURINDEX", n as f64)? == -1.0 {
+                n as u32
+            } else {
+                unsigned_property(f, "POURINDEX", n as u32)?
+            },
             remove_islands: f.yes("REMOVEISLANDS"),
             min_island_area_mm2: f.num("PCBCRAFT_MINAREA", 0.0)?,
             shelved: f.yes("SHELVED"),
@@ -1791,6 +1798,34 @@ mod tests {
         for value in ["-2", "1.5", "4294967296"] {
             let f = fields(format!("|ID={value}").as_bytes()).unwrap();
             assert!(unsigned_property(&f, "ID", 0).is_err());
+        }
+    }
+    #[test]
+    fn unassigned_native_pour_order_uses_source_order_and_preserves_metadata() {
+        let fixture = include_str!("../../../fixtures/pcb-update/editor-v2.PcbDoc");
+        let native = fixture.replace("POURINDEX=0", "POURINDEX=-1");
+        let doc = import_pcb(native.as_bytes(), "unassigned.PcbDoc").unwrap();
+        let board = doc.pcb.as_ref().unwrap();
+        assert_eq!(board.polygon_pours.len(), 1);
+        assert_eq!(board.polygon_pours[0].priority, 0);
+        assert_eq!(board.polygon_pours[0].properties["POURINDEX"], "-1");
+        assert_eq!(board.polygons[0]["POURINDEX"], "-1");
+        assert_eq!(
+            STANDARD
+                .decode(&board.source.as_ref().unwrap().bytes_base64)
+                .unwrap(),
+            native.as_bytes()
+        );
+        for invalid in ["-2", "1.5", "4294967296"] {
+            assert!(
+                import_pcb(
+                    fixture
+                        .replace("POURINDEX=0", &format!("POURINDEX={invalid}"))
+                        .as_bytes(),
+                    "invalid.PcbDoc"
+                )
+                .is_err()
+            );
         }
     }
 }

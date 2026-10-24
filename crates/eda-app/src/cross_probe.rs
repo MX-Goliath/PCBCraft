@@ -273,7 +273,7 @@ mod tests {
         app.documents.push(OpenDocument::new(sch, None));
         app.documents.push(OpenDocument::new(pcb, None));
         for d in &mut app.documents {
-            d.saved = Some(d.model.clone());
+            d.mark_saved();
         }
         app.active = Some(0);
         app

@@ -9,7 +9,65 @@ use flate2::read::ZlibDecoder;
 use ruststep::ast::{EntityInstance, Name, Parameter, Record};
 use std::{collections::BTreeMap, io::Read, sync::Arc};
 use truck_meshalgo::prelude::*;
-use truck_stepio::r#in::Table;
+use truck_stepio::r#in::{Table, alias::Curve3D};
+
+// Truck's adaptive curve division can recurse 100 levels. A non-finite or
+// discontinuous curve never satisfies its tolerance and can allocate billions
+// of points before the later triangle limit is checked. Bound work *before*
+// handing edges to the shell tessellator.
+const MAX_EDGE_SAMPLES: usize = 16_384;
+const MAX_MODEL_SAMPLES: usize = 250_000;
+fn bounded_polyline(
+    range: (f64, f64),
+    tolerance: f64,
+    remaining: &mut usize,
+    evaluate: impl Fn(f64) -> Point3,
+) -> Result<PolylineCurve<Point3>, String> {
+    if !range.0.is_finite() || !range.1.is_finite() {
+        return Err("STEP edge has a non-finite parameter range".into());
+    }
+    let mut samples = 0;
+    let mut sample = |t| {
+        if samples >= MAX_EDGE_SAMPLES || *remaining == 0 {
+            return Err("STEP curve sampling budget exceeded".to_owned());
+        }
+        samples += 1;
+        *remaining -= 1;
+        let p = evaluate(t);
+        if !p.x.is_finite() || !p.y.is_finite() || !p.z.is_finite() {
+            return Err("STEP edge evaluates to non-finite coordinates".to_owned());
+        }
+        Ok(p)
+    };
+    let first = sample(range.0)?;
+    let last = sample(range.1)?;
+    let mut points = vec![first];
+    let mut pending = vec![(range.0, first, range.1, last, 0)];
+    while let Some((start, a, end, b, depth)) = pending.pop() {
+        let mid = start * 0.5 + end * 0.5;
+        let p = sample(mid)?;
+        let mut flat = true;
+        for (fraction, value) in [
+            (0.25, sample(start * 0.75 + end * 0.25)?),
+            (0.5, p),
+            (0.75, sample(start * 0.25 + end * 0.75)?),
+        ] {
+            if value.distance2(a + (b - a) * fraction) > tolerance * tolerance {
+                flat = false;
+            }
+        }
+        if flat {
+            points.push(b);
+        } else {
+            if depth >= 20 || mid == start || mid == end {
+                return Err("STEP curve subdivision did not converge".into());
+            }
+            pending.push((mid, p, end, b, depth + 1));
+            pending.push((start, a, mid, p, depth + 1));
+        }
+    }
+    Ok(PolylineCurve(points))
+}
 
 fn refs(p: &Parameter) -> Vec<u64> {
     match p {
@@ -145,18 +203,46 @@ pub(super) fn mesh(source: &str, name: String) -> Result<Model, String> {
     };
     let mut shells: Vec<_> = table.shell.iter().collect();
     shells.sort_by_key(|(id, _)| **id);
+    let mut remaining = MAX_MODEL_SAMPLES;
     for (id, shell) in shells {
         let face_ids = records
             .get(id)
             .map(|r| refs(&r.parameter))
             .unwrap_or_default();
-        let shell = table
+        let mut shell = table
             .to_compressed_shell(shell)
             .map_err(|e| format!("STEP topology: {e}"))?;
         if shell.faces.len() != face_ids.len() {
             return Err("STEP dropped faces".into());
         }
-        let mesh = shell.robust_triangulation((0.02 / scale).max(1e-6));
+        let tolerance = (0.02 / scale).max(1e-6);
+        for (index, edge) in shell.edges.iter_mut().enumerate() {
+            let polyline =
+                bounded_polyline(edge.curve.range_tuple(), tolerance, &mut remaining, |t| {
+                    edge.curve.subs(t)
+                })
+                .map_err(|e| format!("{e} (shell {id}, edge {index})"))?;
+            edge.curve = Curve3D::Polyline(polyline);
+        }
+        for (index, face) in shell.faces.iter().enumerate() {
+            // Invalid STEP-to-kernel surfaces can return NaN even though the
+            // source numbers and all boundary edges are finite. Truck also
+            // samples curves on these surfaces while closing trimming loops;
+            // check the domain before entering that recursive code.
+            if let (Some((a, b)), Some((c, d))) = face.surface.try_range_tuple() {
+                for u in [a, a * 0.5 + b * 0.5, b] {
+                    for v in [c, c * 0.5 + d * 0.5, d] {
+                        let p = face.surface.subs(u, v);
+                        if !p.x.is_finite() || !p.y.is_finite() || !p.z.is_finite() {
+                            return Err(format!(
+                                "STEP non-finite surface (shell {id}, face {index})"
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        let mesh = shell.robust_triangulation(tolerance);
         for (i, face) in mesh.faces.iter().enumerate() {
             let poly = face
                 .surface
@@ -253,6 +339,78 @@ pub(super) fn read_models(streams: &BTreeMap<String, Vec<u8>>, board: &mut Board
 mod tests {
     use super::*;
     const FACE: &str = include_str!("../../../fixtures/pcb-update/colored-face.step");
+    #[test]
+    fn non_finite_curves_are_rejected_before_recursive_tessellation() {
+        for invalid in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let mut remaining = MAX_MODEL_SAMPLES;
+            let error = bounded_polyline((0., 1.), 0.02, &mut remaining, |t| {
+                Point3::new(t, if t == 0.5 { invalid } else { 0. }, 0.)
+            })
+            .unwrap_err();
+            assert!(error.contains("non-finite coordinates"));
+            assert_eq!(MAX_MODEL_SAMPLES - remaining, 3);
+        }
+        let mut remaining = MAX_MODEL_SAMPLES;
+        assert!(
+            bounded_polyline((0., f64::INFINITY), 0.02, &mut remaining, |_| {
+                panic!("An invalid range must not be evaluated")
+            })
+            .is_err()
+        );
+    }
+    #[test]
+    fn discontinuous_and_oversized_curves_fail_with_bounded_work() {
+        let mut remaining = MAX_MODEL_SAMPLES;
+        let error = bounded_polyline((0., 1.), 0.02, &mut remaining, |t| {
+            Point3::new(t, if t < 0.5 { 0. } else { 1. }, 0.)
+        })
+        .unwrap_err();
+        assert!(error.contains("did not converge"));
+        assert!(MAX_MODEL_SAMPLES - remaining < 200);
+        let mut remaining = MAX_MODEL_SAMPLES;
+        let error = bounded_polyline((0., 1.), 0.02, &mut remaining, |t| {
+            Point3::new(t, 1e9 * t * t, 0.)
+        })
+        .unwrap_err();
+        assert!(error.contains("sampling budget"));
+        assert_eq!(MAX_MODEL_SAMPLES - remaining, MAX_EDGE_SAMPLES);
+        let mut remaining = 2;
+        assert!(
+            bounded_polyline((0., 1.), 0.02, &mut remaining, |t| Point3::new(t, 0., 0.))
+                .unwrap_err()
+                .contains("sampling budget")
+        );
+        assert_eq!(remaining, 0);
+    }
+    #[test]
+    fn bounded_curves_preserve_lines_and_resolve_closed_arcs_to_tolerance() {
+        let mut remaining = MAX_MODEL_SAMPLES;
+        let line = bounded_polyline((2., 4.), 0.02, &mut remaining, |t| {
+            Point3::new(t, t * 2., 0.)
+        })
+        .unwrap();
+        assert_eq!(line.0, [Point3::new(2., 4., 0.), Point3::new(4., 8., 0.)]);
+        let circle = bounded_polyline((0., std::f64::consts::TAU), 0.02, &mut remaining, |t| {
+            Point3::new(t.cos(), t.sin(), 0.)
+        })
+        .unwrap();
+        assert!(circle.len() > 8 && circle.len() < 100);
+        for pair in circle.windows(2) {
+            let midpoint = pair[0] + (pair[1] - pair[0]) * 0.5;
+            assert!(1. - midpoint.distance(Point3::new(0., 0., 0.)) <= 0.02);
+        }
+    }
+    #[test]
+    fn invalid_surface_does_not_enter_unbounded_trimming_curve_subdivision() {
+        // Finite STEP fields with zero homogeneous weights produce NaN in the
+        // kernel. Keep this independently authored, with no reference models.
+        let invalid = FACE.replace("#34=PLANE('',#33);", "#34=(BOUNDED_SURFACE() B_SPLINE_SURFACE(1,1,((#1,#2),(#4,#3)),.UNSPECIFIED.,.F.,.F.,.F.) B_SPLINE_SURFACE_WITH_KNOTS((2,2),(2,2),(0.,1.),(0.,1.),.UNSPECIFIED.) GEOMETRIC_REPRESENTATION_ITEM() RATIONAL_B_SPLINE_SURFACE(((0.,0.),(0.,0.))) REPRESENTATION_ITEM('') SURFACE());");
+        assert!(
+            mesh(&invalid, "invalid surface".into())
+                .unwrap_err()
+                .contains("non-finite surface")
+        );
+    }
     #[test]
     fn actual_step_topology_is_tessellated_with_face_color_and_finite_dimensions() {
         let m = mesh(FACE, "face".into()).unwrap();

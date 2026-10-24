@@ -347,7 +347,7 @@ mod tests {
                 parameters: Default::default(),
             });
         let mut doc = OpenDocument::new(model, None);
-        doc.saved = Some(doc.model.clone());
+        doc.mark_saved();
         doc
     }
     fn dialog(docs: &[OpenDocument]) -> Dialog {

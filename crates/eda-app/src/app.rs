@@ -50,6 +50,7 @@ struct OpenDocument {
     path: Option<PathBuf>,
     source_path: Option<PathBuf>,
     saved: Option<Document>,
+    content_dirty: std::cell::Cell<Option<(u64, bool)>>,
     history: History,
     view: View,
     sch_editor: schematic_editor::Editor,
@@ -64,6 +65,7 @@ impl OpenDocument {
             model,
             path,
             source_path: None,
+            content_dirty: std::cell::Cell::new(Some((0, saved.is_none()))),
             saved,
             history: History::default(),
             view: View::default(),
@@ -72,13 +74,27 @@ impl OpenDocument {
         }
     }
     fn dirty(&self) -> bool {
-        self.saved.as_ref() != Some(&self.model)
+        self.content_is_dirty()
             || self.pcb_editor.has_pending()
             || self
                 .model
                 .pcb
                 .as_ref()
                 .is_some_and(|b| self.pcb_editor.properties_dirty(b, self.history.revision))
+    }
+    fn content_is_dirty(&self) -> bool {
+        if let Some((revision, dirty)) = self.content_dirty.get()
+            && revision == self.history.revision
+        {
+            return dirty;
+        }
+        let dirty = self.saved.as_ref() != Some(&self.model);
+        self.content_dirty.set(Some((self.history.revision, dirty)));
+        dirty
+    }
+    fn mark_saved(&mut self) {
+        self.saved = Some(self.model.clone());
+        self.content_dirty.set(Some((self.history.revision, false)));
     }
 }
 
@@ -198,6 +214,9 @@ pub struct PcbCraft {
 impl PcbCraft {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         theme::apply(&cc.egui_ctx);
+        if let Some(render) = &cc.wgpu_render_state {
+            eda_render::pcb::enable_gpu(&cc.egui_ctx, render.target_format);
+        }
         let mut settings: Settings = cc
             .storage
             .and_then(|s| eframe::get_value(s, "pcbcraft.settings"))
@@ -331,7 +350,7 @@ impl PcbCraft {
                     self.add_document(doc, native_path);
                     let opened = self.documents.last_mut().unwrap();
                     opened.source_path = Some(path);
-                    opened.saved = Some(opened.model.clone());
+                    opened.mark_saved();
                 } else {
                     self.add_document(doc, Some(path));
                 }
@@ -471,7 +490,7 @@ impl PcbCraft {
         }
         match eda_io::save(&path, &self.documents[index].model) {
             Ok(()) => {
-                self.documents[index].saved = Some(self.documents[index].model.clone());
+                self.documents[index].mark_saved();
                 self.documents[index].path = Some(path.canonicalize().unwrap_or(path.clone()));
                 self.recent(path.clone());
                 self.message(false, format!("Saved {}", path.display()));
@@ -1758,6 +1777,28 @@ impl PcbCraft {
 
 impl eframe::App for PcbCraft {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if std::env::var_os("PCBCRAFT_FRAME_PROFILE").is_some()
+            && let Some(seconds) = _frame.info().cpu_usage
+        {
+            let report = ctx.data_mut(|data| {
+                let samples =
+                    data.get_temp_mut_or_default::<Vec<f64>>(egui::Id::new("frame-cpu-timings"));
+                samples.push(seconds as f64 * 1000.);
+                if samples.len() < 120 {
+                    return None;
+                }
+                let mut samples = std::mem::take(samples);
+                samples.sort_by(f64::total_cmp);
+                Some((
+                    samples[60],
+                    samples[113],
+                    samples.iter().sum::<f64>() / samples.len() as f64,
+                ))
+            });
+            if let Some((median, p95, mean)) = report {
+                eprintln!("frame_cpu_ms median={median:.2} p95={p95:.2} mean={mean:.2} n=120");
+            }
+        }
         if ctx.input(|i| i.viewport().close_requested()) && !self.allow_exit {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.run(Command::Quit, ctx);
@@ -1816,7 +1857,18 @@ impl eframe::App for PcbCraft {
                 )
             })
             .unwrap_or_else(|| "Home — PCBCraft".into());
-        ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
+        let changed = ctx.data_mut(|data| {
+            let id = egui::Id::new("pcbcraft-window-title");
+            if data.get_temp::<String>(id).as_ref() == Some(&title) {
+                false
+            } else {
+                data.insert_temp(id, title.clone());
+                true
+            }
+        });
+        if changed {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
+        }
     }
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         eframe::set_value(storage, "pcbcraft.settings", &self.settings);
@@ -1843,6 +1895,12 @@ mod tests {
         first.history.redo(&mut first.model);
         assert!(first.dirty());
         assert!(!second.dirty());
+        first.mark_saved();
+        assert!(!first.dirty());
+        first.history.undo(&mut first.model);
+        assert!(first.dirty());
+        first.history.redo(&mut first.model);
+        assert!(!first.dirty());
     }
     #[test]
     fn pcb_navigation_preferences_restore_and_old_settings_keep_small_cursor() {
