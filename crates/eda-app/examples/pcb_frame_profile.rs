@@ -140,6 +140,57 @@ fn main() -> Result<(), String> {
             total.len()
         );
     }
+    if args.iter().any(|a| a == "--drag") {
+        use eda_core::pcb::Shape;
+        let item = board
+            .items
+            .iter()
+            .find(|i| !i.locked && i.component.is_none() && matches!(i.shape, Shape::Via { .. }))
+            .ok_or("No unlocked via")?;
+        view.pcb.selected = vec![item.id];
+        let check = Instant::now();
+        let copy = board.clone();
+        println!(
+            "board_clone_ms={:.2}",
+            check.elapsed().as_secs_f64() * 1000.
+        );
+        let check = Instant::now();
+        copy.validate()?;
+        println!(
+            "board_validate_ms={:.2}",
+            check.elapsed().as_secs_f64() * 1000.
+        );
+        drop(copy);
+        let mut prepared = eda_core::pcb::MovePreview::new(board, &[item.id])?;
+        let mut edits = vec![];
+        let mut frames = vec![];
+        let mut publishes = vec![];
+        for n in 0..60 {
+            let start = Instant::now();
+            view.pcb.set_preview(None);
+            let next = prepared.update(
+                item.anchor(),
+                Point {
+                    x: (n + 1) * 10_000,
+                    y: 100_000,
+                },
+                0.,
+            )?;
+            edits.push(start.elapsed().as_secs_f64() * 1000.);
+            let start = Instant::now();
+            view.pcb.set_move_preview_shared(board, next, &[item.id]);
+            publishes.push(start.elapsed().as_secs_f64() * 1000.);
+            frames.push(frame(&mut view, Pos2::new(500., 400.)).1);
+        }
+        edits.sort_by(f64::total_cmp);
+        publishes.sort_by(f64::total_cmp);
+        frames.sort_by(f64::total_cmp);
+        println!(
+            "drag: edit_median_ms={:.2} publish_median_ms={:.2} frame_median_ms={:.2} frame_p95_ms={:.2} frame_max_ms={:.2}",
+            edits[30], publishes[30], frames[30], frames[56], frames[59]
+        );
+        view.pcb.set_preview(None);
+    }
     if three_d {
         view.pcb.three_d.enabled = true;
         for name in ["3d-request", "3d-ready", "3d-cached", "3d-orbit"] {

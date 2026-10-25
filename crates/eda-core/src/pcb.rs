@@ -587,8 +587,6 @@ impl Board {
             p.validate()?;
         }
         for i in &self.items {
-            i.validate_stack()?;
-            i.validate_masks()?;
             if !ids.insert(i.id) {
                 return Err("Duplicate PCB item identifier".into());
             }
@@ -598,92 +596,7 @@ impl Board {
             if i.component.is_some_and(|c| !comps.contains(&c)) {
                 return Err(format!("{} refers to missing component", i.kind()));
             }
-            let ok = match &i.shape {
-                Shape::Track { start, end, width } => {
-                    valid_point(*start) && valid_point(*end) && positive(*width)
-                }
-                Shape::Arc {
-                    centre,
-                    radius,
-                    start_angle,
-                    end_angle,
-                    width,
-                } => {
-                    valid_point(*centre)
-                        && positive(*radius)
-                        && positive(*width)
-                        && start_angle.is_finite()
-                        && end_angle.is_finite()
-                }
-                Shape::Pad {
-                    position,
-                    size,
-                    rotation,
-                    hole,
-                    bottom_size,
-                    middle_size,
-                    ..
-                } => {
-                    valid_point(*position)
-                        && ((positive(size.x) && positive(size.y)) || i.is_drill_only())
-                        && rotation.is_finite()
-                        && *hole >= 0
-                        && *hole <= MAX_COORD
-                        && [bottom_size, middle_size].into_iter().all(|s| {
-                            s.is_none_or(|p| {
-                                (positive(p.x) && positive(p.y))
-                                    || (i.is_drill_only() && p == Point::default())
-                            })
-                        })
-                }
-                Shape::Via {
-                    position,
-                    diameter,
-                    hole,
-                    from_layer,
-                    to_layer,
-                } => {
-                    valid_point(*position)
-                        && positive(*diameter)
-                        && positive(*hole)
-                        && hole < diameter
-                        && from_layer != to_layer
-                }
-                Shape::Text {
-                    position,
-                    height,
-                    stroke,
-                    rotation,
-                    text,
-                    ..
-                } => {
-                    valid_point(*position)
-                        && positive(*height)
-                        && *stroke >= 0
-                        && *stroke <= MAX_COORD
-                        && rotation.is_finite()
-                        && text.len() <= 1_000_000
-                }
-                Shape::Fill {
-                    start,
-                    end,
-                    rotation,
-                } => valid_point(*start) && valid_point(*end) && rotation.is_finite(),
-                Shape::Region { contour, holes, .. } => {
-                    contour.len() >= 3
-                        && contour.len() <= MAX_ITEMS
-                        && contour.iter().all(|p| valid_point(*p))
-                        && holes.len() <= 10_000
-                        && holes.iter().all(|h| {
-                            h.len() >= 3
-                                && h.len() <= MAX_ITEMS
-                                && h.iter().all(|p| valid_point(*p))
-                        })
-                }
-            };
-            if !ok {
-                return Err(format!("Invalid PCB {} geometry", i.kind()));
-            }
+            i.validate_geometry()?;
         }
         Ok(())
     }
@@ -811,45 +724,8 @@ impl Board {
                 }
                 next.items.extend(items);
             }
-            Edit::Replace(mut item) => {
-                if let Some(old) = self.item(item.id) {
-                    item.reconcile_legacy_stack(old);
-                }
-                if let Some(old) = self.item(item.id)
-                    && old
-                        .polygon
-                        .is_some_and(|n| self.polygon_pours.iter().any(|p| p.index == n))
-                {
-                    return Err("Edit the polygon definition, not its generated copper".into());
-                }
-                if self
-                    .item(item.id)
-                    .and_then(|old| old.component)
-                    .is_some_and(|owner| {
-                        self.components.iter().any(|c| c.index == owner && c.locked)
-                    })
-                {
-                    return Err("Cannot edit a child of a locked component".into());
-                }
-                let old = next
-                    .item_mut(item.id)
-                    .ok_or("Selected object no longer exists")?;
-                if old.locked && old != &item {
-                    let mut unlocked = old.clone();
-                    unlocked.locked = false;
-                    if item != unlocked {
-                        return Err(
-                            "Apply Unlock on its own before changing a locked object".into()
-                        );
-                    }
-                }
-                // Mask overrides do not invalidate copper pours. Preserve conservative
-                // invalidation for native primitive properties interpreted by pouring.
-                copper_changed = !old.same_copper_geometry(&item, self)
-                    || old.layer != item.layer
-                    || old.net != item.net
-                    || old.properties != item.properties;
-                *old = item;
+            Edit::Replace(item) => {
+                copper_changed = next.replace_item_unvalidated(item)?;
             }
             Edit::Delete(selection) => {
                 let ids = self.resolve_selection(&selection);
@@ -913,6 +789,48 @@ impl Board {
         next.validate()?;
         Ok(next)
     }
+    /// Internal transaction helper. Callers must validate the whole result
+    /// before publishing it; all replacement/locking restrictions remain here.
+    pub(crate) fn replace_item_unvalidated(&mut self, mut item: Item) -> Result<bool, String> {
+        if let Some(old) = self.item(item.id) {
+            item.reconcile_legacy_stack(old);
+        }
+        if let Some(old) = self.item(item.id)
+            && old
+                .polygon
+                .is_some_and(|n| self.polygon_pours.iter().any(|p| p.index == n))
+        {
+            return Err("Edit the polygon definition, not its generated copper".into());
+        }
+        if self
+            .item(item.id)
+            .and_then(|old| old.component)
+            .is_some_and(|owner| self.components.iter().any(|c| c.index == owner && c.locked))
+        {
+            return Err("Cannot edit a child of a locked component".into());
+        }
+        let old = self
+            .item(item.id)
+            .ok_or("Selected object no longer exists")?;
+        // Mask overrides do not invalidate copper pours. Preserve conservative
+        // invalidation for native primitive properties interpreted by pouring.
+        let copper_changed = !old.same_copper_geometry(&item, self)
+            || old.layer != item.layer
+            || old.net != item.net
+            || old.properties != item.properties;
+        let old = self
+            .item_mut(item.id)
+            .ok_or("Selected object no longer exists")?;
+        if old.locked && old != &item {
+            let mut unlocked = old.clone();
+            unlocked.locked = false;
+            if item != unlocked {
+                return Err("Apply Unlock on its own before changing a locked object".into());
+            }
+        }
+        *old = item;
+        Ok(copper_changed)
+    }
     fn selection_locked(&self, selection: &[Uuid], ids: &BTreeSet<Uuid>) -> bool {
         self.items.iter().any(|i| {
             ids.contains(&i.id)
@@ -961,6 +879,196 @@ impl Board {
         result
     }
 }
+impl Item {
+    fn validate_geometry(&self) -> Result<(), String> {
+        self.validate_stack()?;
+        self.validate_masks()?;
+        let ok = match &self.shape {
+            Shape::Track { start, end, width } => {
+                valid_point(*start) && valid_point(*end) && positive(*width)
+            }
+            Shape::Arc {
+                centre,
+                radius,
+                start_angle,
+                end_angle,
+                width,
+            } => {
+                valid_point(*centre)
+                    && positive(*radius)
+                    && positive(*width)
+                    && start_angle.is_finite()
+                    && end_angle.is_finite()
+            }
+            Shape::Pad {
+                position,
+                size,
+                rotation,
+                hole,
+                bottom_size,
+                middle_size,
+                ..
+            } => {
+                valid_point(*position)
+                    && ((positive(size.x) && positive(size.y)) || self.is_drill_only())
+                    && rotation.is_finite()
+                    && *hole >= 0
+                    && *hole <= MAX_COORD
+                    && [bottom_size, middle_size].into_iter().all(|s| {
+                        s.is_none_or(|p| {
+                            (positive(p.x) && positive(p.y))
+                                || (self.is_drill_only() && p == Point::default())
+                        })
+                    })
+            }
+            Shape::Via {
+                position,
+                diameter,
+                hole,
+                from_layer,
+                to_layer,
+            } => {
+                valid_point(*position)
+                    && positive(*diameter)
+                    && positive(*hole)
+                    && hole < diameter
+                    && from_layer != to_layer
+            }
+            Shape::Text {
+                position,
+                height,
+                stroke,
+                rotation,
+                text,
+                ..
+            } => {
+                valid_point(*position)
+                    && positive(*height)
+                    && *stroke >= 0
+                    && *stroke <= MAX_COORD
+                    && rotation.is_finite()
+                    && text.len() <= 1_000_000
+            }
+            Shape::Fill {
+                start,
+                end,
+                rotation,
+            } => valid_point(*start) && valid_point(*end) && rotation.is_finite(),
+            Shape::Region { contour, holes, .. } => {
+                contour.len() >= 3
+                    && contour.len() <= MAX_ITEMS
+                    && contour.iter().all(|p| valid_point(*p))
+                    && holes.len() <= 10_000
+                    && holes.iter().all(|h| {
+                        h.len() >= 3 && h.len() <= MAX_ITEMS && h.iter().all(|p| valid_point(*p))
+                    })
+            }
+        };
+        if !ok {
+            return Err(format!("Invalid PCB {} geometry", self.kind()));
+        }
+        Ok(())
+    }
+}
+
+/// A validated transform transaction with reusable preview storage. Immutable
+/// snapshots can be shared with render workers; copy-on-write protects them.
+#[derive(Clone)]
+pub struct MovePreview {
+    board: std::sync::Arc<Board>,
+    items: Vec<(usize, Item, bool)>,
+    components: Vec<(usize, Component)>,
+}
+impl MovePreview {
+    pub fn new(board: &Board, selection: &[Uuid]) -> Result<Self, String> {
+        board.validate()?;
+        if board
+            .polygon_pours
+            .iter()
+            .any(|p| selection.contains(&p.id))
+        {
+            return Err("Polygon transforms require a full board transaction".into());
+        }
+        let ids = board.resolve_selection(selection);
+        if board.selection_locked(selection, &ids) {
+            return Err("Selection contains locked objects".into());
+        }
+        let items = board
+            .items
+            .iter()
+            .enumerate()
+            .filter(|(_, i)| ids.contains(&i.id))
+            .map(|(index, i)| {
+                (
+                    index,
+                    i.clone(),
+                    i.component
+                        .and_then(|index| board.components.iter().find(|c| c.index == index))
+                        .is_some_and(|c| c.layer == BOTTOM),
+                )
+            })
+            .collect();
+        let components = board
+            .components
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| selection.contains(&c.id))
+            .map(|(index, c)| (index, c.clone()))
+            .collect();
+        Ok(Self {
+            board: std::sync::Arc::new(board.clone()),
+            items,
+            components,
+        })
+    }
+    pub fn update(
+        &mut self,
+        pivot: Point,
+        translation: Point,
+        angle: f64,
+    ) -> Result<std::sync::Arc<Board>, String> {
+        if !angle.is_finite() {
+            return Err("Invalid rotation".into());
+        }
+        // Validate every changed entity before modifying even the private draft.
+        // Identity, references, models and all other entities were checked at
+        // construction and cannot be changed through this API.
+        let items = self
+            .items
+            .iter()
+            .map(|(index, original, bottom)| {
+                let mut item = original.clone();
+                transform_item(&mut item, pivot, translation, angle, *bottom)?;
+                item.validate_geometry()?;
+                Ok((*index, item))
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        let components = self
+            .components
+            .iter()
+            .map(|(index, original)| {
+                let mut component = original.clone();
+                component.position =
+                    transform_point(component.position, pivot, translation, angle)?;
+                component.rotation = (component.rotation + angle).rem_euclid(360.);
+                if !component.rotation.is_finite() {
+                    return Err("Invalid component rotation".into());
+                }
+                Ok((*index, component))
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        let board = std::sync::Arc::make_mut(&mut self.board);
+        for (index, item) in items {
+            board.items[index] = item;
+        }
+        for (index, component) in components {
+            board.components[index] = component;
+        }
+        board.pours_stale |= !board.polygon_pours.is_empty();
+        Ok(self.board.clone())
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum Edit {
     Insert(Vec<Item>),
@@ -1374,6 +1482,73 @@ pub fn route_points(start: Point, end: Point, diagonal_first: bool) -> Vec<Point
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn prepared_move_matches_full_validation_and_preserves_worker_snapshots() {
+        use std::sync::Arc;
+        let mut b = Board::default();
+        b.items.push(Item::new(
+            TOP,
+            None,
+            Shape::Track {
+                start: Point::mm(1, 1),
+                end: Point::mm(3, 1),
+                width: 200_000,
+            },
+        ));
+        let selection = vec![b.items[0].id];
+        let original = b.clone();
+        let pivot = Point::mm(1, 1);
+        let mut prepared = MovePreview::new(&b, &selection).unwrap();
+        let mut snapshots = vec![];
+        for (n, angle) in [0., 90., -90., 360., 17.].into_iter().enumerate() {
+            let translation = Point::mm(n as i64, 2);
+            let next = prepared.update(pivot, translation, angle).unwrap();
+            let expected = b
+                .edited(Edit::Transform {
+                    selection: selection.clone(),
+                    pivot,
+                    translation,
+                    angle,
+                })
+                .unwrap();
+            assert_eq!(*next, expected);
+            snapshots.push((next, expected));
+        }
+        for (snapshot, expected) in &snapshots {
+            assert_eq!(**snapshot, *expected);
+        }
+        assert_eq!(b, original);
+        assert!(prepared.update(pivot, Point::default(), f64::NAN).is_err());
+        assert!(
+            prepared
+                .update(
+                    pivot,
+                    Point {
+                        x: MAX_COORD * 2,
+                        y: 0
+                    },
+                    0.
+                )
+                .is_err()
+        );
+        let next = prepared.update(pivot, Point::default(), 0.).unwrap();
+        assert_eq!(*next, b);
+        let ptr = Arc::as_ptr(&next);
+        drop(next);
+        let next = prepared.update(pivot, Point::mm(1, 1), 0.).unwrap();
+        assert_eq!(
+            ptr,
+            Arc::as_ptr(&next),
+            "unshared draft must reuse its allocation"
+        );
+        b.items[0].locked = true;
+        assert!(MovePreview::new(&b, &selection).is_err());
+        b.items[0].locked = false;
+        if let Shape::Track { width, .. } = &mut b.items[0].shape {
+            *width = -1;
+        }
+        assert!(MovePreview::new(&b, &selection).is_err());
+    }
     #[test]
     fn clockwise_contour_arcs_start_at_their_vertex_without_a_diagonal_backtrack() {
         let arc = ContourArc {

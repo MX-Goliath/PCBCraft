@@ -18,12 +18,11 @@ impl Cache {
     pub fn update(
         &mut self,
         board: &Board,
-        preview: Option<&Board>,
+        preview: Option<&Arc<Board>>,
         revision: u64,
         preview_generation: u64,
         ctx: &egui::Context,
     ) {
-        let scene = preview.unwrap_or(board);
         let preview_key = preview.map(|_| preview_generation);
         if let Some(job) = &self.job {
             let received = job.receiver.lock().unwrap().try_recv();
@@ -43,7 +42,7 @@ impl Cache {
             }
         }
         if self.job.is_none() && (self.revision != Some(revision) || self.preview != preview_key) {
-            let snapshot = Arc::new(scene.clone());
+            let snapshot = preview.cloned().unwrap_or_else(|| Arc::new(board.clone()));
             let (sender, receiver) = mpsc::sync_channel(1);
             let worker_board = snapshot.clone();
             let ctx = ctx.clone();
@@ -112,7 +111,7 @@ mod tests {
         Arc::get_mut(cache.job.as_mut().unwrap()).unwrap().preview = Some(10);
         cache.update(
             &Board::default(),
-            Some(&Board::default()),
+            Some(&Arc::new(Board::default())),
             4,
             11,
             &egui::Context::default(),

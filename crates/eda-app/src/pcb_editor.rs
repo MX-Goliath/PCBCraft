@@ -78,6 +78,7 @@ enum Gesture {
         selection: Vec<Uuid>,
         connected: bool,
         rotation: f64,
+        prepared: Option<pcb::MovePreview>,
     },
     Box {
         origin: Point,
@@ -743,7 +744,7 @@ fn input(
         }
         return Ok(());
     }
-    if let Some(gesture) = &ed.gesture {
+    if let Some(gesture) = &mut ed.gesture {
         if i.drag_stopped && !i.hovered {
             ed.gesture = None;
             doc.view.pcb.set_preview(None);
@@ -759,6 +760,7 @@ fn input(
                     selection,
                     connected,
                     rotation,
+                    prepared,
                 } => {
                     if *revision != doc.history.revision {
                         ed.gesture = None;
@@ -768,9 +770,10 @@ fn input(
                     let preview_key = (p, rotation.to_bits());
                     if i.drag_stopped
                         && ed.gesture_preview == Some(preview_key)
-                        && let Some(next) = doc.view.pcb.take_preview()
+                        && doc.view.pcb.preview().is_some()
                     {
                         ed.gesture = None;
+                        let next = doc.view.pcb.take_preview().unwrap();
                         commit(doc, next)?;
                         return Ok(());
                     }
@@ -784,6 +787,41 @@ fn input(
                         x: p.x - origin.x,
                         y: p.y - origin.y,
                     };
+                    if !*connected
+                        && !base
+                            .polygon_pours
+                            .iter()
+                            .any(|poly| selection.contains(&poly.id))
+                    {
+                        if prepared.is_none() {
+                            *prepared = Some(pcb::MovePreview::new(base, selection)?);
+                        }
+                        // Release the view's reference before updating the draft.
+                        // A worker retaining an older snapshot still triggers COW.
+                        doc.view.pcb.set_preview(None);
+                        let next =
+                            match prepared
+                                .as_mut()
+                                .unwrap()
+                                .update(*origin, translation, *rotation)
+                            {
+                                Ok(next) => next,
+                                Err(error) => {
+                                    if i.drag_stopped {
+                                        ed.gesture = None;
+                                    }
+                                    return Err(error);
+                                }
+                            };
+                        if i.drag_stopped {
+                            ed.gesture = None;
+                            commit(doc, std::sync::Arc::unwrap_or_clone(next))?;
+                        } else {
+                            doc.view.pcb.set_move_preview_shared(base, next, selection);
+                            ed.gesture_preview = Some(preview_key);
+                        }
+                        return Ok(());
+                    }
                     let next = if *connected {
                         pcb_tools::drag_connected(base, selection, *origin, translation, *rotation)
                     } else {
@@ -801,7 +839,7 @@ fn input(
                                 doc.view.pcb.set_preview(None);
                                 commit(doc, next)?;
                             } else {
-                                doc.view.pcb.set_preview(Some(next));
+                                doc.view.pcb.set_move_preview(base, next, selection);
                                 ed.gesture_preview = Some(preview_key);
                             }
                         }
@@ -845,7 +883,8 @@ fn input(
                                 doc.view.pcb.set_preview(None);
                                 commit(doc, next)?;
                             } else {
-                                doc.view.pcb.set_preview(Some(next));
+                                let selection = doc.view.pcb.selected.clone();
+                                doc.view.pcb.set_move_preview(base, next, &selection);
                                 ed.gesture_preview = Some(preview_key);
                             }
                         }
@@ -978,6 +1017,7 @@ fn input(
                     selection: doc.view.pcb.selected.clone(),
                     connected: (modifiers.ctrl || modifiers.command) && !modifiers.shift,
                     rotation: 0.0,
+                    prepared: None,
                 });
                 ed.gesture_preview = None;
             } else {

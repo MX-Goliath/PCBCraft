@@ -343,7 +343,7 @@ pub fn move_handle(
                 *contour.get_mut(n).ok_or("Vertex not found")? = at;
                 validate_ring(contour)?;
             }
-            next = board.edited(Edit::Replace(i))?;
+            next.replace_item_unvalidated(i)?;
         }
         Handle::TrackStart(id) | Handle::TrackEnd(id) => {
             let item = board.item(id).ok_or("Track not found")?;
@@ -382,7 +382,7 @@ pub fn move_handle(
                 }
             }
             for item in changed {
-                next = next.edited(Edit::Replace(item))?;
+                next.replace_item_unvalidated(item)?;
             }
         }
     }
@@ -469,6 +469,7 @@ pub fn drag_connected(
         translation,
         angle,
     })?;
+    let selected: Vec<_> = board.items.iter().filter(|i| ids.contains(&i.id)).collect();
     for candidate in &board.items {
         if ids.contains(&candidate.id)
             || candidate.component.is_some()
@@ -480,12 +481,10 @@ pub fn drag_connected(
             continue;
         };
         let attached = |point: Point| {
-            board
-                .items
+            selected
                 .iter()
                 .filter(|i| {
-                    ids.contains(&i.id)
-                        && i.net == candidate.net
+                    i.net == candidate.net
                         && crate::pcb_polygon::on_layer(board, i, candidate.layer)
                 })
                 .any(|i| match i.shape {
@@ -513,9 +512,10 @@ pub fn drag_connected(
                 },
                 width,
             };
-            next = next.edited(Edit::Replace(updated))?;
+            next.replace_item_unvalidated(updated)?;
         }
     }
+    next.validate()?;
     Ok(next)
 }
 

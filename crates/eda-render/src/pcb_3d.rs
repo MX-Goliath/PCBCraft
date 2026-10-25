@@ -29,6 +29,13 @@ struct Face {
 }
 #[derive(Default)]
 struct Scene {
+    source: Option<Arc<Board>>,
+    cuts: Option<pcb_3d::Cuts>,
+    substrate: Arc<Vec<StackSurface>>,
+    substrate_faces: std::ops::Range<usize>,
+    mask_faces: std::ops::Range<usize>,
+    items: std::collections::HashMap<Uuid, (usize, std::ops::Range<usize>)>,
+    reused_items: usize,
     parents: std::collections::HashMap<Uuid, Uuid>,
     faces: Vec<Face>,
     centre: [f32; 3],
@@ -376,8 +383,10 @@ impl State {
                 receiver: Mutex::new(receiver),
             }));
             let ctx = ctx.clone();
+            let previous = self.scene.clone();
             std::thread::spawn(move || {
-                let scene = build(&snapshot, key.1);
+                let mut scene = build_reusing(&snapshot, key.1, &previous);
+                scene.source = Some(Arc::new(snapshot));
                 let _ = sender.send(scene);
                 ctx.request_repaint();
             });
@@ -429,7 +438,73 @@ fn rings(faces: &mut Vec<Triangle>, outer: &[Point], holes: &[Vec<Point>], z: f3
         }
     }
 }
+#[cfg(test)]
 fn build(board: &Board, components: bool) -> Scene {
+    build_reusing(board, components, &Scene::default())
+}
+fn add(
+    scene: &mut Scene,
+    triangles: Vec<Triangle>,
+    owner: Option<Uuid>,
+    material: usize,
+    layer: u16,
+) {
+    scene
+        .faces
+        .extend(triangles.into_iter().map(|triangle| Face {
+            triangle,
+            owner,
+            material,
+            layer,
+        }));
+}
+fn same_artwork_context(a: &Board, b: &Board) -> bool {
+    a.layers == b.layers
+        && a.layer_stack == b.layer_stack
+        && a.nets == b.nets
+        // Placement is carried by transformed child primitives. Rule scopes
+        // read component identity/footprint/properties, not its origin or angle.
+        && a.components.len() == b.components.len()
+        && a.components.iter().zip(&b.components).all(|(a, b)| {
+            a.id == b.id && a.index == b.index && a.designator == b.designator
+                && a.comment == b.comment && a.footprint == b.footprint
+                && a.layer == b.layer && a.locked == b.locked && a.properties == b.properties
+        })
+        && a.properties == b.properties
+        && a.rules == b.rules
+        && a.classes == b.classes
+        && a.polygons == b.polygons
+        && a.polygon_pours == b.polygon_pours
+}
+fn artwork_bounds(item: &Item) -> Option<Bounds> {
+    if matches!(item.shape, Shape::Text { .. }) {
+        return None;
+    }
+    let mut bounds = item.bounds();
+    if matches!(item.shape, Shape::Pad { .. } | Shape::Via { .. }) {
+        for layer in [TOP, BOTTOM] {
+            bounds.union(Bounds::points(&item.pad_outline(layer)));
+        }
+    }
+    Some(bounds.expanded(1))
+}
+fn mask_sources(board: &Board) -> impl Iterator<Item = &Item> {
+    board.items.iter().filter(|i| {
+        matches!(i.shape, Shape::Pad { .. } | Shape::Via { .. }) || matches!(i.layer, 37 | 38)
+    })
+}
+fn build_reusing(board: &Board, components: bool, previous: &Scene) -> Scene {
+    let started = std::time::Instant::now();
+    let mut stage = started;
+    let mut timing = |name: &str| {
+        if std::env::var_os("PCBCRAFT_FRAME_PROFILE").is_some() {
+            eprintln!(
+                "pcb_3d_stage {name}_ms={:.2}",
+                stage.elapsed().as_secs_f64() * 1000.
+            );
+        }
+        stage = std::time::Instant::now();
+    };
     let mut scene = Scene::default();
     let origin = Point::default();
     let board_outline = board.outline_points(256);
@@ -438,62 +513,89 @@ fn build(board: &Board, components: bool) -> Scene {
     scene.thickness = thickness;
     let mask = Color32::from_rgb(28, 106, 64);
     let cuts = pcb_3d::Cuts::new(board);
-    let mut add = |triangles: Vec<Triangle>, owner, material, layer| {
+    let same_context = previous
+        .source
+        .as_ref()
+        .is_some_and(|old| same_artwork_context(old, board));
+    let same_cuts = previous
+        .cuts
+        .as_ref()
+        .is_some_and(|old| cuts.same_geometry(old));
+    let substrate = if same_cuts {
+        previous.substrate.clone()
+    } else {
+        Arc::new(pcb_3d::substrate(board))
+    };
+    let reuse_substrate = same_cuts && previous.thickness == thickness;
+    if reuse_substrate {
         scene
             .faces
-            .extend(triangles.into_iter().map(|triangle| Face {
-                triangle,
-                owner,
-                material,
-                layer,
-            }))
-    };
-    for region in pcb_3d::substrate(board) {
-        let mut faces = vec![];
-        rings(
-            &mut faces,
-            &region.outline,
-            &region.holes,
-            -0.005,
-            Color32::from_rgb(139, 128, 70),
-        );
-        rings(
-            &mut faces,
-            &region.outline,
-            &region.holes,
-            -thickness + 0.005,
-            Color32::from_rgb(139, 128, 70),
-        );
-        wall(
-            &mut faces,
-            &region.outline,
-            -thickness,
-            0.,
-            Color32::from_rgb(139, 128, 70),
-            origin,
-        );
-        for hole in &region.holes {
+            .extend_from_slice(&previous.faces[previous.substrate_faces.clone()]);
+    } else {
+        for region in substrate.iter() {
+            let mut faces = vec![];
+            rings(
+                &mut faces,
+                &region.outline,
+                &region.holes,
+                -0.005,
+                Color32::from_rgb(139, 128, 70),
+            );
+            rings(
+                &mut faces,
+                &region.outline,
+                &region.holes,
+                -thickness + 0.005,
+                Color32::from_rgb(139, 128, 70),
+            );
             wall(
                 &mut faces,
-                hole,
+                &region.outline,
                 -thickness,
                 0.,
-                Color32::from_rgb(132, 128, 110),
+                Color32::from_rgb(139, 128, 70),
                 origin,
             );
+            for hole in &region.holes {
+                wall(
+                    &mut faces,
+                    hole,
+                    -thickness,
+                    0.,
+                    Color32::from_rgb(132, 128, 110),
+                    origin,
+                );
+            }
+            add(&mut scene, faces, None, 1, MULTI_LAYER);
         }
-        add(faces, None, 1, MULTI_LAYER);
     }
-    for (bottom, z, material, layer) in
-        [(false, 0.04, 4, TOP), (true, -thickness - 0.04, 5, BOTTOM)]
+    timing("substrate");
+    scene.substrate_faces = 0..scene.faces.len();
+    let mask_start = scene.faces.len();
+    if reuse_substrate
+        && same_context
+        && previous
+            .source
+            .as_ref()
+            .is_some_and(|old| mask_sources(old).eq(mask_sources(board)))
     {
-        for region in pcb_3d::solder_mask(board, bottom) {
-            let mut faces = vec![];
-            rings(&mut faces, &region.outline, &region.holes, z, mask);
-            add(faces, None, material, layer);
+        scene
+            .faces
+            .extend_from_slice(&previous.faces[previous.mask_faces.clone()]);
+    } else {
+        for (bottom, z, material, layer) in
+            [(false, 0.04, 4, TOP), (true, -thickness - 0.04, 5, BOTTOM)]
+        {
+            for region in pcb_3d::solder_mask_on_substrate(board, bottom, &substrate) {
+                let mut faces = vec![];
+                rings(&mut faces, &region.outline, &region.holes, z, mask);
+                add(&mut scene, faces, None, material, layer);
+            }
         }
     }
-    for item in &board.items {
+    timing("masks");
+    scene.mask_faces = mask_start..scene.faces.len();
+    for (item_index, item) in board.items.iter().enumerate() {
         if item.keepout
             || item.properties.contains_key("PCBCRAFT_BODY_PROJECTION")
             || item
@@ -501,6 +603,31 @@ fn build(board: &Board, components: bool) -> Scene {
                 .contains_key("PCBCRAFT_LEGACY_REGION_DUPLICATE")
             || !board.text_visible(item)
         {
+            continue;
+        }
+        let first = scene.faces.len();
+        if same_context
+            && previous.thickness == thickness
+            && let Some((old_index, range)) = previous.items.get(&item.id)
+            && previous
+                .source
+                .as_ref()
+                .is_some_and(|old| old.items[*old_index] == *item)
+            && (same_cuts
+                || previous.cuts.as_ref().is_some_and(|old| {
+                    artwork_bounds(item).is_some_and(|bounds| cuts.same_in(old, bounds))
+                }))
+        {
+            scene
+                .faces
+                .extend_from_slice(&previous.faces[range.clone()]);
+            scene
+                .items
+                .insert(item.id, (item_index, first..scene.faces.len()));
+            if let Some(parent) = previous.parents.get(&item.id) {
+                scene.parents.insert(item.id, *parent);
+            }
+            scene.reused_items += 1;
             continue;
         }
         for (layer, mut z) in [(TOP, 0.015), (BOTTOM, -thickness - 0.015)] {
@@ -596,6 +723,7 @@ fn build(board: &Board, components: bool) -> Scene {
                 scene.parents.insert(item.id, parent);
             }
             add(
+                &mut scene,
                 faces,
                 Some(item.id),
                 if item.layer == TOP_OVERLAY {
@@ -624,6 +752,7 @@ fn build(board: &Board, components: bool) -> Scene {
                         origin,
                     );
                     add(
+                        &mut scene,
                         paste,
                         Some(item.id),
                         if bottom { 7 } else { 6 },
@@ -657,9 +786,13 @@ fn build(board: &Board, components: bool) -> Scene {
                 Color32::from_rgb(193, 177, 113),
                 origin,
             );
-            add(faces, Some(item.id), 0, MULTI_LAYER);
+            add(&mut scene, faces, Some(item.id), 0, MULTI_LAYER);
         }
+        scene
+            .items
+            .insert(item.id, (item_index, first..scene.faces.len()));
     }
+    timing("artwork");
     if components {
         for item in board.items.iter().filter(|i| {
             i.properties.contains_key("PCBCRAFT_BODY_PROJECTION")
@@ -684,15 +817,18 @@ fn build(board: &Board, components: bool) -> Scene {
                 .and_then(|v| v.parse::<f32>().ok())
                 .unwrap_or(1.)
                 .clamp(0., 1.);
+            let Some(transform) = pcb_3d::ModelTransform::new(board, item) else {
+                continue;
+            };
             let faces = model
                 .triangles
                 .iter()
-                .filter_map(|t| {
+                .map(|t| {
                     let mut v = [[0.; 3]; 3];
                     for (vertex, p) in v.iter_mut().zip(t.vertices) {
-                        *vertex = pcb_3d::model_point(board, item, p)?.map(|x| x as f32);
+                        *vertex = transform.point(p).map(|x| x as f32);
                     }
-                    Some(Triangle {
+                    Triangle {
                         v,
                         color: Color32::from_rgba_unmultiplied(
                             t.color[0],
@@ -700,10 +836,10 @@ fn build(board: &Board, components: bool) -> Scene {
                             t.color[2],
                             (f32::from(t.color[3]) * opacity) as u8,
                         ),
-                    })
+                    }
                 })
                 .collect();
-            add(faces, owner, 8, MULTI_LAYER);
+            add(&mut scene, faces, owner, 8, MULTI_LAYER);
         }
         for body in pcb_3d::bodies(board) {
             let mut faces = vec![];
@@ -716,9 +852,10 @@ fn build(board: &Board, components: bool) -> Scene {
             for hole in &body.holes {
                 wall(&mut faces, hole, z0, z1, color, origin);
             }
-            add(faces, Some(body.component), 8, MULTI_LAYER);
+            add(&mut scene, faces, Some(body.component), 8, MULTI_LAYER);
         }
     }
+    timing("components");
     let bounds = if board_bounds.empty {
         board.bounds()
     } else {
@@ -747,8 +884,19 @@ fn build(board: &Board, components: bool) -> Scene {
             .sqrt()
             * 0.5;
     }
+    scene.cuts = Some(cuts);
+    scene.substrate = substrate;
+    let geometry_ms = started.elapsed().as_secs_f64() * 1000.;
     scene.geometry = gpu::Geometry::new(&scene);
     scene.picking = picking::Index::new(&scene.faces);
+    if std::env::var_os("PCBCRAFT_FRAME_PROFILE").is_some() {
+        eprintln!(
+            "pcb_3d_build geometry_ms={geometry_ms:.2} total_ms={:.2} reused_items={} triangles={}",
+            started.elapsed().as_secs_f64() * 1000.,
+            scene.reused_items,
+            scene.faces.len()
+        );
+    }
     scene
 }
 fn planar(
@@ -1281,6 +1429,107 @@ pub fn canvas(ui: &mut egui::Ui, board: &Board, view: &mut View) -> CanvasOutput
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn same_scene(a: &Scene, b: &Scene) {
+        assert_eq!(a.faces.len(), b.faces.len());
+        assert_eq!(a.parents, b.parents);
+        for (a, b) in a.faces.iter().zip(&b.faces) {
+            assert_eq!(a.triangle.v, b.triangle.v);
+            assert_eq!(a.triangle.color, b.triangle.color);
+            assert_eq!(
+                (a.owner, a.material, a.layer),
+                (b.owner, b.material, b.layer)
+            );
+        }
+    }
+    #[test]
+    fn incremental_scene_matches_fresh_after_moves_drills_masks_outline_and_undo() {
+        let mut b = Board::from_legacy(&eda_core::Document::new(
+            eda_core::DocumentKind::Board,
+            "cache",
+        ));
+        for y in [5, 15, 25] {
+            b.items.push(Item::new(
+                TOP,
+                None,
+                Shape::Track {
+                    start: Point::mm(5, y),
+                    end: Point::mm(25, y),
+                    width: 1_000_000,
+                },
+            ));
+        }
+        b.items.push(Item::new(
+            MULTI_LAYER,
+            None,
+            Shape::Via {
+                position: Point::mm(10, 15),
+                diameter: 2_000_000,
+                hole: 1_000_000,
+                from_layer: TOP,
+                to_layer: BOTTOM,
+            },
+        ));
+        b.components.push(Component {
+            id: Uuid::new_v4(),
+            index: 0,
+            designator: "U1".into(),
+            comment: String::new(),
+            footprint: String::new(),
+            position: Point::mm(10, 10),
+            rotation: 0.,
+            layer: TOP,
+            locked: false,
+            properties: Fields::new(),
+        });
+        b.items[1].component = Some(0);
+        let original = b.clone();
+        let mut previous = build(&b, true);
+        previous.source = Some(Arc::new(b.clone()));
+        for step in 0..9 {
+            match step {
+                0 => b.items[0] = b.items[0].with_anchor(Point::mm(6, 6)).unwrap(),
+                1 => b.items[3] = b.items[3].with_anchor(Point::mm(10, 25)).unwrap(),
+                2 => {
+                    b.items[3].masks = Some(Box::new(MaskSettings::for_item(&b.items[3])));
+                    b.items[3].masks.as_mut().unwrap().solder[0].tented = true;
+                }
+                3 => b.items[1].layer = BOTTOM,
+                4 => {
+                    b.outline[0].position.x += 1_000_000;
+                }
+                5 => {
+                    b.items.remove(3);
+                }
+                6 => b = original.clone(),
+                7 => {
+                    b = b
+                        .edited(Edit::Transform {
+                            selection: vec![b.components[0].id],
+                            pivot: b.components[0].position,
+                            translation: Point::mm(1, 1),
+                            angle: 90.,
+                        })
+                        .unwrap()
+                }
+                _ => {
+                    b.rules.push(Fields::from([
+                        ("RULEKIND".into(), "SolderMaskExpansion".into()),
+                        ("SCOPE1EXPRESSION".into(), "All".into()),
+                        ("EXPANSION".into(), "0.5mm".into()),
+                    ]));
+                }
+            }
+            let mut cached = build_reusing(&b, true, &previous);
+            let fresh = build(&b, true);
+            same_scene(&cached, &fresh);
+            if step == 0 {
+                assert!(cached.reused_items >= 2);
+                assert!(Arc::ptr_eq(&cached.substrate, &previous.substrate));
+            }
+            cached.source = Some(Arc::new(b.clone()));
+            previous = cached;
+        }
+    }
     #[test]
     fn bottom_view_mirrors_x_and_preserves_y_like_the_native_flip() {
         let mut s = State::default();

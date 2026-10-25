@@ -464,3 +464,99 @@ editing, larger boards and other zoom/visibility configurations can still be
 expensive. Full Altium rendering/performance parity is not claimed. Linux is
 cross-checked with all targets; native Linux performance/UI is not measured and
 no Linux distributable is built in this stage.
+
+
+## Movement and 3D rebuilds, 2026-10-25
+
+Measured against commit `dfc36a7`, using Rust 1.90.0 release builds on the same
+Ryzen 9 5900X / RX 7900 XTX Linux machine. Sources were opened read-only;
+ReferenceA and ReferenceM SHA256 values remained unchanged. Raw probe output,
+conditions and source hashes are in `performance-2026-10-25.json`.
+
+### Changes
+
+- A movement session validates its source once, then transforms and validates
+  only its selected entities. It reuses its draft allocation while immutable
+  worker snapshots use copy-on-write. Release still passes the complete board
+  through History validation. Invalid moves, locked objects, cancellation,
+  rotation, Undo and Redo retain their transaction semantics.
+- 2D artwork keeps stationary GPU buffers during move, rotation, connected drag
+  and handle editing. Live items, masks, drills and labels retain their original
+  paint order. Changing selection/display or editing polygon definitions still
+  rebuilds the appropriate artwork. Connections render separately; background
+  connection calculations share immutable previews instead of cloning each one.
+- Movement refits the spatial tree and expires only changed outlines. Snapping
+  queries a separate index of the original board during previews.
+- Connected dragging checks its selected primitives instead of rescanning all
+  board objects for every candidate endpoint. Neighbour replacements share one
+  draft and receive one final validation instead of cloning/validating per track.
+- 3D placement parameters, component-side lookup and trigonometry are prepared
+  once per model instance. Substrate construction is shared between mask films.
+  Rebuilds reuse substrate/mask faces when their dependencies match, and reuse
+  unaffected item faces when neither their source nor nearby physical cuts
+  changed. Rules, layer stack, component metadata, polygons and outline changes
+  invalidate the relevant results. Cut queries use an R-tree; fully internal
+  artwork on convex boards avoids unnecessary clipping. BVH construction
+  computes triangle bounds and partition keys once.
+
+### Measurements
+
+The 2D probe uses 1000×800, 15 px/mm and 60 movement samples. These values are
+CPU canvas/tessellation times with GPU callbacks, not presentation FPS. Session
+construction is outside the repeated samples. The maximum includes the first
+artwork rebuild when the gesture starts.
+
+| Board | Objects | Move frame median before / after | Frame p95 before / after | Updated frame maximum |
+|---|---:|---:|---:|---:|
+| ReferenceA | 1,032 | 15.89 / 0.41 ms | 23.09 / 0.79 ms | 14.29 ms |
+| ReferenceM | 41,475 | 284.94 / 4.57 ms | 318.61 / 8.09 ms | 319.31 ms |
+
+The separate model-update median changed from 2.81 ms to below 0.01 ms on ReferenceA,
+and from 53.20 ms to below 0.01 ms on ReferenceM. Publishing the updated preview
+changed from 1.46 to 0.02 ms and from 13.96 to 1.44 ms respectively. These are
+separate medians, not a measured combined frame/input latency.
+
+The 3D probe waits for scene preparation and an actual completed offscreen GPU
+frame. Edits are cumulative translations of an unlocked track, via, then
+component by 1 mm in X and Y; the original file is never saved.
+
+| Scene preparation plus first GPU frame | ReferenceA before / after | ReferenceM before / after |
+|---|---:|---:|
+| First entry | 743.30 / 120.77 ms | 3819.00 / 4174.46 ms |
+| After track movement | 738.04 / 51.49 ms | 3753.22 / 725.78 ms |
+| After via movement | 753.30 / 117.76 ms | 3716.51 / 2642.68 ms |
+| After component movement | 727.36 / 75.78 ms | 3716.45 / 1721.64 ms |
+
+First entry on the large board did not improve; its roughly 2.2 million triangles
+still require a complete build and upload. A moved drill invalidates physical
+substrate and mask surfaces, so that rebuild remains expensive.
+
+### Verification and reproduction
+
+398 workspace tests, strict all-target Clippy and fmt --check pass. Tests compare
+prepared edits with ordinary fully validated commands, preserve retained worker
+snapshots after subsequent moves, reject invalid/locked edits, compare refitted
+spatial queries with fresh trees, and compare incremental 3D faces with complete
+builds after track/via/component/mask/layer/outline edits, deletion and restoration.
+GPU readback compares live movement against a full rebuild with at most two
+8-bit channel levels allowed for shader dithering/quantization.
+
+Real eframe windows were run and their captures inspected. The fixed ReferenceA 3D pose
+is pixel-identical before/after. During continuous native movement, ReferenceA CPU frames
+had median 0.66 / p95 0.84 / maximum 1.64 ms; ReferenceM had 6.20 / 20.10 / 23.23 ms.
+These samples exclude the first second. The large-board probe also recorded
+initial frames of 309 and 72 ms. Local captures are retained under
+`target/pcb-performance-2026-10-25/`. The rebuilt Linux AppImage was launched with
+the editor fixture and painted its canvas successfully.
+
+```bash
+rtk bash scripts/dev.sh run --locked --release -p eda-app --example pcb_frame_profile -- INPUT.PcbDoc --gpu --drag
+rtk bash scripts/dev.sh run --locked --release -p eda-app --example pcb_3d_frame_profile -- INPUT.PcbDoc --edits
+rtk bash scripts/dev.sh run --locked --release -p eda-app --example pcb_3d_frame_profile -- INPUT.PcbDoc --2d --drag --window --capture /tmp/pcb-drag.png
+```
+
+Remaining costs include initial selection/gesture artwork, copy-on-write when a
+worker still retains a snapshot, polygon editing/repour, initial large 3D scenes,
+and globally changed substrate/mask surfaces. Constant 60 FPS across all boards
+and operations is not established. Windows runtime performance was not measured
+in this iteration. Existing visual/STEP/import limitations remain in features.json.

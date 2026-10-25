@@ -1,12 +1,16 @@
 //! Document-space display geometry, bounded to the current scene revision.
 use eda_core::pcb::*;
 use eda_geom::Point;
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::{BTreeSet, HashMap},
+    sync::Arc,
+};
 use uuid::Uuid;
 
 #[derive(Clone, Default)]
 pub(super) struct Cache {
     key: Option<(u64, u64)>,
+    transformed: Option<BTreeSet<Uuid>>,
     pub bounds: HashMap<Uuid, Bounds>,
     pub indices: HashMap<Uuid, usize>,
     pub outline: Arc<Vec<Point>>,
@@ -22,6 +26,7 @@ impl Cache {
         if self.key == Some((revision, preview)) {
             return;
         }
+        self.transformed = None;
         self.key = Some((revision, preview));
         self.bounds = board.items.iter().map(|i| (i.id, i.bounds())).collect();
         self.indices = board
@@ -36,6 +41,33 @@ impl Cache {
         self.pads.clear();
         self.drills.clear();
         self.masks.clear();
+    }
+    pub fn prepare_transformed(
+        &mut self,
+        board: &Board,
+        revision: u64,
+        preview: u64,
+        changed: &BTreeSet<Uuid>,
+    ) {
+        if self.key == Some((revision, preview)) {
+            return;
+        }
+        if self.key.is_some_and(|key| key.0 == revision)
+            && self.transformed.as_ref() == Some(changed)
+        {
+            for id in changed {
+                let item = &board.items[self.indices[id]];
+                self.bounds.insert(*id, item.bounds());
+            }
+            self.pads.retain(|(id, _), _| !changed.contains(id));
+            self.drills.retain(|id, _| !changed.contains(id));
+            self.masks.retain(|(id, _, _), _| !changed.contains(id));
+            self.spatial.refit(board, &self.bounds, changed);
+            self.key = Some((revision, preview));
+        } else {
+            self.prepare(board, revision, preview);
+            self.transformed = Some(changed.clone());
+        }
     }
     pub fn query(&self, bounds: Bounds) -> Vec<usize> {
         self.spatial.query(bounds)
@@ -85,23 +117,7 @@ impl Spatial {
                 .iter()
                 .enumerate()
                 .map(|(index, item)| {
-                    let mut b = bounds[&item.id];
-                    b.include(item.anchor());
-                    if matches!(
-                        item.shape,
-                        Shape::Pad {
-                            bottom_size: Some(_),
-                            ..
-                        } | Shape::Pad {
-                            middle_size: Some(_),
-                            ..
-                        }
-                    ) || item.pad_stack.is_some()
-                    {
-                        for layer in board.layers.iter().filter(|l| l.copper) {
-                            b.union(Bounds::points(&item.pad_outline(layer.id)));
-                        }
-                    }
+                    let b = Self::item_bounds(board, item, bounds[&item.id]);
                     (b, index)
                 })
                 .collect(),
@@ -111,6 +127,48 @@ impl Spatial {
             result.build(0..result.entries.len());
         }
         result
+    }
+    fn item_bounds(board: &Board, item: &Item, mut b: Bounds) -> Bounds {
+        b.include(item.anchor());
+        if matches!(
+            item.shape,
+            Shape::Pad {
+                bottom_size: Some(_),
+                ..
+            } | Shape::Pad {
+                middle_size: Some(_),
+                ..
+            }
+        ) || item.pad_stack.is_some()
+        {
+            for layer in board.layers.iter().filter(|l| l.copper) {
+                b.union(Bounds::points(&item.pad_outline(layer.id)));
+            }
+        }
+        b
+    }
+    fn refit(&mut self, board: &Board, bounds: &HashMap<Uuid, Bounds>, changed: &BTreeSet<Uuid>) {
+        for (b, index) in &mut self.entries {
+            let item = &board.items[*index];
+            if changed.contains(&item.id) {
+                *b = Self::item_bounds(board, item, bounds[&item.id]);
+            }
+        }
+        // Children follow parents in storage, so a reverse pass repairs every
+        // ancestor without sorting or rebuilding unaffected pad outlines.
+        for index in (0..self.nodes.len()).rev() {
+            let node = &self.nodes[index];
+            let mut b = Bounds::empty();
+            if let Some((left, right)) = node.children {
+                b.union(self.nodes[left].bounds);
+                b.union(self.nodes[right].bounds);
+            } else {
+                for (bounds, _) in &self.entries[node.range.clone()] {
+                    b.union(*bounds);
+                }
+            }
+            self.nodes[index].bounds = b;
+        }
     }
     fn build(&mut self, range: std::ops::Range<usize>) -> usize {
         let mut bounds = Bounds::empty();
@@ -125,7 +183,7 @@ impl Spatial {
         });
         if range.len() > 8 {
             let x = bounds.max.x - bounds.min.x >= bounds.max.y - bounds.min.y;
-            self.entries[range.clone()].sort_unstable_by_key(|(b, _)| {
+            self.entries[range.clone()].select_nth_unstable_by_key(range.len() / 2, |(b, _)| {
                 if x {
                     b.min.x / 2 + b.max.x / 2
                 } else {
@@ -187,6 +245,30 @@ mod tests {
             },
         ));
         board
+    }
+    #[test]
+    fn transformed_geometry_preserves_stationary_outlines_and_refits_moved_bounds() {
+        let mut b = board();
+        let moving = b.items[0].id;
+        let mut stationary = b.items[0].clone();
+        stationary.id = Uuid::new_v4();
+        b.items.push(stationary);
+        let changed = BTreeSet::from([moving]);
+        let mut cache = Cache::default();
+        cache.prepare_transformed(&b, 0, 1, &changed);
+        let kept = cache.pad(&b.items[1], TOP);
+        for n in 2..10 {
+            b.items[0] = b.items[0].with_anchor(Point::mm(n as i64, 3)).unwrap();
+            cache.prepare_transformed(&b, 0, n, &changed);
+            assert!(Arc::ptr_eq(&kept, &cache.pad(&b.items[1], TOP)));
+            assert_eq!(*cache.pad(&b.items[0], TOP), b.items[0].pad_outline(TOP));
+            let mut fresh = Cache::default();
+            fresh.prepare(&b, 0, n);
+            for x in -3..15 {
+                let bounds = Bounds::points(&[Point::mm(x, 3)]).expanded(500_000);
+                assert_eq!(cache.query(bounds), fresh.query(bounds));
+            }
+        }
     }
     #[test]
     fn cached_geometry_matches_model_and_is_reused_between_frames() {

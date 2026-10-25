@@ -1,0 +1,205 @@
+{
+  "date": "2026-10-25",
+  "baseline_commit": "dfc36a7",
+  "rust": "1.90.0",
+  "profile": "release",
+  "cpu": "AMD Ryzen 9 5900X",
+  "gpu": "AMD Radeon RX 7900 XTX, RADV Mesa 26.2.5",
+  "viewport": [
+    1000,
+    800
+  ],
+  "notes": [
+    "2D timings measure CPU canvas and egui tessellation with GPU callbacks, not GPU execution or input-to-present latency.",
+    "3D timings include completed offscreen GPU frames; edits are cumulative track, via, then component translations of 1 mm in X and Y.",
+    "MovePreview construction and initial gesture selection are outside the steady movement samples.",
+    "Native CPU timings exclude the first second and use the canvas probe, not the full application chrome."
+  ],
+  "boards": {
+    "ReferenceA": {
+      "before": {
+        "drag": {
+          "output": [
+            "load_ms=361.61",
+            "saved_compare_ms=0.85",
+            "GPU callbacks: CPU submission timings only; no GPU execution in this probe",
+            "items=1032 layers=15",
+            "cold: paint_ms=27.04 paint+tessellate_ms=27.26 p95_ms=27.26 max_ms=27.26 frames_over_33ms=0/1",
+            "cursor: paint_ms=1.20 paint+tessellate_ms=1.28 p95_ms=0.24 max_ms=10.84 frames_over_33ms=0/10",
+            "pan: paint_ms=0.13 paint+tessellate_ms=0.21 p95_ms=0.23 max_ms=0.23 frames_over_33ms=0/10",
+            "long-pan: paint_ms=0.05 paint+tessellate_ms=0.08 p95_ms=0.22 max_ms=0.40 frames_over_33ms=0/360",
+            "zoom: paint_ms=0.13 paint+tessellate_ms=0.21 p95_ms=0.31 max_ms=0.34 frames_over_33ms=0/120",
+            "drag: edit_median_ms=2.81 publish_median_ms=1.46 frame_median_ms=15.89 frame_p95_ms=23.09 frame_max_ms=25.01"
+          ]
+        },
+        "3d": {
+          "output": [
+            "adapter=AdapterInfo { name: \"AMD Radeon RX 7900 XTX (RADV NAVI31)\", vendor: 4098, device: 29772, device_type: DiscreteGpu, driver: \"radv\", driver_info: \"Mesa 26.2.5-arch1.1\", backend: Vulkan }",
+            "scene_and_first_gpu_frame_ms=743.30",
+            "cached: cpu_median_ms=0.13 completed_median_ms=0.23 completed_p95_ms=0.60 completed_max_ms=14.72",
+            "orbit: cpu_median_ms=0.27 completed_median_ms=0.94 completed_p95_ms=1.41 completed_max_ms=15.92",
+            "pan: cpu_median_ms=0.21 completed_median_ms=0.62 completed_p95_ms=1.04 completed_max_ms=14.47",
+            "zoom: cpu_median_ms=0.24 completed_median_ms=0.92 completed_p95_ms=1.19 completed_max_ms=14.75",
+            "after_track_edit_scene_ms=738.04",
+            "after_via_edit_scene_ms=753.30",
+            "after_component_edit_scene_ms=727.36"
+          ]
+        }
+      },
+      "after": {
+        "drag": {
+          "output": [
+            "load_ms=369.65",
+            "saved_compare_ms=0.74",
+            "GPU callbacks: CPU submission timings only; no GPU execution in this probe",
+            "items=1032 layers=15",
+            "cold: paint_ms=26.28 paint+tessellate_ms=26.45 p95_ms=26.45 max_ms=26.45 frames_over_33ms=0/1",
+            "cursor: paint_ms=0.16 paint+tessellate_ms=0.24 p95_ms=0.26 max_ms=0.32 frames_over_33ms=0/10",
+            "pan: paint_ms=0.14 paint+tessellate_ms=0.23 p95_ms=0.23 max_ms=0.24 frames_over_33ms=0/10",
+            "long-pan: paint_ms=0.06 paint+tessellate_ms=0.08 p95_ms=0.22 max_ms=0.24 frames_over_33ms=0/360",
+            "zoom: paint_ms=0.13 paint+tessellate_ms=0.21 p95_ms=0.32 max_ms=0.34 frames_over_33ms=0/120",
+            "board_clone_ms=5.80",
+            "board_validate_ms=0.26",
+            "drag: edit_median_ms=0.00 publish_median_ms=0.02 frame_median_ms=0.41 frame_p95_ms=0.79 frame_max_ms=14.29"
+          ]
+        },
+        "3d": {
+          "output": [
+            "adapter=AdapterInfo { name: \"AMD Radeon RX 7900 XTX (RADV NAVI31)\", vendor: 4098, device: 29772, device_type: DiscreteGpu, driver: \"radv\", driver_info: \"Mesa 26.2.5-arch1.1\", backend: Vulkan }",
+            "scene_and_first_gpu_frame_ms=120.77",
+            "cached: cpu_median_ms=0.12 completed_median_ms=0.21 completed_p95_ms=0.33 completed_max_ms=14.00",
+            "orbit: cpu_median_ms=0.26 completed_median_ms=0.93 completed_p95_ms=1.21 completed_max_ms=14.30",
+            "pan: cpu_median_ms=0.23 completed_median_ms=0.84 completed_p95_ms=1.08 completed_max_ms=15.17",
+            "zoom: cpu_median_ms=0.24 completed_median_ms=0.89 completed_p95_ms=1.14 completed_max_ms=14.67",
+            "after_track_edit_scene_ms=51.49",
+            "after_via_edit_scene_ms=117.76",
+            "after_component_edit_scene_ms=75.78"
+          ]
+        }
+      }
+    },
+    "radar": {
+      "before": {
+        "drag": {
+          "output": [
+            "load_ms=875.22",
+            "saved_compare_ms=11.78",
+            "3D model SamtecTSW-07_2x1.stp: STEP assembly transforms are not supported",
+            "3D model SMB_nominal.stp: STEP non-finite surface (shell 920, face 21)",
+            "3D model TSW-103-07-T-S.stp: STEP conversion-based length units are not supported",
+            "3D model Samtec-TSW-101-17-T-S.stp: STEP conversion-based length units are not supported",
+            "3D model Samtec-QSH-030-01-L-D-A.stp: STEP conversion-based length units are not supported",
+            "3D model OSTTE030161.stp: STEP assembly transforms are not supported",
+            "3D model 128-0711-201.stp: STEP non-finite surface (shell 1172, face 0)",
+            "3D model DRY0006A.stp: STEP assembly transforms are not supported",
+            "3D model DRL0006A.stp: STEP assembly transforms are not supported",
+            "3D model D0008A.stp: STEP assembly transforms are not supported",
+            "3D model PJ-002AHAD_PRT.stp: STEP non-finite surface (shell 1200, face 6)",
+            "3D model ABL0161A.stp: STEP assembly transforms are not supported",
+            "3D model 3528-21.stp: STEP assembly transforms are not supported",
+            "3D model SSM-110-S-DV.stp: STEP assembly transforms are not supported",
+            "3D model SSM-103-S-SV.stp: STEP assembly transforms are not supported",
+            "3D model RNF0026C.stp: STEP assembly transforms are not supported",
+            "3D model PDT0128A.stp: STEP assembly transforms are not supported",
+            "3D model NDK_NX3225SA.stp: STEP non-finite surface (shell 609, face 3)",
+            "3D model DRB0008B.stp: STEP assembly transforms are not supported",
+            "3D model DBZ0003A.stp: STEP assembly transforms are not supported",
+            "3D model Molex_1050170001.stp: STEP non-finite surface (shell 14232, face 8)",
+            "GPU callbacks: CPU submission timings only; no GPU execution in this probe",
+            "items=41475 layers=34",
+            "cold: paint_ms=321.53 paint+tessellate_ms=323.16 p95_ms=323.16 max_ms=323.16 frames_over_33ms=1/1",
+            "cursor: paint_ms=1.40 paint+tessellate_ms=2.05 p95_ms=2.30 max_ms=2.43 frames_over_33ms=0/10",
+            "pan: paint_ms=1.32 paint+tessellate_ms=1.96 p95_ms=2.00 max_ms=2.00 frames_over_33ms=0/10",
+            "long-pan: paint_ms=0.61 paint+tessellate_ms=0.83 p95_ms=2.03 max_ms=2.31 frames_over_33ms=0/360",
+            "zoom: paint_ms=2.74 paint+tessellate_ms=3.24 p95_ms=2.11 max_ms=189.88 frames_over_33ms=1/120",
+            "drag: edit_median_ms=53.20 publish_median_ms=13.96 frame_median_ms=284.94 frame_p95_ms=318.61 frame_max_ms=350.29"
+          ]
+        },
+        "3d": {
+          "output": [
+            "adapter=AdapterInfo { name: \"AMD Radeon RX 7900 XTX (RADV NAVI31)\", vendor: 4098, device: 29772, device_type: DiscreteGpu, driver: \"radv\", driver_info: \"Mesa 26.2.5-arch1.1\", backend: Vulkan }",
+            "scene_and_first_gpu_frame_ms=3819.00",
+            "cached: cpu_median_ms=0.56 completed_median_ms=0.79 completed_p95_ms=1.59 completed_max_ms=14.46",
+            "orbit: cpu_median_ms=0.79 completed_median_ms=2.51 completed_p95_ms=15.63 completed_max_ms=16.91",
+            "pan: cpu_median_ms=0.22 completed_median_ms=1.34 completed_p95_ms=14.59 completed_max_ms=15.80",
+            "zoom: cpu_median_ms=0.84 completed_median_ms=3.27 completed_p95_ms=16.26 completed_max_ms=16.91",
+            "after_track_edit_scene_ms=3753.22",
+            "after_via_edit_scene_ms=3716.51",
+            "after_component_edit_scene_ms=3716.45"
+          ]
+        }
+      },
+      "after": {
+        "drag": {
+          "output": [
+            "load_ms=892.57",
+            "saved_compare_ms=13.23",
+            "3D model SamtecTSW-07_2x1.stp: STEP assembly transforms are not supported",
+            "3D model SMB_nominal.stp: STEP non-finite surface (shell 920, face 21)",
+            "3D model TSW-103-07-T-S.stp: STEP conversion-based length units are not supported",
+            "3D model Samtec-TSW-101-17-T-S.stp: STEP conversion-based length units are not supported",
+            "3D model Samtec-QSH-030-01-L-D-A.stp: STEP conversion-based length units are not supported",
+            "3D model OSTTE030161.stp: STEP assembly transforms are not supported",
+            "3D model 128-0711-201.stp: STEP non-finite surface (shell 1172, face 0)",
+            "3D model DRY0006A.stp: STEP assembly transforms are not supported",
+            "3D model DRL0006A.stp: STEP assembly transforms are not supported",
+            "3D model D0008A.stp: STEP assembly transforms are not supported",
+            "3D model PJ-002AHAD_PRT.stp: STEP non-finite surface (shell 1200, face 6)",
+            "3D model ABL0161A.stp: STEP assembly transforms are not supported",
+            "3D model 3528-21.stp: STEP assembly transforms are not supported",
+            "3D model SSM-110-S-DV.stp: STEP assembly transforms are not supported",
+            "3D model SSM-103-S-SV.stp: STEP assembly transforms are not supported",
+            "3D model RNF0026C.stp: STEP assembly transforms are not supported",
+            "3D model PDT0128A.stp: STEP assembly transforms are not supported",
+            "3D model NDK_NX3225SA.stp: STEP non-finite surface (shell 609, face 3)",
+            "3D model DRB0008B.stp: STEP assembly transforms are not supported",
+            "3D model DBZ0003A.stp: STEP assembly transforms are not supported",
+            "3D model Molex_1050170001.stp: STEP non-finite surface (shell 14232, face 8)",
+            "GPU callbacks: CPU submission timings only; no GPU execution in this probe",
+            "items=41475 layers=34",
+            "cold: paint_ms=328.86 paint+tessellate_ms=330.30 p95_ms=330.30 max_ms=330.30 frames_over_33ms=1/1",
+            "cursor: paint_ms=1.75 paint+tessellate_ms=2.42 p95_ms=2.99 max_ms=3.68 frames_over_33ms=0/10",
+            "pan: paint_ms=1.53 paint+tessellate_ms=2.19 p95_ms=2.30 max_ms=2.37 frames_over_33ms=0/10",
+            "long-pan: paint_ms=0.81 paint+tessellate_ms=1.05 p95_ms=2.62 max_ms=5.97 frames_over_33ms=0/360",
+            "zoom: paint_ms=1.27 paint+tessellate_ms=1.75 p95_ms=2.21 max_ms=2.54 frames_over_33ms=0/120",
+            "board_clone_ms=21.28",
+            "board_validate_ms=25.14",
+            "drag: edit_median_ms=0.00 publish_median_ms=1.44 frame_median_ms=4.57 frame_p95_ms=8.09 frame_max_ms=319.31"
+          ]
+        },
+        "3d": {
+          "output": [
+            "adapter=AdapterInfo { name: \"AMD Radeon RX 7900 XTX (RADV NAVI31)\", vendor: 4098, device: 29772, device_type: DiscreteGpu, driver: \"radv\", driver_info: \"Mesa 26.2.5-arch1.1\", backend: Vulkan }",
+            "scene_and_first_gpu_frame_ms=4174.46",
+            "cached: cpu_median_ms=0.58 completed_median_ms=0.82 completed_p95_ms=1.92 completed_max_ms=14.70",
+            "orbit: cpu_median_ms=0.84 completed_median_ms=2.54 completed_p95_ms=15.34 completed_max_ms=17.36",
+            "pan: cpu_median_ms=0.23 completed_median_ms=1.56 completed_p95_ms=14.57 completed_max_ms=15.52",
+            "zoom: cpu_median_ms=0.85 completed_median_ms=3.32 completed_p95_ms=16.00 completed_max_ms=16.61",
+            "after_track_edit_scene_ms=725.78",
+            "after_via_edit_scene_ms=2642.68",
+            "after_component_edit_scene_ms=1721.64"
+          ]
+        }
+      }
+    }
+  },
+  "native": {
+    "ReferenceA_drag_cpu_ms": {
+      "median": 0.66,
+      "p95": 0.84,
+      "max": 1.64,
+      "frames": 118
+    },
+    "radar_drag_cpu_ms": {
+      "median": 6.2,
+      "p95": 20.1,
+      "max": 23.23,
+      "frames": 119
+    },
+    "ReferenceA_3d_before_after_different_pixels": 0
+  },
+  "source_sha256": {
+    "ReferenceA.PcbDoc": "redacted-source-sha256",
+    "ReferenceMBoard.PcbDoc": "redacted-source-sha256"
+  }
+}

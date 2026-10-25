@@ -33,8 +33,16 @@ struct Refinement {
     changed: Option<Instant>,
 }
 
+#[derive(Clone, Copy)]
+pub(super) enum Live {
+    Artwork(Color32),
+    Mask(u16, MaskKind, bool),
+    Details,
+}
 #[derive(Clone)]
 enum Part {
+    Live(Uuid, Live),
+    Connections,
     Mesh(Arc<Mesh>),
     Grid,
     Hatch(Uuid, Color32),
@@ -42,6 +50,8 @@ enum Part {
     Origin,
 }
 enum Capture {
+    Live(Uuid, Live),
+    Connections,
     Shapes(egui::layers::PaintList),
     Grid,
     Hatch(Uuid, Color32),
@@ -69,6 +79,14 @@ impl Builder {
         if !shapes.is_empty() {
             self.captured.push(Capture::Shapes(shapes));
         }
+    }
+    pub fn live(&mut self, painter: &egui::Painter, id: Uuid, live: Live) {
+        self.flush(painter.ctx());
+        self.captured.push(Capture::Live(id, live));
+    }
+    pub fn connections(&mut self, painter: &egui::Painter) {
+        self.flush(painter.ctx());
+        self.captured.push(Capture::Connections);
     }
     pub fn hatch(&mut self, painter: &egui::Painter, item: Uuid, color: Color32) {
         self.flush(painter.ctx());
@@ -119,7 +137,13 @@ impl Cache {
     pub fn rebuild(&mut self, painter: &egui::Painter, board: &Board, view: &mut View, key: u64) {
         let mut result = Self::build(painter, board, view, key, self.builds);
         result.refinement = self.refinement.clone();
-        result.seed(board, view, painter.ctx());
+        if view.pcb.preview.is_none() {
+            result.seed(board, view, painter.ctx());
+        } else {
+            let mut state = result.refinement.lock().unwrap();
+            state.snapshot = None;
+            state.changed = None;
+        }
         *self = result;
     }
     fn build(
@@ -295,6 +319,8 @@ impl Cache {
         let texture = self.atlas.as_ref().unwrap().id();
         for captured in builder.captured {
             match captured {
+                Capture::Live(id, live) => self.parts.push(Part::Live(id, live)),
+                Capture::Connections => self.parts.push(Part::Connections),
                 Capture::Grid => self.parts.push(Part::Grid),
                 Capture::Hatch(item, color) => self.parts.push(Part::Hatch(item, color)),
                 Capture::Tools => self.parts.push(Part::Tools),
@@ -343,6 +369,45 @@ impl Cache {
         let mut mesh_index = 0;
         for part in &self.parts {
             match part {
+                Part::Connections => paint_connections(painter, board, &view.camera, view, rect),
+                Part::Live(id, live) => {
+                    let item = &board.items[view.pcb.geometry.indices[id]];
+                    let camera = view.camera.clone();
+                    match *live {
+                        Live::Artwork(color) => {
+                            if !(view.pcb.display.draft[display::Settings::kind(item)]
+                                && paint_draft(
+                                    painter,
+                                    &camera,
+                                    rect,
+                                    item,
+                                    view.pcb.active_layer,
+                                    color,
+                                ))
+                            {
+                                paint_item(
+                                    painter,
+                                    &camera,
+                                    rect,
+                                    item,
+                                    view.pcb.active_layer,
+                                    color,
+                                    &mut view.pcb,
+                                );
+                            }
+                        }
+                        Live::Mask(layer, kind, bottom) => paint_mask(
+                            painter,
+                            board,
+                            &camera,
+                            view,
+                            rect,
+                            item,
+                            (layer, kind, bottom),
+                        ),
+                        Live::Details => paint_details(painter, board, &camera, view, rect, item),
+                    }
+                }
                 Part::Mesh(mesh) => {
                     if let Some(gpu) = &self.gpu {
                         painter.add(gpu.callback(mesh_index, rect, delta, scale, true));
@@ -387,9 +452,17 @@ pub(super) fn key(board: &Board, view: &View, ctx: &egui::Context) -> u64 {
     let pcb = &view.pcb;
     let mut hash = std::collections::hash_map::DefaultHasher::new();
     (
-        board as *const Board as usize,
+        if pcb.preview_items.is_some() {
+            0
+        } else {
+            board as *const Board as usize
+        },
         pcb.three_d.revision,
-        pcb.preview_generation,
+        if pcb.preview_items.is_some() {
+            0
+        } else {
+            pcb.preview_generation
+        },
         view.camera.mirrored_x,
         ctx.pixels_per_point().to_bits(),
     )
@@ -418,7 +491,8 @@ pub(super) fn key(board: &Board, view: &View, ctx: &egui::Context) -> u64 {
         pcb.polygons_visible,
     )
         .hash(&mut hash);
-    (Arc::as_ptr(&pcb.connections.lines) as usize).hash(&mut hash);
+    pcb.preview_items.hash(&mut hash);
+    board.pours_stale.hash(&mut hash);
     pcb.display.paint_hash(&mut hash);
     hash.finish()
 }

@@ -894,3 +894,19 @@ Cause, implementation and validation: docs/pcb-update/INTERACTIVE_ROUTING.md.
   Windows runtime and exact Altium visual/performance parity remain open.
   Gesture antialiasing/labels use scaled previous detail until refinement.
   See `docs/pcb-update/PERFORMANCE.md` for reproduction and limits.
+
+
+### PCB performance, 25.10.2026
+
+- [x] Замерены движение и перестройка 3D на ReferenceA и ReferenceM.
+- [x] Переиспользуемый проверенный черновик перемещения, неизменяемые снимки
+  для фоновых задач, частичная перерисовка и обновление пространственного индекса.
+- [x] Подготовка преобразования 3D на экземпляр модели; кэш геометрии основания,
+  масок и незатронутых объектов, индекс вырезов и ускорение построения BVH.
+- [x] 398 тестов, fmt, строгий Clippy; реальные окна 2D/3D, снимки и GPU readback;
+  release-сборка и обновлённый Linux AppImage.
+- [ ] Первые тяжёлые кадры и глобальная перестройка основания/масок большой платы
+  остаются дорогими. Постоянные 60 FPS для всех операций не подтверждены.
+
+Измерения и границы проверки: `docs/pcb-update/PERFORMANCE.md`,
+`docs/pcb-update/performance-2026-10-25.json`. Исходные платы не изменены.

@@ -30,43 +30,69 @@ impl Model {
 /// Native MODEL.2D is an absolute board origin. MODEL.3D Euler rotations
 /// precede the mounting-side reflection; component rotation is already baked
 /// into the body record and must not be applied a second time.
-pub fn model_point(board: &Board, item: &Item, mut p: [f64; 3]) -> Option<[f64; 3]> {
-    let f = &item.properties;
-    for (key, a, b) in [
-        ("MODEL.3D.ROTX", 1, 2),
-        ("MODEL.3D.ROTY", 2, 0),
-        ("MODEL.3D.ROTZ", 0, 1),
-    ] {
-        let angle = f
-            .get(key)
-            .map_or(Some(0.0), |v| v.trim().parse::<f64>().ok())?;
-        if !angle.is_finite() {
-            return None;
+#[derive(Clone, Copy, Debug)]
+pub struct ModelTransform {
+    rotations: [(f64, f64); 3],
+    offset: [f64; 3],
+    bottom: bool,
+    thickness: f64,
+}
+impl ModelTransform {
+    /// Parse placement once per body, not once per triangle vertex.
+    pub fn new(board: &Board, item: &Item) -> Option<Self> {
+        let f = &item.properties;
+        let mut rotations = [(0., 1.); 3];
+        for (rotation, key) in
+            rotations
+                .iter_mut()
+                .zip(["MODEL.3D.ROTX", "MODEL.3D.ROTY", "MODEL.3D.ROTZ"])
+        {
+            let angle = f
+                .get(key)
+                .map_or(Some(0.), |v| v.trim().parse::<f64>().ok())?;
+            if !angle.is_finite() {
+                return None;
+            }
+            *rotation = angle.to_radians().sin_cos();
         }
-        let (s, c) = angle.to_radians().sin_cos();
-        let (x, y) = (p[a], p[b]);
-        p[a] = x * c - y * s;
-        p[b] = x * s + y * c;
+        let mut offset = [0.; 3];
+        for (value, key) in offset
+            .iter_mut()
+            .zip(["MODEL.2D.X", "MODEL.2D.Y", "MODEL.3D.DZ"])
+        {
+            *value = dimension_nm(f.get(key).map_or("0", String::as_str)).ok()? as f64 / 1e6;
+        }
+        let bottom = item
+            .component
+            .and_then(|index| board.components.iter().find(|c| c.index == index))
+            .is_some_and(|c| c.layer == BOTTOM);
+        Some(Self {
+            rotations,
+            offset,
+            bottom,
+            thickness: board.stack_thickness_nm() as f64 / 1e6,
+        })
     }
-    let read = |key: &str| {
-        dimension_nm(f.get(key).map_or("0", String::as_str))
-            .ok()
-            .map(|v| v as f64 / 1e6)
-    };
-    let bottom = item
-        .component
-        .and_then(|index| board.components.iter().find(|c| c.index == index))
-        .is_some_and(|c| c.layer == BOTTOM);
-    if bottom {
-        p[1] = -p[1];
+    pub fn point(&self, mut p: [f64; 3]) -> [f64; 3] {
+        for ((s, c), (a, b)) in self.rotations.into_iter().zip([(1, 2), (2, 0), (0, 1)]) {
+            let (x, y) = (p[a], p[b]);
+            p[a] = x * c - y * s;
+            p[b] = x * s + y * c;
+        }
+        if self.bottom {
+            p[1] = -p[1];
+        }
+        for (p, offset) in p.iter_mut().zip(self.offset) {
+            *p += offset;
+        }
+        if self.bottom {
+            p[2] = -self.thickness - p[2];
+        }
+        p
     }
-    p[0] += read("MODEL.2D.X")?;
-    p[1] += read("MODEL.2D.Y")?;
-    p[2] += read("MODEL.3D.DZ")?;
-    if bottom {
-        p[2] = -board.stack_thickness_nm() as f64 / 1e6 - p[2];
-    }
-    Some(p)
+}
+pub fn model_point(board: &Board, item: &Item, p: [f64; 3]) -> Option<[f64; 3]> {
+    Some(ModelTransform::new(board, item)?.point(p))
 }
 
 pub(crate) fn transform_model(
@@ -320,8 +346,59 @@ pub fn substrate(board: &Board) -> Vec<StackSurface> {
 /// Physical through cuts applied to surface copper as well as the substrate.
 /// Bounds reject unrelated drills before any polygon boolean operation.
 pub struct Cuts {
+    index: rstar::RTree<CutEntry>,
+    convex: Vec<Point>,
     polygons: Vec<(Bounds, Polygon<f64>)>,
     board: Polygon<f64>,
+}
+struct CutEntry {
+    bounds: rstar::AABB<[f64; 2]>,
+    index: usize,
+}
+impl rstar::RTreeObject for CutEntry {
+    type Envelope = rstar::AABB<[f64; 2]>;
+    fn envelope(&self) -> Self::Envelope {
+        self.bounds
+    }
+}
+fn envelope(b: Bounds) -> rstar::AABB<[f64; 2]> {
+    rstar::AABB::from_corners(
+        [b.min.x as f64, b.min.y as f64],
+        [b.max.x as f64, b.max.y as f64],
+    )
+}
+fn cross(a: Point, b: Point, p: Point) -> i128 {
+    (b.x as i128 - a.x as i128) * (p.y as i128 - a.y as i128)
+        - (b.y as i128 - a.y as i128) * (p.x as i128 - a.x as i128)
+}
+fn convex_outline(points: &[Point]) -> Vec<Point> {
+    if points.len() < 3 {
+        return vec![];
+    }
+    let mut direction = 0;
+    for (a, b) in points
+        .iter()
+        .zip(points.iter().cycle().skip(1))
+        .take(points.len())
+    {
+        for p in points {
+            let side = cross(*a, *b, *p).signum();
+            if side != 0 {
+                if direction != 0 && direction != side {
+                    return vec![];
+                }
+                direction = side;
+            }
+        }
+    }
+    if direction == 0 {
+        return vec![];
+    }
+    let mut result = points.to_vec();
+    if direction < 0 {
+        result.reverse();
+    }
+    result
 }
 impl Cuts {
     pub fn new(board: &Board) -> Self {
@@ -356,25 +433,71 @@ impl Cuts {
                 polygons.push((Bounds::points(contour), polygon(contour)));
             }
         }
+        let outline = board.outline_points(256);
+        let index = rstar::RTree::bulk_load(
+            polygons
+                .iter()
+                .enumerate()
+                .map(|(i, (b, _))| CutEntry {
+                    bounds: envelope(*b),
+                    index: i,
+                })
+                .collect(),
+        );
         Self {
+            index,
+            convex: convex_outline(&outline),
             polygons,
-            board: polygon(&board.outline_points(256)),
+            board: polygon(&outline),
         }
+    }
+    fn near(&self, bounds: Bounds) -> Vec<usize> {
+        if bounds.empty {
+            return vec![];
+        }
+        let mut indices: Vec<_> = self
+            .index
+            .locate_in_envelope_intersecting(&envelope(bounds))
+            .map(|p| p.index)
+            .collect();
+        // Preserve boolean input order for reproducible triangulation.
+        indices.sort_unstable();
+        indices
+    }
+    pub fn same_geometry(&self, other: &Self) -> bool {
+        self.board == other.board && self.polygons == other.polygons
+    }
+    /// Only cuts touching these item bounds can change its clipped artwork.
+    pub fn same_in(&self, other: &Self, bounds: Bounds) -> bool {
+        self.board == other.board
+            && self
+                .near(bounds)
+                .iter()
+                .map(|i| &self.polygons[*i])
+                .eq(other.near(bounds).iter().map(|i| &other.polygons[*i]))
     }
     pub fn surface(&self, outer: &[Point], holes: &[Vec<Point>]) -> Vec<StackSurface> {
         let bounds = Bounds::points(outer);
         let cuts: Vec<_> = self
-            .polygons
-            .iter()
-            .filter(|(b, _)| {
-                !bounds.empty
-                    && b.min.x <= bounds.max.x
-                    && b.max.x >= bounds.min.x
-                    && b.min.y <= bounds.max.y
-                    && b.max.y >= bounds.min.y
-            })
-            .map(|(_, p)| p)
+            .near(bounds)
+            .into_iter()
+            .map(|i| &self.polygons[i].1)
             .collect();
+        // A convex board contains the entire polygon when it contains every
+        // vertex. Concave outlines still use the exact polygon boolean path.
+        let inside = !self.convex.is_empty()
+            && self
+                .convex
+                .iter()
+                .zip(self.convex.iter().cycle().skip(1))
+                .take(self.convex.len())
+                .all(|(a, b)| outer.iter().all(|p| cross(*a, *b, *p) >= 0));
+        if inside && cuts.is_empty() {
+            return vec![StackSurface {
+                outline: outer.to_vec(),
+                holes: holes.to_vec(),
+            }];
+        }
         let p = polygon(outer);
         let p = Polygon::new(
             p.exterior().clone(),
@@ -383,7 +506,16 @@ impl Cuts {
                 .map(|h| polygon(h).exterior().clone())
                 .collect(),
         );
-        let result = p.intersection(&self.board).difference(&unary_union(cuts));
+        let clipped = if inside {
+            geo::MultiPolygon(vec![p])
+        } else {
+            p.intersection(&self.board)
+        };
+        let result = if cuts.is_empty() {
+            clipped
+        } else {
+            clipped.difference(&unary_union(cuts))
+        };
         let ring = |line: &LineString<f64>| {
             line.0
                 .iter()
@@ -408,6 +540,15 @@ impl Cuts {
 /// Solder resist is a physical film above copper, with the union of all pad,
 /// via and explicitly drawn mask openings removed. It is not the board core.
 pub fn solder_mask(board: &Board, bottom: bool) -> Vec<StackSurface> {
+    solder_mask_on_substrate(board, bottom, &substrate(board))
+}
+
+/// Reuse the already cut substrate for both mask films in a scene rebuild.
+pub fn solder_mask_on_substrate(
+    board: &Board,
+    bottom: bool,
+    substrate: &[StackSurface],
+) -> Vec<StackSurface> {
     let mut apertures = Vec::new();
     for item in &board.items {
         if item.keepout
@@ -439,7 +580,7 @@ pub fn solder_mask(board: &Board, bottom: bool) -> Vec<StackSurface> {
     }
     let cuts = unary_union(apertures.iter());
     let mut result = Vec::new();
-    for s in substrate(board) {
+    for s in substrate {
         let p = polygon(&s.outline);
         let p = Polygon::new(
             p.exterior().clone(),
@@ -581,6 +722,106 @@ mod tests {
         surfaces.iter().any(|s| {
             point_in_polygon(p, &s.outline) && !s.holes.iter().any(|h| point_in_polygon(p, h))
         })
+    }
+    #[test]
+    fn indexed_cuts_match_full_boolean_for_convex_concave_and_edge_crossings() {
+        use geo::Area;
+        for concave in [false, true] {
+            let mut b = board();
+            if concave {
+                b.outline = [
+                    Point::mm(0, 0),
+                    Point::mm(30, 0),
+                    Point::mm(30, 10),
+                    Point::mm(10, 10),
+                    Point::mm(10, 30),
+                    Point::mm(0, 30),
+                ]
+                .into_iter()
+                .map(|position| ContourVertex {
+                    position,
+                    arc: None,
+                })
+                .collect();
+            }
+            for x in [5, 6, 15, 25] {
+                b.items.push(Item::new(
+                    MULTI_LAYER,
+                    None,
+                    Shape::Via {
+                        position: Point::mm(x, 8),
+                        diameter: 3_000_000,
+                        hole: 2_000_000,
+                        from_layer: TOP,
+                        to_layer: BOTTOM,
+                    },
+                ));
+            }
+            let cuts = Cuts::new(&b);
+            for x in -2..35 {
+                let outer = rectangle(Point::mm(x, 10), Point::mm(5, 6), 17.);
+                let hole = rectangle(Point::mm(x, 10), Point::mm(1, 1), 0.);
+                let p = Polygon::new(
+                    polygon(&outer).exterior().clone(),
+                    vec![polygon(&hole).exterior().clone()],
+                );
+                let expected = p
+                    .intersection(&cuts.board)
+                    .difference(&unary_union(cuts.polygons.iter().map(|(_, p)| p)));
+                let actual = geo::MultiPolygon(
+                    cuts.surface(&outer, &[hole])
+                        .iter()
+                        .map(|s| {
+                            Polygon::new(
+                                polygon(&s.outline).exterior().clone(),
+                                s.holes
+                                    .iter()
+                                    .map(|h| polygon(h).exterior().clone())
+                                    .collect(),
+                            )
+                        })
+                        .collect(),
+                );
+                assert!(
+                    actual.xor(&expected).unsigned_area() < 0.0001,
+                    "concave={concave} x={x}"
+                );
+            }
+        }
+    }
+    #[test]
+    fn prepared_model_transform_preserves_euler_order_bottom_offsets_and_invalid_data() {
+        let mut b = board();
+        b.components.push(component());
+        let mut item = Item::new(
+            57,
+            None,
+            Shape::Track {
+                start: Point::default(),
+                end: Point::mm(1, 0),
+                width: 100_000,
+            },
+        );
+        item.component = Some(0);
+        item.properties = Fields::from([
+            ("MODEL.3D.ROTX".into(), "90".into()),
+            ("MODEL.3D.ROTY".into(), "90".into()),
+            ("MODEL.3D.ROTZ".into(), "90".into()),
+            ("MODEL.2D.X".into(), "10mm".into()),
+            ("MODEL.2D.Y".into(), "20mm".into()),
+            ("MODEL.3D.DZ".into(), "2mm".into()),
+        ]);
+        let top = ModelTransform::new(&b, &item).unwrap().point([1., 2., 3.]);
+        for (a, e) in top.into_iter().zip([13., 22., 1.]) {
+            assert!((a - e).abs() < 1e-10);
+        }
+        b.components[0].layer = BOTTOM;
+        let bottom = ModelTransform::new(&b, &item).unwrap().point([1., 2., 3.]);
+        for (a, e) in bottom.into_iter().zip([13., 18., -2.6]) {
+            assert!((a - e).abs() < 1e-10);
+        }
+        item.properties.insert("MODEL.3D.ROTX".into(), "NaN".into());
+        assert!(ModelTransform::new(&b, &item).is_none());
     }
     #[test]
     fn curved_artwork_is_a_bounded_band_with_round_caps_and_a_true_ring_counter() {

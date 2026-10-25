@@ -398,6 +398,117 @@ mod tests {
         readback.slice(..).get_mapped_range().to_vec()
     }
     #[test]
+    fn moving_preview_matches_fresh_pixels_and_keeps_static_buffers() {
+        use crate::{View, pcb};
+        use eda_core::pcb::*;
+        use eda_geom::Point;
+        let instance = wgpu::Instance::default();
+        let Ok(adapter) = pollster::block_on(instance.request_adapter(&Default::default())) else {
+            return;
+        };
+        let (device, queue) =
+            pollster::block_on(adapter.request_device(&Default::default())).unwrap();
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let mut renderer = egui_wgpu::Renderer::new(&device, format, None, 1, false);
+        let ctx = Context::default();
+        enable_gpu(&ctx, format);
+        let mut b = Board::default();
+        b.items.push(Item::new(
+            MULTI_LAYER,
+            None,
+            Shape::Via {
+                position: Point::default(),
+                diameter: 2_000_000,
+                hole: 600_000,
+                from_layer: TOP,
+                to_layer: BOTTOM,
+            },
+        ));
+        b.items.push(Item::new(
+            TOP,
+            None,
+            Shape::Track {
+                start: Point::mm(-3, 0),
+                end: Point::mm(3, 0),
+                width: 300_000,
+            },
+        ));
+        let mut view = View::default();
+        view.camera.fitted = true;
+        view.camera.pixels_per_mm = 8.;
+        view.grid = false;
+        view.pcb.initialize(&b);
+        view.pcb.display.connections = false;
+        view.pcb.display.pad_numbers = false;
+        view.pcb.display.pad_nets = false;
+        view.pcb.display.via_nets = false;
+        view.pcb.display.origin_visible = false;
+        view.pcb.visible.extend([TOP, BOTTOM, MULTI_LAYER, 37, 38]);
+        view.pcb.selected = vec![b.items[0].id];
+        let mut render = |view: &mut View| {
+            let output = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, Vec2::splat(64.))),
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        pcb::canvas(ui, &b, view);
+                    });
+                },
+            );
+            for (id, delta) in &output.textures_delta.set {
+                renderer.update_texture(&device, &queue, *id, delta);
+            }
+            let jobs = ctx.tessellate(output.shapes, output.pixels_per_point);
+            let result = image(&device, &queue, &mut renderer, &jobs, format, 1.);
+            for id in &output.textures_delta.free {
+                renderer.free_texture(id);
+            }
+            result
+        };
+        let mut built = None;
+        for n in 1..5 {
+            let selection = [b.items[0].id];
+            let moved = b
+                .edited(Edit::Transform {
+                    selection: selection.to_vec(),
+                    pivot: Point::default(),
+                    translation: Point {
+                        x: n * 125_000,
+                        y: n * 250_000,
+                    },
+                    angle: 0.,
+                })
+                .unwrap();
+            view.pcb.set_move_preview(&b, moved, &selection);
+            let actual = render(&mut view);
+            assert_eq!(
+                *built.get_or_insert(view.pcb.paint_cache.builds),
+                view.pcb.paint_cache.builds
+            );
+            let mut fresh = view.clone();
+            fresh.pcb.preview_items = None;
+            fresh.pcb.paint_cache = Default::default();
+            let expected = render(&mut fresh);
+            // Resident artwork applies the PCB shader's sub-LSB dithering;
+            // live primitives use egui's pass. Allow only quantization noise.
+            let error = actual
+                .iter()
+                .zip(&expected)
+                .map(|(a, b)| a.abs_diff(*b))
+                .max()
+                .unwrap();
+            assert!(
+                error <= 2,
+                "live vs full rebuild: step={n} maximum channel error={error}"
+            );
+        }
+        view.pcb.set_preview(None);
+        render(&mut view);
+        assert!(view.pcb.paint_cache.builds > built.unwrap());
+    }
+    #[test]
     fn resident_artwork_matches_egui_meshes_during_pan_clip_dpi_and_blending() {
         let instance = wgpu::Instance::default();
         let Ok(adapter) = pollster::block_on(instance.request_adapter(&Default::default())) else {

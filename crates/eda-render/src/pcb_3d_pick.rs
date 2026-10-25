@@ -71,16 +71,31 @@ impl Index {
             nodes: vec![],
         };
         if !faces.is_empty() {
-            result.build(faces, 0..faces.len());
+            // Triangle bounds and sort keys are invariant throughout the BVH
+            // build. Reading all nine vertex coordinates at every tree level
+            // and partition comparison dominates large-scene preparation.
+            let geometry: Vec<_> = faces
+                .iter()
+                .map(|face| {
+                    let mut bounds = Bounds3::empty();
+                    for p in face.triangle.v {
+                        bounds.include(p);
+                    }
+                    let centre: [f32; 3] =
+                        std::array::from_fn(|axis| face.triangle.v.iter().map(|p| p[axis]).sum());
+                    (bounds, centre)
+                })
+                .collect();
+            result.build(&geometry, 0..faces.len());
         }
         result
     }
-    fn build(&mut self, faces: &[Face], range: std::ops::Range<usize>) -> usize {
+    fn build(&mut self, geometry: &[(Bounds3, [f32; 3])], range: std::ops::Range<usize>) -> usize {
         let mut bounds = Bounds3::empty();
         for &index in &self.indices[range.clone()] {
-            for p in faces[index].triangle.v {
-                bounds.include(p);
-            }
+            let b = geometry[index].0;
+            bounds.include(b.min);
+            bounds.include(b.max);
         }
         let index = self.nodes.len();
         self.nodes.push(Node {
@@ -96,11 +111,10 @@ impl Index {
                 .unwrap();
             let middle = range.len() / 2;
             self.indices[range.clone()].select_nth_unstable_by(middle, |&a, &b| {
-                let centre = |i: usize| faces[i].triangle.v.iter().map(|p| p[axis]).sum::<f32>();
-                centre(a).total_cmp(&centre(b))
+                geometry[a].1[axis].total_cmp(&geometry[b].1[axis])
             });
-            let left = self.build(faces, range.start..range.start + middle);
-            let right = self.build(faces, range.start + middle..range.end);
+            let left = self.build(geometry, range.start..range.start + middle);
+            let right = self.build(geometry, range.start + middle..range.end);
             self.nodes[index].children = Some((left, right));
         }
         index
