@@ -128,3 +128,47 @@ new Altium comparison.
 
 Validation: 389 workspace tests, formatting and strict all-target Clippy passed.
 ReferenceM PcbDoc/PrjPcb hashes remained unchanged.
+
+## Connected track dragging, 2026-10-25
+
+The reported failure was reproduced in the controller. Ordinary primary-button
+drag used a rigid transform and disconnected the segment. M,D only stretched
+neighbour endpoints and could leave arbitrary-angle tracks.
+
+Ordinary dragging of free copper tracks, M,D for a track selection and track
+endpoint handles now use the core routing solver. Edited tracks and neighbours
+are rebuilt with 45-degree or orthogonal legs. Fixed pad/via contacts receive
+connecting legs. Straight-track T junctions, crossings and existing interior
+contacts on affected neighbours become routing waypoints. Width, net, layer and
+primitive metadata are retained; the first leg keeps the edited primitive UUID.
+Unrelated no-net copper remains an obstacle, including at a new endpoint.
+
+The solver uses the editor's conflict mode and clearance. Walkaround searches
+for a complete connection; Stop rejects a blocked edit as one transaction.
+Neither mode commits a shortened, disconnected prefix. Final changed copper is
+checked again against the completed multi-net geometry. Locked-neighbour errors
+and cancellation leave the original board intact. Pointer release commits the
+exact cached preview, with one Undo/Redo entry. Controller changes request a new
+frame after canvas painting, so the last preview and release appear immediately
+without requiring another mouse movement.
+
+Validation on pinned Rust 1.90.0: 414 workspace tests, formatting and strict
+all-target Clippy passed. New regressions cover fixed pads/vias, neighbour and
+branch rerouting, crossing junctions, selected chains, locked objects, no-net
+contacts and obstacles, walkaround/stop, endpoint handles, preview commit,
+cancellation, frame requests and Undo/Redo.
+
+The full application was also built and exercised in a real Linux X11 window
+using XTest primary-button events without modifiers. A 20 mm track between two
+fixed pads was dragged 5 mm. Preview and committed artwork showed the moved
+segment and both connections. Save produced three tracks, Undo restored one,
+and Ctrl+Y restored the exact saved board. Pad records stayed unchanged.
+Captures and saved test documents are under `target/track-drag-check/`.
+Only this generated test document was saved. No new live Altium comparison was
+performed.
+
+This covers straight track selections. Mixed/component selections retain the
+previous endpoint-stretching behavior, and explicit M,M retains breaking Move
+semantics. Shove, gloss, redundant-loop removal, posture continuity, arbitrary
+arc/pour contact topology, large-board connected-drag latency and Windows runtime
+remain outside this verification. Exact Altium interactive-drag parity is open.

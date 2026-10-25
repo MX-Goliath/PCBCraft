@@ -309,6 +309,10 @@ impl Obstacles {
     pub fn clear(&self, a: Point, b: Point, radius: i64, clearance: i64) -> bool {
         self.blocker(a, b, radius, clearance, None).is_none()
     }
+    pub(super) fn clear_for_route(&self, route: &RouteSession, a: Point, b: Point) -> bool {
+        self.blocker(a, b, route.width / 2, route.clearance, Some(route))
+            .is_none()
+    }
     fn stop(&self, points: &[Point], route: &RouteSession) -> Vec<Point> {
         let clear = |a, b| {
             self.blocker(

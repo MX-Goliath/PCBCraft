@@ -7,6 +7,9 @@ use uuid::Uuid;
 #[path = "pcb_route_obstacles.rs"]
 mod obstacles;
 pub use obstacles::Conflict;
+#[path = "pcb_route_drag.rs"]
+mod drag;
+pub use drag::{DragOptions, drag_track_endpoint, drag_tracks, track_selection};
 
 /// Resolve an unconditional preferred routing dimension. Unknown higher-priority
 /// scopes stop resolution; they must not silently fall back to a generic rule.

@@ -41,6 +41,56 @@ fn track() -> Item {
     )
 }
 #[test]
+fn pointer_preview_and_release_request_a_frame_after_canvas_painting() {
+    let mut app = app();
+    let item = track();
+    app.documents[0]
+        .model
+        .pcb
+        .as_mut()
+        .unwrap()
+        .items
+        .push(item);
+    let doc = &mut app.documents[0];
+    doc.view.pcb.initialize(doc.model.pcb.as_ref().unwrap());
+    doc.view.camera.pixels_per_mm = 100.0;
+    let ctx = egui::Context::default();
+    let frame = |ctx: &egui::Context| ctx.run(egui::RawInput::default(), |_| {});
+    for _ in 0..5 {
+        let _ = frame(&ctx);
+    }
+    assert_ne!(
+        frame(&ctx).viewport_output[&egui::ViewportId::ROOT].repaint_delay,
+        std::time::Duration::ZERO
+    );
+    for finish in [false, true] {
+        let output = ctx.run(egui::RawInput::default(), |ctx| {
+            app.pcb_input(
+                0,
+                eda_render::pcb::Input {
+                    point: Some(Point::mm(3, 4)),
+                    raw_point: Some(Point::mm(3, 4)),
+                    press_origin: Some(Point::mm(3, 2)),
+                    drag_started: !finish,
+                    dragging: !finish,
+                    drag_stopped: finish,
+                    hovered: true,
+                    ..Default::default()
+                },
+                ctx,
+            );
+        });
+        assert_eq!(
+            output.viewport_output[&egui::ViewportId::ROOT].repaint_delay,
+            std::time::Duration::ZERO
+        );
+        for _ in 0..5 {
+            let _ = frame(&ctx);
+        }
+    }
+    assert_eq!(app.documents[0].history.revision, 1);
+}
+#[test]
 fn leaving_a_field_for_board_or_mixed_selection_commits_once_and_undo_restores() {
     for mixed in [false, true] {
         let mut app = app();

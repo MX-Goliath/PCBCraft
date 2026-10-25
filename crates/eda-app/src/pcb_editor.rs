@@ -745,6 +745,11 @@ fn input(
         return Ok(());
     }
     if let Some(gesture) = &mut ed.gesture {
+        let drag_options = pcb_route::DragOptions {
+            conflict: ed.conflict,
+            clearance: ed.clearance,
+            diagonal_first: ed.diagonal_first,
+        };
         if i.drag_stopped && !i.hovered {
             ed.gesture = None;
             doc.view.pcb.set_preview(None);
@@ -823,7 +828,24 @@ fn input(
                         return Ok(());
                     }
                     let next = if *connected {
-                        pcb_tools::drag_connected(base, selection, *origin, translation, *rotation)
+                        if pcb_route::track_selection(base, selection) {
+                            pcb_route::drag_tracks(
+                                base,
+                                selection,
+                                *origin,
+                                translation,
+                                *rotation,
+                                drag_options,
+                            )
+                        } else {
+                            pcb_tools::drag_connected(
+                                base,
+                                selection,
+                                *origin,
+                                translation,
+                                *rotation,
+                            )
+                        }
                     } else {
                         base.edited(Edit::Transform {
                             selection: selection.clone(),
@@ -876,7 +898,21 @@ fn input(
                     {
                         return Ok(());
                     }
-                    match pcb_tools::move_handle(base, *handle, p, true) {
+                    let next = match *handle {
+                        Handle::TrackStart(id) | Handle::TrackEnd(id)
+                            if pcb_route::track_selection(base, &[id]) =>
+                        {
+                            pcb_route::drag_track_endpoint(
+                                base,
+                                id,
+                                matches!(handle, Handle::TrackStart(_)),
+                                p,
+                                drag_options,
+                            )
+                        }
+                        _ => pcb_tools::move_handle(base, *handle, p, true),
+                    };
+                    match next {
                         Ok(next) => {
                             if i.drag_stopped {
                                 ed.gesture = None;
@@ -889,9 +925,9 @@ fn input(
                             }
                         }
                         Err(error) => {
+                            doc.view.pcb.set_preview(None);
                             if i.drag_stopped {
                                 ed.gesture = None;
-                                doc.view.pcb.set_preview(None);
                                 return Err(error);
                             }
                         }
@@ -1015,7 +1051,8 @@ fn input(
                         )
                     },
                     selection: doc.view.pcb.selected.clone(),
-                    connected: (modifiers.ctrl || modifiers.command) && !modifiers.shift,
+                    connected: pcb_route::track_selection(board, &doc.view.pcb.selected)
+                        || (modifiers.ctrl || modifiers.command) && !modifiers.shift,
                     rotation: 0.0,
                     prepared: None,
                 });
@@ -1110,20 +1147,42 @@ fn input(
                     y: p.y - origin.y,
                 };
                 let next = if ed.tool == Tool::Drag {
-                    pcb_tools::drag_connected(
-                        base,
-                        &doc.view.pcb.selected,
-                        origin,
-                        translation,
-                        ed.rotation,
-                    )?
+                    if pcb_route::track_selection(base, &doc.view.pcb.selected) {
+                        pcb_route::drag_tracks(
+                            base,
+                            &doc.view.pcb.selected,
+                            origin,
+                            translation,
+                            ed.rotation,
+                            pcb_route::DragOptions {
+                                conflict: ed.conflict,
+                                clearance: ed.clearance,
+                                diagonal_first: ed.diagonal_first,
+                            },
+                        )
+                    } else {
+                        pcb_tools::drag_connected(
+                            base,
+                            &doc.view.pcb.selected,
+                            origin,
+                            translation,
+                            ed.rotation,
+                        )
+                    }
                 } else {
                     base.edited(Edit::Transform {
                         selection: doc.view.pcb.selected.clone(),
                         pivot: origin,
                         translation,
                         angle: ed.rotation,
-                    })?
+                    })
+                };
+                let next = match next {
+                    Ok(next) => next,
+                    Err(error) => {
+                        doc.view.pcb.set_preview(None);
+                        return Err(error);
+                    }
                 };
                 if i.clicked {
                     commit(doc, next)?;
@@ -1334,8 +1393,23 @@ impl PcbCraft {
             return;
         }
         let doc = &mut self.documents[index];
+        let painted = (doc.history.revision, doc.view.pcb.preview_generation());
+        let input_changed = doc.pcb_editor.last_point != input_.point
+            || input_.drag_started
+            || input_.drag_stopped
+            || input_.clicked
+            || input_.secondary_clicked
+            || input_.cancelled
+            || ctx.input(|i| !i.events.is_empty());
         let mut editor = std::mem::take(&mut doc.pcb_editor);
         let result = input(doc, &mut editor, &mut self.pcb_clipboard, input_, ctx);
+        // Canvas painting precedes controller input in this frame. Publish a
+        // changed preview or commit immediately, even when the pointer stops.
+        if doc.history.revision != painted.0
+            || input_changed && doc.view.pcb.preview_generation() != painted.1
+        {
+            ctx.request_repaint();
+        }
         let error = result.err();
         let changed = error
             .as_ref()
@@ -2528,6 +2602,183 @@ mod controller_tests {
             hovered: true,
             ..Default::default()
         }
+    }
+    fn routed_drag_doc() -> (OpenDocument, Uuid) {
+        let mut d = doc();
+        let b = d.model.pcb.as_mut().unwrap();
+        let mut other = b.items[0].clone();
+        other.id = Uuid::new_v4();
+        if let Shape::Pad { position, .. } = &mut other.shape {
+            *position = Point::mm(20, 0);
+        }
+        b.items.push(other);
+        let track = Item::new(
+            pcb::TOP,
+            Some(0),
+            Shape::Track {
+                start: Point::mm(10, 0),
+                end: Point::mm(20, 0),
+                width: 250_000,
+            },
+        );
+        let id = track.id;
+        b.items.push(track);
+        (d, id)
+    }
+    #[test]
+    fn ordinary_track_drag_reroutes_without_modifiers_and_commits_the_exact_preview() {
+        for fast in [false, true] {
+            let (mut d, id) = routed_drag_doc();
+            let original = d.model.clone();
+            let mut ed = Editor::default();
+            let ctx = egui::Context::default();
+            let frame = drag_frame(Point::mm(15, 0), Point::mm(15, 3), fast);
+            let preview = if fast {
+                None
+            } else {
+                input(&mut d, &mut ed, &mut None, frame.clone(), &ctx).unwrap();
+                assert_eq!(d.model, original);
+                let preview = d.view.pcb.preview().unwrap().clone();
+                assert!(eda_core::pcb_connectivity::connections(&preview).is_empty());
+                assert!(preview.items.len() > original.pcb.as_ref().unwrap().items.len());
+                Some(preview)
+            };
+            input(
+                &mut d,
+                &mut ed,
+                &mut None,
+                Input {
+                    drag_started: fast,
+                    drag_stopped: true,
+                    dragging: false,
+                    ..frame
+                },
+                &ctx,
+            )
+            .unwrap();
+            let board = d.model.pcb.as_ref().unwrap();
+            assert_eq!(board.item(id).unwrap().anchor(), Point::mm(10, 3));
+            assert!(eda_core::pcb_connectivity::connections(board).is_empty());
+            if let Some(preview) = preview {
+                assert_eq!(board, &preview);
+            }
+            assert_eq!(d.history.revision, 1);
+            assert!(ed.gesture.is_none());
+            assert!(d.view.pcb.preview().is_none());
+            let after = d.model.clone();
+            d.history.undo(&mut d.model);
+            assert_eq!(d.model, original);
+            d.history.redo(&mut d.model);
+            assert_eq!(d.model, after);
+        }
+    }
+    #[test]
+    fn blocked_track_drag_clears_previous_preview_and_never_commits_on_release() {
+        let (mut d, _) = routed_drag_doc();
+        let mut obstacle = Item::new(
+            pcb::TOP,
+            None,
+            Shape::Track {
+                start: Point::mm(15, 2),
+                end: Point::mm(15, 4),
+                width: 250_000,
+            },
+        );
+        obstacle.keepout = true;
+        d.model.pcb.as_mut().unwrap().items.push(obstacle);
+        let original = d.model.clone();
+        let mut ed = Editor {
+            conflict: Conflict::Stop,
+            ..Default::default()
+        };
+        let ctx = egui::Context::default();
+        input(
+            &mut d,
+            &mut ed,
+            &mut None,
+            drag_frame(Point::mm(15, 0), Point::mm(15, 1), false),
+            &ctx,
+        )
+        .unwrap();
+        assert!(d.view.pcb.preview().is_some());
+        for finish in [false, true] {
+            assert!(
+                input(
+                    &mut d,
+                    &mut ed,
+                    &mut None,
+                    Input {
+                        drag_started: false,
+                        ..drag_frame(Point::mm(15, 0), Point::mm(15, 3), finish)
+                    },
+                    &ctx
+                )
+                .is_err()
+            );
+            assert!(d.view.pcb.preview().is_none());
+            assert_eq!(d.model, original);
+            assert_eq!(d.history.revision, 0);
+        }
+        assert!(ed.gesture.is_none());
+    }
+    #[test]
+    fn track_endpoint_drag_and_keyboard_drag_keep_fixed_pads_connected() {
+        for endpoint in [false, true] {
+            let (mut d, id) = routed_drag_doc();
+            d.view.pcb.selected = vec![id];
+            let mut ed = Editor::default();
+            let ctx = egui::Context::default();
+            if endpoint {
+                input(
+                    &mut d,
+                    &mut ed,
+                    &mut None,
+                    drag_frame(Point::mm(20, 0), Point::mm(20, 4), true),
+                    &ctx,
+                )
+                .unwrap();
+            } else {
+                ed.set_tool(Tool::Drag, &mut d.view);
+                input(&mut d, &mut ed, &mut None, click(15, 0), &ctx).unwrap();
+                input(&mut d, &mut ed, &mut None, click(15, 4), &ctx).unwrap();
+            }
+            assert!(
+                eda_core::pcb_connectivity::connections(d.model.pcb.as_ref().unwrap()).is_empty()
+            );
+            assert_eq!(d.history.revision, 1);
+        }
+    }
+    #[test]
+    fn cancelling_a_routed_track_drag_discards_every_added_leg() {
+        let (mut d, _) = routed_drag_doc();
+        let original = d.model.clone();
+        let mut ed = Editor::default();
+        let ctx = egui::Context::default();
+        input(
+            &mut d,
+            &mut ed,
+            &mut None,
+            drag_frame(Point::mm(15, 0), Point::mm(15, 3), false),
+            &ctx,
+        )
+        .unwrap();
+        assert!(
+            d.view.pcb.preview().unwrap().items.len() > original.pcb.as_ref().unwrap().items.len()
+        );
+        input(
+            &mut d,
+            &mut ed,
+            &mut None,
+            Input {
+                cancelled: true,
+                ..Default::default()
+            },
+            &ctx,
+        )
+        .unwrap();
+        assert_eq!(d.model, original);
+        assert_eq!(d.history.revision, 0);
+        assert!(d.view.pcb.preview().is_none());
     }
     #[test]
     fn fast_drag_is_one_transaction_and_undo_redo_restore_geometry() {
