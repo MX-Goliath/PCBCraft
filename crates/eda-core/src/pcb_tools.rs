@@ -117,12 +117,7 @@ pub fn flip_component(board: &Board, id: Uuid) -> Result<Board, String> {
         .iter()
         .find(|c| c.id == id)
         .ok_or("Select a component to flip")?;
-    if c.locked
-        || board
-            .items
-            .iter()
-            .any(|i| i.component == Some(c.index) && i.locked)
-    {
+    if c.locked {
         return Err("Selection contains locked objects".into());
     }
     let mirror = |p: Point| Point {
@@ -447,9 +442,68 @@ mod tests {
             },
         );
         i.component = Some(0);
+        i.locked = true;
         b.items.push(i);
         let twice = flip_component(&flip_component(&b, id).unwrap(), id).unwrap();
         assert_eq!(b, twice);
+    }
+    #[test]
+    fn footprint_locks_preserve_relative_geometry_without_blocking_component_edits() {
+        let mut b = Board::default();
+        let c = Component {
+            id: Uuid::new_v4(),
+            index: 0,
+            designator: "U10".into(),
+            comment: String::new(),
+            footprint: String::new(),
+            position: Point::mm(5, 5),
+            rotation: 0.0,
+            layer: TOP,
+            locked: false,
+            properties: Fields::new(),
+        };
+        let id = c.id;
+        b.components.push(c);
+        let mut child = Item::new(
+            TOP,
+            None,
+            Shape::Track {
+                start: Point::mm(4, 5),
+                end: Point::mm(6, 5),
+                width: 200_000,
+            },
+        );
+        child.component = Some(0);
+        child.locked = true;
+        let child_id = child.id;
+        b.items.push(child);
+        let transform = |selection| Edit::Transform {
+            selection,
+            pivot: Point::mm(5, 5),
+            translation: Point::mm(2, 3),
+            angle: 90.0,
+        };
+        assert!(b.edited(transform(vec![child_id])).is_err());
+        assert!(b.edited(Edit::Delete(vec![child_id])).is_err());
+        assert!(MovePreview::new(&b, &[child_id]).is_err());
+        let moved = b.edited(transform(vec![id])).unwrap();
+        assert_eq!(moved.components[0].position, Point::mm(7, 8));
+        assert_eq!(moved.components[0].rotation, 90.0);
+        assert_eq!(moved.items[0].anchor(), Point::mm(7, 7));
+        assert!(moved.items[0].locked);
+        let mut preview = MovePreview::new(&b, &[id]).unwrap();
+        assert_eq!(
+            *preview
+                .update(Point::mm(5, 5), Point::mm(2, 3), 90.0)
+                .unwrap(),
+            moved
+        );
+        assert!(b.edited(Edit::Delete(vec![id])).unwrap().items.is_empty());
+        b.components[0].locked = true;
+        assert!(b.edited(transform(vec![id])).is_err());
+        assert!(b.edited(Edit::Delete(vec![id])).is_err());
+        assert!(MovePreview::new(&b, &[id]).is_err());
+        assert!(flip_component(&b, id).is_err());
     }
 }
 

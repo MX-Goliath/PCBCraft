@@ -1,16 +1,18 @@
-# PCB 3D Layout Mode — updated 2026-10-24
+# PCB 3D Layout Mode — updated 2026-10-25
 
 Press **3** in a PCB document to enter 3D Layout Mode, **2** to return to 2D.
 Both modes also appear under View. Numeric input in an active text field is not
-intercepted. Each document keeps separate 2D and 3D cameras. Navigation and mode
-changes do not modify the document or Undo history. An unfinished PCB gesture,
+intercepted. Switching modes shares the board point at the viewport centre and
+the scale in logical pixels per millimetre. The chosen 3D viewing direction is
+retained. Navigation and mode changes do not modify the document or Undo history. An unfinished PCB gesture,
 route or properties edit must be completed/cancelled before entering 3D.
 
 - Shift + right-button drag: orbit. Shift + middle drag also works.
 - Right/middle drag: pan. Wheel, Ctrl+wheel and pinch: zoom at pointer.
 - Fit resets pan/zoom; Top and Bottom set the viewing direction. Existing View
   fit commands work in 3D; Selected Objects also centres/fits Cross Probe targets.
-- Ctrl+F flips the 3D camera around the board, preserving the 2D camera.
+- Ctrl+F flips the 3D camera around the board. Returning to 2D uses the resulting
+  visible board area and scale.
   View > 3D View Control provides the observed native sequence of side views,
   rotate/pan commands, Isometric View (0), Flipped Isometric View (Ctrl+0), and
   90 Degree Rotation (9). Fold/Unfold remains disabled. Keypad-specific mappings
@@ -24,6 +26,34 @@ route or properties edit must be completed/cancelled before entering 3D.
   pads and tracks. Components can be hidden with the Components checkbox.
 - Placement, routing and clipboard-reference tools return to 2D. A left drag in
   the 3D viewport does not move PCB objects; move through Properties or in 2D.
+
+## Shared 2D/3D camera, 2026-10-25
+
+Panning and zooming in either mode carry over to the other. In an oblique 3D
+view, the anchor is the centre ray's intersection with the board plane at Z=0.
+The scale is measured along the board axis without foreshortening at that point;
+perspective and tilt still change the apparent shape and extent. At an edge-on
+angle, or when the centre ray misses the board plane, the stored board anchor
+is retained instead of exporting an unstable horizon point.
+
+The incoming view is applied after asynchronous scene preparation, using the
+actual 3D viewport size. Returning before preparation finishes keeps the exact
+incoming 2D camera. Dock/toolbar resizing preserves scale. Repeated switches
+without navigation preserve the exact 2D camera and 3D pose, avoiding cumulative
+floating-point drift. Explicit Fit and directional preset commands still fit
+the board. A deferred Fit is cleared when leaving the mode that requested it.
+
+Regression coverage includes high zoom, top/bottom and oblique views in both
+projection modes, navigation in either mode, 100 repeated transitions, viewport
+and scene-radius changes, edge-on fallback and immediate return during scene
+preparation. Controller tests exercise asynchronous rendering and document/Undo
+immutability. Exact Altium camera/projection parity remains unverified.
+
+Linux AppImage validation used a separate U10 fixture copied from ReferenceM:
+2D navigation, 3D orbit/pan/zoom and five repeated mode switches. Captured 2D
+round trips and oblique 3D round trips were pixel-identical. Workspace validation
+passed 429 tests, formatting and strict all-target Clippy on Rust 1.90.0. The
+rebuilt AppImage passed its SHA256 check; the source PcbDoc hash was unchanged.
 
 ## Geometry and rendering
 
@@ -81,7 +111,7 @@ the renderer does not edit document data.
 Tests cover source immutability, top/bottom heights, fallback identity, overlapping
 through-drills vs blind vias, depth picking, selection shading, reusable scene and
 texture caches, fast orbit/pan release with press modifiers, mode shortcuts,
-selection/rotation/Undo, preservation of the 2D camera and refusal of pending edits.
+selection/rotation/Undo, shared camera transfers and refusal of pending edits.
 
 Initial 2026-10-22 validation: 228 tests passed; formatting and strict Clippy passed.
 The release AppImage was exercised in a real Linux window on the local TI

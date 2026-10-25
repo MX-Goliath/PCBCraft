@@ -832,9 +832,17 @@ impl Board {
         Ok(copper_changed)
     }
     fn selection_locked(&self, selection: &[Uuid], ids: &BTreeSet<Uuid>) -> bool {
+        // Primitive locks keep footprint children fixed relative to their
+        // component. Moving/deleting the whole unlocked footprint is allowed.
+        let components: HashSet<_> = self
+            .components
+            .iter()
+            .filter(|c| selection.contains(&c.id))
+            .map(|c| c.index)
+            .collect();
         self.items.iter().any(|i| {
             ids.contains(&i.id)
-                && (i.locked
+                && (i.locked && !i.component.is_some_and(|owner| components.contains(&owner))
                     || i.component.is_some_and(|owner| {
                         self.components.iter().any(|c| c.index == owner && c.locked)
                     }))

@@ -238,6 +238,9 @@ impl BoardView {
             .clone()
             .unwrap_or_else(|| b.layers.iter().map(|l| l.id).collect());
         self.component_selection = true;
+        // Locked objects remain inspectable, including their unlock control.
+        // Model commands still reject changes until the component is unlocked.
+        self.select_locked = true;
         self.filters = [true; 8];
         self.select_bodies = true;
         self.select_keepouts = true;
@@ -285,14 +288,16 @@ impl BoardView {
     /// the owner's mounting side, not the primitive's layer (a through-hole pad
     /// or body projection can otherwise select a component on the far side).
     pub fn selectable_on_board(&self, board: &Board, item: &Item) -> bool {
-        if !self.selectable(item) {
-            return false;
-        }
         if self.component_selection
             && let Some(owner) = item
                 .component
                 .and_then(|index| board.components.iter().find(|c| c.index == index))
         {
+            // Components are a selection category of their own. Pad/track/body
+            // filters and child locks apply when selecting a primitive alone.
+            if !self.is_visible(item) {
+                return false;
+            }
             if owner.locked && !self.select_locked {
                 return false;
             }
@@ -302,8 +307,48 @@ impl BoardView {
             {
                 return false;
             }
+            return true;
         }
-        true
+        self.selectable(item)
+    }
+    /// Pick the visible footprint envelope, including the space between pads.
+    /// Text is picked directly but never enlarges this body-selection envelope.
+    pub fn component_hits(&mut self, board: &Board, point: Point) -> Vec<Uuid> {
+        if !self.component_selection {
+            return vec![];
+        }
+        self.geometry
+            .prepare(board, self.three_d.revision, self.preview_generation);
+        let mut hits = Vec::new();
+        for component in &board.components {
+            if component.locked && !self.select_locked
+                || matches!(self.active_layer, TOP | BOTTOM)
+                    && matches!(component.layer, TOP | BOTTOM)
+                    && component.layer != self.active_layer
+            {
+                continue;
+            }
+            let Some(bounds) = self.geometry.component_bounds.get(&component.index) else {
+                continue;
+            };
+            if !bounds.contains(point) {
+                continue;
+            }
+            let mut visible = Bounds::empty();
+            for index in &self.geometry.component_items[&component.index] {
+                let item = &board.items[*index];
+                if self.is_visible(item) {
+                    visible.union(self.geometry.bounds[&item.id]);
+                }
+            }
+            if !visible.empty && visible.contains(point) {
+                let area =
+                    (visible.max.x - visible.min.x) as f64 * (visible.max.y - visible.min.y) as f64;
+                hits.push((component.id, area));
+            }
+        }
+        hits.sort_by(|a, b| a.1.total_cmp(&b.1).then(a.0.cmp(&b.0)));
+        hits.into_iter().map(|(id, _)| id).collect()
     }
     pub fn pick_layer_rank(&self, item: &Item) -> u8 {
         if item.layer == self.active_layer {
@@ -523,6 +568,21 @@ pub fn canvas(ui: &mut egui::Ui, b: &Board, view: &mut View) -> CanvasOutput {
                 .then_with(|| a.3.total_cmp(&b.3))
         });
         hits.extend(candidates.into_iter().map(|c| c.0));
+        if !view.cross_probe {
+            let components = view.pcb.component_hits(scene, p);
+            // A direct hit on footprint artwork keeps the primitive ID for
+            // routing/cycling; an interior hit selects the owning component.
+            let interiors: Vec<_> = components
+                .into_iter()
+                .filter(|id| {
+                    let owner = scene.components.iter().find(|c| c.id == *id).unwrap().index;
+                    !hits
+                        .iter()
+                        .any(|hit| scene.item(*hit).is_some_and(|i| i.component == Some(owner)))
+                })
+                .collect();
+            hits.splice(0..0, interiors);
+        }
         if view.pcb.filters[7] {
             for poly in scene.polygon_pours.iter().rev() {
                 if !view.pcb.polygon_visible(poly.layer) || (poly.locked && !view.pcb.select_locked)
@@ -1463,6 +1523,120 @@ fn polygon(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn component_filter_selects_body_between_locked_pads_independently_of_primitive_filters() {
+        let mut b = Board::default();
+        b.components.push(Component {
+            id: Uuid::new_v4(),
+            index: 0,
+            designator: "R1".into(),
+            comment: String::new(),
+            footprint: String::new(),
+            position: Point::default(),
+            rotation: 0.0,
+            layer: TOP,
+            locked: false,
+            properties: Fields::new(),
+        });
+        let component = b.components[0].id;
+        for x in [-2, 2] {
+            let mut pad = Item::new(
+                TOP,
+                None,
+                Shape::Pad {
+                    position: Point::mm(x, 0),
+                    size: Point::mm(1, 1),
+                    rotation: 0.0,
+                    shape: PadShape::Rectangle,
+                    hole: 0,
+                    plated: true,
+                    name: x.to_string(),
+                    bottom_size: None,
+                    middle_size: None,
+                },
+            );
+            pad.component = Some(0);
+            pad.locked = true;
+            b.items.push(pad);
+        }
+        let mut label = Item::new(
+            TOP_OVERLAY,
+            None,
+            Shape::Text {
+                position: Point::mm(20, 0),
+                text: "R1".into(),
+                height: 1_000_000,
+                stroke: 100_000,
+                rotation: 0.0,
+                mirrored: false,
+                font: String::new(),
+            },
+        );
+        label.component = Some(0);
+        b.items.push(label);
+        let mut view = BoardView::default();
+        view.initialize(&b);
+        view.filters.fill(false);
+        assert!(view.selectable_on_board(&b, &b.items[0]));
+        assert_eq!(view.component_hits(&b, Point::default()), vec![component]);
+        let ctx = egui::Context::default();
+        let mut fonts = egui::FontDefinitions::default();
+        fonts.families.insert(
+            egui::FontFamily::Name("sch-sans".into()),
+            fonts.families[&egui::FontFamily::Proportional].clone(),
+        );
+        ctx.set_fonts(fonts);
+        let mut canvas_view = View::default();
+        canvas_view.camera.fitted = true;
+        canvas_view.camera.pixels_per_mm = 50.0;
+        canvas_view.pcb.initialize(&b);
+        canvas_view.pcb.filters.fill(false);
+        let screen = Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 600.0));
+        let mut pointer = Pos2::ZERO;
+        let _ = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(screen),
+                ..Default::default()
+            },
+            |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    pointer = canvas_view
+                        .camera
+                        .screen(Point::default(), ui.available_rect_before_wrap());
+                    canvas(ui, &b, &mut canvas_view);
+                });
+            },
+        );
+        let _ = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(screen),
+                events: vec![egui::Event::PointerMoved(pointer)],
+                ..Default::default()
+            },
+            |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    canvas(ui, &b, &mut canvas_view);
+                });
+            },
+        );
+        assert_eq!(canvas_view.pcb.input.as_ref().unwrap().hit, Some(component));
+        assert!(view.component_hits(&b, Point::mm(10, 0)).is_empty());
+        view.visible.remove(&TOP);
+        assert!(view.component_hits(&b, Point::default()).is_empty());
+        view.visible.insert(TOP);
+        view.active_layer = BOTTOM;
+        assert!(view.component_hits(&b, Point::default()).is_empty());
+        view.active_layer = TOP;
+        view.component_selection = false;
+        assert!(!view.selectable_on_board(&b, &b.items[0]));
+        assert!(view.component_hits(&b, Point::default()).is_empty());
+        view.component_selection = true;
+        b.components[0].locked = true;
+        view.select_locked = false;
+        assert!(view.component_hits(&b, Point::default()).is_empty());
+        view.select_locked = true;
+        assert_eq!(view.component_hits(&b, Point::default()), vec![component]);
+    }
     #[test]
     fn component_selection_uses_mounting_side_even_for_multilayer_pads() {
         let mut board = Board::default();

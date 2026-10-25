@@ -583,7 +583,10 @@ impl PcbCraft {
             Command::CrossProbe => self.start_cross_probe(),
             Command::Annotate => self.open_annotation(),
             Command::LayerStack => self.open_layer_stack(),
-            Command::Pcb3d(enabled) => self.set_pcb_3d(enabled),
+            Command::Pcb3d(enabled) => {
+                self.set_pcb_3d(enabled);
+                ctx.request_repaint();
+            }
             Command::SchPlace(kind) => self.start_schematic_tool(kind),
             Command::SchEdit(action) => self.schematic_action(action, ctx),
             Command::Pcb(action) => self.pcb_action(action),

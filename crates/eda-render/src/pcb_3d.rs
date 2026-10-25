@@ -15,6 +15,8 @@ use uuid::Uuid;
 #[path = "pcb_3d_gpu.rs"]
 mod gpu;
 pub use gpu::enable_gpu;
+#[path = "pcb_3d_camera.rs"]
+mod camera;
 #[path = "pcb_3d_text.rs"]
 mod lettering;
 #[path = "pcb_3d_pick.rs"]
@@ -133,6 +135,7 @@ pub struct State {
     pub pan: Vec2,
     pub(crate) highlighted: Option<std::collections::BTreeSet<Uuid>>,
     focus: Option<[f32; 3]>,
+    camera_link: camera::Link,
     drag: Option<(Pos2, egui::PointerButton, bool)>,
     pub show_components: bool,
     scene: Arc<Scene>,
@@ -160,6 +163,7 @@ impl Default for State {
             pan: Vec2::ZERO,
             highlighted: None,
             focus: None,
+            camera_link: Default::default(),
             drag: None,
             show_components: true,
             scene: Arc::default(),
@@ -396,6 +400,7 @@ impl State {
         self.drag = None;
     }
     pub fn fit(&mut self) {
+        self.camera_link = Default::default();
         self.focus = None;
         self.zoom = 1.;
         self.pan = Vec2::ZERO;
@@ -1172,6 +1177,9 @@ pub fn canvas(ui: &mut egui::Ui, board: &Board, view: &mut View) -> CanvasOutput
     });
     let (rect, response) = ui.allocate_exact_size(ui.available_size(), Sense::click_and_drag());
     state.prepare(board, ui.ctx());
+    if !state.preparing() {
+        state.sync_camera_viewport(rect.size());
+    }
     if !state.preparing()
         && let Some(target) = view.pcb.requested_fit.take()
     {
@@ -1206,6 +1214,7 @@ pub fn canvas(ui: &mut egui::Ui, board: &Board, view: &mut View) -> CanvasOutput
                 state.zoom = (state.scene.radius / radius.max(1.)).clamp(0.1, 40.);
             }
         }
+        state.sync_camera_viewport(rect.size());
     }
     let focused = ui.input(|i| i.focused);
     let mut drag = state.drag.is_some();
@@ -1251,7 +1260,10 @@ pub fn canvas(ui: &mut egui::Ui, board: &Board, view: &mut View) -> CanvasOutput
         let factor = ui.input(|i| i.zoom_delta() * (i.smooth_scroll_delta.y * 0.003).exp());
         if factor.is_finite() && factor > 0. && factor != 1. {
             let old = state.zoom;
-            state.zoom = (old * factor).clamp(0.1, 40.);
+            state.zoom = state.zoom_for_scale(
+                rect.size(),
+                (state.pixels_per_mm(rect.size()) * factor).clamp(0.001, 100_000.),
+            );
             if let Some(p) = response.hover_pos() {
                 let p = p - rect.center();
                 state.pan = p - (p - state.pan) * (state.zoom / old);

@@ -1,5 +1,13 @@
+# Build output, packaged releases and local tools.
 /target/
 /dist/
 /.tools/
+
+# Temporary files and logs.
 *.tmp
 *.log
+
+# Python tooling caches.
+__pycache__/
+*.py[cod]
+.pytest_cache/

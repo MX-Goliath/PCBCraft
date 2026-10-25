@@ -799,7 +799,16 @@ fn input(
                             .any(|poly| selection.contains(&poly.id))
                     {
                         if prepared.is_none() {
-                            *prepared = Some(pcb::MovePreview::new(base, selection)?);
+                            match pcb::MovePreview::new(base, selection) {
+                                Ok(next) => *prepared = Some(next),
+                                Err(error) => {
+                                    doc.view.pcb.set_preview(None);
+                                    if i.drag_stopped {
+                                        ed.gesture = None;
+                                    }
+                                    return Err(error);
+                                }
+                            }
                         }
                         // Release the view's reference before updating the draft.
                         // A worker retaining an older snapshot still triggers COW.
@@ -988,39 +997,47 @@ fn input(
                     ctx,
                 );
             }
-            let hit = board
-                .items
-                .iter()
-                .filter(|v| doc.view.pcb.selectable_on_board(board, v))
-                .map(|v| {
-                    (
-                        v,
-                        v.hit_distance_on_layer(
-                            origin,
-                            if v.layer == pcb::MULTI_LAYER {
-                                doc.view.pcb.active_layer
-                            } else {
-                                v.layer
-                            },
-                        ),
-                    )
+            let hit = doc
+                .view
+                .pcb
+                .component_hits(board, origin)
+                .first()
+                .copied()
+                .or_else(|| {
+                    board
+                        .items
+                        .iter()
+                        .filter(|v| doc.view.pcb.selectable_on_board(board, v))
+                        .map(|v| {
+                            (
+                                v,
+                                v.hit_distance_on_layer(
+                                    origin,
+                                    if v.layer == pcb::MULTI_LAYER {
+                                        doc.view.pcb.active_layer
+                                    } else {
+                                        v.layer
+                                    },
+                                ),
+                            )
+                        })
+                        .filter(|(_, d)| *d <= tol)
+                        .min_by(|a, b| {
+                            let rank = |i: &Item| match i.shape {
+                                Shape::Pad { .. } | Shape::Via { .. } => 0,
+                                Shape::Track { .. } | Shape::Arc { .. } => 1,
+                                Shape::Text { .. } => 2,
+                                _ => 3,
+                            };
+                            doc.view
+                                .pcb
+                                .pick_layer_rank(a.0)
+                                .cmp(&doc.view.pcb.pick_layer_rank(b.0))
+                                .then(rank(a.0).cmp(&rank(b.0)))
+                                .then_with(|| a.1.total_cmp(&b.1))
+                        })
+                        .map(|(v, _)| picked(board, &doc.view.pcb, v.id))
                 })
-                .filter(|(_, d)| *d <= tol)
-                .min_by(|a, b| {
-                    let rank = |i: &Item| match i.shape {
-                        Shape::Pad { .. } | Shape::Via { .. } => 0,
-                        Shape::Track { .. } | Shape::Arc { .. } => 1,
-                        Shape::Text { .. } => 2,
-                        _ => 3,
-                    };
-                    doc.view
-                        .pcb
-                        .pick_layer_rank(a.0)
-                        .cmp(&doc.view.pcb.pick_layer_rank(b.0))
-                        .then(rank(a.0).cmp(&rank(b.0)))
-                        .then_with(|| a.1.total_cmp(&b.1))
-                })
-                .map(|(v, _)| picked(board, &doc.view.pcb, v.id))
                 .or_else(|| {
                     board
                         .polygon_pours
@@ -1394,6 +1411,9 @@ impl PcbCraft {
         }
         let doc = &mut self.documents[index];
         let painted = (doc.history.revision, doc.view.pcb.preview_generation());
+        let selection_before =
+            (input_.clicked || input_.double_clicked || input_.drag_started || input_.drag_stopped)
+                .then(|| doc.view.pcb.selected.clone());
         let input_changed = doc.pcb_editor.last_point != input_.point
             || input_.drag_started
             || input_.drag_stopped
@@ -1407,6 +1427,7 @@ impl PcbCraft {
         // changed preview or commit immediately, even when the pointer stops.
         if doc.history.revision != painted.0
             || input_changed && doc.view.pcb.preview_generation() != painted.1
+            || selection_before.is_some_and(|before| before != doc.view.pcb.selected)
         {
             ctx.request_repaint();
         }
@@ -2315,6 +2336,138 @@ mod tests {
 #[cfg(test)]
 mod controller_tests {
     use super::*;
+    fn footprint_doc() -> (OpenDocument, Uuid) {
+        let mut d = doc();
+        let board = d.model.pcb.as_mut().unwrap();
+        let mut pad = board.items[0].clone();
+        board.items.clear();
+        let id = Uuid::new_v4();
+        board.components.push(pcb::Component {
+            id,
+            index: 0,
+            designator: "U10".into(),
+            comment: String::new(),
+            footprint: "SOT23".into(),
+            position: Point::mm(10, 0),
+            rotation: 0.0,
+            layer: pcb::TOP,
+            locked: false,
+            properties: pcb::Fields::new(),
+        });
+        for x in [8, 12] {
+            pad.id = Uuid::new_v4();
+            pad.component = Some(0);
+            pad.locked = true;
+            if let Shape::Pad { position, .. } = &mut pad.shape {
+                *position = Point::mm(x, 0);
+            }
+            board.items.push(pad.clone());
+        }
+        d.view.pcb.filters.fill(false);
+        (d, id)
+    }
+    #[test]
+    fn component_body_drag_ignores_primitive_filters_and_keeps_locked_children_in_the_footprint() {
+        let (mut d, id) = footprint_doc();
+        let original = d.model.clone();
+        let mut ed = Editor::default();
+        let ctx = egui::Context::default();
+        let frame = drag_frame(Point::mm(10, 0), Point::mm(13, 2), false);
+        input(&mut d, &mut ed, &mut None, frame.clone(), &ctx).unwrap();
+        assert_eq!(d.view.pcb.selected, vec![id]);
+        assert_eq!(d.model, original);
+        let preview = d.view.pcb.preview().unwrap().clone();
+        assert_eq!(preview.components[0].position, Point::mm(13, 2));
+        assert_eq!(preview.items[0].anchor(), Point::mm(11, 2));
+        assert_eq!(preview.items[1].anchor(), Point::mm(15, 2));
+        assert!(
+            preview
+                .items
+                .iter()
+                .all(|i| i.locked && i.component == Some(0))
+        );
+        input(
+            &mut d,
+            &mut ed,
+            &mut None,
+            Input {
+                drag_started: false,
+                drag_stopped: true,
+                dragging: false,
+                ..frame
+            },
+            &ctx,
+        )
+        .unwrap();
+        assert_eq!(d.model.pcb.as_ref(), Some(&preview));
+        assert_eq!(d.history.revision, 1);
+        d.history.undo(&mut d.model);
+        assert_eq!(d.model, original);
+        d.history.redo(&mut d.model);
+        assert_eq!(d.model.pcb.as_ref(), Some(&preview));
+    }
+    #[test]
+    fn component_only_filter_supports_box_selection_keyboard_move_and_drag() {
+        for tool in [Tool::Move, Tool::Drag] {
+            let (mut d, id) = footprint_doc();
+            assert_eq!(
+                box_selection(
+                    d.model.pcb.as_ref().unwrap(),
+                    &d.view.pcb,
+                    Point::mm(7, -1),
+                    Point::mm(13, 1)
+                ),
+                vec![id]
+            );
+            let mut ed = Editor::default();
+            ed.set_tool(tool, &mut d.view);
+            let ctx = egui::Context::default();
+            let mut first = click(10, 0);
+            first.hit = Some(id);
+            input(&mut d, &mut ed, &mut None, first, &ctx).unwrap();
+            ed.rotation = 90.0;
+            input(&mut d, &mut ed, &mut None, click(13, 2), &ctx).unwrap();
+            let b = d.model.pcb.as_ref().unwrap();
+            assert_eq!(b.components[0].position, Point::mm(13, 2));
+            assert_eq!(b.components[0].rotation, 90.0);
+            assert_eq!(b.items[0].anchor(), Point::mm(13, 0));
+            assert_eq!(b.items[1].anchor(), Point::mm(13, 4));
+            assert_eq!(d.history.revision, 1);
+        }
+    }
+    #[test]
+    fn locked_component_can_be_inspected_but_a_failed_drop_keeps_the_document_and_releases_the_gesture()
+     {
+        let (mut d, id) = footprint_doc();
+        d.model.pcb.as_mut().unwrap().components[0].locked = true;
+        let before = d.model.clone();
+        let ctx = egui::Context::default();
+        let mut ed = Editor::default();
+        assert_eq!(
+            d.view
+                .pcb
+                .component_hits(d.model.pcb.as_ref().unwrap(), Point::mm(10, 0)),
+            vec![id]
+        );
+        let mut first = click(10, 0);
+        first.hit = Some(id);
+        input(&mut d, &mut ed, &mut None, first, &ctx).unwrap();
+        assert_eq!(d.view.pcb.selected, vec![id]);
+        assert!(
+            input(
+                &mut d,
+                &mut ed,
+                &mut None,
+                drag_frame(Point::mm(10, 0), Point::mm(13, 2), true),
+                &ctx
+            )
+            .is_err()
+        );
+        assert_eq!(d.model, before);
+        assert_eq!(d.history.revision, 0);
+        assert!(ed.gesture.is_none());
+        assert!(d.view.pcb.preview().is_none());
+    }
     #[test]
     fn overlapping_components_box_and_drag_follow_active_mounting_side() {
         for active in [pcb::TOP, pcb::BOTTOM] {

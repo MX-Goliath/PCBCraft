@@ -13,6 +13,8 @@ pub(super) struct Cache {
     transformed: Option<BTreeSet<Uuid>>,
     pub bounds: HashMap<Uuid, Bounds>,
     pub indices: HashMap<Uuid, usize>,
+    pub component_items: HashMap<u32, Vec<usize>>,
+    pub component_bounds: HashMap<u32, Bounds>,
     pub outline: Arc<Vec<Point>>,
     pub board_triangles: Vec<usize>,
     pads: HashMap<(Uuid, u16), Arc<Vec<Point>>>,
@@ -36,6 +38,27 @@ impl Cache {
             .map(|(index, i)| (i.id, index))
             .collect();
         self.spatial = Spatial::new(board, &self.bounds);
+        self.component_items.clear();
+        for (index, item) in board.items.iter().enumerate() {
+            if let Some(owner) = item.component
+                && !item.keepout
+                && item.polygon.is_none()
+                && !matches!(item.shape, Shape::Text { .. })
+            {
+                self.component_items.entry(owner).or_default().push(index);
+            }
+        }
+        self.component_bounds = self
+            .component_items
+            .iter()
+            .map(|(owner, indices)| {
+                let mut bounds = Bounds::empty();
+                for index in indices {
+                    bounds.union(self.bounds[&board.items[*index].id]);
+                }
+                (*owner, bounds)
+            })
+            .collect();
         self.outline = Arc::new(board.outline_points(256));
         self.board_triangles.clear();
         self.pads.clear();
@@ -58,6 +81,19 @@ impl Cache {
             for id in changed {
                 let item = &board.items[self.indices[id]];
                 self.bounds.insert(*id, item.bounds());
+            }
+            let owners: BTreeSet<_> = changed
+                .iter()
+                .filter_map(|id| board.items[self.indices[id]].component)
+                .collect();
+            for owner in owners {
+                if let Some(indices) = self.component_items.get(&owner) {
+                    let mut bounds = Bounds::empty();
+                    for index in indices {
+                        bounds.union(self.bounds[&board.items[*index].id]);
+                    }
+                    self.component_bounds.insert(owner, bounds);
+                }
             }
             self.pads.retain(|(id, _), _| !changed.contains(id));
             self.drills.retain(|id, _| !changed.contains(id));

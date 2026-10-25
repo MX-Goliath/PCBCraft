@@ -25,6 +25,13 @@ impl PcbCraft {
         }
         doc.pcb_editor.cancel(&mut doc.view);
         doc.view.pcb.three_d.cancel_drag();
+        // A deferred Fit belongs to the mode in which it was requested.
+        doc.view.pcb.requested_fit = None;
+        if enabled {
+            doc.view.pcb.three_d.enter_from_2d(&doc.view.camera);
+        } else {
+            doc.view.pcb.three_d.leave_to_2d(&mut doc.view.camera);
+        }
         doc.view.pcb.three_d.enabled = enabled;
         doc.view.pcb.three_d.revision = doc.history.revision;
     }
@@ -46,6 +53,7 @@ impl PcbCraft {
         });
         if let Some(enabled) = mode {
             self.set_pcb_3d(enabled);
+            ctx.request_repaint();
             return true;
         }
         if let Some(index) = self.active

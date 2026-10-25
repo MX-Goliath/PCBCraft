@@ -91,6 +91,41 @@ fn pointer_preview_and_release_request_a_frame_after_canvas_painting() {
     assert_eq!(app.documents[0].history.revision, 1);
 }
 #[test]
+fn click_selection_and_deselection_refresh_properties_without_another_pointer_move() {
+    let mut app = app();
+    let item = track();
+    let id = item.id;
+    let doc = &mut app.documents[0];
+    doc.model.pcb.as_mut().unwrap().items.push(item);
+    doc.view.pcb.initialize(doc.model.pcb.as_ref().unwrap());
+    let ctx = egui::Context::default();
+    for hit in [Some(id), None] {
+        for _ in 0..5 {
+            let _ = ctx.run(egui::RawInput::default(), |_| {});
+        }
+        let output = ctx.run(egui::RawInput::default(), |ctx| {
+            app.pcb_input(
+                0,
+                eda_render::pcb::Input {
+                    point: Some(Point::mm(3, 2)),
+                    raw_point: Some(Point::mm(3, 2)),
+                    hit,
+                    clicked: true,
+                    hovered: true,
+                    ..Default::default()
+                },
+                ctx,
+            );
+        });
+        assert_eq!(
+            output.viewport_output[&egui::ViewportId::ROOT].repaint_delay,
+            std::time::Duration::ZERO
+        );
+        assert_eq!(app.documents[0].view.pcb.selected.first().copied(), hit);
+        assert_eq!(app.documents[0].history.revision, 0);
+    }
+}
+#[test]
 fn leaving_a_field_for_board_or_mixed_selection_commits_once_and_undo_restores() {
     for mixed in [false, true] {
         let mut app = app();
@@ -588,5 +623,102 @@ fn entering_three_d_rejects_pending_gesture_and_two_d_noop_keeps_it() {
     assert!(app.documents[0].pcb_editor.gesture.is_some());
     app.set_pcb_3d(false);
     assert!(app.documents[0].pcb_editor.gesture.is_some());
+    assert_eq!(app.documents[0].history.revision, 0);
+}
+
+#[test]
+fn layout_modes_share_the_visible_board_area_scale_and_leave_document_history_untouched() {
+    let mut app = app();
+    let ctx = egui::Context::default();
+    let doc = &mut app.documents[0];
+    doc.view.camera.centre_mm = [12., 34.];
+    doc.view.camera.pixels_per_mm = 37.5;
+    doc.view.camera.fitted = true;
+    let original = doc.model.clone();
+    let frame = |app: &mut PcbCraft| {
+        let _ = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(640., 480.),
+                )),
+                ..Default::default()
+            },
+            |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let doc = &mut app.documents[0];
+                    eda_render::pcb::canvas(ui, doc.model.pcb.as_ref().unwrap(), &mut doc.view);
+                });
+            },
+        );
+    };
+    let ready = |app: &mut PcbCraft| {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        frame(app);
+        while app.documents[0].view.pcb.three_d.preparing()
+            || app.documents[0].view.pcb.three_d.rendering()
+        {
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(std::time::Duration::from_millis(1));
+            frame(app);
+        }
+    };
+    app.set_pcb_3d(true);
+    ready(&mut app);
+    app.documents[0].view.pcb.three_d.pan = egui::vec2(48., -28.);
+    app.documents[0].view.pcb.three_d.zoom *= 1.25;
+    ready(&mut app);
+    app.set_pcb_3d(false);
+    let centre = app.documents[0].view.camera.centre_mm;
+    let scale = app.documents[0].view.camera.pixels_per_mm;
+    assert!((centre[0] - (12. - 48. / 46.875)).abs() < 0.0001);
+    assert!((centre[1] - (34. - 28. / 46.875)).abs() < 0.0001);
+    assert!((scale - 46.875).abs() < 0.0001);
+    for _ in 0..20 {
+        frame(&mut app);
+        app.set_pcb_3d(true);
+        ready(&mut app);
+        app.set_pcb_3d(false);
+        frame(&mut app);
+        assert_eq!(app.documents[0].view.camera.centre_mm, centre);
+        assert_eq!(app.documents[0].view.camera.pixels_per_mm, scale);
+    }
+    app.documents[0].view.camera.centre_mm = [28.25, 16.125];
+    app.documents[0].view.camera.pixels_per_mm = 63.;
+    app.documents[0].view.pcb.three_d.yaw = 0.55;
+    app.documents[0].view.pcb.three_d.pitch = 0.7;
+    app.set_pcb_3d(true);
+    ready(&mut app);
+    app.set_pcb_3d(false);
+    assert_eq!(app.documents[0].view.camera.centre_mm, [28.25, 16.125]);
+    assert_eq!(app.documents[0].view.camera.pixels_per_mm, 63.);
+    assert_eq!(app.documents[0].view.pcb.three_d.yaw, 0.55);
+    assert_eq!(app.documents[0].view.pcb.three_d.pitch, 0.7);
+    assert_eq!(app.documents[0].model, original);
+    assert_eq!(app.documents[0].history.revision, 0);
+}
+
+#[test]
+fn switching_while_3d_prepares_keeps_the_2d_view_and_drops_fits_from_the_previous_mode() {
+    let mut app = app();
+    app.documents[0].view.camera.centre_mm = [95.707197, 63.233325];
+    app.documents[0].view.camera.pixels_per_mm = 151.25;
+    app.documents[0].view.camera.fitted = true;
+    let original = app.documents[0].model.clone();
+    for _ in 0..20 {
+        app.documents[0].view.pcb.requested_fit = Some(eda_render::pcb::FitTarget::Selection);
+        app.set_pcb_3d(true);
+        assert!(app.documents[0].view.pcb.requested_fit.is_none());
+        app.documents[0].view.pcb.requested_fit = Some(eda_render::pcb::FitTarget::Board);
+        app.set_pcb_3d(false);
+        assert!(app.documents[0].view.pcb.requested_fit.is_none());
+        assert_eq!(
+            app.documents[0].view.camera.centre_mm,
+            [95.707197, 63.233325]
+        );
+        assert_eq!(app.documents[0].view.camera.pixels_per_mm, 151.25);
+        assert!(app.documents[0].view.camera.fitted);
+    }
+    assert_eq!(app.documents[0].model, original);
     assert_eq!(app.documents[0].history.revision, 0);
 }

@@ -127,3 +127,44 @@ history revision zero and unchanged saved content. The application's own GPU
 screenshot showed only Top/L3 tabs, with L3 active and no unsaved marker. This
 checks native UI/controller integration using synthetic events. Physical mouse
 side-button input was not exercised in this session.
+
+## Component selection and footprint locks, 2026-10-25
+
+The user reported missing component selection/movement on ReferenceMBoard.PcbDoc.
+Two defects were found. Picking required a hit on an individual footprint
+primitive, so an empty body interior between pads did not pick the component.
+The Components category also depended on enabled primitive categories. Separately,
+whole-component edits incorrectly rejected individually locked child objects.
+The supplied board contains 362 components. Of 37 footprints with locked children,
+31 components are themselves unlocked; U10 has two locked body records.
+
+Components now have a separate selection category. Clicking a visible footprint
+envelope selects its component, including empty space between pads. Designator
+and comment text remains directly pickable but does not enlarge the body envelope.
+The geometry cache keeps component membership and bounds, updating affected
+footprints with transformed previews. Visible geometry and mounting-side rules
+still apply. Overlapping envelopes prefer the smaller footprint. Mouse dragging
+uses the same body hit test as clicking; box selection and M,M/M,D also work with
+only Components enabled. Selection changes request the next frame immediately,
+so highlighting and Properties do not wait for another pointer movement.
+
+Locked children stay locked relative to their footprint during whole-component
+Move, Drag, Rotate, Flip and Delete. Selecting such a primitive independently
+still respects its lock. A locked component can be selected for inspection and
+its unlock control, but model commands reject movement until explicitly unlocked.
+A rejected drop releases the gesture without changing the document.
+
+Validation: 420 workspace tests, formatting and strict all-target Clippy passed
+on pinned Rust 1.90.0. The read-only `pcb_component_check` example tested R189,
+U10 and bottom-side C62 on the full supplied board, with component-only filters
+and in-memory move/rotate drafts. The native source bytes were unchanged.
+An AppImage window exercised a generated copy containing U10's original component
+and 16 child records: body click, whole-footprint drag, JSON Save, Undo restoring
+the previous placement and exact Redo. Both child lock flags and identities were
+retained. Captures and JSON results are under `target/component-selection-check/`.
+The updated AppImage was rebuilt and its SHA256 sidecar verified.
+
+This uses footprint bounds, not exact arbitrary body contours. Altium selection
+preferences/overlap parity, Windows runtime and full-board drag latency remain
+unverified. There was no new live Altium comparison; the user's original PCB was
+never saved.
