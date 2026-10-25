@@ -1,0 +1,472 @@
+{
+  "schema_version": 1,
+  "date": "2026-10-25",
+  "scope": "Incremental reuse of stationary PCB artwork on route entry and stale-pour transitions; not full editor completion",
+  "source": {
+    "board": "ReferenceB/ReferenceBBoard.PcbDoc",
+    "items": 15513,
+    "components": 69,
+    "sha256": "redacted-source-sha256",
+    "written": false,
+    "hash_after_native_test": "unchanged"
+  },
+  "environment": {
+    "os": "Windows",
+    "cpu": "AMD Ryzen 7 8845H",
+    "gpu": "AMD Radeon 780M",
+    "rust": "1.90.0",
+    "profile": "optimized dev opt-level=2",
+    "headless_canvas": [
+      1000,
+      800
+    ],
+    "pixels_per_mm": 15,
+    "net": "ExampleGround",
+    "samples_per_run": 60,
+    "scope": "CPU target/model/publication/canvas+tessellation; GPU callbacks submitted but not executed by profile",
+    "excludes": [
+      "load",
+      "route session construction",
+      "GPU execution",
+      "presented FPS",
+      "end-to-end input latency"
+    ],
+    "conditions": "Sequential profile loops, no concurrent builds during measured samples; CPU frequency and background activity uncontrolled. Final profiles precede main binary build and native launch. Preserve initial and final results."
+  },
+  "runs": [
+    {
+      "name": "target\\pcb-artwork-groups-2026-10-25\\after.txt",
+      "stage": "initial_group_cache",
+      "samples": 60,
+      "legs": 119,
+      "metrics": {
+        "target": {
+          "median_ms": 0.118,
+          "p95_ms": 0.1792,
+          "max_ms": 0.3849,
+          "first_ms": 0.1715,
+          "over_16_7ms": 0,
+          "over_33ms": 0
+        },
+        "model": {
+          "median_ms": 3.8706,
+          "p95_ms": 4.9614,
+          "max_ms": 12.9542,
+          "first_ms": 12.9542,
+          "over_16_7ms": 0,
+          "over_33ms": 0
+        },
+        "publish": {
+          "median_ms": 0.0006,
+          "p95_ms": 0.0018,
+          "max_ms": 0.0028,
+          "first_ms": 0.0021,
+          "over_16_7ms": 0,
+          "over_33ms": 0
+        },
+        "canvas+tessellate": {
+          "median_ms": 1.1595,
+          "p95_ms": 2.4565,
+          "max_ms": 8.5446,
+          "first_ms": 8.5446,
+          "over_16_7ms": 0,
+          "over_33ms": 0
+        },
+        "combined": {
+          "median_ms": 5.2436,
+          "p95_ms": 8.495,
+          "max_ms": 21.6751,
+          "first_ms": 21.6751,
+          "over_16_7ms": 1,
+          "over_33ms": 0
+        }
+      },
+      "artwork": [
+        {
+          "n": 1,
+          "cpu_ms": 24.09,
+          "zoom": 15,
+          "revision": 0,
+          "preview": 0,
+          "groups": 155,
+          "reused": 0
+        },
+        {
+          "n": 2,
+          "cpu_ms": 2.08,
+          "zoom": 15,
+          "revision": 0,
+          "preview": 1,
+          "groups": 155,
+          "reused": 151
+        }
+      ],
+      "raw_summary": "pcb_artwork_build n=1 cpu_ms=24.09 zoom=15.000000 revision=0 preview=0 groups=155 reused=0\r\npcb_artwork_build n=2 cpu_ms=2.08 zoom=15.000000 revision=0 preview=1 groups=155 reused=151\r\nitems=15513 samples=60 legs=119 net=ExampleGround\r\ntarget: median_ms=0.1180 p95_ms=0.1792 max_ms=0.3849 first_ms=0.1715 over_16_7ms=0 over_33ms=0\r\nmodel: median_ms=3.8706 p95_ms=4.9614 max_ms=12.9542 first_ms=12.9542 over_16_7ms=0 over_33ms=0\r\npublish: median_ms=0.0006 p95_ms=0.0018 max_ms=0.0028 first_ms=0.0021 over_16_7ms=0 over_33ms=0\r\ncanvas+tessellate: median_ms=1.1595 p95_ms=2.4565 max_ms=8.5446 first_ms=8.5446 over_16_7ms=0 over_33ms=0\r\ncombined: median_ms=5.2436 p95_ms=8.4950 max_ms=21.6751 first_ms=21.6751 over_16_7ms=1 over_33ms=0\r\n"
+    },
+    {
+      "name": "target\\pcb-artwork-groups-2026-10-25\\varied.txt",
+      "stage": "initial_group_cache",
+      "samples": 60,
+      "legs": 84,
+      "metrics": {
+        "target": {
+          "median_ms": 0.123,
+          "p95_ms": 0.1437,
+          "max_ms": 0.261,
+          "first_ms": 0.1437,
+          "over_16_7ms": 0,
+          "over_33ms": 0
+        },
+        "model": {
+          "median_ms": 4.5686,
+          "p95_ms": 5.207,
+          "max_ms": 12.9212,
+          "first_ms": 12.9212,
+          "over_16_7ms": 0,
+          "over_33ms": 0
+        },
+        "publish": {
+          "median_ms": 0.0006,
+          "p95_ms": 0.0015,
+          "max_ms": 0.0019,
+          "first_ms": 0.0019,
+          "over_16_7ms": 0,
+          "over_33ms": 0
+        },
+        "canvas+tessellate": {
+          "median_ms": 1.1979,
+          "p95_ms": 1.8519,
+          "max_ms": 8.98,
+          "first_ms": 8.98,
+          "over_16_7ms": 0,
+          "over_33ms": 0
+        },
+        "combined": {
+          "median_ms": 5.7371,
+          "p95_ms": 7.7976,
+          "max_ms": 22.0493,
+          "first_ms": 22.0493,
+          "over_16_7ms": 1,
+          "over_33ms": 0
+        }
+      },
+      "artwork": [
+        {
+          "n": 1,
+          "cpu_ms": 23.44,
+          "zoom": 15,
+          "revision": 0,
+          "preview": 0,
+          "groups": 155,
+          "reused": 0
+        },
+        {
+          "n": 2,
+          "cpu_ms": 1.98,
+          "zoom": 15,
+          "revision": 0,
+          "preview": 1,
+          "groups": 155,
+          "reused": 151
+        }
+      ],
+      "raw_summary": "pcb_artwork_build n=1 cpu_ms=23.44 zoom=15.000000 revision=0 preview=0 groups=155 reused=0\r\npcb_artwork_build n=2 cpu_ms=1.98 zoom=15.000000 revision=0 preview=1 groups=155 reused=151\r\nitems=15513 samples=60 legs=84 net=ExampleGround\r\ntarget: median_ms=0.1230 p95_ms=0.1437 max_ms=0.2610 first_ms=0.1437 over_16_7ms=0 over_33ms=0\r\nmodel: median_ms=4.5686 p95_ms=5.2070 max_ms=12.9212 first_ms=12.9212 over_16_7ms=0 over_33ms=0\r\npublish: median_ms=0.0006 p95_ms=0.0015 max_ms=0.0019 first_ms=0.0019 over_16_7ms=0 over_33ms=0\r\ncanvas+tessellate: median_ms=1.1979 p95_ms=1.8519 max_ms=8.9800 first_ms=8.9800 over_16_7ms=0 over_33ms=0\r\ncombined: median_ms=5.7371 p95_ms=7.7976 max_ms=22.0493 first_ms=22.0493 over_16_7ms=1 over_33ms=0\r\n"
+    },
+    {
+      "name": "target\\pcb-artwork-groups-2026-10-25\\final-after.txt",
+      "stage": "final_group_cache",
+      "samples": 60,
+      "legs": 119,
+      "metrics": {
+        "target": {
+          "median_ms": 0.3533,
+          "p95_ms": 0.7912,
+          "max_ms": 1.1895,
+          "first_ms": 0.5105,
+          "over_16_7ms": 0,
+          "over_33ms": 0
+        },
+        "model": {
+          "median_ms": 4.0487,
+          "p95_ms": 5.3439,
+          "max_ms": 19.124,
+          "first_ms": 19.124,
+          "over_16_7ms": 1,
+          "over_33ms": 0
+        },
+        "publish": {
+          "median_ms": 0.0014,
+          "p95_ms": 0.0028,
+          "max_ms": 0.0114,
+          "first_ms": 0.0019,
+          "over_16_7ms": 0,
+          "over_33ms": 0
+        },
+        "canvas+tessellate": {
+          "median_ms": 2.5104,
+          "p95_ms": 5.4228,
+          "max_ms": 17.5504,
+          "first_ms": 17.5504,
+          "over_16_7ms": 1,
+          "over_33ms": 0
+        },
+        "combined": {
+          "median_ms": 7.2775,
+          "p95_ms": 10.5462,
+          "max_ms": 37.1903,
+          "first_ms": 37.1903,
+          "over_16_7ms": 1,
+          "over_33ms": 1
+        }
+      },
+      "artwork": [
+        {
+          "n": 1,
+          "cpu_ms": 30.44,
+          "zoom": 15,
+          "revision": 0,
+          "preview": 0,
+          "groups": 155,
+          "reused": 0
+        },
+        {
+          "n": 2,
+          "cpu_ms": 1.99,
+          "zoom": 15,
+          "revision": 0,
+          "preview": 1,
+          "groups": 155,
+          "reused": 151
+        }
+      ],
+      "raw_summary": "pcb_artwork_build n=1 cpu_ms=30.44 zoom=15.000000 revision=0 preview=0 groups=155 reused=0\r\npcb_artwork_build n=2 cpu_ms=1.99 zoom=15.000000 revision=0 preview=1 groups=155 reused=151\r\nitems=15513 samples=60 legs=119 net=ExampleGround\r\ntarget: median_ms=0.3533 p95_ms=0.7912 max_ms=1.1895 first_ms=0.5105 over_16_7ms=0 over_33ms=0\r\nmodel: median_ms=4.0487 p95_ms=5.3439 max_ms=19.1240 first_ms=19.1240 over_16_7ms=1 over_33ms=0\r\npublish: median_ms=0.0014 p95_ms=0.0028 max_ms=0.0114 first_ms=0.0019 over_16_7ms=0 over_33ms=0\r\ncanvas+tessellate: median_ms=2.5104 p95_ms=5.4228 max_ms=17.5504 first_ms=17.5504 over_16_7ms=1 over_33ms=0\r\ncombined: median_ms=7.2775 p95_ms=10.5462 max_ms=37.1903 first_ms=37.1903 over_16_7ms=1 over_33ms=1\r\n"
+    },
+    {
+      "name": "target\\pcb-artwork-groups-2026-10-25\\final-varied.txt",
+      "stage": "final_group_cache",
+      "samples": 60,
+      "legs": 84,
+      "metrics": {
+        "target": {
+          "median_ms": 0.208,
+          "p95_ms": 0.5886,
+          "max_ms": 1.2542,
+          "first_ms": 0.5886,
+          "over_16_7ms": 0,
+          "over_33ms": 0
+        },
+        "model": {
+          "median_ms": 4.7701,
+          "p95_ms": 5.1198,
+          "max_ms": 18.2395,
+          "first_ms": 18.2395,
+          "over_16_7ms": 1,
+          "over_33ms": 0
+        },
+        "publish": {
+          "median_ms": 0.0028,
+          "p95_ms": 0.0094,
+          "max_ms": 0.0149,
+          "first_ms": 0.0018,
+          "over_16_7ms": 0,
+          "over_33ms": 0
+        },
+        "canvas+tessellate": {
+          "median_ms": 3.3051,
+          "p95_ms": 5.5928,
+          "max_ms": 14.4763,
+          "first_ms": 14.4763,
+          "over_16_7ms": 0,
+          "over_33ms": 0
+        },
+        "combined": {
+          "median_ms": 8.1933,
+          "p95_ms": 10.3123,
+          "max_ms": 33.328,
+          "first_ms": 33.328,
+          "over_16_7ms": 1,
+          "over_33ms": 1
+        }
+      },
+      "artwork": [
+        {
+          "n": 1,
+          "cpu_ms": 38.47,
+          "zoom": 15,
+          "revision": 0,
+          "preview": 0,
+          "groups": 155,
+          "reused": 0
+        },
+        {
+          "n": 2,
+          "cpu_ms": 2.62,
+          "zoom": 15,
+          "revision": 0,
+          "preview": 1,
+          "groups": 155,
+          "reused": 151
+        }
+      ],
+      "raw_summary": "pcb_artwork_build n=1 cpu_ms=38.47 zoom=15.000000 revision=0 preview=0 groups=155 reused=0\r\npcb_artwork_build n=2 cpu_ms=2.62 zoom=15.000000 revision=0 preview=1 groups=155 reused=151\r\nitems=15513 samples=60 legs=84 net=ExampleGround\r\ntarget: median_ms=0.2080 p95_ms=0.5886 max_ms=1.2542 first_ms=0.5886 over_16_7ms=0 over_33ms=0\r\nmodel: median_ms=4.7701 p95_ms=5.1198 max_ms=18.2395 first_ms=18.2395 over_16_7ms=1 over_33ms=0\r\npublish: median_ms=0.0028 p95_ms=0.0094 max_ms=0.0149 first_ms=0.0018 over_16_7ms=0 over_33ms=0\r\ncanvas+tessellate: median_ms=3.3051 p95_ms=5.5928 max_ms=14.4763 first_ms=14.4763 over_16_7ms=0 over_33ms=0\r\ncombined: median_ms=8.1933 p95_ms=10.3123 max_ms=33.3280 first_ms=33.3280 over_16_7ms=1 over_33ms=1\r\n"
+    },
+    {
+      "name": "target\\pcb-snap-reuse-2026-10-25\\after.txt",
+      "stage": "preceding_shared_snap_baseline",
+      "samples": 60,
+      "legs": 119,
+      "metrics": {
+        "target": {
+          "median_ms": 0.1801,
+          "p95_ms": 0.368,
+          "max_ms": 0.4778,
+          "first_ms": 0.1198,
+          "over_16_7ms": 0,
+          "over_33ms": 0
+        },
+        "model": {
+          "median_ms": 4.0815,
+          "p95_ms": 5.2257,
+          "max_ms": 16.7756,
+          "first_ms": 16.7756,
+          "over_16_7ms": 1,
+          "over_33ms": 0
+        },
+        "publish": {
+          "median_ms": 0.0019,
+          "p95_ms": 0.0039,
+          "max_ms": 0.0091,
+          "first_ms": 0.0039,
+          "over_16_7ms": 0,
+          "over_33ms": 0
+        },
+        "canvas+tessellate": {
+          "median_ms": 2.1469,
+          "p95_ms": 5.2127,
+          "max_ms": 48.7416,
+          "first_ms": 48.7416,
+          "over_16_7ms": 1,
+          "over_33ms": 1
+        },
+        "combined": {
+          "median_ms": 6.7688,
+          "p95_ms": 9.2336,
+          "max_ms": 65.6447,
+          "first_ms": 65.6447,
+          "over_16_7ms": 1,
+          "over_33ms": 1
+        }
+      },
+      "artwork": [],
+      "raw_summary": "items=15513 samples=60 legs=119 net=ExampleGround\r\ntarget: median_ms=0.1801 p95_ms=0.3680 max_ms=0.4778 first_ms=0.1198 over_16_7ms=0 over_33ms=0\r\nmodel: median_ms=4.0815 p95_ms=5.2257 max_ms=16.7756 first_ms=16.7756 over_16_7ms=1 over_33ms=0\r\npublish: median_ms=0.0019 p95_ms=0.0039 max_ms=0.0091 first_ms=0.0039 over_16_7ms=0 over_33ms=0\r\ncanvas+tessellate: median_ms=2.1469 p95_ms=5.2127 max_ms=48.7416 first_ms=48.7416 over_16_7ms=1 over_33ms=1\r\ncombined: median_ms=6.7688 p95_ms=9.2336 max_ms=65.6447 first_ms=65.6447 over_16_7ms=1 over_33ms=1\r\n"
+    },
+    {
+      "name": "target\\pcb-snap-reuse-2026-10-25\\varied.txt",
+      "stage": "preceding_shared_snap_baseline",
+      "samples": 60,
+      "legs": 84,
+      "metrics": {
+        "target": {
+          "median_ms": 0.2898,
+          "p95_ms": 0.4349,
+          "max_ms": 1.0664,
+          "first_ms": 0.1317,
+          "over_16_7ms": 0,
+          "over_33ms": 0
+        },
+        "model": {
+          "median_ms": 4.6676,
+          "p95_ms": 5.1521,
+          "max_ms": 14.5098,
+          "first_ms": 14.5098,
+          "over_16_7ms": 0,
+          "over_33ms": 0
+        },
+        "publish": {
+          "median_ms": 0.002,
+          "p95_ms": 0.0075,
+          "max_ms": 0.0117,
+          "first_ms": 0.002,
+          "over_16_7ms": 0,
+          "over_33ms": 0
+        },
+        "canvas+tessellate": {
+          "median_ms": 2.6031,
+          "p95_ms": 5.7503,
+          "max_ms": 28.2872,
+          "first_ms": 28.2872,
+          "over_16_7ms": 1,
+          "over_33ms": 0
+        },
+        "combined": {
+          "median_ms": 7.7865,
+          "p95_ms": 10.9781,
+          "max_ms": 42.9343,
+          "first_ms": 42.9343,
+          "over_16_7ms": 1,
+          "over_33ms": 1
+        }
+      },
+      "artwork": [],
+      "raw_summary": "items=15513 samples=60 legs=84 net=ExampleGround\r\ntarget: median_ms=0.2898 p95_ms=0.4349 max_ms=1.0664 first_ms=0.1317 over_16_7ms=0 over_33ms=0\r\nmodel: median_ms=4.6676 p95_ms=5.1521 max_ms=14.5098 first_ms=14.5098 over_16_7ms=0 over_33ms=0\r\npublish: median_ms=0.0020 p95_ms=0.0075 max_ms=0.0117 first_ms=0.0020 over_16_7ms=0 over_33ms=0\r\ncanvas+tessellate: median_ms=2.6031 p95_ms=5.7503 max_ms=28.2872 first_ms=28.2872 over_16_7ms=1 over_33ms=0\r\ncombined: median_ms=7.7865 p95_ms=10.9781 max_ms=42.9343 first_ms=42.9343 over_16_7ms=1 over_33ms=1\r\n"
+    }
+  ],
+  "implementation": [
+    "Group boundaries follow existing layer/type artwork, masks, details, board and polygon-outline order; route tail slots exist in source captures.",
+    "Compatible groups share exact meshes, private font atlas handles and GPU scenes. Stale copper or changed source IDs invalidate their group; display/font/DPI/history and incompatible preview changes invalidate reuse.",
+    "Reused scenes may begin at a nonzero mesh index; submitted callbacks initialize/update their camera when parameters differ.",
+    "CPU zoom refinement remaps each shared mesh once to the UI atlas. Group references are direct; no chain of ancestor Cache objects."
+  ],
+  "validation": {
+    "workspace_tests": 452,
+    "breakdown": {
+      "app": 99,
+      "core": 176,
+      "geom": 1,
+      "io": 74,
+      "render": 102
+    },
+    "fmt_all_check": "passed",
+    "strict_workspace_all_target_clippy": "passed",
+    "windows_dev_build": "passed",
+    "linux_gnu_all_target_check": "passed; no Linux execution",
+    "regressions": [
+      "Group identity across source-to-route and fresh/stale copper",
+      "Display and revision invalidation",
+      "Expired scene release through weak reference after style change",
+      "GPU pixels against complete redraw, Rgba8Unorm and Rgba8UnormSrgb, dithering off/on",
+      "Source pad labels, holes/masks, split track, variable route tails, via, backtrack, highlights, draft and mirrored/single-layer states",
+      "Camera update while earlier scene mesh zero is no longer submitted",
+      "Existing CPU zoom/atlas replacement and worker invalidation"
+    ],
+    "gpu_channel_tolerance": {
+      "without_dither": 1,
+      "with_production_dither": 3
+    },
+    "native_windows": {
+      "window_logical_pixels": [
+        1707,
+        1019
+      ],
+      "steps": [
+        "Fit Board and refined labels",
+        "Start NetC13_2",
+        "Move preview: stale copper dimming and preserved stationary artwork",
+        "Place: net length 7.845 -> 8.173 mm",
+        "Backspace: 8.173 -> 7.845 mm",
+        "Place again, Escape to Finish, Ctrl+Z to clean title and original artwork"
+      ],
+      "observed_artwork": "155/155 groups reused at entry, CPU 3.52 ms; 151/155 on stale transition, CPU 5.39 ms",
+      "source_hash_unchanged": true,
+      "source_saved": false,
+      "log": "pcb_artwork_build n=1 cpu_ms=33.47 zoom=5.728256 revision=0 preview=0 groups=155 reused=0\nframe_cpu_ms median=3.28 p95=4.73 mean=4.53 max=142.89 n=120\nframe_cpu_ms median=3.19 p95=4.57 mean=3.33 max=19.81 n=120\npcb_artwork_build n=1 cpu_ms=22.07 zoom=16.416622 revision=0 preview=0 groups=155 reused=0\nframe_cpu_ms median=3.06 p95=4.72 mean=3.23 max=19.16 n=120\npcb_artwork_build n=3 cpu_ms=3.52 zoom=16.416622 revision=0 preview=1 groups=155 reused=155\npcb_artwork_build n=4 cpu_ms=5.39 zoom=16.416622 revision=0 preview=3 groups=155 reused=151\nframe_cpu_ms median=3.52 p95=6.45 mean=4.61 max=46.64 n=120\nframe_cpu_ms median=4.09 p95=5.87 mean=4.42 max=35.65 n=120\npcb_artwork_build n=5 cpu_ms=4.17 zoom=16.416622 revision=0 preview=9 groups=155 reused=151\npcb_artwork_build n=6 cpu_ms=3.08 zoom=16.416622 revision=0 preview=11 groups=155 reused=151\npcb_artwork_build n=7 cpu_ms=28.18 zoom=16.416622 revision=1 preview=16 groups=155 reused=0\nframe_cpu_ms median=2.73 p95=6.15 mean=4.80 max=99.22 n=120\npcb_artwork_build n=8 cpu_ms=67.69 zoom=16.416622 revision=2 preview=16 groups=155 reused=0\npcb_artwork_build n=9 cpu_ms=33.18 zoom=16.416622 revision=3 preview=16 groups=155 reused=0\nframe_cpu_ms median=2.40 p95=5.11 mean=4.99 max=133.40 n=120\nframe_cpu_ms median=3.97 p95=5.39 mean=3.99 max=5.86 n=120\nframe_cpu_ms median=3.77 p95=5.39 mean=3.80 max=12.78 n=120\nframe_cpu_ms median=3.91 p95=5.31 mean=3.89 max=16.80 n=120\nframe_cpu_ms median=3.98 p95=5.50 mean=4.05 max=15.06 n=120\n\r\n"
+    }
+  },
+  "limitations": [
+    "Final regular/varied combined first samples still reached 37.1903 / 33.3280 ms, one >33 ms in each run. Initial measurements were faster; no fixed latency/FPS guarantee.",
+    "Native Finish/repour/Undo changed revisions and rebuilt all groups; logged artwork costs reached 67.69 ms. Native CPU frame batches also include startup/action outliers; they are not continuous-routing FPS measurements.",
+    "Source track splits can rebuild an entire affected artwork group. Generic editing previews, display/font/DPI changes and different tessellation scale still require appropriate rebuilds.",
+    "Retaining directly referenced source scene/atlas generations consumes memory; arbitrary-board peak RAM/VRAM is not established.",
+    "Exact Altium feature/behavior/layout parity, Linux runtime and new AppImage remain open."
+  ]
+}

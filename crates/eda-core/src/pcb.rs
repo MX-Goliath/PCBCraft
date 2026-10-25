@@ -105,6 +105,9 @@ pub struct Component {
     pub designator: String,
     pub comment: String,
     pub footprint: String,
+    /// Base-variant component parameters; None means legacy/uninterpreted data.
+    #[serde(default)]
+    pub parameters: Option<Fields>,
     pub position: Point,
     pub rotation: f64,
     pub layer: u16,
@@ -888,7 +891,7 @@ impl Board {
     }
 }
 impl Item {
-    fn validate_geometry(&self) -> Result<(), String> {
+    pub(crate) fn validate_geometry(&self) -> Result<(), String> {
         self.validate_stack()?;
         self.validate_masks()?;
         let ok = match &self.shape {
@@ -1595,6 +1598,7 @@ mod tests {
             designator: "R1".into(),
             comment: "".into(),
             footprint: "R".into(),
+            parameters: Some(Default::default()),
             position: Point::default(),
             rotation: 0.0,
             layer: TOP,
@@ -1840,6 +1844,7 @@ mod tests {
             designator: "U1".into(),
             comment: String::new(),
             footprint: String::new(),
+            parameters: Some(Default::default()),
             position: p(0, 0),
             rotation: 0.0,
             layer: TOP,

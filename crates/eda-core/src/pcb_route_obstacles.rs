@@ -3,6 +3,10 @@
 use super::*;
 use crate::pcb_polygon::copper;
 use geo::{Distance, Euclidean, Line, MultiPolygon};
+use rstar::{AABB, RTree, RTreeObject};
+#[cfg(test)]
+#[path = "pcb_route_obstacles_tests.rs"]
+mod tests;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Conflict {
@@ -54,20 +58,67 @@ impl Geometry {
     }
 }
 #[derive(Clone)]
+struct IndexedBounds {
+    bounds: AABB<[f64; 2]>,
+    index: usize,
+}
+impl RTreeObject for IndexedBounds {
+    type Envelope = AABB<[f64; 2]>;
+    fn envelope(&self) -> Self::Envelope {
+        self.bounds
+    }
+}
+#[derive(Clone)]
 pub(super) struct Obstacles {
     objects: Vec<Obstacle>,
     spatial: bool,
+    index: RTree<IndexedBounds>,
+    maximum_gap: i64,
+    first_error: Option<usize>,
 }
 impl Obstacles {
+    fn indexed(objects: Vec<Obstacle>, spatial: bool) -> Self {
+        let index = RTree::bulk_load(
+            objects
+                .iter()
+                .enumerate()
+                .map(|(index, o)| IndexedBounds {
+                    bounds: envelope(o.bounds),
+                    index,
+                })
+                .collect(),
+        );
+        let maximum_gap = objects
+            .iter()
+            .map(|o| {
+                o.gap
+                    .as_ref()
+                    .ok()
+                    .copied()
+                    .flatten()
+                    .unwrap_or(0)
+                    .max(o.gap_bound)
+            })
+            .max()
+            .unwrap_or(0);
+        let first_error = objects.iter().position(|o| o.gap.is_err());
+        Self {
+            objects,
+            spatial,
+            index,
+            maximum_gap,
+            first_error,
+        }
+    }
     pub fn new(board: &Board, layer: u16, net: Option<u32>) -> Self {
         let probe = crate::pcb_rules::probe(layer, net, Point::default(), 1);
         Self::for_item(board, layer, &probe)
     }
     pub fn error(&self) -> Result<(), String> {
-        for o in &self.objects {
-            if let Err(e) = &o.gap {
-                return Err(e.clone());
-            }
+        if let Some(index) = self.first_error
+            && let Err(e) = &self.objects[index].gap
+        {
+            return Err(e.clone());
         }
         Ok(())
     }
@@ -194,10 +245,7 @@ impl Obstacles {
                 });
                 // An explicit zero edge clearance permits objects to cross that edge.
                 if matches!(gap, Ok(Some(0))) && !spatial {
-                    return Self {
-                        objects: obstacles,
-                        spatial,
-                    };
+                    return Self::indexed(obstacles, spatial);
                 }
                 let exterior = vec![
                     (-100_001.0, -100_001.0),
@@ -229,10 +277,7 @@ impl Obstacles {
                 });
             }
         }
-        Self {
-            objects: obstacles,
-            spatial,
-        }
+        Self::indexed(obstacles, spatial)
     }
     fn blocker(
         &self,
@@ -241,6 +286,33 @@ impl Obstacles {
         radius: i64,
         clearance: i64,
         route: Option<&RouteSession>,
+    ) -> Option<usize> {
+        // Clearance may change during a session, and room/matrix rules can
+        // enlarge it away from the initial probe. Query with a conservative
+        // maximum, then resolve the exact pair rule in the narrow phase.
+        // Include the 1 nm tolerance used by the geometry distance check.
+        let search = envelope(
+            Bounds::points(&[a, b]).expanded(radius + self.maximum_gap.max(clearance) + 1),
+        );
+        let mut candidates: Vec<_> = self
+            .index
+            .locate_in_envelope_intersecting(&search)
+            .map(|o| o.index)
+            .collect();
+        // A rule error must block even if its geometry is outside the query.
+        candidates.extend(self.first_error);
+        candidates.sort_unstable();
+        candidates.dedup();
+        self.blocker_among(a, b, radius, clearance, route, candidates)
+    }
+    fn blocker_among(
+        &self,
+        a: Point,
+        b: Point,
+        radius: i64,
+        clearance: i64,
+        route: Option<&RouteSession>,
+        candidates: impl IntoIterator<Item = usize>,
     ) -> Option<usize> {
         let bounds = Bounds::points(&[a, b]);
         let line = Line::new(
@@ -258,7 +330,10 @@ impl Obstacles {
                 },
             )
         });
-        self.objects.iter().position(|o| {
+        // Keep original board order: choosing a different first obstruction
+        // changes walkaround posture and the result of the bounded search.
+        candidates.into_iter().find(|&index| {
+            let o = &self.objects[index];
             let Ok(gap) = o.gap else {
                 return true;
             };
@@ -267,7 +342,8 @@ impl Obstacles {
                     o.gap_bound.max(clearance)
                 } else {
                     gap.unwrap_or(clearance)
-                };
+                }
+                + 1;
             let bounds = bounds.expanded(broad_radius);
             if !(bounds.min.x <= o.bounds.max.x
                 && bounds.max.x >= o.bounds.min.x
@@ -436,6 +512,14 @@ impl Obstacles {
         }
         self.stop(&direct, route)
     }
+}
+fn envelope(bounds: Bounds) -> AABB<[f64; 2]> {
+    // Valid model nanometres fit exactly in f64. Floating tree arithmetic also
+    // avoids overflowing i64 when multiplying board-sized envelope extents.
+    AABB::from_corners(
+        [bounds.min.x as f64, bounds.min.y as f64],
+        [bounds.max.x as f64, bounds.max.y as f64],
+    )
 }
 fn maximum_gap(board: &Board, probe: &Item, other_kind: &str, edge: bool) -> i64 {
     board

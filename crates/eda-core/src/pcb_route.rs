@@ -10,6 +10,9 @@ pub use obstacles::Conflict;
 #[path = "pcb_route_drag.rs"]
 mod drag;
 pub use drag::{DragOptions, drag_track_endpoint, drag_tracks, track_selection};
+#[path = "pcb_route_preview.rs"]
+mod preview;
+pub use preview::RoutePreview;
 
 /// Resolve an unconditional preferred routing dimension. Unknown higher-priority
 /// scopes stop resolution; they must not silently fall back to a generic rule.
@@ -50,7 +53,7 @@ pub enum Corner {
 #[derive(Clone)]
 pub struct RouteSession {
     pub revision: u64,
-    pub draft: Board,
+    draft: Board,
     pub anchor: Point,
     pub layer: u16,
     pub net: Option<u32>,
@@ -61,6 +64,7 @@ pub struct RouteSession {
     pub clearance: i64,
     obstacles: obstacles::Obstacles,
     checkpoints: Vec<Checkpoint>,
+    preview: preview::Cache,
 }
 #[derive(Clone)]
 struct Checkpoint {
@@ -176,6 +180,7 @@ impl RouteSession {
         let mut draft = board.clone();
         split_at(&mut draft, anchor, layer, net)?;
         draft.validate()?;
+        let preview = preview::Cache::new(board, &draft);
         Ok(Self {
             revision,
             draft,
@@ -189,6 +194,7 @@ impl RouteSession {
             clearance: 200_000,
             obstacles,
             checkpoints: vec![],
+            preview,
         })
     }
     fn checkpoint(&self, next: &Board) -> Checkpoint {
@@ -211,6 +217,9 @@ impl RouteSession {
     }
     pub fn has_segments(&self) -> bool {
         !self.checkpoints.is_empty()
+    }
+    pub fn draft(&self) -> &Board {
+        &self.draft
     }
     pub fn points(&self, end: Point) -> Vec<Point> {
         if !(1..=100_000_000_000).contains(&self.width)
@@ -304,7 +313,9 @@ impl RouteSession {
         let mut next = self.append_to(self.draft.clone(), end)?;
         split_at(&mut next, end, self.layer, self.net)?;
         next.validate()?;
-        self.checkpoints.push(self.checkpoint(&next));
+        let checkpoint = self.checkpoint(&next);
+        self.preview.invalidate(&checkpoint);
+        self.checkpoints.push(checkpoint);
         self.draft = next;
         self.anchor = end;
         Ok(())
@@ -398,7 +409,9 @@ impl RouteSession {
         split_at(&mut next, end, to_layer, self.net)?;
         next.pours_stale |= !next.polygon_pours.is_empty();
         next.validate()?;
-        self.checkpoints.push(self.checkpoint(&next));
+        let checkpoint = self.checkpoint(&next);
+        self.preview.invalidate(&checkpoint);
+        self.checkpoints.push(checkpoint);
         self.draft = next;
         self.anchor = end;
         self.layer = to_layer;
@@ -407,6 +420,7 @@ impl RouteSession {
     }
     pub fn backtrack(&mut self) -> bool {
         if let Some(c) = self.checkpoints.pop() {
+            self.preview.invalidate(&c);
             self.draft.items.truncate(c.items_len);
             for (n, item) in c.restored {
                 self.draft.items[n] = item;

@@ -711,6 +711,7 @@ mod tests {
             designator: "U1".into(),
             comment: String::new(),
             footprint: String::new(),
+            parameters: Some(Default::default()),
             position: Point::mm(10, 10),
             rotation: 90.,
             layer: TOP,

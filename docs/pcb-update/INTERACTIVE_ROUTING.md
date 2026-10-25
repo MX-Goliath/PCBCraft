@@ -172,3 +172,104 @@ previous endpoint-stretching behavior, and explicit M,M retains breaking Move
 semantics. Shove, gloss, redundant-loop removal, posture continuity, arbitrary
 arc/pour contact topology, large-board connected-drag latency and Windows runtime
 remain outside this verification. Exact Altium interactive-drag parity is open.
+
+## ReferenceB routing startup and obstacle indexing, 2026-10-25
+
+On the Windows ReferenceB/ReferenceBBoard.PcbDoc (15,513 items), RouteSession
+startup aborted on `InPadClass('TP_Pads') Or CompParameterValue('ID') Like '216'`.
+InPadClass was already supported; component parameters were archived but unread.
+The next blocking query after that fix was `HasPad('BM1-0')`.
+
+The importer now reads base component parameter groups in PrimitiveParameters,
+checking record bounds, owner index and native UNIQUEID. Footprint/System and
+named-variant groups remain separate and preserved in the source archive.
+Component parameters have their own model field, independent of native metadata.
+Old JSON recovers missing data from its archived native source using component
+identity, including after index/position edits. Unavailable parameters remain
+unknown and cannot silently fall back to a generic clearance rule.
+
+Supported additions: CompParameterValue with Like (`*` and `?`), string `=`/`<>`,
+HasPad full names (including Free pads), wildcard HasFootprint, ObjectKind string
+equality and pad Name string equality. Existing boolean/priority evaluation
+continues to reject unsupported branches. The ReferenceB `ID=216` query returns 24 pads
+on the 24 TP components, consistent with an independent read of native groups.
+Native parameter edits and ASCII export of populated parameters are refused;
+JSON retains them. Unchanged binary parameter streams survive byte-for-byte.
+
+The R-tree optimization described in PERFORMANCE.md applies to routing, via
+clearance and connected track drag. Regressions compare indexed blockers with
+exhaustive checks across mixed shapes, changing clearances, room/matrix rules,
+errors and extreme coordinates. Source order remains deterministic.
+
+Validation: 438 workspace tests, strict all-target Clippy, formatting and Windows
+dev build. Native file probe verifies preview/place/finish and exact Undo. Real
+Windows window: Fit Board, start NetC13_2, place, Escape to finish, Ctrl+Z restores
+the clean document. No source writes; original SHA256 is recorded in the JSON
+measurement file. Altium Enterprise 24.4.1 was inspected on a research copy at
+1707 px width; applying the test PCB Filter query returned “Error occurred while
+Running script”, so this does not verify live query-result or visual parity.
+
+Semantics references: [Altium component parameters](https://www.altium.com/documentation/altium-designer/pcb/query-functions/parameters),
+[HasPad and membership functions](https://www.altium.com/documentation/altium-designer/pcb/query-functions/membership-checks),
+[Like wildcards](https://www.altium.com/documentation/altium-designer/query-language).
+These supplement the native evidence and do not prove version-specific parity.
+
+Still open: full query language (including native complex hole/annular scopes),
+variants, parameter editing and native writing, shove/gloss/loop removal, preview
+copies/validation/artwork, full-board presentation latency and exact Altium UI.
+
+## Route preview reuse, 2026-10-25
+
+RouteSession's draft is private and exposed read-only. Hover uses a reusable
+validated prefix plus new legs, with stable active-leg IDs and immutable retained
+snapshots. Placing, via changes, backtracking and History keep complete validation.
+The app skips unchanged requests and releases its previous preview before an
+update; connectivity workers own separate geometry snapshots. No model command
+depends on the renderer or GPU.
+
+The renderer keeps the source spatial tree, updates explicitly split tracks, and
+paints the placed/active tail in the original layer ordering. Unchanged pad,
+drill, mask and stationary GPU buffers survive tail count/posture changes.
+Source geometry can be reused on entry; unrelated previews/revisions cannot.
+Live tessellation uses the stationary document anchor to avoid one-pixel rounding
+shifts. GPU tests compare full redraws with linear/sRGB, masks, highlight, draft,
+single layers, mirrored camera, splitting, vias and backtracking.
+
+On the full Windows ReferenceB board, CPU preview median dropped from 57.5230 to
+5.7226 ms in the initial optimized run; this does not measure executed GPU work
+or presented FPS. A 90.7778 ms cold frame remained. See PERFORMANCE.md and
+`route-preview-performance-2026-10-25.json` for conditions, later source-reuse
+measurements, raw summaries and limitations.
+
+449 workspace tests pass. The native Windows window verified NetC13_2 placement,
+Backspace, Finish and Undo/Redo/Undo to a clean document without saving the source.
+Linux all-target compilation passes; Linux runtime and exact Altium parity remain
+unverified. Shove/gloss, arc routing, loop removal and the remaining query/native
+I/O restrictions above are still open.
+
+Preview snapping now shares the displayed source's immutable spatial tree rather
+than building a second complete geometry cache. Route splits and transformed
+previews cannot alter that source tree; candidates keep original coordinates
+and document order. Revision changes expire it, and cold entry has a spatial-only
+fallback. Off skips object lookup while preserving the grid; Ctrl+Shift bypass
+remains raw. Actual canvas tests compare both source and preview endpoints,
+cold/warm entry, All/Current/Off, grid and bypass with full model snapping.
+Windows Current Layer route/place/Finish/Undo passed on the full ReferenceB board;
+the original Off mode and clean document were restored. 451 workspace tests pass.
+Whole-frame latency improvement from this specific cache change is not proven;
+see `route-snapping-performance-2026-10-25.json` and PERFORMANCE.md.
+
+Stationary artwork now survives source-to-route entry in groups matching the
+original layer/type ordering. Route-tail slots exist in the source capture;
+stale polygon copper and split source tracks expire their groups while other
+meshes/atlases/GPU buffers remain shared. Native Windows ReferenceB reused 155/155
+groups at entry and 151/155 when copper became stale. Source pad labels, holes,
+masks, fresh/stale transitions and a reused GPU scene lacking mesh zero are
+covered by complete-redraw pixel comparisons, including camera movement.
+
+452 workspace tests and all required gates pass. Native route placement,
+Backspace, Finish and Undo restored the clean original board; no source save,
+SHA256 unchanged. Final headless first CPU samples were still 33–37 ms; native
+Finish/repour/Undo still rebuilt all groups and had artwork costs up to 67.69 ms.
+This is a bounded rendering optimization, with full routing/Altium parity still
+open. See `artwork-groups-performance-2026-10-25.json` and PERFORMANCE.md.

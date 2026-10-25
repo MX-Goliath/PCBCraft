@@ -12,6 +12,46 @@ use std::{
 
 const ZOOM_SETTLE: Duration = Duration::from_millis(120);
 
+// Match stationary artwork's document anchor when egui rounds stroke/glyph
+// coordinates. Tessellating at the moving viewport can shift a line by a whole
+// pixel (rounding half pixels on opposite sides of zero differently).
+pub(super) fn paint_live(
+    painter: &egui::Painter,
+    view: &mut View,
+    rect: Rect,
+    draw: impl FnOnce(&egui::Painter, &Camera, &mut View, Rect),
+) {
+    let anchor = Bounds::points(&view.pcb.geometry.outline).centre();
+    let camera = Camera {
+        centre_mm: [anchor.x as f64 / 1e6, anchor.y as f64 / 1e6],
+        ..view.camera.clone()
+    };
+    let fixed_rect = Rect::from_center_size(Pos2::ZERO, Vec2::splat(2.));
+    let shift = view.camera.screen(anchor, rect).to_vec2();
+    let layer = painter.layer_id();
+    let saved = painter
+        .ctx()
+        .graphics_mut(|g| std::mem::take(g.entry(layer)));
+    let mut fixed = painter.clone();
+    fixed.set_clip_rect(Rect::EVERYTHING);
+    draw(&fixed, &camera, view, fixed_rect);
+    let shapes = painter.ctx().graphics_mut(|g| {
+        let shapes = std::mem::replace(g.entry(layer), saved);
+        shapes.all_entries().cloned().collect()
+    });
+    for primitive in painter
+        .ctx()
+        .tessellate(shapes, painter.ctx().pixels_per_point())
+    {
+        if let Primitive::Mesh(mut mesh) = primitive.primitive {
+            for vertex in &mut mesh.vertices {
+                vertex.pos += shift;
+            }
+            painter.add(egui::Shape::mesh(mesh));
+        }
+    }
+}
+
 // One owned snapshot and at most one worker per view. The worker has its own
 // egui context: running a second frame on the UI context would race its fonts
 // and paint lists. Content/display changes replace its render snapshot.
@@ -39,17 +79,47 @@ pub(super) enum Live {
     Mask(u16, MaskKind, bool),
     Details,
 }
+#[derive(Clone, Copy)]
+pub(super) enum Routes {
+    Artwork(u16),
+    Details(u16),
+    Mask(u16, MaskKind, bool),
+}
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) enum Group {
+    Board,
+    Artwork(u16, u8),
+    Details(u16, u8),
+    Mask(u16),
+    Polygons,
+}
+#[derive(Clone)]
+struct GroupCache {
+    signature: u64,
+    parts: Vec<Part>,
+}
+#[derive(Clone)]
+struct CachedMesh {
+    mesh: Arc<Mesh>,
+    gpu: Option<(Arc<gpu::Scene>, usize)>,
+    _atlas: TextureHandle,
+}
 #[derive(Clone)]
 enum Part {
+    Routes(Routes),
     Live(Uuid, Live),
     Connections,
-    Mesh(Arc<Mesh>),
+    Mesh(CachedMesh),
     Grid,
     Hatch(Uuid, Color32),
     Tools,
     Origin,
 }
 enum Capture {
+    Start(Group, u64),
+    End,
+    Reuse(Group, Arc<GroupCache>),
+    Routes(Routes),
     Live(Uuid, Live),
     Connections,
     Shapes(egui::layers::PaintList),
@@ -62,6 +132,8 @@ pub(super) struct Builder {
     layer: LayerId,
     saved: egui::layers::PaintList,
     captured: Vec<Capture>,
+    previous: BTreeMap<Group, Arc<GroupCache>>,
+    active: bool,
 }
 impl Builder {
     pub fn new(painter: &egui::Painter) -> Self {
@@ -72,6 +144,28 @@ impl Builder {
                 .ctx()
                 .graphics_mut(|g| std::mem::take(g.entry(layer))),
             captured: vec![],
+            previous: BTreeMap::new(),
+            active: false,
+        }
+    }
+    pub fn group(&mut self, painter: &egui::Painter, group: Group, signature: u64) -> bool {
+        self.end_group(painter);
+        self.flush(painter.ctx());
+        if let Some(old) = self.previous.get(&group)
+            && old.signature == signature
+        {
+            self.captured.push(Capture::Reuse(group, old.clone()));
+            return false;
+        }
+        self.captured.push(Capture::Start(group, signature));
+        self.active = true;
+        true
+    }
+    pub fn end_group(&mut self, painter: &egui::Painter) {
+        if self.active {
+            self.flush(painter.ctx());
+            self.captured.push(Capture::End);
+            self.active = false;
         }
     }
     fn flush(&mut self, ctx: &egui::Context) {
@@ -83,6 +177,10 @@ impl Builder {
     pub fn live(&mut self, painter: &egui::Painter, id: Uuid, live: Live) {
         self.flush(painter.ctx());
         self.captured.push(Capture::Live(id, live));
+    }
+    pub fn routes(&mut self, painter: &egui::Painter, pass: Routes) {
+        self.flush(painter.ctx());
+        self.captured.push(Capture::Routes(pass));
     }
     pub fn connections(&mut self, painter: &egui::Painter) {
         self.flush(painter.ctx());
@@ -116,6 +214,8 @@ pub(super) struct Cache {
     parts: Vec<Part>,
     atlas: Option<TextureHandle>,
     gpu: Option<Arc<gpu::Scene>>,
+    shared_key: Option<u64>,
+    groups: BTreeMap<Group, Arc<GroupCache>>,
     pub builds: usize,
 }
 impl Default for Cache {
@@ -129,13 +229,24 @@ impl Default for Cache {
             parts: vec![],
             atlas: None,
             gpu: None,
+            shared_key: None,
+            groups: BTreeMap::new(),
             builds: 0,
         }
     }
 }
 impl Cache {
+    #[cfg(test)]
+    pub(super) fn resident_scene(&self) -> Option<Arc<gpu::Scene>> {
+        self.gpu.clone()
+    }
     pub fn rebuild(&mut self, painter: &egui::Painter, board: &Board, view: &mut View, key: u64) {
-        let mut result = Self::build(painter, board, view, key, self.builds);
+        let shared_key = shared_key(board, view, painter.ctx());
+        let previous = (self.shared_key == shared_key
+            && shared_key.is_some()
+            && self.scale == view.camera.pixels_per_mm)
+            .then_some(&*self);
+        let mut result = Self::build_reusing(painter, board, view, key, self.builds, previous);
         result.refinement = self.refinement.clone();
         if view.pcb.preview.is_none() {
             result.seed(board, view, painter.ctx());
@@ -153,11 +264,24 @@ impl Cache {
         key: u64,
         builds: usize,
     ) -> Self {
+        Self::build_reusing(painter, board, view, key, builds, None)
+    }
+    fn build_reusing(
+        painter: &egui::Painter,
+        board: &Board,
+        view: &mut View,
+        key: u64,
+        builds: usize,
+        previous: Option<&Self>,
+    ) -> Self {
         let start = Instant::now();
         let mut scene_painter = painter.clone();
         // Include offscreen objects so navigation never leaves cached artwork.
         scene_painter.set_clip_rect(Rect::EVERYTHING);
         let mut builder = Builder::new(&scene_painter);
+        if let Some(previous) = previous {
+            builder.previous = previous.groups.clone();
+        }
         // Keep pixel rounding independent of the pan at capture time.
         let anchor = Bounds::points(&view.pcb.geometry.outline).centre();
         let camera = Camera {
@@ -171,14 +295,30 @@ impl Cache {
             ..Default::default()
         };
         result.finish(builder, &scene_painter, key, &camera, rect);
+        result.shared_key = shared_key(board, view, painter.ctx());
+        if result.gpu.is_none() {
+            result.gpu = previous.and_then(|cache| cache.gpu.clone());
+        }
         if std::env::var_os("PCBCRAFT_FRAME_PROFILE").is_some() {
+            let reused = previous.map_or(0, |old| {
+                result
+                    .groups
+                    .iter()
+                    .filter(|(id, group)| {
+                        old.groups
+                            .get(id)
+                            .is_some_and(|old| Arc::ptr_eq(old, group))
+                    })
+                    .count()
+            });
             eprintln!(
-                "pcb_artwork_build n={} cpu_ms={:.2} zoom={:.6} revision={} preview={}",
+                "pcb_artwork_build n={} cpu_ms={:.2} zoom={:.6} revision={} preview={} groups={} reused={reused}",
                 result.builds,
                 start.elapsed().as_secs_f64() * 1000.,
                 camera.pixels_per_mm,
                 view.pcb.three_d.revision,
                 view.pcb.preview_generation,
+                result.groups.len(),
             );
         }
         result
@@ -231,9 +371,27 @@ impl Cache {
                                 result.image.as_ref().unwrap().clone(),
                                 egui::TextureOptions::LINEAR,
                             );
+                            let mut remapped = HashMap::new();
+                            let mut remap = |part: &mut Part| {
+                                if let Part::Mesh(cached) = part {
+                                    let id = Arc::as_ptr(&cached.mesh) as usize;
+                                    cached.mesh = remapped
+                                        .entry(id)
+                                        .or_insert_with(|| {
+                                            let mut mesh = (*cached.mesh).clone();
+                                            mesh.texture_id = atlas.id();
+                                            Arc::new(mesh)
+                                        })
+                                        .clone();
+                                    cached._atlas = atlas.clone();
+                                }
+                            };
                             for part in &mut result.parts {
-                                if let Part::Mesh(mesh) = part {
-                                    Arc::make_mut(mesh).texture_id = atlas.id();
+                                remap(part);
+                            }
+                            for group in result.groups.values_mut() {
+                                for part in &mut Arc::make_mut(group).parts {
+                                    remap(part);
                                 }
                             }
                             result.atlas = Some(atlas);
@@ -301,6 +459,7 @@ impl Cache {
         rect: Rect,
     ) {
         let ctx = painter.ctx();
+        builder.end_group(painter);
         builder.flush(ctx);
         ctx.graphics_mut(|g| *g.entry(builder.layer) = builder.saved);
         self.parts.clear();
@@ -317,8 +476,23 @@ impl Cache {
             ));
         }
         let texture = self.atlas.as_ref().unwrap().id();
+        let mut new_meshes = vec![];
+        let mut ranges = vec![];
+        let mut group_start = None;
         for captured in builder.captured {
             match captured {
+                Capture::Start(group, signature) => {
+                    group_start = Some((group, signature, self.parts.len()));
+                }
+                Capture::End => {
+                    let (group, signature, start) = group_start.take().unwrap();
+                    ranges.push((group, signature, start..self.parts.len()));
+                }
+                Capture::Reuse(group, cached) => {
+                    self.parts.extend(cached.parts.iter().cloned());
+                    self.groups.insert(group, cached);
+                }
+                Capture::Routes(pass) => self.parts.push(Part::Routes(pass)),
                 Capture::Live(id, live) => self.parts.push(Part::Live(id, live)),
                 Capture::Connections => self.parts.push(Part::Connections),
                 Capture::Grid => self.parts.push(Part::Grid),
@@ -333,25 +507,48 @@ impl Cache {
                         if let Primitive::Mesh(mut mesh) = primitive {
                             debug_assert_eq!(mesh.texture_id, egui::TextureId::default());
                             mesh.texture_id = texture;
-                            self.parts.push(Part::Mesh(Arc::new(mesh)));
+                            new_meshes.push(self.parts.len());
+                            self.parts.push(Part::Mesh(CachedMesh {
+                                mesh: Arc::new(mesh),
+                                gpu: None,
+                                _atlas: self.atlas.as_ref().unwrap().clone(),
+                            }));
                         }
                     }
                 }
             }
         }
-        self.gpu = gpu::format(ctx).map(|format| {
-            gpu::Scene::new(
-                self.parts
-                    .iter()
-                    .filter_map(|part| match part {
-                        Part::Mesh(mesh) => Some(mesh.clone()),
-                        _ => None,
-                    })
-                    .collect(),
-                image.clone(),
-                format,
-            )
-        });
+        self.gpu = gpu::format(ctx)
+            .filter(|_| !new_meshes.is_empty())
+            .map(|format| {
+                gpu::Scene::new(
+                    new_meshes
+                        .iter()
+                        .filter_map(|index| match &self.parts[*index] {
+                            Part::Mesh(mesh) => Some(mesh.mesh.clone()),
+                            _ => None,
+                        })
+                        .collect(),
+                    image.clone(),
+                    format,
+                )
+            });
+        if let Some(gpu) = &self.gpu {
+            for (slot, index) in new_meshes.into_iter().enumerate() {
+                if let Part::Mesh(mesh) = &mut self.parts[index] {
+                    mesh.gpu = Some((gpu.clone(), slot));
+                }
+            }
+        }
+        for (group, signature, range) in ranges {
+            self.groups.insert(
+                group,
+                Arc::new(GroupCache {
+                    signature,
+                    parts: self.parts[range].to_vec(),
+                }),
+            );
+        }
         self.image = Some(image);
         self.scale = camera.pixels_per_mm;
         self.origin = camera.screen(Point::default(), rect);
@@ -366,54 +563,84 @@ impl Cache {
             world(&view.camera, rect.expand(2.).left_bottom(), rect),
             world(&view.camera, rect.expand(2.).right_top(), rect),
         ]);
-        let mut mesh_index = 0;
         for part in &self.parts {
             match part {
+                Part::Routes(pass) => paint_route_items(painter, board, view, rect, *pass),
                 Part::Connections => paint_connections(painter, board, &view.camera, view, rect),
                 Part::Live(id, live) => {
                     let item = &board.items[view.pcb.geometry.indices[id]];
-                    let camera = view.camera.clone();
-                    match *live {
-                        Live::Artwork(color) => {
-                            if !(view.pcb.display.draft[display::Settings::kind(item)]
-                                && paint_draft(
-                                    painter,
-                                    &camera,
-                                    rect,
-                                    item,
-                                    view.pcb.active_layer,
-                                    color,
-                                ))
-                            {
-                                paint_item(
-                                    painter,
-                                    &camera,
-                                    rect,
-                                    item,
-                                    view.pcb.active_layer,
-                                    color,
-                                    &mut view.pcb,
-                                );
-                            }
-                        }
-                        Live::Mask(layer, kind, bottom) => paint_mask(
+                    if let Live::Artwork(color) = *live
+                        && matches!(item.shape, Shape::Region { .. })
+                        && (matches!(item.shape, Shape::Region { cutout: true, .. })
+                            || item.keepout
+                            || item.properties.contains_key("PCBCRAFT_BODY_PROJECTION"))
+                        && !view.pcb.display.draft[display::Settings::kind(item)]
+                    {
+                        paint_item(
                             painter,
-                            board,
-                            &camera,
-                            view,
+                            &view.camera,
                             rect,
                             item,
-                            (layer, kind, bottom),
-                        ),
-                        Live::Details => paint_details(painter, board, &camera, view, rect, item),
-                    }
-                }
-                Part::Mesh(mesh) => {
-                    if let Some(gpu) = &self.gpu {
-                        painter.add(gpu.callback(mesh_index, rect, delta, scale, true));
-                        mesh_index += 1;
+                            view.pcb.active_layer,
+                            color,
+                            &mut view.pcb,
+                        );
                         continue;
                     }
+                    paint_live(
+                        painter,
+                        view,
+                        rect,
+                        |painter, camera, view, rect| match *live {
+                            Live::Artwork(color) => {
+                                if !(view.pcb.display.draft[display::Settings::kind(item)]
+                                    && paint_draft(
+                                        painter,
+                                        camera,
+                                        rect,
+                                        item,
+                                        view.pcb.active_layer,
+                                        color,
+                                    ))
+                                {
+                                    paint_item(
+                                        painter,
+                                        camera,
+                                        rect,
+                                        item,
+                                        view.pcb.active_layer,
+                                        color,
+                                        &mut view.pcb,
+                                    );
+                                }
+                            }
+                            Live::Mask(layer, kind, bottom) => paint_mask(
+                                painter,
+                                board,
+                                camera,
+                                view,
+                                rect,
+                                item,
+                                (layer, kind, bottom),
+                            ),
+                            Live::Details => {
+                                paint_details(painter, board, camera, view, rect, item)
+                            }
+                        },
+                    );
+                }
+                Part::Mesh(cached) => {
+                    if let Some((gpu, mesh_index)) = &cached.gpu {
+                        painter.add(gpu.callback(
+                            *mesh_index,
+                            rect,
+                            delta,
+                            scale,
+                            super::gpu::artwork_dither(painter.ctx()),
+                        ));
+                        continue;
+                    }
+                    let mesh = &cached.mesh;
                     let mesh = if delta == Vec2::ZERO && scale == 1. {
                         mesh.clone()
                     } else {
@@ -448,21 +675,11 @@ impl Cache {
     }
 }
 
-pub(super) fn key(board: &Board, view: &View, ctx: &egui::Context) -> u64 {
+fn common_hash(view: &View, ctx: &egui::Context) -> std::collections::hash_map::DefaultHasher {
     let pcb = &view.pcb;
     let mut hash = std::collections::hash_map::DefaultHasher::new();
     (
-        if pcb.preview_items.is_some() {
-            0
-        } else {
-            board as *const Board as usize
-        },
         pcb.three_d.revision,
-        if pcb.preview_items.is_some() {
-            0
-        } else {
-            pcb.preview_generation
-        },
         view.camera.mirrored_x,
         ctx.pixels_per_point().to_bits(),
     )
@@ -491,7 +708,80 @@ pub(super) fn key(board: &Board, view: &View, ctx: &egui::Context) -> u64 {
         pcb.polygons_visible,
     )
         .hash(&mut hash);
-    pcb.preview_items.hash(&mut hash);
+    pcb.display.paint_hash(&mut hash);
+    hash
+}
+fn shared_key(board: &Board, view: &View, ctx: &egui::Context) -> Option<u64> {
+    if view.pcb.preview.is_some() && view.pcb.route_preview.is_none() {
+        return None;
+    }
+    let mut hash = common_hash(view, ctx);
+    view.pcb
+        .route_preview
+        .as_ref()
+        .map_or(board.items.len(), |r| r.prefix)
+        .hash(&mut hash);
+    Some(hash.finish())
+}
+pub(super) fn group_signature<'a>(
+    board: &Board,
+    view: &BoardView,
+    items: impl IntoIterator<Item = &'a Item>,
+) -> u64 {
+    let mut hash = std::collections::hash_map::DefaultHasher::new();
+    let mut stale = false;
+    for item in items {
+        if view
+            .preview_items
+            .as_ref()
+            .is_some_and(|ids| ids.contains(&item.id))
+        {
+            item.id.hash(&mut hash);
+        }
+        stale |= board.pours_stale && item.polygon.is_some();
+    }
+    stale.hash(&mut hash);
+    hash.finish()
+}
+pub(super) fn key(board: &Board, view: &View, ctx: &egui::Context) -> u64 {
+    let pcb = &view.pcb;
+    let mut hash = common_hash(view, ctx);
+    (
+        if pcb.preview_items.is_some() {
+            0
+        } else {
+            board as *const Board as usize
+        },
+        if pcb.preview_items.is_some() {
+            0
+        } else {
+            pcb.preview_generation
+        },
+    )
+        .hash(&mut hash);
+    pcb.route_preview.is_some().hash(&mut hash);
+    if let Some(route) = &pcb.route_preview {
+        route.prefix.hash(&mut hash);
+        route.source_changes.hash(&mut hash);
+    } else {
+        pcb.preview_items.hash(&mut hash);
+        if let Some(ids) = &pcb.preview_items {
+            for id in ids {
+                let item = &board.items[pcb.geometry.indices[id]];
+                // A route can change layer/net or add a via. Those affect cached
+                // ordering, visibility and live colors even with stable identities.
+                (
+                    item.layer,
+                    item.net,
+                    item.component,
+                    item.keepout,
+                    item.polygon,
+                    std::mem::discriminant(&item.shape),
+                )
+                    .hash(&mut hash);
+            }
+        }
+    }
     board.pours_stale.hash(&mut hash);
     pcb.display.paint_hash(&mut hash);
     hash.finish()
@@ -500,6 +790,113 @@ pub(super) fn key(board: &Board, view: &View, ctx: &egui::Context) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn route_entry_reuses_stationary_groups_and_rebuilds_only_stale_copper() {
+        let ctx = egui::Context::default();
+        gpu::enable_gpu(&ctx, egui_wgpu::wgpu::TextureFormat::Rgba8Unorm);
+        let mut board = Board::default();
+        board.polygon_pours.push(eda_core::pcb_polygon::Polygon {
+            contour: [
+                Point::mm(-4, -4),
+                Point::mm(4, -4),
+                Point::mm(4, 4),
+                Point::mm(-4, 4),
+            ]
+            .map(|position| ContourVertex {
+                position,
+                arc: None,
+            })
+            .into(),
+            ..Default::default()
+        });
+        let mut copper = Item::new(
+            TOP,
+            None,
+            Shape::Fill {
+                start: Point::mm(-4, -4),
+                end: Point::mm(4, 4),
+                rotation: 0.,
+            },
+        );
+        copper.polygon = Some(0);
+        board.items.push(copper);
+        board.items.push(Item::new(
+            TOP,
+            None,
+            Shape::Track {
+                start: Point::mm(-2, 0),
+                end: Point::mm(2, 0),
+                width: 250_000,
+            },
+        ));
+        let mut view = View::default();
+        view.camera.fitted = true;
+        view.camera.pixels_per_mm = 20.;
+        view.pcb.initialize(&board);
+        view.pcb.display.connections = false;
+        view.pcb.visible.insert(37);
+        frame(&ctx, &board, &mut view, Pos2::new(400., 300.));
+        let original = view.pcb.paint_cache.groups.clone();
+        let source_gpu = Arc::downgrade(view.pcb.paint_cache.gpu.as_ref().unwrap());
+        let mut route = eda_core::pcb_route::RouteSession::begin(
+            &board,
+            0,
+            Point::mm(5, 5),
+            TOP,
+            None,
+            250_000,
+            0,
+        )
+        .unwrap();
+        route.conflict = eda_core::pcb_route::Conflict::Ignore;
+        for end in [Point::mm(6, 5), route.anchor, Point::mm(6, 6)] {
+            view.pcb.set_preview(None);
+            let preview = route.preview_shared(end).unwrap();
+            let stale = preview.board.pours_stale;
+            view.pcb.set_route_preview(preview);
+            frame(&ctx, &board, &mut view, Pos2::new(400., 300.));
+            for group in [
+                Group::Board,
+                Group::Artwork(TOP, 1),
+                Group::Details(TOP, 1),
+                Group::Mask(37),
+                Group::Polygons,
+            ] {
+                assert!(Arc::ptr_eq(
+                    &original[&group],
+                    &view.pcb.paint_cache.groups[&group]
+                ));
+            }
+            if stale {
+                assert!(!Arc::ptr_eq(
+                    &original[&Group::Artwork(TOP, 0)],
+                    &view.pcb.paint_cache.groups[&Group::Artwork(TOP, 0)]
+                ));
+            }
+        }
+        let before = view.pcb.paint_cache.groups.clone();
+        view.pcb.highlight_net = Some(0);
+        frame(&ctx, &board, &mut view, Pos2::new(400., 300.));
+        assert!(
+            before
+                .iter()
+                .all(|(id, old)| !Arc::ptr_eq(old, &view.pcb.paint_cache.groups[id]))
+        );
+        drop(original);
+        drop(before);
+        assert!(
+            source_gpu.upgrade().is_none(),
+            "expired groups retained old GPU resources"
+        );
+        let before = view.pcb.paint_cache.groups.clone();
+        view.pcb.three_d.revision += 1;
+        frame(&ctx, &board, &mut view, Pos2::new(400., 300.));
+        assert!(
+            before
+                .iter()
+                .all(|(id, old)| !Arc::ptr_eq(old, &view.pcb.paint_cache.groups[id]))
+        );
+    }
     fn frame(ctx: &egui::Context, board: &Board, view: &mut View, point: Pos2) {
         frame_with_texture_limit(ctx, board, view, point, 2048);
     }
@@ -653,8 +1050,9 @@ mod tests {
                 .iter()
                 .filter_map(|p| match p {
                     Part::Mesh(m) => Some((
-                        m.indices.clone(),
-                        m.vertices
+                        m.mesh.indices.clone(),
+                        m.mesh
+                            .vertices
                             .iter()
                             .map(|v| (v.pos, v.color))
                             .collect::<Vec<_>>(),

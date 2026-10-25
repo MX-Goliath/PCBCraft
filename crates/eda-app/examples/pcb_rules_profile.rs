@@ -52,6 +52,24 @@ fn main() -> Result<(), String> {
         return Ok(());
     }
     let board = document.pcb.ok_or("Not a PCB")?;
+    let args: Vec<_> = std::env::args().collect();
+    if let Some(pair) = args.windows(2).find(|pair| pair[0] == "--query") {
+        let mut matches = std::collections::BTreeMap::<String, usize>::new();
+        let mut owners = std::collections::BTreeSet::new();
+        for item in &board.items {
+            if eda_core::pcb_rules::query(&board, item, &pair[1])? {
+                *matches.entry(item.kind().into()).or_default() += 1;
+                if let Some(owner) = item
+                    .component
+                    .and_then(|index| board.components.iter().find(|c| c.index == index))
+                {
+                    owners.insert(owner.designator.clone());
+                }
+            }
+        }
+        println!("matches={matches:?} component_owners={owners:?}; source not written");
+        return Ok(());
+    }
     if std::env::args().any(|a| a == "--repour") {
         let start = std::time::Instant::now();
         let poured = eda_core::pcb_polygon::repour(&board)?;

@@ -21,10 +21,13 @@ mod stack_tests;
 #[path = "altium_pcb_write.rs"]
 pub mod writer;
 
+#[path = "altium_pcb_parameters.rs"]
+mod parameters;
 #[path = "altium_pcb_stack.rs"]
 mod stack_io;
 #[path = "pcb_step.rs"]
 mod step_io;
+pub(crate) use parameters::upgrade_component_parameters;
 
 const LIMIT: usize = 128 * 1024 * 1024;
 const MAX_BLOCK: usize = 16 * 1024 * 1024;
@@ -461,6 +464,7 @@ fn component(f: Fields, ns: Uuid, n: usize) -> Result<Component> {
         designator: f.text("SOURCEDESIGNATOR"),
         comment: f.text("SOURCECOMMENT"),
         footprint: f.text("PATTERN"),
+        parameters: Some(Default::default()),
         position: f.pos("X", "Y")?,
         rotation: f.num("ROTATION", 0.0)?,
         layer,
@@ -516,6 +520,7 @@ fn binary(bytes: &[u8], ns: Uuid) -> Result<Board> {
         "Board6",
         "Nets6",
         "Components6",
+        "PrimitiveParameters",
         "Rules6",
         "Polygons6",
         "Tracks6",
@@ -603,6 +608,9 @@ fn binary(bytes: &[u8], ns: Uuid) -> Result<Board> {
                 _ => {}
             }
         }
+    }
+    if let Some(data) = streams.get("/PrimitiveParameters/Data") {
+        parameters::import(&mut board, data)?;
     }
     let wide = streams
         .get("/WideStrings6/Data")

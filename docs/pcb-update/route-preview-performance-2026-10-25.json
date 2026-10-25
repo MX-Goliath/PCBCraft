@@ -1,0 +1,446 @@
+{
+  "schema_version": 1,
+  "date": "2026-10-25",
+  "scope": "PCB routing preview CPU submissions and bounded runtime/visual regression verification; full editor and Altium parity remain incomplete",
+  "source": {
+    "board": "ReferenceB/ReferenceBBoard.PcbDoc",
+    "items": 15513,
+    "components": 69,
+    "sha256": "redacted-source-sha256",
+    "written": false
+  },
+  "environment": {
+    "os": "Windows",
+    "cpu": "AMD Ryzen 7 8845H",
+    "gpu": "AMD Radeon 780M",
+    "rust": "1.90.0",
+    "profile": "optimized dev, opt-level=2",
+    "canvas_logical_pixels": [
+      1000,
+      800
+    ],
+    "pixels_per_mm": 15,
+    "net": "ExampleGround",
+    "samples_per_run": 60,
+    "gpu_callbacks": "Submitted to egui, not executed in timing example",
+    "connections_enabled": true,
+    "baseline_canvas_warmed": true,
+    "session_construction_timed": false,
+    "concurrency": "Source-reuse profiles ran sequentially, before cross-compilation and GUI launch. The earlier final-full-reference run may overlap GUI startup. No hardware frequency control; preserve all runs rather than choosing the fastest."
+  },
+  "runs": [
+    {
+      "name": "before.txt",
+      "stage": "original_full_preview",
+      "full_redraw_control": false,
+      "varied": false,
+      "samples": 60,
+      "route_legs_total": 119,
+      "metrics": {
+        "target": {
+          "median_ms": 0.1364,
+          "p95_ms": 0.2737,
+          "max_ms": 0.5548
+        },
+        "model": {
+          "median_ms": 12.2317,
+          "p95_ms": 16.6052,
+          "max_ms": 21.0599
+        },
+        "publish": {
+          "median_ms": 4.8573,
+          "p95_ms": 6.0946,
+          "max_ms": 9.4964
+        },
+        "canvas+tessellate": {
+          "median_ms": 39.3744,
+          "p95_ms": 46.1246,
+          "max_ms": 64.2051
+        },
+        "combined": {
+          "median_ms": 57.523,
+          "p95_ms": 64.6967,
+          "max_ms": 82.3728
+        }
+      },
+      "raw_summary": "items=15513 samples=60 legs=119 net=ExampleGround\r\ntarget: median_ms=0.1364 p95_ms=0.2737 max_ms=0.5548\r\nmodel: median_ms=12.2317 p95_ms=16.6052 max_ms=21.0599\r\npublish: median_ms=4.8573 p95_ms=6.0946 max_ms=9.4964\r\ncanvas+tessellate: median_ms=39.3744 p95_ms=46.1246 max_ms=64.2051\r\ncombined: median_ms=57.5230 p95_ms=64.6967 max_ms=82.3728\r\n"
+    },
+    {
+      "name": "cold-build.txt",
+      "stage": "initial_reusable_preview",
+      "full_redraw_control": false,
+      "varied": false,
+      "samples": 60,
+      "route_legs_total": 119,
+      "metrics": {
+        "target": {
+          "median_ms": 0.3497,
+          "p95_ms": 0.5169,
+          "max_ms": 0.8258,
+          "over_16_7ms": 0,
+          "over_33ms": 0
+        },
+        "model": {
+          "median_ms": 4.1186,
+          "p95_ms": 5.4172,
+          "max_ms": 13.455,
+          "over_16_7ms": 0,
+          "over_33ms": 0
+        },
+        "publish": {
+          "median_ms": 0.0013,
+          "p95_ms": 0.0059,
+          "max_ms": 0.0091,
+          "over_16_7ms": 0,
+          "over_33ms": 0
+        },
+        "canvas+tessellate": {
+          "median_ms": 2.8448,
+          "p95_ms": 5.3119,
+          "max_ms": 74.1153,
+          "over_16_7ms": 1,
+          "over_33ms": 1
+        },
+        "combined": {
+          "median_ms": 7.391,
+          "p95_ms": 10.3387,
+          "max_ms": 87.7613,
+          "over_16_7ms": 1,
+          "over_33ms": 1
+        }
+      },
+      "raw_summary": "pcb_artwork_build n=1 cpu_ms=35.30 zoom=15.000000 revision=0 preview=0\r\npcb_artwork_build n=2 cpu_ms=30.35 zoom=15.000000 revision=0 preview=1\r\nitems=15513 samples=60 legs=119 net=ExampleGround\r\ntarget: median_ms=0.3497 p95_ms=0.5169 max_ms=0.8258 over_16_7ms=0 over_33ms=0\r\nmodel: median_ms=4.1186 p95_ms=5.4172 max_ms=13.4550 over_16_7ms=0 over_33ms=0\r\npublish: median_ms=0.0013 p95_ms=0.0059 max_ms=0.0091 over_16_7ms=0 over_33ms=0\r\ncanvas+tessellate: median_ms=2.8448 p95_ms=5.3119 max_ms=74.1153 over_16_7ms=1 over_33ms=1\r\ncombined: median_ms=7.3910 p95_ms=10.3387 max_ms=87.7613 over_16_7ms=1 over_33ms=1\r\n"
+    },
+    {
+      "name": "final-after.txt",
+      "stage": "initial_reusable_preview",
+      "full_redraw_control": false,
+      "varied": false,
+      "samples": 60,
+      "route_legs_total": 119,
+      "metrics": {
+        "target": {
+          "median_ms": 0.1372,
+          "p95_ms": 0.4726,
+          "max_ms": 0.6257,
+          "over_16_7ms": 0,
+          "over_33ms": 0
+        },
+        "model": {
+          "median_ms": 3.9585,
+          "p95_ms": 4.7927,
+          "max_ms": 20.1642,
+          "over_16_7ms": 1,
+          "over_33ms": 0
+        },
+        "publish": {
+          "median_ms": 0.001,
+          "p95_ms": 0.003,
+          "max_ms": 0.0032,
+          "over_16_7ms": 0,
+          "over_33ms": 0
+        },
+        "canvas+tessellate": {
+          "median_ms": 1.6253,
+          "p95_ms": 4.6621,
+          "max_ms": 70.5004,
+          "over_16_7ms": 1,
+          "over_33ms": 1
+        },
+        "combined": {
+          "median_ms": 5.7226,
+          "p95_ms": 9.0993,
+          "max_ms": 90.7778,
+          "over_16_7ms": 1,
+          "over_33ms": 1
+        }
+      },
+      "raw_summary": "items=15513 samples=60 legs=119 net=ExampleGround\r\ntarget: median_ms=0.1372 p95_ms=0.4726 max_ms=0.6257 over_16_7ms=0 over_33ms=0\r\nmodel: median_ms=3.9585 p95_ms=4.7927 max_ms=20.1642 over_16_7ms=1 over_33ms=0\r\npublish: median_ms=0.0010 p95_ms=0.0030 max_ms=0.0032 over_16_7ms=0 over_33ms=0\r\ncanvas+tessellate: median_ms=1.6253 p95_ms=4.6621 max_ms=70.5004 over_16_7ms=1 over_33ms=1\r\ncombined: median_ms=5.7226 p95_ms=9.0993 max_ms=90.7778 over_16_7ms=1 over_33ms=1\r\n"
+    },
+    {
+      "name": "final-full-reference.txt",
+      "stage": "initial_reusable_preview",
+      "full_redraw_control": true,
+      "varied": false,
+      "samples": 60,
+      "route_legs_total": 119,
+      "metrics": {
+        "target": {
+          "median_ms": 0.1427,
+          "p95_ms": 0.4071,
+          "max_ms": 0.5779,
+          "over_16_7ms": 0,
+          "over_33ms": 0
+        },
+        "model": {
+          "median_ms": 13.5021,
+          "p95_ms": 21.5003,
+          "max_ms": 22.7308,
+          "over_16_7ms": 16,
+          "over_33ms": 0
+        },
+        "publish": {
+          "median_ms": 5.4906,
+          "p95_ms": 10.3521,
+          "max_ms": 17.0162,
+          "over_16_7ms": 1,
+          "over_33ms": 0
+        },
+        "canvas+tessellate": {
+          "median_ms": 43.5994,
+          "p95_ms": 56.9084,
+          "max_ms": 68.1437,
+          "over_16_7ms": 60,
+          "over_33ms": 60
+        },
+        "combined": {
+          "median_ms": 65.4687,
+          "p95_ms": 80.3977,
+          "max_ms": 89.1223,
+          "over_16_7ms": 60,
+          "over_33ms": 60
+        }
+      },
+      "raw_summary": "items=15513 samples=60 legs=119 net=ExampleGround\ntarget: median_ms=0.1427 p95_ms=0.4071 max_ms=0.5779 over_16_7ms=0 over_33ms=0\nmodel: median_ms=13.5021 p95_ms=21.5003 max_ms=22.7308 over_16_7ms=16 over_33ms=0\npublish: median_ms=5.4906 p95_ms=10.3521 max_ms=17.0162 over_16_7ms=1 over_33ms=0\ncanvas+tessellate: median_ms=43.5994 p95_ms=56.9084 max_ms=68.1437 over_16_7ms=60 over_33ms=60\ncombined: median_ms=65.4687 p95_ms=80.3977 max_ms=89.1223 over_16_7ms=60 over_33ms=60\n"
+    },
+    {
+      "name": "final-varied.txt",
+      "stage": "initial_reusable_preview",
+      "full_redraw_control": false,
+      "varied": true,
+      "samples": 60,
+      "route_legs_total": 84,
+      "metrics": {
+        "target": {
+          "median_ms": 0.1286,
+          "p95_ms": 0.4266,
+          "max_ms": 0.6663,
+          "over_16_7ms": 0,
+          "over_33ms": 0
+        },
+        "model": {
+          "median_ms": 4.6554,
+          "p95_ms": 5.0031,
+          "max_ms": 16.4015,
+          "over_16_7ms": 0,
+          "over_33ms": 0
+        },
+        "publish": {
+          "median_ms": 0.0011,
+          "p95_ms": 0.0025,
+          "max_ms": 0.0031,
+          "over_16_7ms": 0,
+          "over_33ms": 0
+        },
+        "canvas+tessellate": {
+          "median_ms": 1.6271,
+          "p95_ms": 4.0611,
+          "max_ms": 69.626,
+          "over_16_7ms": 1,
+          "over_33ms": 1
+        },
+        "combined": {
+          "median_ms": 6.3729,
+          "p95_ms": 9.2021,
+          "max_ms": 86.1332,
+          "over_16_7ms": 1,
+          "over_33ms": 1
+        }
+      },
+      "raw_summary": "items=15513 samples=60 legs=84 net=ExampleGround\ntarget: median_ms=0.1286 p95_ms=0.4266 max_ms=0.6663 over_16_7ms=0 over_33ms=0\nmodel: median_ms=4.6554 p95_ms=5.0031 max_ms=16.4015 over_16_7ms=0 over_33ms=0\npublish: median_ms=0.0011 p95_ms=0.0025 max_ms=0.0031 over_16_7ms=0 over_33ms=0\ncanvas+tessellate: median_ms=1.6271 p95_ms=4.0611 max_ms=69.6260 over_16_7ms=1 over_33ms=1\ncombined: median_ms=6.3729 p95_ms=9.2021 max_ms=86.1332 over_16_7ms=1 over_33ms=1\n"
+    },
+    {
+      "name": "source-reuse-after.txt",
+      "stage": "reused_source_geometry",
+      "full_redraw_control": false,
+      "varied": false,
+      "samples": 60,
+      "route_legs_total": 119,
+      "metrics": {
+        "target": {
+          "median_ms": 0.3339,
+          "p95_ms": 0.4627,
+          "max_ms": 1.1731,
+          "over_16_7ms": 0,
+          "over_33ms": 0
+        },
+        "model": {
+          "median_ms": 3.9686,
+          "p95_ms": 4.7608,
+          "max_ms": 18.65,
+          "over_16_7ms": 1,
+          "over_33ms": 0
+        },
+        "publish": {
+          "median_ms": 0.0016,
+          "p95_ms": 0.0047,
+          "max_ms": 0.011,
+          "over_16_7ms": 0,
+          "over_33ms": 0
+        },
+        "canvas+tessellate": {
+          "median_ms": 2.9875,
+          "p95_ms": 5.2516,
+          "max_ms": 53.6047,
+          "over_16_7ms": 1,
+          "over_33ms": 1
+        },
+        "combined": {
+          "median_ms": 7.1928,
+          "p95_ms": 9.6066,
+          "max_ms": 72.375,
+          "over_16_7ms": 1,
+          "over_33ms": 1
+        }
+      },
+      "raw_summary": "items=15513 samples=60 legs=119 net=ExampleGround\r\ntarget: median_ms=0.3339 p95_ms=0.4627 max_ms=1.1731 over_16_7ms=0 over_33ms=0\r\nmodel: median_ms=3.9686 p95_ms=4.7608 max_ms=18.6500 over_16_7ms=1 over_33ms=0\r\npublish: median_ms=0.0016 p95_ms=0.0047 max_ms=0.0110 over_16_7ms=0 over_33ms=0\r\ncanvas+tessellate: median_ms=2.9875 p95_ms=5.2516 max_ms=53.6047 over_16_7ms=1 over_33ms=1\r\ncombined: median_ms=7.1928 p95_ms=9.6066 max_ms=72.3750 over_16_7ms=1 over_33ms=1\r\n"
+    },
+    {
+      "name": "source-reuse-full-reference.txt",
+      "stage": "reused_source_geometry",
+      "full_redraw_control": true,
+      "varied": false,
+      "samples": 60,
+      "route_legs_total": 119,
+      "metrics": {
+        "target": {
+          "median_ms": 0.1645,
+          "p95_ms": 0.7207,
+          "max_ms": 2.075,
+          "over_16_7ms": 0,
+          "over_33ms": 0
+        },
+        "model": {
+          "median_ms": 17.1894,
+          "p95_ms": 24.2623,
+          "max_ms": 27.4885,
+          "over_16_7ms": 31,
+          "over_33ms": 0
+        },
+        "publish": {
+          "median_ms": 7.2899,
+          "p95_ms": 18.4056,
+          "max_ms": 21.1432,
+          "over_16_7ms": 6,
+          "over_33ms": 0
+        },
+        "canvas+tessellate": {
+          "median_ms": 56.9446,
+          "p95_ms": 69.3642,
+          "max_ms": 81.8072,
+          "over_16_7ms": 60,
+          "over_33ms": 60
+        },
+        "combined": {
+          "median_ms": 83.2955,
+          "p95_ms": 103.6451,
+          "max_ms": 112.6602,
+          "over_16_7ms": 60,
+          "over_33ms": 60
+        }
+      },
+      "raw_summary": "items=15513 samples=60 legs=119 net=ExampleGround\r\ntarget: median_ms=0.1645 p95_ms=0.7207 max_ms=2.0750 over_16_7ms=0 over_33ms=0\r\nmodel: median_ms=17.1894 p95_ms=24.2623 max_ms=27.4885 over_16_7ms=31 over_33ms=0\r\npublish: median_ms=7.2899 p95_ms=18.4056 max_ms=21.1432 over_16_7ms=6 over_33ms=0\r\ncanvas+tessellate: median_ms=56.9446 p95_ms=69.3642 max_ms=81.8072 over_16_7ms=60 over_33ms=60\r\ncombined: median_ms=83.2955 p95_ms=103.6451 max_ms=112.6602 over_16_7ms=60 over_33ms=60\r\n"
+    },
+    {
+      "name": "source-reuse-varied.txt",
+      "stage": "reused_source_geometry",
+      "full_redraw_control": false,
+      "varied": true,
+      "samples": 60,
+      "route_legs_total": 84,
+      "metrics": {
+        "target": {
+          "median_ms": 0.3588,
+          "p95_ms": 0.5045,
+          "max_ms": 0.6441,
+          "over_16_7ms": 0,
+          "over_33ms": 0
+        },
+        "model": {
+          "median_ms": 4.708,
+          "p95_ms": 4.9467,
+          "max_ms": 15.3999,
+          "over_16_7ms": 0,
+          "over_33ms": 0
+        },
+        "publish": {
+          "median_ms": 0.0016,
+          "p95_ms": 0.0068,
+          "max_ms": 0.0092,
+          "over_16_7ms": 0,
+          "over_33ms": 0
+        },
+        "canvas+tessellate": {
+          "median_ms": 2.6487,
+          "p95_ms": 5.0289,
+          "max_ms": 46.7954,
+          "over_16_7ms": 1,
+          "over_33ms": 1
+        },
+        "combined": {
+          "median_ms": 7.6839,
+          "p95_ms": 10.3159,
+          "max_ms": 62.3378,
+          "over_16_7ms": 1,
+          "over_33ms": 1
+        }
+      },
+      "raw_summary": "items=15513 samples=60 legs=84 net=ExampleGround\r\ntarget: median_ms=0.3588 p95_ms=0.5045 max_ms=0.6441 over_16_7ms=0 over_33ms=0\r\nmodel: median_ms=4.7080 p95_ms=4.9467 max_ms=15.3999 over_16_7ms=0 over_33ms=0\r\npublish: median_ms=0.0016 p95_ms=0.0068 max_ms=0.0092 over_16_7ms=0 over_33ms=0\r\ncanvas+tessellate: median_ms=2.6487 p95_ms=5.0289 max_ms=46.7954 over_16_7ms=1 over_33ms=1\r\ncombined: median_ms=7.6839 p95_ms=10.3159 max_ms=62.3378 over_16_7ms=1 over_33ms=1\r\n"
+    }
+  ],
+  "validation": {
+    "workspace_tests": 449,
+    "breakdown": {
+      "app": 99,
+      "core": 176,
+      "geom": 1,
+      "io": 74,
+      "render": 99
+    },
+    "fmt_all_check": "passed",
+    "strict_workspace_all_target_clippy": "passed",
+    "windows_dev_build": "passed",
+    "linux_gnu_all_target_check": "passed, compilation only; no Linux runtime",
+    "gpu_readback": {
+      "formats": [
+        "Rgba8Unorm",
+        "Rgba8UnormSrgb"
+      ],
+      "max_channel_error_without_dither": 1,
+      "max_channel_error_with_production_dither": 3,
+      "cases": [
+        "variable route tails",
+        "source split",
+        "placement",
+        "via",
+        "backtrack",
+        "mask",
+        "highlight",
+        "draft",
+        "mirrored camera",
+        "single-layer"
+      ],
+      "stationary_scene_buffers_reused": true
+    },
+    "native_windows": {
+      "logical_window": [
+        1707,
+        1019
+      ],
+      "board": "full native ReferenceB board",
+      "net": "NetC13_2",
+      "initial_preview_build": "place, Backspace: 8.173 -> 7.845 mm, place again, Finish, Undo/Redo/Undo; clean title restored",
+      "source_reuse_build": "Fit Board; NetC13_2 preview motion and placement (net length 7.845 -> 8.173 mm), Escape to Finish, Ctrl+Z to clean title and original artwork; source not saved",
+      "source_hash_after_initial_window": "unchanged",
+      "source_saved": false
+    }
+  },
+  "limitations": [
+    "One of 60 optimized samples still exceeds 33 ms, including after source-geometry reuse.",
+    "CPU submission timings are not presented FPS, GPU duration or end-to-end input latency.",
+    "First preview still rebuilds stationary artwork and prepares original-board snapping geometry.",
+    "Placement, layer/via changes, Finish and History keep full board validation and may stall.",
+    "Large polygon distance calculations, long routes, other boards/hardware, retained external snapshots, repour and globally changed display states remain incomplete performance coverage.",
+    "Linux runtime, new AppImage and exact Altium functional/visual parity are unverified."
+  ]
+}

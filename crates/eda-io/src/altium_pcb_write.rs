@@ -932,6 +932,7 @@ fn supported_dependency_guard(
             "UniqueIDPrimitiveInformation",
             "ExtendedPrimitiveInformation",
             "PrimitiveGuids",
+            "PrimitiveParameters",
             "PinPairsSection",
             "Connections6",
             "FromTos6",
@@ -1709,6 +1710,9 @@ fn verify_tables(expected: &Board, actual: &Board, maps: Option<&Maps>) -> Resul
             .find(|a| Some(a.index) == index(1, c.index))
             .ok_or("Missing saved component")?;
         if c.designator != a.designator
+            || c.parameters
+                .as_ref()
+                .is_some_and(|p| a.parameters.as_ref() != Some(p))
             || c.comment != a.comment
             || c.footprint != a.footprint
             || c.layer != a.layer
@@ -2023,6 +2027,17 @@ pub fn serialize(doc: &Document, format: Format) -> Result<Vec<u8>> {
         return Err(
             "Creating native rule records is not supported; keep this document in JSON".into(),
         );
+    }
+    for component in &board.components {
+        let original_parameters = old_board
+            .and_then(|b| b.components.iter().find(|c| c.index == component.index))
+            .and_then(|c| c.parameters.as_ref());
+        if component.parameters.as_ref().is_some_and(|parameters| {
+            !binary && !parameters.is_empty()
+                || parameters != original_parameters.unwrap_or(&Fields::new())
+        }) {
+            return Err("Native writing of changed component parameters is not implemented; keep the edit in PCBCraft JSON".into());
+        }
     }
     if !binary {
         for item in &board.items {

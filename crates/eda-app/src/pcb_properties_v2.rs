@@ -1365,7 +1365,7 @@ fn routing(
         read_row(ui, "Class", "N/A");
         ui.separator();
         let length = ed.route_session.as_ref().map(|r| {
-            r.draft
+            r.draft()
                 .items
                 .iter()
                 .filter(|i| r.net.is_some() && i.net == r.net)

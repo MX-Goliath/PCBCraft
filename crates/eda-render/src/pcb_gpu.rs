@@ -45,6 +45,18 @@ pub(super) fn copy_configuration(from: &Context, to: &Context) {
 pub(crate) fn format(ctx: &Context) -> Option<wgpu::TextureFormat> {
     ctx.data_mut(|data| data.get_temp(egui::Id::new("pcb-gpu-format")))
 }
+pub(super) fn artwork_dither(ctx: &Context) -> bool {
+    #[cfg(test)]
+    {
+        ctx.data_mut(|data| data.get_temp::<bool>(egui::Id::new("pcb-artwork-test-dither")))
+            .unwrap_or(true)
+    }
+    #[cfg(not(test))]
+    {
+        let _ = ctx;
+        true
+    }
+}
 pub(super) struct Scene {
     meshes: Vec<Arc<Mesh>>,
     image: ColorImage,
@@ -56,6 +68,7 @@ struct Buffers {
     uniform: wgpu::Buffer,
     bindings: wgpu::BindGroup,
     meshes: Vec<(wgpu::Buffer, wgpu::Buffer)>,
+    camera: Option<[f32; 8]>,
 }
 impl Scene {
     pub fn new(
@@ -243,6 +256,7 @@ impl Scene {
             uniform,
             bindings,
             meshes,
+            camera: None,
         }
     }
 }
@@ -263,8 +277,9 @@ impl CallbackTrait for Draw {
         _: &mut wgpu::CommandEncoder,
         _: &mut CallbackResources,
     ) -> Vec<wgpu::CommandBuffer> {
-        // All callbacks in this scene share one camera; only the first writes it.
-        if self.mesh == 0 {
+        // Reused groups may omit mesh zero from an older scene. Every submitted
+        // callback must therefore be able to prepare that scene's camera.
+        {
             let mut prepared = self.scene.prepared.lock().unwrap();
             let buffers = prepared.get_or_insert_with(|| self.scene.prepare(device, queue));
             let viewport = egui::PaintCallbackInfo {
@@ -287,7 +302,10 @@ impl CallbackTrait for Draw {
                 0.,
                 0.,
             ];
-            queue.write_buffer(&buffers.uniform, 0, bytemuck::cast_slice(&uniform));
+            if buffers.camera != Some(uniform) {
+                queue.write_buffer(&buffers.uniform, 0, bytemuck::cast_slice(&uniform));
+                buffers.camera = Some(uniform);
+            }
         }
         vec![]
     }
@@ -316,6 +334,8 @@ impl CallbackTrait for Draw {
 
 #[cfg(test)]
 mod tests {
+    #[path = "pcb_route_gpu_tests.rs"]
+    mod routing;
     use super::*;
     use egui::{
         Color32, Pos2,

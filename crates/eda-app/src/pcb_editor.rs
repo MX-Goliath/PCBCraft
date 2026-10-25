@@ -510,6 +510,20 @@ fn finish_route(doc: &mut OpenDocument, ed: &mut Editor) -> Result<(), String> {
     }
     Ok(())
 }
+fn publish_route_preview(
+    view: &mut View,
+    route: &mut RouteSession,
+    end: Point,
+) -> Result<(), String> {
+    if route.preview_current(end) && view.pcb.preview().is_some() {
+        return Ok(());
+    }
+    // Release the UI's previous snapshot before updating reusable storage.
+    // A worker retaining it triggers copy-on-write, preserving its immutable data.
+    view.pcb.set_preview(None);
+    view.pcb.set_route_preview(route.preview_shared(end)?);
+    Ok(())
+}
 pub(super) fn prepare_save(doc: &mut OpenDocument) -> Result<(), String> {
     let mut ed = std::mem::take(&mut doc.pcb_editor);
     let result = (|| -> Result<(), String> {
@@ -538,7 +552,7 @@ fn route_layer(doc: &mut OpenDocument, ed: &mut Editor, layer: u16) -> Result<()
                 ed.diameter,
                 ed.drill,
             )?;
-            doc.view.pcb.set_preview(Some(route.draft.clone()));
+            publish_route_preview(&mut doc.view, route, route.anchor)?;
         }
     }
     doc.view.pcb.active_layer = layer;
@@ -1244,32 +1258,30 @@ fn input(
                         && end != route.anchor
                         && route.points(end).last() == Some(&end);
                     route.place(end, hit)?;
-                    doc.view.pcb.set_preview(Some(route.draft.clone()));
                     if finishes {
                         finish_route(doc, ed)?;
+                    } else {
+                        publish_route_preview(&mut doc.view, route, route.anchor)?;
                     }
                 } else {
-                    doc.view.pcb.set_preview(Some(route.preview(end)?));
+                    publish_route_preview(&mut doc.view, route, end)?;
                 }
             } else if i.clicked {
-                let route = RouteSession::begin(
+                // Free-space starts use the grid; existing pads/tracks use exact geometry.
+                let hit = pcb_route::target(board, i.raw_point.unwrap_or(p), layer, tol);
+                let mut route = RouteSession::begin(
                     board,
                     doc.history.revision,
-                    i.raw_point.unwrap_or(p),
+                    if hit.is_some() {
+                        i.raw_point.unwrap_or(p)
+                    } else {
+                        p
+                    },
                     layer,
                     ed.net,
                     ed.width,
-                    tol,
+                    if hit.is_some() { tol } else { 0 },
                 )?;
-                // Free-space starts use the grid; existing pads/tracks use exact geometry.
-                let route = if pcb_route::target(board, i.raw_point.unwrap_or(p), layer, tol)
-                    .is_none()
-                {
-                    RouteSession::begin(board, doc.history.revision, p, layer, ed.net, ed.width, 0)?
-                } else {
-                    route
-                };
-                let mut route = route;
                 ed.width = route.width;
                 let via = Item::new(
                     pcb::MULTI_LAYER,
@@ -1293,7 +1305,8 @@ fn input(
                 route.conflict = ed.conflict;
                 route.clearance = ed.clearance;
                 ed.net = route.net;
-                doc.view.pcb.set_preview(Some(route.draft.clone()));
+                let anchor = route.anchor;
+                publish_route_preview(&mut doc.view, &mut route, anchor)?;
                 ed.route_session = Some(route);
             }
         }
@@ -1623,7 +1636,7 @@ impl PcbCraft {
                     if let Some(route) = &mut ed.route_session {
                         if route.backtrack() {
                             doc.view.pcb.active_layer = route.layer;
-                            doc.view.pcb.set_preview(Some(route.draft.clone()));
+                            publish_route_preview(&mut doc.view, route, route.anchor)?;
                         } else {
                             ed.route_session = None;
                             doc.view.pcb.set_preview(None);
@@ -1712,6 +1725,7 @@ impl PcbCraft {
                         designator,
                         comment: String::new(),
                         footprint: "Local footprint".into(),
+                        parameters: Some(Default::default()),
                         position,
                         rotation: 0.0,
                         layer: doc.view.pcb.active_layer,
@@ -2348,6 +2362,7 @@ mod controller_tests {
             designator: "U10".into(),
             comment: String::new(),
             footprint: "SOT23".into(),
+            parameters: Some(Default::default()),
             position: Point::mm(10, 0),
             rotation: 0.0,
             layer: pcb::TOP,
@@ -2483,6 +2498,7 @@ mod controller_tests {
                     designator: format!("U{index}"),
                     comment: String::new(),
                     footprint: String::new(),
+                    parameters: Some(Default::default()),
                     position: Point::mm(10, 0),
                     rotation: 0.0,
                     layer,
@@ -2595,7 +2611,7 @@ mod controller_tests {
         assert_eq!(d.view.pcb.active_layer, pcb::BOTTOM);
         let route = ed.route_session.as_ref().unwrap();
         assert_eq!(route.layer, pcb::BOTTOM);
-        assert!(route.draft.items.iter().any(|item| matches!(
+        assert!(route.draft().items.iter().any(|item| matches!(
             item.shape,
             Shape::Via {
                 position,
@@ -2633,6 +2649,31 @@ mod controller_tests {
         assert_eq!(d.history.revision, 1);
         d.history.undo(&mut d.model);
         assert_eq!(d.model, original);
+    }
+    #[test]
+    fn unchanged_route_pointer_reuses_snapshot_generation_and_storage() {
+        let mut d = doc();
+        let before = d.model.clone();
+        let mut ed = Editor::default();
+        ed.set_tool(Tool::Route, &mut d.view);
+        let ctx = egui::Context::default();
+        input(&mut d, &mut ed, &mut None, click(10, 0), &ctx).unwrap();
+        let movement = Input {
+            clicked: false,
+            ..click(13, 2)
+        };
+        input(&mut d, &mut ed, &mut None, movement.clone(), &ctx).unwrap();
+        let generation = d.view.pcb.preview_generation();
+        let address = d.view.pcb.preview().unwrap() as *const Board;
+        for _ in 0..20 {
+            input(&mut d, &mut ed, &mut None, movement.clone(), &ctx).unwrap();
+            assert_eq!(d.view.pcb.preview_generation(), generation);
+            assert_eq!(d.view.pcb.preview().unwrap() as *const Board, address);
+        }
+        assert_eq!(d.model, before);
+        assert_eq!(d.history.revision, 0);
+        ed.cancel(&mut d.view);
+        assert!(d.view.pcb.preview().is_none());
     }
     #[test]
     fn cancel_route_does_not_leave_splits_or_new_tracks() {

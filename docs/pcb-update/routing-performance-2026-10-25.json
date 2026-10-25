@@ -1,0 +1,49 @@
+{
+  "date": "2026-10-25",
+  "platform": "Windows x86_64, AMD Ryzen 7 8845H, Radeon 780M",
+  "build": "Rust 1.90.0, optimized dev profile, opt-level=2",
+  "baseline": "506b1c8 plus the same pcb_route_query_profile workload",
+  "scope": "Model-space solver CPU wall time; excludes painting, GPU presentation and end-to-end input latency. One run per version, 120 cursor positions per conflict mode. Final run had the GUI open; these are workload-specific measurements.",
+  "workload": {
+    "items": 40001,
+    "remote_tracks": 40000,
+    "local_obstacle": "400000 nm wide vertical track at x=5 mm, y=-2..2 mm, stored last",
+    "anchor_mm": [0, 0],
+    "route_width_nm": 250000,
+    "clearance_nm": 200000,
+    "targets_nm": "x=10000000, y=sample*1000-60000, sample=0..119"
+  },
+  "before": {
+    "prepare_ms": 12.234,
+    "stop": {"median_ms": 4.0011, "p95_ms": 7.1388, "max_ms": 9.8049, "legs": 239},
+    "walkaround": {"median_ms": 1.9503, "p95_ms": 2.6895, "max_ms": 3.4271, "legs": 539}
+  },
+  "after": {
+    "prepare_ms": 27.768,
+    "stop": {"median_ms": 0.0084, "p95_ms": 0.0100, "max_ms": 0.0503, "legs": 239},
+    "walkaround": {"median_ms": 0.0056, "p95_ms": 0.0062, "max_ms": 0.0182, "legs": 539}
+  },
+  "native_board": {
+    "file": "ReferenceB/ReferenceBBoard.PcbDoc",
+    "sha256_before_and_after": "redacted-source-sha256",
+    "items": 15513,
+    "components": 69,
+    "before": "Route startup abort: Unsupported query: InPadClass('TP_Pads') Or CompParameterValue('ID') Like '216'",
+    "after": {
+      "net": "ExampleGround",
+      "prepare_ms": 21.77,
+      "solve_ms": [4.76, 3.84, 3.96],
+      "preview_place_finish_undo_ms": 79.96,
+      "matching_id_216_pads": 24,
+      "gui": "Native PCBCraft window: Fit Board, start NetC13_2, place leg, Escape finish, Ctrl+Z returns clean. No source save."
+    }
+  },
+  "remaining": [
+    "Initial obstacle preparation is more expensive because it builds an R-tree.",
+    "Preview copies, full validation and whole-scene artwork rebuilding remain synchronous.",
+    "Large overlapping polygon distance calculations remain expensive.",
+    "Full query language, variants, parameter editing/native writing and exact Altium parity remain incomplete.",
+    "Altium 24.4.1 PCB Filter returned a script error for the comparison query, so no live matching-count parity is claimed.",
+    "No new Linux runtime or presentation FPS measurement."
+  ]
+}

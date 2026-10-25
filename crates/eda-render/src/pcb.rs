@@ -4,7 +4,7 @@ use eda_core::pcb::*;
 use eda_geom::Point;
 use egui::{Color32, Pos2, Rect, Response, Sense, Stroke, StrokeKind, Vec2};
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     hash::{Hash, Hasher},
 };
 use uuid::Uuid;
@@ -54,7 +54,8 @@ pub struct BoardView {
     preview: Option<std::sync::Arc<Board>>,
     preview_generation: u64,
     preview_items: Option<BTreeSet<Uuid>>,
-    snap_geometry: geometry::Cache,
+    route_preview: Option<RoutePainting>,
+    snap_geometry: geometry::SnapCache,
     pub tool_active: bool,
     pub selection_box: Option<(Point, Point)>,
     pub draft_outline: Vec<Point>,
@@ -70,6 +71,12 @@ pub struct BoardView {
     grid_initialized: bool,
     connections: connections::Cache,
     paint_cache: paint_cache::Cache,
+}
+#[derive(Clone)]
+struct RoutePainting {
+    prefix: usize,
+    source_changes: BTreeSet<Uuid>,
+    by_layer: BTreeMap<u16, Vec<usize>>,
 }
 #[derive(Clone, Default)]
 pub struct Input {
@@ -139,6 +146,7 @@ impl BoardView {
         self.preview_generation
     }
     pub fn set_preview(&mut self, preview: Option<Board>) {
+        self.route_preview = None;
         self.preview_items = None;
         if self.preview.as_deref() == preview.as_ref() {
             return;
@@ -158,6 +166,7 @@ impl BoardView {
         next: std::sync::Arc<Board>,
         selection: &[Uuid],
     ) {
+        self.route_preview = None;
         let compatible = base.items.len() == next.items.len()
             && !base.polygon_pours.iter().any(|p| selection.contains(&p.id));
         self.preview_generation = self.preview_generation.wrapping_add(1);
@@ -172,10 +181,27 @@ impl BoardView {
         });
         self.preview = Some(next);
     }
+    /// Routing preserves source slots and publishes the complete changed set,
+    /// including splits, placed legs/vias and the active leg's stable identities.
+    pub fn set_route_preview(&mut self, next: eda_core::pcb_route::RoutePreview) {
+        let mut by_layer: BTreeMap<u16, Vec<usize>> = BTreeMap::new();
+        for (index, item) in next.board.items.iter().enumerate().skip(next.source_len) {
+            by_layer.entry(item.layer).or_default().push(index);
+        }
+        self.route_preview = Some(RoutePainting {
+            prefix: next.source_len,
+            source_changes: next.source_changes,
+            by_layer,
+        });
+        self.preview_generation = self.preview_generation.wrapping_add(1);
+        self.preview_items = Some(next.changed_items);
+        self.preview = Some(next.board);
+    }
     pub fn preview(&self) -> Option<&Board> {
         self.preview.as_deref()
     }
     pub fn take_preview(&mut self) -> Option<Board> {
+        self.route_preview = None;
         self.preview_items = None;
         self.preview.take().map(|board| {
             self.preview_generation = self.preview_generation.wrapping_add(1);
@@ -450,13 +476,30 @@ pub fn canvas(ui: &mut egui::Ui, b: &Board, view: &mut View) -> CanvasOutput {
     }
     let preview = view.pcb.preview.clone();
     let scene = preview.as_deref().unwrap_or(b);
-    if let Some(changed) = &view.pcb.preview_items {
+    if let Some(route) = &view.pcb.route_preview {
+        view.pcb.geometry.prepare_routed(
+            scene,
+            view.pcb.three_d.revision,
+            view.pcb.preview_generation,
+            route.prefix,
+            &route.source_changes,
+        );
+    } else if let Some(changed) = &view.pcb.preview_items {
         view.pcb.geometry.prepare_transformed(
             scene,
             view.pcb.three_d.revision,
             view.pcb.preview_generation,
             changed,
         );
+    } else if preview.is_none() {
+        view.pcb.geometry.prepare_source(
+            scene,
+            view.pcb.three_d.revision,
+            view.pcb.preview_generation,
+        );
+        view.pcb
+            .snap_geometry
+            .share_source(&view.pcb.geometry, view.pcb.three_d.revision);
     } else {
         view.pcb.geometry.prepare(
             scene,
@@ -479,25 +522,16 @@ pub fn canvas(ui: &mut egui::Ui, b: &Board, view: &mut View) -> CanvasOutput {
     let point = raw.map(|p| {
         if bypass {
             p
-        } else if preview.is_some() {
-            view.pcb
-                .snap_geometry
-                .prepare(b, view.pcb.three_d.revision, 0);
-            let candidates = view
-                .pcb
-                .snap_geometry
-                .query(Bounds::points(&[p]).expanded(view.pcb.snap.distance.max(0)));
-            b.snap_with_items(
-                p,
-                if view.grid { view.grid_nm } else { 0 },
-                view.pcb.active_layer,
-                &view.pcb.visible,
-                &view.pcb.snap,
-                candidates.into_iter().map(|index| &b.items[index]),
-            )
         } else {
             let near = Bounds::points(&[p]).expanded(view.pcb.snap.distance.max(0));
-            let candidates = view.pcb.geometry.query(near);
+            let candidates = if view.pcb.snap.mode == SnapLayerMode::Off {
+                vec![]
+            } else if preview.is_some() {
+                view.pcb.snap_geometry.prepare(b, view.pcb.three_d.revision);
+                view.pcb.snap_geometry.query(near)
+            } else {
+                view.pcb.geometry.query(near)
+            };
             b.snap_with_items(
                 p,
                 if view.grid { view.grid_nm } else { 0 },
@@ -711,23 +745,116 @@ pub fn canvas(ui: &mut egui::Ui, b: &Board, view: &mut View) -> CanvasOutput {
     }
 }
 fn paint_order(i: &Item, active: u16) -> (u8, u16, u8) {
-    (
-        if i.layer == active {
-            1
-        } else if i.layer == MULTI_LAYER {
-            2
-        } else if i.layer == TOP_OVERLAY || i.layer == BOTTOM_OVERLAY {
-            3
-        } else {
-            0
-        },
+    layer_paint_order(
         i.layer,
+        active,
         if matches!(i.shape, Shape::Region { .. } | Shape::Fill { .. }) {
             0
         } else {
             1
         },
     )
+}
+fn layer_paint_order(layer: u16, active: u16, kind: u8) -> (u8, u16, u8) {
+    (
+        if layer == active {
+            1
+        } else if layer == MULTI_LAYER {
+            2
+        } else if layer == TOP_OVERLAY || layer == BOTTOM_OVERLAY {
+            3
+        } else {
+            0
+        },
+        layer,
+        kind,
+    )
+}
+fn artwork_visible(board: &Board, item: &Item, view: &BoardView) -> bool {
+    view.is_visible(item)
+        && board.text_visible(item)
+        && (view.single_layer == 0
+            || item.layer != MULTI_LAYER
+            || item.is_drill_only()
+            || eda_core::pcb_polygon::on_layer(board, item, view.active_layer))
+}
+fn artwork_color(scene: &Board, item: &Item, view: &BoardView, selected: bool) -> Color32 {
+    let mut color = dim(view.color(item.layer), view.display.alpha(item));
+    if view.single_layer == 1 && item.layer != view.active_layer && item.layer != MULTI_LAYER {
+        color = dim(color, view.display.dim);
+    }
+    if let Some(net) = view.highlight_net {
+        color = if item.net == Some(net) {
+            dim(view.display.highlight_color, view.display.highlight_dim)
+        } else {
+            dim(color, view.display.masked_dim)
+        };
+    }
+    if selected {
+        color = view.display.selection_color;
+    }
+    if scene.pours_stale && item.polygon.is_some() {
+        color = dim(color, view.display.dim);
+    }
+    color
+}
+fn paint_route_items(
+    painter: &egui::Painter,
+    board: &Board,
+    view: &mut View,
+    rect: Rect,
+    pass: paint_cache::Routes,
+) {
+    let Some(route) = &view.pcb.route_preview else {
+        return;
+    };
+    let layer = match pass {
+        paint_cache::Routes::Artwork(layer) | paint_cache::Routes::Details(layer) => layer,
+        paint_cache::Routes::Mask(..) => MULTI_LAYER,
+    };
+    let indices = route.by_layer.get(&layer).cloned().unwrap_or_default();
+    if indices.is_empty() {
+        return;
+    }
+    paint_cache::paint_live(painter, view, rect, |painter, camera, view, rect| {
+        for index in indices {
+            let item = &board.items[index];
+            match pass {
+                paint_cache::Routes::Artwork(_) if artwork_visible(board, item, &view.pcb) => {
+                    let color =
+                        artwork_color(board, item, &view.pcb, view.pcb.selected.contains(&item.id));
+                    if !(view.pcb.display.draft[display::Settings::kind(item)]
+                        && paint_draft(painter, camera, rect, item, view.pcb.active_layer, color))
+                    {
+                        paint_item(
+                            painter,
+                            camera,
+                            rect,
+                            item,
+                            view.pcb.active_layer,
+                            color,
+                            &mut view.pcb,
+                        );
+                    }
+                }
+                paint_cache::Routes::Details(_) if artwork_visible(board, item, &view.pcb) => {
+                    paint_details(painter, board, camera, view, rect, item);
+                }
+                paint_cache::Routes::Mask(layer, kind, bottom) => {
+                    paint_mask(
+                        painter,
+                        board,
+                        camera,
+                        view,
+                        rect,
+                        item,
+                        (layer, kind, bottom),
+                    );
+                }
+                _ => {}
+            }
+        }
+    });
 }
 fn paint_scene(
     painter: &egui::Painter,
@@ -739,7 +866,10 @@ fn paint_scene(
 ) {
     let b = scene;
     let outline = view.pcb.geometry.outline.clone();
-    if outline.len() >= 3 && view.pcb.display.board_visible {
+    if builder.group(painter, paint_cache::Group::Board, 0)
+        && outline.len() >= 3
+        && view.pcb.display.board_visible
+    {
         polygon(
             painter,
             camera,
@@ -763,121 +893,142 @@ fn paint_scene(
             }
         }
     }
+    builder.end_group(painter);
     builder.grid(painter);
     let selected = scene.resolve_selection(&view.pcb.selected);
     let mut order: Vec<_> = scene
         .items
         .iter()
-        .filter(|i| {
-            view.pcb.is_visible(i)
-                && scene.text_visible(i)
-                && (view.pcb.single_layer == 0
-                    || i.layer != MULTI_LAYER
-                    || i.is_drill_only()
-                    || eda_core::pcb_polygon::on_layer(scene, i, view.pcb.active_layer))
-        })
+        .take(
+            view.pcb
+                .route_preview
+                .as_ref()
+                .map_or(scene.items.len(), |r| r.prefix),
+        )
+        .filter(|i| artwork_visible(scene, i, &view.pcb))
+        .map(|i| (Some(i), i.layer))
         .collect();
-    order.sort_by_key(|i| paint_order(i, view.pcb.active_layer));
+    order.extend(
+        (1..=32)
+            .chain(39..=54)
+            .chain([MULTI_LAYER])
+            .map(|layer| (None, layer)),
+    );
+    let active = view.pcb.active_layer;
+    let order_key = |(item, layer): &(Option<&Item>, u16)| {
+        item.map_or_else(
+            || layer_paint_order(*layer, active, 1),
+            |i| paint_order(i, active),
+        )
+    };
+    order.sort_by_key(order_key);
     paint_masks(painter, scene, camera, view, rect, false, builder);
-    for item in &order {
-        let mut color = dim(view.pcb.color(item.layer), view.pcb.display.alpha(item));
-        if view.pcb.single_layer == 1
-            && item.layer != view.pcb.active_layer
-            && item.layer != MULTI_LAYER
-        {
-            color = dim(color, view.pcb.display.dim);
+    for group in order.chunk_by(|a, b| order_key(a) == order_key(b)) {
+        let (_, layer, kind) = order_key(&group[0]);
+        let signature =
+            paint_cache::group_signature(scene, &view.pcb, group.iter().filter_map(|(i, _)| *i));
+        if !builder.group(painter, paint_cache::Group::Artwork(layer, kind), signature) {
+            continue;
         }
-        if let Some(net) = view.pcb.highlight_net {
-            color = if item.net == Some(net) {
-                dim(
-                    view.pcb.display.highlight_color,
-                    view.pcb.display.highlight_dim,
-                )
-            } else {
-                dim(color, view.pcb.display.masked_dim)
+        for (item, layer) in group {
+            let Some(item) = item else {
+                builder.routes(painter, paint_cache::Routes::Artwork(*layer));
+                continue;
             };
+            let color = artwork_color(scene, item, &view.pcb, selected.contains(&item.id));
+            if view
+                .pcb
+                .preview_items
+                .as_ref()
+                .is_some_and(|ids| ids.contains(&item.id))
+            {
+                builder.live(painter, item.id, paint_cache::Live::Artwork(color));
+                continue;
+            }
+            if view.pcb.display.draft[display::Settings::kind(item)]
+                && paint_draft(painter, camera, rect, item, view.pcb.active_layer, color)
+            {
+                continue;
+            }
+            if matches!(item.shape, Shape::Region { cutout: true, .. })
+                || (matches!(item.shape, Shape::Region { .. })
+                    && (item.keepout || item.properties.contains_key("PCBCRAFT_BODY_PROJECTION")))
+            {
+                builder.hatch(painter, item.id, color);
+                continue;
+            }
+            paint_item(
+                painter,
+                camera,
+                rect,
+                item,
+                view.pcb.active_layer,
+                color,
+                &mut view.pcb,
+            );
         }
-        if selected.contains(&item.id) {
-            color = view.pcb.display.selection_color;
-        }
-        if scene.pours_stale && item.polygon.is_some() {
-            color = dim(color, view.pcb.display.dim);
-        }
-        if view
-            .pcb
-            .preview_items
-            .as_ref()
-            .is_some_and(|ids| ids.contains(&item.id))
-        {
-            builder.live(painter, item.id, paint_cache::Live::Artwork(color));
-            continue;
-        }
-        if view.pcb.display.draft[display::Settings::kind(item)]
-            && paint_draft(painter, camera, rect, item, view.pcb.active_layer, color)
-        {
-            continue;
-        }
-        if matches!(item.shape, Shape::Region { cutout: true, .. })
-            || (matches!(item.shape, Shape::Region { .. })
-                && (item.keepout || item.properties.contains_key("PCBCRAFT_BODY_PROJECTION")))
-        {
-            builder.hatch(painter, item.id, color);
-            continue;
-        }
-        paint_item(
-            painter,
-            camera,
-            rect,
-            item,
-            view.pcb.active_layer,
-            color,
-            &mut view.pcb,
-        );
     }
+    builder.end_group(painter);
     builder.connections(painter);
-    for poly in &scene.polygon_pours {
-        if !view.pcb.polygon_visible(poly.layer) {
-            continue;
-        }
-        let selected = view.pcb.selected.contains(&poly.id);
-        let color = if selected {
-            Color32::WHITE
-        } else {
-            dim(
-                view.pcb.color(poly.layer),
-                if poly.shelved { 80 } else { 140 },
-            )
-        };
-        let points = poly.points();
-        if points.len() > 2 {
-            painter.add(egui::Shape::closed_line(
-                points.iter().map(|p| camera.screen(*p, rect)).collect(),
-                Stroke::new(if selected { 2.0 } else { 0.7 }, color),
-            ));
-        }
-        if selected {
-            for hole in &poly.holes {
+    if builder.group(painter, paint_cache::Group::Polygons, 0) {
+        for poly in &scene.polygon_pours {
+            if !view.pcb.polygon_visible(poly.layer) {
+                continue;
+            }
+            let selected = view.pcb.selected.contains(&poly.id);
+            let color = if selected {
+                Color32::WHITE
+            } else {
+                dim(
+                    view.pcb.color(poly.layer),
+                    if poly.shelved { 80 } else { 140 },
+                )
+            };
+            let points = poly.points();
+            if points.len() > 2 {
                 painter.add(egui::Shape::closed_line(
-                    hole.iter().map(|p| camera.screen(*p, rect)).collect(),
-                    Stroke::new(1.5, color),
+                    points.iter().map(|p| camera.screen(*p, rect)).collect(),
+                    Stroke::new(if selected { 2.0 } else { 0.7 }, color),
                 ));
+            }
+            if selected {
+                for hole in &poly.holes {
+                    painter.add(egui::Shape::closed_line(
+                        hole.iter().map(|p| camera.screen(*p, rect)).collect(),
+                        Stroke::new(1.5, color),
+                    ));
+                }
             }
         }
     }
+    builder.end_group(painter);
     builder.tools(painter);
     paint_masks(painter, scene, camera, view, rect, true, builder);
-    for item in &order {
-        if view
-            .pcb
-            .preview_items
-            .as_ref()
-            .is_some_and(|ids| ids.contains(&item.id))
-        {
-            builder.live(painter, item.id, paint_cache::Live::Details);
-        } else {
-            paint_details(painter, b, camera, view, rect, item);
+    for group in order.chunk_by(|a, b| order_key(a) == order_key(b)) {
+        let (_, layer, kind) = order_key(&group[0]);
+        let signature =
+            paint_cache::group_signature(scene, &view.pcb, group.iter().filter_map(|(i, _)| *i));
+        if !builder.group(painter, paint_cache::Group::Details(layer, kind), signature) {
+            continue;
+        }
+        for (item, layer) in group {
+            let Some(item) = item else {
+                builder.routes(painter, paint_cache::Routes::Details(*layer));
+                continue;
+            };
+            if view
+                .pcb
+                .preview_items
+                .as_ref()
+                .is_some_and(|ids| ids.contains(&item.id))
+            {
+                builder.live(painter, item.id, paint_cache::Live::Details);
+            } else {
+                paint_details(painter, b, camera, view, rect, item);
+            }
         }
     }
+    builder.end_group(painter);
     builder.origin(painter);
 }
 fn paint_details(
@@ -1146,9 +1297,32 @@ fn paint_masks(
         {
             continue;
         }
+        let prefix = view
+            .pcb
+            .route_preview
+            .as_ref()
+            .map_or(board.items.len(), |r| r.prefix);
+        let signature = paint_cache::group_signature(
+            board,
+            &view.pcb,
+            board
+                .items
+                .iter()
+                .take(prefix)
+                .filter(|i| matches!(i.shape, Shape::Pad { .. } | Shape::Via { .. })),
+        );
+        if !builder.group(painter, paint_cache::Group::Mask(layer), signature) {
+            continue;
+        }
         for item in board
             .items
             .iter()
+            .take(
+                view.pcb
+                    .route_preview
+                    .as_ref()
+                    .map_or(board.items.len(), |r| r.prefix),
+            )
             .filter(|i| matches!(i.shape, Shape::Pad { .. } | Shape::Via { .. }))
         {
             if view
@@ -1174,7 +1348,9 @@ fn paint_masks(
                 );
             }
         }
+        builder.routes(painter, paint_cache::Routes::Mask(layer, kind, bottom));
     }
+    builder.end_group(painter);
 }
 
 fn paint_mask(
@@ -1532,6 +1708,7 @@ mod tests {
             designator: "R1".into(),
             comment: String::new(),
             footprint: String::new(),
+            parameters: Some(Default::default()),
             position: Point::default(),
             rotation: 0.0,
             layer: TOP,
@@ -1647,6 +1824,7 @@ mod tests {
                 designator: format!("U{index}"),
                 comment: String::new(),
                 footprint: String::new(),
+                parameters: Some(Default::default()),
                 position: Point::default(),
                 rotation: 0.0,
                 layer,

@@ -1,0 +1,228 @@
+{
+  "schema_version": 1,
+  "date": "2026-10-25",
+  "scope": "Shared original-board spatial candidates during PCB editing previews",
+  "source": {
+    "board": "ReferenceB/ReferenceBBoard.PcbDoc",
+    "items": 15513,
+    "components": 69,
+    "sha256": "redacted-source-sha256",
+    "source_saved": false,
+    "hash_after_native_test": "unchanged"
+  },
+  "implementation": [
+    "SnapCache shares an Arc of the already prepared source spatial tree; it does not clone the display caches or retain a Board.",
+    "Refitting route splits and transformed items uses copy-on-write, retaining original snapping candidates.",
+    "Revision changes invalidate candidates. A preview before any source frame builds a spatial-only fallback.",
+    "Off mode skips item candidate preparation/query but retains core grid snapping. Ctrl+Shift bypass remains raw."
+  ],
+  "environment": {
+    "os": "Windows",
+    "cpu": "AMD Ryzen 7 8845H",
+    "rust": "1.90.0",
+    "profile": "optimized dev opt-level=2",
+    "logical_canvas": [
+      1000,
+      800
+    ],
+    "pixels_per_mm": 15,
+    "object_snapping": "Current Layer",
+    "connections": true,
+    "gpu_callbacks": "submitted but not executed by timing example",
+    "timing_scope": "target, model, publication, canvas+tessellation; excludes load/session construction",
+    "conditions": "Runs sequential, no concurrent compilation during timed loops; frequency/power and background scheduling uncontrolled. Baseline GUI open; after runs GUI closed. No claimed fixed whole-frame speedup."
+  },
+  "runs": [
+    {
+      "name": "after.txt",
+      "samples": 60,
+      "net": "ExampleGround",
+      "route_legs_total": 119,
+      "metrics": {
+        "target": {
+          "median_ms": 0.1801,
+          "p95_ms": 0.368,
+          "max_ms": 0.4778,
+          "first_ms": 0.1198,
+          "over_16_7ms": 0,
+          "over_33ms": 0
+        },
+        "model": {
+          "median_ms": 4.0815,
+          "p95_ms": 5.2257,
+          "max_ms": 16.7756,
+          "first_ms": 16.7756,
+          "over_16_7ms": 1,
+          "over_33ms": 0
+        },
+        "publish": {
+          "median_ms": 0.0019,
+          "p95_ms": 0.0039,
+          "max_ms": 0.0091,
+          "first_ms": 0.0039,
+          "over_16_7ms": 0,
+          "over_33ms": 0
+        },
+        "canvas+tessellate": {
+          "median_ms": 2.1469,
+          "p95_ms": 5.2127,
+          "max_ms": 48.7416,
+          "first_ms": 48.7416,
+          "over_16_7ms": 1,
+          "over_33ms": 1
+        },
+        "combined": {
+          "median_ms": 6.7688,
+          "p95_ms": 9.2336,
+          "max_ms": 65.6447,
+          "first_ms": 65.6447,
+          "over_16_7ms": 1,
+          "over_33ms": 1
+        }
+      },
+      "raw_summary": "items=15513 samples=60 legs=119 net=ExampleGround\r\ntarget: median_ms=0.1801 p95_ms=0.3680 max_ms=0.4778 first_ms=0.1198 over_16_7ms=0 over_33ms=0\r\nmodel: median_ms=4.0815 p95_ms=5.2257 max_ms=16.7756 first_ms=16.7756 over_16_7ms=1 over_33ms=0\r\npublish: median_ms=0.0019 p95_ms=0.0039 max_ms=0.0091 first_ms=0.0039 over_16_7ms=0 over_33ms=0\r\ncanvas+tessellate: median_ms=2.1469 p95_ms=5.2127 max_ms=48.7416 first_ms=48.7416 over_16_7ms=1 over_33ms=1\r\ncombined: median_ms=6.7688 p95_ms=9.2336 max_ms=65.6447 first_ms=65.6447 over_16_7ms=1 over_33ms=1\r\n"
+    },
+    {
+      "name": "before.txt",
+      "samples": 60,
+      "net": "ExampleGround",
+      "route_legs_total": 119,
+      "metrics": {
+        "target": {
+          "median_ms": 0.1047,
+          "p95_ms": 0.1256,
+          "max_ms": 0.1721,
+          "first_ms": 0.1504,
+          "over_16_7ms": 0,
+          "over_33ms": 0
+        },
+        "model": {
+          "median_ms": 3.8099,
+          "p95_ms": 4.734,
+          "max_ms": 12.6017,
+          "first_ms": 12.6017,
+          "over_16_7ms": 0,
+          "over_33ms": 0
+        },
+        "publish": {
+          "median_ms": 0.0004,
+          "p95_ms": 0.0015,
+          "max_ms": 0.0021,
+          "first_ms": 0.0015,
+          "over_16_7ms": 0,
+          "over_33ms": 0
+        },
+        "canvas+tessellate": {
+          "median_ms": 0.8915,
+          "p95_ms": 1.8735,
+          "max_ms": 38.4422,
+          "first_ms": 38.4422,
+          "over_16_7ms": 1,
+          "over_33ms": 1
+        },
+        "combined": {
+          "median_ms": 4.8551,
+          "p95_ms": 6.4533,
+          "max_ms": 51.1992,
+          "first_ms": 51.1992,
+          "over_16_7ms": 1,
+          "over_33ms": 1
+        }
+      },
+      "raw_summary": "items=15513 samples=60 legs=119 net=ExampleGround\r\ntarget: median_ms=0.1047 p95_ms=0.1256 max_ms=0.1721 first_ms=0.1504 over_16_7ms=0 over_33ms=0\r\nmodel: median_ms=3.8099 p95_ms=4.7340 max_ms=12.6017 first_ms=12.6017 over_16_7ms=0 over_33ms=0\r\npublish: median_ms=0.0004 p95_ms=0.0015 max_ms=0.0021 first_ms=0.0015 over_16_7ms=0 over_33ms=0\r\ncanvas+tessellate: median_ms=0.8915 p95_ms=1.8735 max_ms=38.4422 first_ms=38.4422 over_16_7ms=1 over_33ms=1\r\ncombined: median_ms=4.8551 p95_ms=6.4533 max_ms=51.1992 first_ms=51.1992 over_16_7ms=1 over_33ms=1\r\n"
+    },
+    {
+      "name": "varied.txt",
+      "samples": 60,
+      "net": "ExampleGround",
+      "route_legs_total": 84,
+      "metrics": {
+        "target": {
+          "median_ms": 0.2898,
+          "p95_ms": 0.4349,
+          "max_ms": 1.0664,
+          "first_ms": 0.1317,
+          "over_16_7ms": 0,
+          "over_33ms": 0
+        },
+        "model": {
+          "median_ms": 4.6676,
+          "p95_ms": 5.1521,
+          "max_ms": 14.5098,
+          "first_ms": 14.5098,
+          "over_16_7ms": 0,
+          "over_33ms": 0
+        },
+        "publish": {
+          "median_ms": 0.002,
+          "p95_ms": 0.0075,
+          "max_ms": 0.0117,
+          "first_ms": 0.002,
+          "over_16_7ms": 0,
+          "over_33ms": 0
+        },
+        "canvas+tessellate": {
+          "median_ms": 2.6031,
+          "p95_ms": 5.7503,
+          "max_ms": 28.2872,
+          "first_ms": 28.2872,
+          "over_16_7ms": 1,
+          "over_33ms": 0
+        },
+        "combined": {
+          "median_ms": 7.7865,
+          "p95_ms": 10.9781,
+          "max_ms": 42.9343,
+          "first_ms": 42.9343,
+          "over_16_7ms": 1,
+          "over_33ms": 1
+        }
+      },
+      "raw_summary": "items=15513 samples=60 legs=84 net=ExampleGround\r\ntarget: median_ms=0.2898 p95_ms=0.4349 max_ms=1.0664 first_ms=0.1317 over_16_7ms=0 over_33ms=0\r\nmodel: median_ms=4.6676 p95_ms=5.1521 max_ms=14.5098 first_ms=14.5098 over_16_7ms=0 over_33ms=0\r\npublish: median_ms=0.0020 p95_ms=0.0075 max_ms=0.0117 first_ms=0.0020 over_16_7ms=0 over_33ms=0\r\ncanvas+tessellate: median_ms=2.6031 p95_ms=5.7503 max_ms=28.2872 first_ms=28.2872 over_16_7ms=1 over_33ms=0\r\ncombined: median_ms=7.7865 p95_ms=10.9781 max_ms=42.9343 first_ms=42.9343 over_16_7ms=1 over_33ms=1\r\n"
+    }
+  ],
+  "conclusion": "Reference equality verifies removal of duplicate spatial construction on warm preview entry. Total CPU timings do not establish improved first-frame latency: regular first sample 51.1992 ms before and 65.6447 ms after; varied tail first sample 42.9343 ms. First-frame artwork/model costs and run variability remain.",
+  "validation": {
+    "workspace_tests": 451,
+    "counts": {
+      "app": 99,
+      "core": 176,
+      "geom": 1,
+      "io": 74,
+      "render": 101
+    },
+    "fmt_all_check": "passed",
+    "strict_workspace_all_target_clippy": "passed",
+    "windows_dev_build": "passed",
+    "linux_gnu_all_target_check": "passed; compilation only",
+    "regressions": [
+      "Shared source identity and independent refitting snapshots",
+      "Original candidate indices after source track split and tail insertion",
+      "Fallback before source frame and revision/Undo invalidation",
+      "Spatial candidates versus complete model snapping: multilayer pad extents, All/Current/Off",
+      "Actual canvas pointer events: source endpoints, rejection of own-preview endpoints, grid on/off, bypass on/off, cold/warm source entry",
+      "Existing GPU readback and controller/history tests"
+    ],
+    "native_windows": {
+      "window_logical_pixels": [
+        1707,
+        1019
+      ],
+      "steps": [
+        "Fit Board",
+        "Snap Options Off -> Current Layer",
+        "Route NetC13_2, move preview, place; displayed net length 7.845 -> 8.173 mm",
+        "Escape to Finish",
+        "Ctrl+Z restores clean document",
+        "Snap Options restored to Off"
+      ],
+      "source_not_saved": true,
+      "source_hash_unchanged": true
+    }
+  },
+  "limitations": [
+    "First-frame artwork/model costs still exceed 33 ms in these workloads.",
+    "No executed GPU, presentation FPS, end-to-end input latency or arbitrary-board guarantee.",
+    "No new Altium semantic/layout comparison, Linux runtime or AppImage packaging."
+  ]
+}

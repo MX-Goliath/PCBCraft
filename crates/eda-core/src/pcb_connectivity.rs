@@ -17,6 +17,85 @@ struct Copper {
     bounds: geo::Rect<f64>,
     anchors: Vec<Point>,
 }
+/// Geometry-only input for a background connectivity calculation. Native
+/// archives, models, component parameters and unrelated item metadata are not
+/// electrical geometry. Owning this input releases interactive preview storage.
+pub struct Snapshot {
+    board: Board,
+}
+impl Snapshot {
+    pub fn new(board: &Board) -> Self {
+        let items = board
+            .items
+            .iter()
+            .filter_map(|item| {
+                let net = connection_net(board, item)?;
+                Some(Item {
+                    id: item.id,
+                    layer: item.layer,
+                    net: Some(net),
+                    component: None,
+                    locked: false,
+                    keepout: false,
+                    polygon: None,
+                    shape: item.shape.clone(),
+                    source: None,
+                    // Legacy pad corner geometry can depend on native properties.
+                    properties: if matches!(item.shape, Shape::Pad { .. } | Shape::Via { .. }) {
+                        item.properties.clone()
+                    } else {
+                        Fields::new()
+                    },
+                    pad_stack: item.pad_stack.clone(),
+                    masks: None,
+                })
+            })
+            .collect();
+        Self {
+            board: Board {
+                items,
+                layers: board.layers.clone(),
+                ..Default::default()
+            },
+        }
+    }
+    pub fn connections(&self) -> Vec<Connection> {
+        connections(&self.board)
+    }
+}
+fn connection_net(board: &Board, item: &Item) -> Option<u32> {
+    let net = item.net.or_else(|| {
+        item.polygon.and_then(|index| {
+            board
+                .polygon_pours
+                .iter()
+                .find(|p| p.index == index)
+                .and_then(|p| p.net)
+        })
+    })?;
+    if item.keepout
+        || item.is_drill_only()
+        || matches!(
+            item.shape,
+            Shape::Text { .. } | Shape::Region { cutout: true, .. }
+        )
+        || item.properties.contains_key("PCBCRAFT_BODY_PROJECTION")
+        || item
+            .properties
+            .get("PCBCRAFT_LEGACY_REGION_DUPLICATE")
+            .is_some_and(|v| v == "TRUE")
+        || item.polygon.is_some() && board.pours_stale
+        || item.polygon.is_some_and(|index| {
+            board
+                .polygon_pours
+                .iter()
+                .any(|p| p.index == index && p.shelved)
+        })
+    {
+        return None;
+    }
+    Some(net)
+}
 fn root(parent: &mut [usize], mut n: usize) -> usize {
     while parent[n] != n {
         parent[n] = parent[parent[n]];
@@ -39,35 +118,7 @@ pub fn connections(board: &Board) -> Vec<Connection> {
     for item in &board.items {
         // Native Regions6/ShapeBasedRegions6 pour fragments may inherit NET
         // from their owning polygon instead of repeating it in the fragment.
-        let net = item.net.or_else(|| {
-            item.polygon.and_then(|index| {
-                board
-                    .polygon_pours
-                    .iter()
-                    .find(|p| p.index == index)
-                    .and_then(|p| p.net)
-            })
-        });
-        if let Some(net) = net
-            && !item.keepout
-            && !item.is_drill_only()
-            && !matches!(
-                item.shape,
-                Shape::Text { .. } | Shape::Region { cutout: true, .. }
-            )
-            && !item.properties.contains_key("PCBCRAFT_BODY_PROJECTION")
-            && item
-                .properties
-                .get("PCBCRAFT_LEGACY_REGION_DUPLICATE")
-                .is_none_or(|v| v != "TRUE")
-            && !(item.polygon.is_some() && board.pours_stale)
-            && !item.polygon.is_some_and(|index| {
-                board
-                    .polygon_pours
-                    .iter()
-                    .any(|p| p.index == index && p.shelved)
-            })
-        {
+        if let Some(net) = connection_net(board, item) {
             nets.entry(net).or_default().push(item);
         }
     }
@@ -206,6 +257,65 @@ pub fn connections(board: &Board) -> Vec<Connection> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn detached_snapshot_matches_physical_geometry_and_is_independent_of_later_edits() {
+        let mut board = Board {
+            items: vec![
+                track(TOP, 0, Point::mm(-3, 0), Point::mm(-1, 0)),
+                track(TOP, 0, Point::mm(1, 0), Point::mm(3, 0)),
+                track(BOTTOM, 0, Point::mm(-3, 0), Point::mm(3, 0)),
+            ],
+            ..Default::default()
+        };
+        let mut pad = Item::new(
+            MULTI_LAYER,
+            Some(0),
+            Shape::Pad {
+                position: Point::default(),
+                size: Point::mm(4, 2),
+                rotation: 30.,
+                shape: PadShape::RoundedRectangle,
+                hole: 500_000,
+                plated: true,
+                name: "1".into(),
+                bottom_size: Some(Point::mm(3, 2)),
+                middle_size: None,
+            },
+        );
+        pad.set_stack_mode(StackMode::TopMiddleBottom, &board);
+        board.items.push(pad);
+        let mut bridge = track(TOP, 0, Point::mm(-1, 0), Point::mm(1, 0));
+        bridge.net = None;
+        bridge.polygon = Some(7);
+        board.items.push(bridge);
+        board.polygon_pours.push(pcb_polygon::Polygon {
+            index: 7,
+            net: Some(0),
+            ..Default::default()
+        });
+        for state in 0..5 {
+            board.pours_stale = state == 1;
+            board.polygon_pours[0].shelved = state == 2;
+            board.items[3].keepout = state == 3;
+            if state == 4 {
+                board.items[3]
+                    .properties
+                    .insert("PCBCRAFT_BODY_PROJECTION".into(), "TRUE".into());
+            }
+            let expected = connections(&board);
+            let snapshot = Snapshot::new(&board);
+            let original = board.clone();
+            board.items.clear();
+            assert_eq!(snapshot.connections(), expected);
+            assert!(
+                snapshot.board.models.is_empty()
+                    && snapshot.board.source.is_none()
+                    && snapshot.board.components.is_empty()
+                    && snapshot.board.rules.is_empty()
+            );
+            board = original;
+        }
+    }
     fn track(layer: u16, net: u32, a: Point, b: Point) -> Item {
         Item::new(
             layer,

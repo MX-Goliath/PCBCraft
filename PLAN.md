@@ -972,3 +972,103 @@ Cause, implementation and validation: docs/pcb-update/INTERACTIVE_ROUTING.md.
 
 Подробности: `docs/pcb-update/3D_VIEW.md`, `pcb.shared_camera` в
 `docs/features.json`.
+
+### Трассировка ReferenceB и индекс препятствий, 25.10.2026
+
+- [x] Воспроизведён отказ запуска на полной ReferenceB (15 513 объектов): отсутствовали
+  CompParameterValue/Like и HasPad; параметры PrimitiveParameters не читались.
+- [x] Импорт базовых параметров отдельно от native metadata; проверка владельцев,
+  границ и дубликатов. Восстановление старого JSON по native UNIQUEID, сохранение
+  параметров в модели/JSON; отказ неподдерживаемой нативной записи изменений.
+- [x] CompParameterValue/Like, HasPad и wildcard HasFootprint; проверки приоритета
+  зазоров, ошибок и неизвестных условий. На ReferenceB найдены все 24 pads с ID=216.
+- [x] Пространственный индекс вместо повторных полных обходов препятствий;
+  сохранён порядок, room/matrix зазоры, допуск 1 нм и отказ по ошибке правила.
+- [x] Windows, 40 001 дорожка: медиана Stop 4,0011 -> 0,0084 мс, Walkaround
+  1,9503 -> 0,0056 мс. Подготовка 12,234 -> 27,768 мс. Это CPU solver, не FPS.
+- [x] 438 workspace tests, fmt --check, строгий all-target Clippy, Windows build.
+  Реальное окно полной ReferenceB: NetC13_2, сегмент, Finish, Undo до чистого документа.
+  Исходный PcbDoc не сохранён, SHA256 прежний.
+- [ ] Копии/валидация и графика route preview, дорогие расстояния до больших
+  заливок, полный язык правил/варианты, shove/gloss и точное совпадение Altium.
+  PCB Filter Altium 24.4.1 вернул ошибку скрипта; live query parity не доказан.
+
+Данные и границы: `docs/pcb-update/routing-performance-2026-10-25.json`,
+`docs/pcb-update/INTERACTIVE_ROUTING.md`, `docs/pcb-update/PERFORMANCE.md`.
+
+### Предпросмотр трассы без пересборки всей платы, 25.10.2026
+
+- [x] Закрытый валидированный draft RouteSession; повторно используемый immutable
+  preview, стабильные ID активных сегментов, проверка новой геометрии при hover.
+  Полная валидация place/via/backtrack/History и неизменность удержанных снимков.
+- [x] Пропуск одинаковых запросов; отдельный geometry snapshot для connectivity,
+  без удержания Arc редактора и повторной полной копии платы на каждом движении.
+- [x] Исходное дерево/контуры сохранены, разрезанные дорожки refit; tail меняет
+  длину и состав независимо от stationary artwork. Повторное использование
+  геометрии исходной платы при входе; чужой preview/revision сбрасывают кэш.
+- [x] Общий document anchor live/cached tessellation устраняет сдвиг на пиксель.
+  GPU readback linear/sRGB, masks/highlight/draft/mirror/single-layer/via/backtrack:
+  <=1 уровень канала без dithering, <=3 с production dithering на перекрытиях.
+- [x] ReferenceB, 60 CPU samples: медиана 57,5230 -> 5,7226 мс, p95 64,6967 -> 9,0993.
+  Меняющиеся хвосты: 6,3729/9,2021 мс. Первый кадр до 90,7778 мс, 1/60 >33 мс.
+  Повторные замеры после source reuse записаны отдельно; это не presented FPS.
+- [x] Финальный source reuse: 7,1928/9,6066 мс, максимум 72,3750 мс;
+  меняющийся tail: 7,6839/10,3159, максимум 62,3378 мс. Полная перерисовка
+  в том же финальном executable: 83,2955/103,6451, максимум 112,6602 мс.
+  Разброс между прогонами сохранён в данных; cold frame всё ещё 1/60 >33 мс.
+- [x] 449 workspace tests, fmt, strict all-target Clippy, Windows build;
+  Linux GNU all-target compilation. Windows GUI: place/Backspace/Finish,
+  Undo/Redo/Undo до чистой платы; source PcbDoc не сохранён, SHA256 прежний.
+- [ ] Устранение cold artwork/snapping и задержек place/Finish/repour,
+  произвольные большие платы/длинные трассы, Linux runtime и полное совпадение
+  функционала, поведения и интерфейса Altium остаются в исходном охвате.
+
+Данные: `docs/pcb-update/route-preview-performance-2026-10-25.json`.
+
+### Общий индекс исходной платы для привязки preview, 25.10.2026
+
+- [x] Вместо второго полного display cache хранится Arc пространственного
+  дерева исходной платы. Source frame передаёт готовое дерево; refit preview
+  отделяет копию и не меняет исходные координаты/индексы привязки.
+- [x] Истечение по revision, spatial-only fallback до первого source frame;
+  Off пропускает поиск объектов, сохраняя сетку; Ctrl+Shift возвращает raw point.
+- [x] Реальные canvas events: All/Current/Off, grid/bypass, cold/warm preview,
+  исходный конец дорожки и отсутствие snap к собственному preview. Проверки
+  multilayer pad, split refit, удержанных снимков, fallback и смены revision.
+- [x] 451 workspace tests, fmt, strict all-target Clippy, Windows build,
+  Linux GNU all-target compilation. Windows ReferenceB: Off -> Current, NetC13_2,
+  движение/размещение/Finish/Undo до чистого документа, возврат Off.
+  PcbDoc не сохранён; SHA256 исходного файла прежний.
+- [ ] Дополнительное ускорение полного кадра этим изменением не доказано:
+  baseline median/p95/first 4,8551/6,4533/51,1992 мс, после изменения
+  6,7688/9,2336/65,6447; varied 7,7865/10,9781/42,9343. Неуправляемые
+  частота CPU/background scheduling, разные состояния GUI; все данные сохранены.
+  Cold artwork/model, итоговая presentation latency и точность Altium открыты.
+
+Данные: `docs/pcb-update/route-snapping-performance-2026-10-25.json`.
+
+### Повторное использование неподвижного artwork при старте трассы, 25.10.2026
+
+- [x] Группы board/layer/type/masks/details/polygon outlines в прежнем порядке
+  рисования. Source capture содержит места для route tail; stale copper и
+  разрезанные исходные tracks перестраивают затронутые группы, остальные
+  mesh/atlas/GPU scenes разделяются. Revision/style/font/DPI/scale проверяются.
+- [x] Камера обновляется и для сохранённой GPU scene без mesh zero; одинаковые
+  uniforms повторно не пишутся. CPU refinement remap выполняется один раз на
+  общий mesh; weak-reference тест проверяет освобождение старых GPU resources.
+- [x] Полный ReferenceB: 151/155 групп сохранены при stale переходе; final artwork
+  1,99/2,62 мс. Final combined regular median/p95/first 7,2775/10,5462/37,1903,
+  varied 8,1933/10,3123/33,3280 мс. Ранние first 21,6751/22,0493 тоже сохранены;
+  частота/background не контролировались, это CPU submissions без GPU/FPS.
+- [x] 452 workspace tests, fmt, strict all-target Clippy, Windows build,
+  Linux GNU all-target compilation. GPU linear/sRGB, pads/labels/masks/holes,
+  split/stale/via/backtrack/highlight/draft/mirror и камера без mesh zero;
+  <=1 уровень канала без dither, <=3 с production dither.
+- [x] Windows GUI: Fit/refinement, NetC13_2 route motion/place/Backspace/place,
+  Finish/Undo до чистой платы. Entry 155/155 (3,52 мс), stale 151/155 (5,39 мс).
+  Исходный PcbDoc не сохранён, SHA256 прежний.
+- [ ] Finish/repour/Undo и смена глобальных состояний всё ещё строят все группы;
+  в native log artwork до 67,69 мс. Cold model/validation, split-группы, другие
+  платы, RAM/VRAM, Linux runtime и весь исходный функционал/Altium parity открыты.
+
+Данные: `docs/pcb-update/artwork-groups-performance-2026-10-25.json`.

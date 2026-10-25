@@ -24,6 +24,7 @@ pub fn load(path: &Path) -> Result<Document, String> {
     if let Some(board) = &mut doc.pcb {
         altium_pcb::upgrade_polygons(board, doc.id)?;
         altium_pcb::upgrade_models(board);
+        altium_pcb::upgrade_component_parameters(board)?;
     }
     doc.validate()?;
     Ok(doc)

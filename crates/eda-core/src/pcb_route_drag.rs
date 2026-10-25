@@ -342,6 +342,7 @@ fn reroute(
             clearance: options.clearance,
             obstacles,
             checkpoints: vec![],
+            preview: Default::default(),
         };
         let mut points = vec![start];
         for pair in waypoints.windows(2) {
@@ -408,6 +409,7 @@ fn reroute(
                 clearance: options.clearance,
                 obstacles,
                 checkpoints: vec![],
+                preview: Default::default(),
             };
             if !route.obstacles.clear_for_route(&route, start, end) {
                 return Err("Dragged tracks violate copper clearance".into());

@@ -244,6 +244,7 @@ fn literal_component_comment_survives_missing_sourcecomment_and_drives_propertie
         designator: "NM1".into(),
         comment: String::new(),
         footprint: "Code_2D".into(),
+        parameters: Some(Default::default()),
         position: Point::default(),
         rotation: 0.0,
         layer: TOP,

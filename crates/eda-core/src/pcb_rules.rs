@@ -577,6 +577,12 @@ pub(crate) fn scope(board: &Board, item: &Item, s: &str, depth: usize) -> Option
     if upper.starts_with("NOT(") {
         return scope(board, item, &s[3..], depth + 1).map(|v| !v);
     }
+    if upper.starts_with("COMPPARAMETERVALUE(") {
+        return membership::component_parameter_comparison(board, item, s);
+    }
+    if upper.starts_with("OBJECTKIND") || upper.starts_with("NAME") {
+        return membership::field_comparison(item, s);
+    }
     match upper.as_str() {
         "ALL" | "TRUE" => return Some(true),
         "FALSE" => return Some(false),
@@ -601,6 +607,7 @@ pub(crate) fn scope(board: &Board, item: &Item, s: &str, depth: usize) -> Option
         "INNET",
         "INCOMPONENT",
         "HASFOOTPRINT",
+        "HASPAD",
         "ONLAYER",
         "INPADCLASS",
         "INNETCLASS",
@@ -664,7 +671,15 @@ pub(crate) fn scope(board: &Board, item: &Item, s: &str, depth: usize) -> Option
                         component.is_some_and(|c| c.designator.eq_ignore_ascii_case(value))
                     }
                     "HASFOOTPRINT" => {
-                        component.is_some_and(|c| c.footprint.eq_ignore_ascii_case(value))
+                        component.is_some_and(|c| membership::like(&c.footprint, value))
+                    }
+                    "HASPAD" => {
+                        if let Shape::Pad { name, .. } = &item.shape {
+                            let parent = component.map_or("Free", |c| c.designator.as_str());
+                            membership::like(&format!("{parent}-{name}"), value)
+                        } else {
+                            false
+                        }
                     }
                     "INNAMEDPOLYGON" | "ISNAMEDPOLYGON" => item.polygon.is_some_and(|index| {
                         board

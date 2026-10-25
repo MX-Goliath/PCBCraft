@@ -560,3 +560,200 @@ worker still retains a snapshot, polygon editing/repour, initial large 3D scenes
 and globally changed substrate/mask surfaces. Constant 60 FPS across all boards
 and operations is not established. Windows runtime performance was not measured
 in this iteration. Existing visual/STEP/import limitations remain in features.json.
+
+## Routing obstacle queries on Windows, 2026-10-25
+
+The route solver previously scanned every obstacle for every candidate segment,
+including the forty binary-search steps in Stop mode. It now uses an R-tree of
+model-space bounds and a conservative clearance bound, then applies the existing
+pair-rule and geometry checks to candidates in original board order. Room/matrix
+clearances, live fallback clearance changes, globally blocking rule errors and the
+1 nm distance tolerance remain covered. Floating envelope arithmetic avoids i64
+overflow when calculating areas of board-sized boxes; valid nanometres remain
+exactly representable. No GUI/GPU dependency was added to the core.
+
+The reproducible `pcb_route_query_profile` example uses 40,000 remote tracks and
+one local obstacle stored last, with 120 cursor positions for each conflict mode.
+Measured on Windows, Ryzen 7 8845H, optimized dev profile, Rust 1.90.0:
+
+| Solver CPU time | Before median / p95 | After median / p95 |
+|---|---:|---:|
+| Stop | 4.0011 / 7.1388 ms | 0.0084 / 0.0100 ms |
+| Walkaround | 1.9503 / 2.6895 ms | 0.0056 / 0.0062 ms |
+
+The summed route-leg counts remained 239 and 539 respectively. Preparation
+increased from 12.234 to 27.768 ms because of index construction. These are
+isolated model calculations on one synthetic layout, not frame rate or total
+input latency. Larger overlapping regions can still dominate exact distance
+checks. Full-board preview copies/validation and artwork rebuilds remain open.
+
+Read-only native ReferenceB probe (15,513 items): startup previously failed on
+`CompParameterValue`; after parameter import/query support, preparation took
+21.77 ms, three solves 4.76/3.84/3.96 ms, and preview/place/finish/Undo 79.96 ms.
+This is not a successful-route timing comparison with the previous version.
+The native Windows GUI also started NetC13_2, placed a leg, finished and returned
+to a clean document with one Undo. Source SHA256 stayed unchanged.
+
+Raw measurements, conditions and limitations:
+`routing-performance-2026-10-25.json`. Reproduce the synthetic workload with:
+
+```powershell
+.\scripts\dev.ps1 -Task run -ExtraArgs @('--example','pcb_route_query_profile')
+```
+
+## Reusable route previews on Windows, 2026-10-25
+
+Moving the routing cursor used to clone and validate the whole board, publish
+another complete preview, then rebuild all artwork. RouteSession now owns a
+private validated prefix and updates an immutable, copy-on-write preview buffer
+with stable IDs for the active legs. Repeated identical requests do no work.
+Only new geometry/references are checked while hovering; placing, changing
+layers, backtracking and committing still validate the complete transaction.
+Retained snapshots remain unchanged when another cursor position is published.
+
+The renderer retains the prefix spatial tree and unaffected pad/drill/mask
+contours. Source-track splits are refitted; variable tails are queried separately
+and painted in their original layer/type order. Cached GPU artwork survives
+zero/one/two active legs, placements, vias and backtracking. Entering a route can
+also reuse the displayed source geometry, including after a cleared preview;
+other previews and document revisions require rebuilding it.
+
+Connectivity workers now receive an owned geometry-only snapshot rather than
+retain the editor's Arc<Board>. This avoids forcing a deep copy on every cursor
+update while a worker runs. Filtering, effective polygon nets, pad/via stacks and
+geometry order are preserved; native metadata and component parameters are not
+copied into that worker input.
+
+Live artwork uses the same document anchor as cached tessellation. This fixes a
+one-pixel stroke shift caused by rounding at opposite sides of zero. Screen-phase
+region hatching retains its existing coordinate behavior. GPU readback compares
+optimized and complete redraws in both linear and sRGB targets, with masks,
+highlighting, single-layer modes, draft, mirroring, splits, vias and backtracking.
+Maximum channel difference is one level without dithering and three with the
+production dithering on overlapping meshes. Stationary scene buffers remain
+shared during the tested tail changes.
+
+The read-only ReferenceB workload contains 15,513 items, 69 components and 60 cursor
+positions on ExampleGround. At 1000 x 800 logical pixels and 15 px/mm, the original
+combined CPU median was 57.5230 ms (p95 64.6967). The first optimized run measured
+5.7226 ms (p95 9.0993), including target lookup, model, publication, canvas and
+tessellation. With alternating straight/bent tails it measured 6.3729 / 9.2021 ms.
+These are headless CPU submissions: GPU callbacks are not executed, and presented
+FPS or total input latency is not measured. Cold preview construction remained
+90.7778 ms in that run; one of 60 samples exceeded 33 ms. Subsequent measurements
+after source-geometry reuse and the full-redraw control are retained separately
+in `route-preview-performance-2026-10-25.json`.
+
+After source-geometry reuse, the final regular workload measured median 7.1928 /
+p95 9.6066 / maximum 72.3750 ms; changing tails measured 7.6839 / 10.3159 /
+62.3378 ms. The sequential full-redraw control in the same final executable
+measured 83.2955 / 103.6451 / 112.6602 ms. The differing steady medians between
+runs show timing variability; they are not evidence of a fixed hardware speedup.
+The new regression also verifies retained source contours after a nonzero prior
+preview generation, split-track refitting and rejection of unrelated previews
+and revisions. Cold optimized frames still exceed 33 ms once in each run.
+
+Validation: 449 workspace tests, fmt --check, strict all-target Clippy, Windows
+build and Linux GNU all-target compilation. Real Windows ReferenceB window: routing
+NetC13_2, placement, Backspace (8.173 -> 7.845 mm), placement again, Finish,
+Undo/Redo/Undo to a clean document. No source save; SHA256 stayed unchanged.
+The first test used the preceding preview build; the final geometry reuse build
+also passed Fit Board, NetC13_2 preview/placement, Finish and Undo to a clean
+document. Both source hashes match. Linux execution and
+new AppImage packaging were not performed.
+
+First-frame artwork, original-board snapping preparation, full validation on
+placement/Finish, exact distances to large polygons, changed display/layer
+states and retained external snapshots can still stall. Full editor performance
+and exact Altium behavior/layout remain open.
+
+```powershell
+.\scripts\dev.ps1 -Task run -ExtraArgs @('--example','pcb_route_preview_profile','--','INPUT.PcbDoc')
+# Add --varied for changing leg counts, or --full-preview for the full-redraw control.
+```
+
+## Shared snapping candidates during previews, 2026-10-25
+
+The original-board snapping cache previously rebuilt bounds, component maps,
+the outline and a second spatial tree when the first preview was displayed.
+It now shares only the source frame's immutable spatial tree. Source-track
+splitting and transformed geometry refit through copy-on-write, so the snap
+candidates retain the original document coordinates and indices. The source
+revision controls lifetime; a preview arriving before a source frame prepares a
+spatial-only fallback. No additional Board snapshot is retained.
+
+Off mode skips item preparation/query and still calls the core grid snap.
+Ctrl+Shift continues to return the raw document point. Real canvas event tests
+compare all modes, grid on/off and bypass against complete model snapping on
+both cold and warm preview entry, including points near the original track end
+and the new preview end. Multilayer pad extents, source split refits, retained
+snapshots, fallback and revision/Undo invalidation are also covered.
+
+The profiler now records the first sample explicitly. This change removes the
+duplicate construction, verified by tree identity, but the whole-frame timings
+do **not** establish further latency improvement. The current regular ReferenceB run
+measured median/p95/first 6.7688/9.2336/65.6447 ms; the immediate baseline was
+4.8551/6.4533/51.1992 ms. The changing-tail run measured 7.7865/10.9781/42.9343 ms.
+CPU frequency/background scheduling were uncontrolled, and GUI presence differed.
+All runs retain one combined sample above 33 ms; stationary artwork and model
+preparation remain cold-frame costs. Timing excludes GPU execution/presentation.
+Raw summaries and conditions: `route-snapping-performance-2026-10-25.json`.
+
+451 workspace tests, formatting, strict all-target Clippy, Windows build and
+Linux GNU all-target compilation passed. In the native Windows ReferenceB window,
+Snap Options changed Off -> Current Layer, NetC13_2 preview/placement and Finish
+worked, and Undo restored a clean document. Off was restored afterward. Source
+SHA256 remained unchanged and no PcbDoc was saved. No new Altium comparison,
+Linux runtime verification or AppImage was performed.
+
+## Reusing stationary artwork groups on route entry, 2026-10-25
+
+Artwork previously had one rebuild boundary: making polygon copper stale on
+route entry retessellated masks, pads, labels and all other stationary layers.
+The cache now follows the existing paint order with separate board, layer/type
+artwork, mask, detail and polygon-outline groups. Source captures include the
+route-tail slots, so unchanged groups can be used by the first preview as well
+as subsequent ones. Stale copper and source-track splits invalidate their own
+groups. Display, font, DPI, history and incompatible-preview changes still
+invalidate sharing; different tessellation scales cannot share these groups.
+
+Shared groups retain their exact meshes, private atlas handles and GPU scenes.
+A reused scene can have its first mesh omitted, so every submitted callback can
+initialize/update that scene's camera; identical uniforms are not rewritten.
+CPU zoom refinement remaps each shared mesh once to the UI atlas. Group parts
+reference resources directly instead of retaining ancestor Cache objects.
+A weak-reference regression verifies expired source GPU resources are released
+after style invalidation. Retained generations still consume RAM/VRAM; peak
+memory on arbitrary boards has not been established.
+
+On the full ReferenceB workload, 151 of 155 groups survived the stale-copper transition.
+The final two headless runs rebuilt artwork in 1.99 and 2.62 ms; their original
+source artwork builds took 30.44 and 38.47 ms. Combined regular CPU samples had
+median/p95/first 7.2775/10.5462/37.1903 ms; changing tails measured
+8.1933/10.3123/33.3280 ms. Initial group-cache runs were faster, with first
+samples 21.6751/22.0493 ms; all results are retained. The preceding shared-snap
+baseline first samples were 65.6447/42.9343 ms. CPU frequency/background activity
+were uncontrolled, and these are submissions without GPU execution, not FPS or
+end-to-end latency. One final sample in each run still exceeded 33 ms.
+
+GPU readback compares group reuse with a complete redraw in linear/sRGB targets,
+with source pad glyphs, holes and masks, splits, fresh/stale copper, vias,
+backtracking, draft, highlighting, single-layer modes and mirroring. It also moves
+the camera while mesh zero from a retained scene is absent. Channel tolerances
+remain <=1 without dithering and <=3 with production dithering on overlaps.
+452 workspace tests, fmt --check, strict all-target Clippy, Windows build and
+Linux GNU all-target compilation passed.
+
+Real Windows ReferenceB window: Fit Board/refinement, start NetC13_2, preview motion and
+stale dimming, place, Backspace, place, Finish and Undo to a clean document.
+At entry, 155/155 groups were reused in 3.52 ms; the stale transition reused
+151/155 in 5.39 ms. Source SHA256 stayed unchanged, with no PcbDoc save.
+Finish/repour/Undo still changed document revisions and rebuilt all groups;
+native artwork costs reached 67.69 ms. Native frame batches include startup and
+action outliers and do not establish continuous routing FPS.
+
+Source splitting can still rebuild a whole affected group. Cold model snapshots,
+commit/validation/repour, global display changes, generic previews, large boards,
+peak memory, Linux execution and exact Altium parity remain open. Conditions,
+all raw summaries and the native log are in
+`artwork-groups-performance-2026-10-25.json`.

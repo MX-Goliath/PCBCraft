@@ -3,6 +3,108 @@ use super::text;
 use crate::pcb::*;
 use geo::{BooleanOps, Intersects, Relate, Validation};
 
+fn quoted(s: &str) -> Option<(String, &str)> {
+    let s = s.trim_start().strip_prefix('\'')?;
+    let mut chars = s.char_indices().peekable();
+    let mut value = String::new();
+    while let Some((index, c)) = chars.next() {
+        if c != '\'' {
+            value.push(c);
+        } else if chars.peek().is_some_and(|(_, c)| *c == '\'') {
+            chars.next();
+            value.push('\'');
+        } else {
+            return Some((value, &s[index + 1..]));
+        }
+    }
+    None
+}
+
+pub(super) fn component_parameter_comparison(board: &Board, item: &Item, s: &str) -> Option<bool> {
+    let (name, tail) = quoted(&s["CompParameterValue(".len()..])?;
+    let tail = tail.trim_start().strip_prefix(')')?.trim_start();
+    let (op, tail) = if let Some(tail) = tail.strip_prefix("<>") {
+        ("<>", tail)
+    } else if let Some(tail) = tail.strip_prefix('=') {
+        ("=", tail)
+    } else if tail
+        .get(..4)
+        .is_some_and(|s| s.eq_ignore_ascii_case("Like"))
+        && tail[4..].starts_with(char::is_whitespace)
+    {
+        ("LIKE", &tail[4..])
+    } else {
+        return None;
+    };
+    let (pattern, tail) = quoted(tail)?;
+    if !tail.trim().is_empty() {
+        return None;
+    }
+    let Some(component) = item
+        .component
+        .and_then(|n| board.components.iter().find(|c| c.index == n))
+    else {
+        return Some(false);
+    };
+    // Legacy JSON without interpreted parameters cannot safely evaluate a rule.
+    let parameters = component.parameters.as_ref()?;
+    let Some((_, value)) = parameters
+        .iter()
+        .find(|(key, _)| key.eq_ignore_ascii_case(&name))
+    else {
+        return Some(false);
+    };
+    Some(match op {
+        "=" => value.eq_ignore_ascii_case(&pattern),
+        "<>" => !value.eq_ignore_ascii_case(&pattern),
+        _ => like(value, &pattern),
+    })
+}
+
+pub(super) fn field_comparison(item: &Item, s: &str) -> Option<bool> {
+    let (field, value) = s.split_once('=')?;
+    let (value, rest) = quoted(value)?;
+    if !rest.trim().is_empty() {
+        return None;
+    }
+    let actual = match field.trim().to_ascii_uppercase().as_str() {
+        "OBJECTKIND" => item.kind(),
+        "NAME" => match &item.shape {
+            Shape::Pad { name, .. } => name,
+            _ => return Some(false),
+        },
+        _ => return None,
+    };
+    Some(actual.eq_ignore_ascii_case(&value))
+}
+
+pub(super) fn like(value: &str, pattern: &str) -> bool {
+    let value: Vec<_> = value.chars().collect();
+    let pattern: Vec<_> = pattern.chars().collect();
+    let (mut v, mut p) = (0, 0);
+    let (mut star, mut retry) = (None, 0);
+    while v < value.len() {
+        if p < pattern.len()
+            && pattern[p] != '*'
+            && (pattern[p] == '?' || pattern[p].eq_ignore_ascii_case(&value[v]))
+        {
+            v += 1;
+            p += 1;
+        } else if p < pattern.len() && pattern[p] == '*' {
+            star = Some(p);
+            retry = v;
+            p += 1;
+        } else if let Some(index) = star {
+            retry += 1;
+            v = retry;
+            p = index + 1;
+        } else {
+            return false;
+        }
+    }
+    pattern[p..].iter().all(|c| *c == '*')
+}
+
 pub(super) fn layer_matches(board: &Board, layer: u16, name: &str) -> bool {
     if board
         .layers
@@ -140,6 +242,136 @@ mod tests {
     use super::*;
     use crate::pcb_rules::query;
     use eda_geom::Point;
+
+    #[test]
+    fn component_parameters_scope_child_copper_with_escaped_strings_and_wildcards() {
+        let mut board = Board::default();
+        board.components.push(Component {
+            id: uuid::Uuid::new_v4(),
+            index: 7,
+            designator: "BM1".into(),
+            comment: String::new(),
+            footprint: "SIP10".into(),
+            position: Point::default(),
+            rotation: 0.,
+            layer: TOP,
+            locked: false,
+            properties: Fields::new(),
+            parameters: Some(Fields::from([
+                ("ID".into(), "216".into()),
+                ("Vendor's name".into(), "A'B OR (C)".into()),
+                ("Empty".into(), "".into()),
+            ])),
+        });
+        let mut child = track(Point::mm(1, 1), Point::mm(2, 1));
+        child.component = Some(7);
+        for expression in [
+            "CompParameterValue('id') Like '216'",
+            "CompParameterValue('ID') Like '?1*'",
+            "CompParameterValue('ID') = '216'",
+            "CompParameterValue('ID') <> '217'",
+            "CompParameterValue('Vendor''s name') Like 'A''B OR (C)'",
+            "CompParameterValue('Empty') Like ''",
+            "InPadClass('TP_Pads') Or CompParameterValue('ID') Like '216'",
+            "Not (CompParameterValue('ID') Like '217')",
+            "HasFootprint('SIP?0')",
+        ] {
+            assert_eq!(query(&board, &child, expression), Ok(true), "{expression}");
+        }
+        assert_eq!(
+            query(&board, &child, "CompParameterValue('missing') Like '*'"),
+            Ok(false)
+        );
+        assert_eq!(
+            query(&board, &child, "CompParameterValue('ID') Like '21'"),
+            Ok(false)
+        );
+        let mut scoped = crate::pcb_rules::default_rule("Clearance");
+        scoped.insert(
+            "SCOPE1EXPRESSION".into(),
+            "CompParameterValue('ID') Like '216'".into(),
+        );
+        scoped.insert("NETSCOPE".into(), "AnyNet".into());
+        scoped.insert("GAP".into(), "1mm".into());
+        let mut fallback = crate::pcb_rules::default_rule("Clearance");
+        fallback.insert("PRIORITY".into(), "2".into());
+        fallback.insert("NETSCOPE".into(), "AnyNet".into());
+        board.rules = vec![scoped, fallback];
+        let foreign = track(Point::mm(3, 1), Point::mm(4, 1));
+        assert_eq!(
+            crate::pcb_rules::clearance(&board, &child, &foreign),
+            Ok(Some(1_000_000))
+        );
+        board.components[0]
+            .parameters
+            .as_mut()
+            .unwrap()
+            .insert("ID".into(), "217".into());
+        assert_eq!(
+            crate::pcb_rules::clearance(&board, &child, &foreign),
+            Ok(Some(200_000))
+        );
+        let expression = "CompParameterValue('ID') Like '216'";
+        board.components[0].parameters = None;
+        assert!(query(&board, &child, expression).is_err());
+        assert!(crate::pcb_rules::clearance(&board, &child, &foreign).is_err());
+        child.component = None;
+        assert_eq!(query(&board, &child, expression), Ok(false));
+        for expression in [
+            "CompParameterValue('ID') Like",
+            "CompParameterValue('ID') Like '216' junk",
+            "CompParameterValue('ID', 'other') Like '216'",
+            "CompParameterValue('ID') LikeX '216'",
+            "All OR CompParameterValue('ID') > '216'",
+        ] {
+            assert!(query(&board, &child, expression).is_err(), "{expression}");
+        }
+    }
+
+    #[test]
+    fn has_pad_uses_full_name_and_never_matches_other_copper() {
+        let board = Board::default();
+        let pad = Item::new(
+            TOP,
+            None,
+            Shape::Pad {
+                position: Point::default(),
+                size: Point::mm(1, 1),
+                rotation: 0.,
+                shape: PadShape::Round,
+                hole: 0,
+                plated: true,
+                name: "1".into(),
+                bottom_size: None,
+                middle_size: None,
+            },
+        );
+        assert_eq!(query(&board, &pad, "HasPad('Free-*')"), Ok(true));
+        assert_eq!(query(&board, &pad, "HasPad('BM1-*')"), Ok(false));
+        assert_eq!(query(&board, &pad, "ObjectKind = 'Pad'"), Ok(true));
+        assert_eq!(query(&board, &pad, "ObjectKind = 'Component'"), Ok(false));
+        assert_eq!(
+            query(
+                &board,
+                &track(Point::mm(0, 0), Point::mm(1, 0)),
+                "HasPad('*')"
+            ),
+            Ok(false)
+        );
+        for (value, pattern, expected) in [
+            ("", "*", true),
+            ("abcd", "a*d", true),
+            ("abcd", "a*c?", true),
+            ("ab", "a*b?", false),
+            ("контакт", "???????", true),
+            ("ab", "*a*b*", true),
+            ("ab", "*a*c", false),
+            ("*ab", "*b", true),
+            ("**", "*", true),
+        ] {
+            assert_eq!(like(value, pattern), expected);
+        }
+    }
 
     fn track(a: Point, b: Point) -> Item {
         Item::new(

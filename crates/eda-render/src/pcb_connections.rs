@@ -42,9 +42,8 @@ impl Cache {
             }
         }
         if self.job.is_none() && (self.revision != Some(revision) || self.preview != preview_key) {
-            let snapshot = preview.cloned().unwrap_or_else(|| Arc::new(board.clone()));
+            let snapshot = eda_core::pcb_connectivity::Snapshot::new(preview.map_or(board, |b| b));
             let (sender, receiver) = mpsc::sync_channel(1);
-            let worker_board = snapshot.clone();
             let ctx = ctx.clone();
             self.job = Some(Arc::new(Job {
                 revision,
@@ -52,7 +51,7 @@ impl Cache {
                 receiver: Mutex::new(receiver),
             }));
             std::thread::spawn(move || {
-                let lines = eda_core::pcb_connectivity::connections(&worker_board);
+                let lines = snapshot.connections();
                 let _ = sender.send(lines);
                 ctx.request_repaint();
             });
@@ -67,6 +66,19 @@ impl Cache {
 mod tests {
     use super::*;
     use eda_geom::Point;
+    #[test]
+    fn background_job_does_not_retain_the_editors_preview_buffer() {
+        let preview = Arc::new(Board::default());
+        let mut cache = Cache::default();
+        cache.update(
+            &Board::default(),
+            Some(&preview),
+            0,
+            1,
+            &egui::Context::default(),
+        );
+        assert_eq!(Arc::strong_count(&preview), 1);
+    }
     fn completed(revision: u64) -> Cache {
         let (sender, receiver) = mpsc::sync_channel(1);
         sender
