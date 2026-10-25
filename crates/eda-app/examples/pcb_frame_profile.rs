@@ -102,7 +102,13 @@ fn main() -> Result<(), String> {
             start.elapsed().as_secs_f64() * 1000.,
         )
     };
-    for (name, n) in [("cold", 1), ("cursor", 10), ("pan", 10), ("long-pan", 360)] {
+    for (name, n) in [
+        ("cold", 1),
+        ("cursor", 10),
+        ("pan", 10),
+        ("long-pan", 360),
+        ("zoom", 120),
+    ] {
         let mut times = vec![];
         for i in 0..n {
             if name == "pan" {
@@ -112,6 +118,11 @@ fn main() -> Result<(), String> {
                 // hide the expensive frames at viewport-cache boundaries.
                 let offset = (i as f64 / 359. * std::f64::consts::TAU).sin() * 1200. / zoom;
                 view.camera.centre_mm[0] = centre.x as f64 / 1e6 + offset;
+            }
+            if name == "zoom" {
+                view.camera.centre_mm = [centre.x as f64 / 1e6, centre.y as f64 / 1e6];
+                view.camera.pixels_per_mm =
+                    zoom * (i as f64 / 119. * std::f64::consts::TAU).sin().exp();
             }
             times.push(frame(&mut view, Pos2::new(500. + i as f32, 400.)));
         }

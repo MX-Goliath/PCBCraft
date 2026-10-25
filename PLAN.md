@@ -867,3 +867,30 @@ Controls and validation: docs/pcb-update/CONTROLS.md.
   Altium/Windows runtime comparison remain outside verified coverage.
 
 Cause, implementation and validation: docs/pcb-update/INTERACTIVE_ROUTING.md.
+
+
+### PCB 2D zoom stalls, 25.10.2026
+
+- [x] Reproduced synchronous whole-scene rebuild on every zoom frame using
+  read-only ReferenceM, 41,475 items. Parent baseline: zoom CPU mean 49.56 ms,
+  p95 54.55/max 128.62 ms, 119/120 frames above 33 ms.
+- [x] Pan/zoom transform resident buffers. Exact detail refines after 120 ms
+  idle on one background worker with independent fonts/DPI/context and GPU
+  preparation. Scale/content keys reject stale results; new content retains an
+  old running job until it exits. Live overlays and current-camera picking stay
+  active. Tests compare refined and fresh geometry, GPU scale pixels/buffer
+  reuse, stale jobs, disconnection and content changes during refinement.
+- [x] Release zoom CPU mean 7.62/p95 14.48/max 18.56 ms, zero >33 ms of 120;
+  completed GPU median 2.46/p95 5.59/max 9.09 ms, refinement publication max
+  6.29 ms. Native window zoom/settle and screenshot inspected; warm CPU median
+  2.20/p95 13.38/max 51.60 ms, six >33 ms of 1530 under concurrent compilation.
+  Source PCB hash unchanged. These are not presentation FPS.
+- [x] `cargo fmt --all -- --check`, strict workspace/all-target Clippy and
+  `cargo test --workspace` pass. Linux AppImage rebuilt, SHA256 sidecar checked,
+  packaged app opened the source PCB in the real desktop session. Source hash
+  remains unchanged.
+- [ ] Cold content/display rebuilds, including incoming connection results,
+  remain synchronous. Snapshot cost, arbitrary-board/extreme-zoom memory bounds,
+  Windows runtime and exact Altium visual/performance parity remain open.
+  Gesture antialiasing/labels use scaled previous detail until refinement.
+  See `docs/pcb-update/PERFORMANCE.md` for reproduction and limits.

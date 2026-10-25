@@ -10,6 +10,7 @@ fn main() -> Result<(), String> {
             .nth(1)
             .ok_or("Usage: pcb_3d_frame_profile INPUT.PcbDoc")?,
     );
+    let two_d = std::env::args_os().any(|a| a == "--2d");
     let document = eda_io::load(&path)?;
     let board = document.pcb.as_ref().ok_or("Not a PCB document")?;
     if std::env::args_os().any(|a| a == "--window") {
@@ -18,7 +19,7 @@ fn main() -> Result<(), String> {
             .windows(2)
             .find(|pair| pair[0] == "--capture")
             .map(|pair| PathBuf::from(&pair[1]));
-        return window(board.clone(), capture);
+        return window(board.clone(), capture, two_d);
     }
     let instance = wgpu::Instance::default();
     let adapter = pollster::block_on(instance.request_adapter(&Default::default()))
@@ -29,7 +30,8 @@ fn main() -> Result<(), String> {
     let format = wgpu::TextureFormat::Rgba8Unorm;
     let mut renderer = egui_wgpu::Renderer::new(&device, format, None, 1, false);
     let ctx = egui::Context::default();
-    eda_render::pcb::enable_gpu(&ctx, format);
+    install_fonts(&ctx);
+    eda_render::pcb::enable_gpu_with_device(&ctx, format, &device, &queue);
     eda_render::pcb_3d::enable_gpu(&ctx, &device);
     let target = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("3D frame probe"),
@@ -47,7 +49,10 @@ fn main() -> Result<(), String> {
     });
     let target = target.create_view(&Default::default());
     let mut view = eda_render::View::default();
-    view.pcb.three_d.enabled = true;
+    view.pcb.three_d.enabled = !two_d;
+    if two_d {
+        initialize_2d(&mut view, board);
+    }
     let mut frame = |view: &mut eda_render::View| {
         let start = Instant::now();
         let output = ctx.run(
@@ -97,7 +102,7 @@ fn main() -> Result<(), String> {
     };
     let start = Instant::now();
     frame(&mut view);
-    while view.pcb.three_d.preparing() {
+    while !two_d && view.pcb.three_d.preparing() {
         if start.elapsed().as_secs() > 120 {
             return Err("Scene preparation timed out".into());
         }
@@ -108,23 +113,44 @@ fn main() -> Result<(), String> {
         "scene_and_first_gpu_frame_ms={:.2}",
         start.elapsed().as_secs_f64() * 1000.
     );
-    for phase in ["cached", "orbit", "pan", "zoom"] {
+    let base_scale = view.camera.pixels_per_mm;
+    let base_centre = view.camera.centre_mm;
+    let phases: &[&str] = if two_d {
+        &["cached", "pan", "zoom", "settle"]
+    } else {
+        &["cached", "orbit", "pan", "zoom"]
+    };
+    for &phase in phases {
         let mut cpu = vec![];
         let mut completed = vec![];
         for n in 0..120 {
-            match phase {
-                "orbit" => {
-                    view.pcb.three_d.yaw += 0.015;
-                    view.pcb.three_d.pitch = 0.7 + (n as f32 * 0.03).sin() * 0.3;
+            if two_d {
+                match phase {
+                    "pan" => {
+                        view.camera.centre_mm[0] = base_centre[0] + (n as f64 * 0.05).sin() * 40.
+                    }
+                    "zoom" => {
+                        view.camera.centre_mm = base_centre;
+                        view.camera.pixels_per_mm = base_scale * (n as f64 * 0.05).sin().exp();
+                    }
+                    "settle" => std::thread::sleep(std::time::Duration::from_millis(8)),
+                    _ => {}
                 }
-                "pan" => {
-                    view.pcb.three_d.pan = Vec2::new(
-                        (n as f32 * 0.05).sin() * 200.,
-                        (n as f32 * 0.03).sin() * 100.,
-                    )
+            } else {
+                match phase {
+                    "orbit" => {
+                        view.pcb.three_d.yaw += 0.015;
+                        view.pcb.three_d.pitch = 0.7 + (n as f32 * 0.03).sin() * 0.3;
+                    }
+                    "pan" => {
+                        view.pcb.three_d.pan = Vec2::new(
+                            (n as f32 * 0.05).sin() * 200.,
+                            (n as f32 * 0.03).sin() * 100.,
+                        )
+                    }
+                    "zoom" => view.pcb.three_d.zoom = 1. + (n as f32 * 0.03).sin().abs() * 2.,
+                    _ => {}
                 }
-                "zoom" => view.pcb.three_d.zoom = 1. + (n as f32 * 0.03).sin().abs() * 2.,
-                _ => {}
             }
             let (a, b) = frame(&mut view);
             cpu.push(a);
@@ -142,13 +168,20 @@ fn main() -> Result<(), String> {
 
 // Native-window QA without desktop input injection. The same canvas and GPU
 // callback run inside eframe; only this read-only probe animates the camera.
-fn window(board: eda_core::pcb::Board, capture: Option<PathBuf>) -> Result<(), String> {
+fn window(
+    board: eda_core::pcb::Board,
+    capture: Option<PathBuf>,
+    two_d: bool,
+) -> Result<(), String> {
     struct Probe {
         board: eda_core::pcb::Board,
         view: eda_render::View,
         ready: Option<Instant>,
         capture: Option<PathBuf>,
         requested_capture: bool,
+        two_d: bool,
+        base_scale: Option<f64>,
+        cpu_times: Vec<f32>,
     }
     impl eframe::App for Probe {
         fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
@@ -165,21 +198,51 @@ fn window(board: eda_core::pcb::Board, capture: Option<PathBuf>) -> Result<(), S
                         image::ColorType::Rgba8,
                     )
                     .unwrap();
-                    eprintln!("Captured native 3D frame: {}", path.display());
+                    eprintln!("Captured native frame: {}", path.display());
                 }
             }
-            if !self.view.pcb.three_d.preparing() {
+            if self.two_d || !self.view.pcb.three_d.preparing() {
                 let t = self
                     .ready
                     .get_or_insert_with(Instant::now)
                     .elapsed()
                     .as_secs_f32();
                 let state = &mut self.view.pcb.three_d;
-                if t > 3. && self.capture.is_some() && !self.requested_capture {
+                if t > if self.two_d { 7. } else { 3. }
+                    && self.capture.is_some()
+                    && !self.requested_capture
+                {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));
                     self.requested_capture = true;
                 }
-                if t < 8. {
+                if self.two_d {
+                    let base = *self
+                        .base_scale
+                        .get_or_insert(self.view.camera.pixels_per_mm);
+                    // Camera zoom, then idle frames that let the
+                    // exact-detail worker complete and publish its buffers.
+                    if t < 5. {
+                        self.view.camera.pixels_per_mm = base * (f64::from(t) * 2.).sin().exp();
+                    } else if t < 8. {
+                        self.view.camera.pixels_per_mm = base * 2.;
+                    } else if t < 11. {
+                        self.view.camera.pixels_per_mm = base * 0.6;
+                    } else if t > 14. {
+                        self.cpu_times.sort_by(f32::total_cmp);
+                        let n = self.cpu_times.len();
+                        if n > 0 {
+                            eprintln!(
+                                "native_2d_cpu frames={} median_ms={:.2} p95_ms={:.2} max_ms={:.2} frames_over_33ms={}",
+                                n,
+                                self.cpu_times[n / 2] * 1000.,
+                                self.cpu_times[(n - 1) * 95 / 100] * 1000.,
+                                self.cpu_times[n - 1] * 1000.,
+                                self.cpu_times.iter().filter(|t| **t > 0.033).count()
+                            );
+                        }
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    }
+                } else if t < 8. {
                     state.yaw = t * 0.6;
                     state.pitch = 0.7 + (t * 0.7).sin() * 0.3;
                 } else if t < 12. {
@@ -189,12 +252,17 @@ fn window(board: eda_core::pcb::Board, capture: Option<PathBuf>) -> Result<(), S
                 } else {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
-                if self.capture.is_some() {
+                if self.capture.is_some() && !self.two_d {
                     // A reproducible oblique pose for before/after image QA.
                     state.yaw = 0.6;
                     state.pitch = 0.55;
                     state.zoom = 1.4;
                     state.pan = Vec2::ZERO;
+                }
+                if let Some(cpu) = frame.info().cpu_usage
+                    && t > 1.
+                {
+                    self.cpu_times.push(cpu);
                 }
                 if let Some(cpu) = frame.info().cpu_usage
                     && cpu > 0.033
@@ -220,18 +288,54 @@ fn window(board: eda_core::pcb::Board, capture: Option<PathBuf>) -> Result<(), S
                 .wgpu_render_state
                 .as_ref()
                 .ok_or_else(|| std::io::Error::other("wgpu is required"))?;
-            eda_render::pcb::enable_gpu(&cc.egui_ctx, render.target_format);
+            eda_render::pcb::enable_gpu_with_device(
+                &cc.egui_ctx,
+                render.target_format,
+                &render.device,
+                &render.queue,
+            );
             eda_render::pcb_3d::enable_gpu(&cc.egui_ctx, &render.device);
+            install_fonts(&cc.egui_ctx);
             let mut view = eda_render::View::default();
-            view.pcb.three_d.enabled = true;
+            view.pcb.three_d.enabled = !two_d;
+            if two_d {
+                initialize_2d(&mut view, &board);
+            }
             Ok(Box::new(Probe {
                 board,
                 view,
                 ready: None,
                 capture,
                 requested_capture: false,
+                two_d,
+                base_scale: None,
+                cpu_times: vec![],
             }))
         }),
     )
     .map_err(|e| e.to_string())
+}
+
+fn install_fonts(ctx: &egui::Context) {
+    let mut fonts = egui::FontDefinitions::default();
+    for name in [
+        "sch-sans",
+        "sch-sans-bold",
+        "sch-sans-italic",
+        "sch-sans-bold-italic",
+        "ui-bold",
+    ] {
+        fonts.families.insert(
+            egui::FontFamily::Name(name.into()),
+            fonts.families[&egui::FontFamily::Proportional].clone(),
+        );
+    }
+    ctx.set_fonts(fonts);
+}
+
+fn initialize_2d(view: &mut eda_render::View, board: &eda_core::pcb::Board) {
+    let centre = eda_core::pcb::Bounds::points(&board.outline_points(256)).centre();
+    view.camera.centre_mm = [centre.x as f64 / 1e6, centre.y as f64 / 1e6];
+    view.camera.pixels_per_mm = 15.;
+    view.camera.fitted = true;
 }

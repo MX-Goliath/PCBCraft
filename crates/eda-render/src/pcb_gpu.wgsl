@@ -1,5 +1,5 @@
 // Match egui's premultiplied gamma colors, atlas sampling and dithering.
-struct Camera { size: vec2<f32>, shift: vec2<f32>, dither: f32, padding0: f32, padding1: vec2<f32> };
+struct Camera { size: vec2<f32>, shift: vec2<f32>, dither: f32, scale: f32, padding1: vec2<f32> };
 @group(0) @binding(0) var<uniform> camera: Camera;
 @group(0) @binding(1) var atlas: texture_2d<f32>;
 @group(0) @binding(2) var atlas_sampler: sampler;
@@ -11,7 +11,7 @@ struct Output {
 @vertex fn vertex(@location(0) position: vec2<f32>, @location(1) uv: vec2<f32>,
     @location(2) packed: u32) -> Output {
     var out: Output;
-    let p = (position + camera.shift) / camera.size;
+    let p = (position * camera.scale + camera.shift) / camera.size;
     out.position = vec4<f32>(2. * p.x - 1., 1. - 2. * p.y, 0., 1.);
     out.uv = uv;
     out.color = vec4<f32>(f32(packed & 255u), f32((packed >> 8u) & 255u),

@@ -215,7 +215,12 @@ impl PcbCraft {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         theme::apply(&cc.egui_ctx);
         if let Some(render) = &cc.wgpu_render_state {
-            eda_render::pcb::enable_gpu(&cc.egui_ctx, render.target_format);
+            eda_render::pcb::enable_gpu_with_device(
+                &cc.egui_ctx,
+                render.target_format,
+                &render.device,
+                &render.queue,
+            );
             eda_render::pcb_3d::enable_gpu(&cc.egui_ctx, &render.device);
         }
         let mut settings: Settings = cc

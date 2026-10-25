@@ -1,11 +1,37 @@
-//! Reuse the complete tessellated PCB artwork across camera translations.
+//! Reuse the complete tessellated PCB artwork across camera translations and zoom gestures.
 //! Screen-anchored hatching stays in its original draw order and is drawn live.
 use super::*;
 use egui::{
     LayerId, TextureHandle,
     epaint::{ClippedPrimitive, Mesh, Primitive},
 };
-use std::sync::Arc;
+use std::{
+    sync::{Arc, Mutex, mpsc},
+    time::{Duration, Instant},
+};
+
+const ZOOM_SETTLE: Duration = Duration::from_millis(120);
+
+// One owned snapshot and at most one worker per view. The worker has its own
+// egui context: running a second frame on the UI context would race its fonts
+// and paint lists. Content/display changes replace its render snapshot.
+struct Snapshot {
+    board: Board,
+    view: View,
+    ctx: egui::Context,
+}
+struct ZoomJob {
+    key: u64,
+    receiver: mpsc::Receiver<(Snapshot, Cache)>,
+}
+#[derive(Default)]
+struct Refinement {
+    snapshot: Option<Snapshot>,
+    job: Option<ZoomJob>,
+    failed: bool,
+    target: f64,
+    changed: Option<Instant>,
+}
 
 #[derive(Clone)]
 enum Part {
@@ -66,6 +92,9 @@ impl Builder {
 pub(super) struct Cache {
     key: Option<u64>,
     origin: Pos2,
+    scale: f64,
+    image: Option<egui::ColorImage>,
+    refinement: Arc<Mutex<Refinement>>,
     parts: Vec<Part>,
     atlas: Option<TextureHandle>,
     gpu: Option<Arc<gpu::Scene>>,
@@ -76,6 +105,9 @@ impl Default for Cache {
         Self {
             key: None,
             origin: Pos2::ZERO,
+            scale: 1.,
+            image: None,
+            refinement: Arc::default(),
             parts: vec![],
             atlas: None,
             gpu: None,
@@ -84,6 +116,155 @@ impl Default for Cache {
     }
 }
 impl Cache {
+    pub fn rebuild(&mut self, painter: &egui::Painter, board: &Board, view: &mut View, key: u64) {
+        let mut result = Self::build(painter, board, view, key, self.builds);
+        result.refinement = self.refinement.clone();
+        result.seed(board, view, painter.ctx());
+        *self = result;
+    }
+    fn build(
+        painter: &egui::Painter,
+        board: &Board,
+        view: &mut View,
+        key: u64,
+        builds: usize,
+    ) -> Self {
+        let start = Instant::now();
+        let mut scene_painter = painter.clone();
+        // Include offscreen objects so navigation never leaves cached artwork.
+        scene_painter.set_clip_rect(Rect::EVERYTHING);
+        let mut builder = Builder::new(&scene_painter);
+        // Keep pixel rounding independent of the pan at capture time.
+        let anchor = Bounds::points(&view.pcb.geometry.outline).centre();
+        let camera = Camera {
+            centre_mm: [anchor.x as f64 / 1e6, anchor.y as f64 / 1e6],
+            ..view.camera.clone()
+        };
+        let rect = Rect::from_center_size(Pos2::ZERO, Vec2::splat(2.));
+        paint_scene(&scene_painter, board, &camera, view, rect, &mut builder);
+        let mut result = Self {
+            builds,
+            ..Default::default()
+        };
+        result.finish(builder, &scene_painter, key, &camera, rect);
+        if std::env::var_os("PCBCRAFT_FRAME_PROFILE").is_some() {
+            eprintln!(
+                "pcb_artwork_build n={} cpu_ms={:.2} zoom={:.6} revision={} preview={}",
+                result.builds,
+                start.elapsed().as_secs_f64() * 1000.,
+                camera.pixels_per_mm,
+                view.pcb.three_d.revision,
+                view.pcb.preview_generation,
+            );
+        }
+        result
+    }
+    fn seed(&mut self, board: &Board, view: &View, ctx: &egui::Context) {
+        let worker = egui::Context::default();
+        worker.set_fonts(ctx.fonts(|f| f.lock().fonts.definitions().clone()));
+        worker.options_mut(|options| *options = ctx.options(|o| o.clone()));
+        worker.set_pixels_per_point(ctx.pixels_per_point());
+        gpu::copy_configuration(ctx, &worker);
+        // paint_cache is taken out of the live view before this snapshot.
+        let mut view = view.clone();
+        view.pcb.paint_cache = Self::default();
+        view.pcb.preview = None;
+        let mut state = self.refinement.lock().unwrap();
+        state.snapshot = Some(Snapshot {
+            board: board.clone(),
+            view,
+            ctx: worker,
+        });
+        state.target = self.scale;
+        state.changed = None;
+        state.failed = false;
+        // Keep an older running job until it exits. Its key rejects its result,
+        // and prevents a second worker from being launched in the meantime.
+    }
+    pub fn refresh(&mut self, scale: f64, ctx: &egui::Context) {
+        let shared = self.refinement.clone();
+        let mut state = shared.lock().unwrap();
+        if state.target != scale {
+            state.target = scale;
+            state.changed = Some(Instant::now());
+        }
+        if let Some(job) = &state.job {
+            match job.receiver.try_recv() {
+                Ok((snapshot, mut result)) => {
+                    let current = self.key == Some(job.key);
+                    if current {
+                        state.snapshot = Some(snapshot);
+                    }
+                    state.job = None;
+                    if current && result.scale == scale {
+                        // Worker texture IDs belong to its own context. GPU
+                        // callbacks own the atlas; the CPU fallback needs a UI
+                        // texture and remapped IDs before publishing the result.
+                        result.atlas = None;
+                        if result.gpu.is_none() {
+                            let atlas = ctx.load_texture(
+                                "pcb-2d-artwork",
+                                result.image.as_ref().unwrap().clone(),
+                                egui::TextureOptions::LINEAR,
+                            );
+                            for part in &mut result.parts {
+                                if let Part::Mesh(mesh) = part {
+                                    Arc::make_mut(mesh).texture_id = atlas.id();
+                                }
+                            }
+                            result.atlas = Some(atlas);
+                        }
+                        result.builds = self.builds + 1;
+                        result.refinement = shared.clone();
+                        *self = result;
+                    }
+                }
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    let current = self.key == Some(job.key);
+                    state.job = None;
+                    state.failed = current;
+                }
+                Err(mpsc::TryRecvError::Empty) => {}
+            }
+        }
+        if self.scale == scale || state.failed {
+            return;
+        }
+        let remaining =
+            ZOOM_SETTLE.saturating_sub(state.changed.map_or(ZOOM_SETTLE, |t| t.elapsed()));
+        if !remaining.is_zero() {
+            ctx.request_repaint_after(remaining);
+            return;
+        }
+        if state.job.is_none()
+            && let Some(mut snapshot) = state.snapshot.take()
+        {
+            let (sender, receiver) = mpsc::sync_channel(1);
+            let key = self.key.unwrap();
+            state.job = Some(ZoomJob { key, receiver });
+            let repaint = ctx.clone();
+            std::thread::spawn(move || {
+                snapshot.view.camera.pixels_per_mm = scale;
+                let mut result = None;
+                let _ = snapshot.ctx.run(egui::RawInput::default(), |ctx| {
+                    let painter = ctx.layer_painter(egui::LayerId::background());
+                    result = Some(Self::build(
+                        &painter,
+                        &snapshot.board,
+                        &mut snapshot.view,
+                        key,
+                        0,
+                    ));
+                });
+                let result = result.unwrap();
+                if let Some(gpu) = &result.gpu {
+                    gpu.prepare_background(&snapshot.ctx);
+                }
+                let _ = sender.send((snapshot, result));
+                repaint.request_repaint();
+            });
+        }
+    }
     pub fn valid(&self, key: u64) -> bool {
         self.key == Some(key)
     }
@@ -141,16 +322,20 @@ impl Cache {
                         _ => None,
                     })
                     .collect(),
-                image,
+                image.clone(),
                 format,
             )
         });
+        self.image = Some(image);
+        self.scale = camera.pixels_per_mm;
         self.origin = camera.screen(Point::default(), rect);
         self.key = Some(key);
         self.builds += 1;
     }
     pub fn paint(&self, painter: &egui::Painter, board: &Board, view: &mut View, rect: Rect) {
-        let delta = view.camera.screen(Point::default(), rect) - self.origin;
+        let scale = (view.camera.pixels_per_mm / self.scale) as f32;
+        let delta =
+            view.camera.screen(Point::default(), rect).to_vec2() - self.origin.to_vec2() * scale;
         let visible = Bounds::points(&[
             world(&view.camera, rect.expand(2.).left_bottom(), rect),
             world(&view.camera, rect.expand(2.).right_top(), rect),
@@ -160,15 +345,17 @@ impl Cache {
             match part {
                 Part::Mesh(mesh) => {
                     if let Some(gpu) = &self.gpu {
-                        painter.add(gpu.callback(mesh_index, rect, delta, true));
+                        painter.add(gpu.callback(mesh_index, rect, delta, scale, true));
                         mesh_index += 1;
                         continue;
                     }
-                    let mesh = if delta == Vec2::ZERO {
+                    let mesh = if delta == Vec2::ZERO && scale == 1. {
                         mesh.clone()
                     } else {
                         let mut moved = (**mesh).clone();
-                        moved.translate(delta);
+                        for vertex in &mut moved.vertices {
+                            vertex.pos = (vertex.pos.to_vec2() * scale + delta).to_pos2();
+                        }
                         Arc::new(moved)
                     };
                     painter.add(egui::Shape::Mesh(mesh));
@@ -203,7 +390,6 @@ pub(super) fn key(board: &Board, view: &View, ctx: &egui::Context) -> u64 {
         board as *const Board as usize,
         pcb.three_d.revision,
         pcb.preview_generation,
-        view.camera.pixels_per_mm.to_bits(),
         view.camera.mirrored_x,
         ctx.pixels_per_point().to_bits(),
     )
@@ -317,10 +503,182 @@ mod tests {
         assert_eq!(view.pcb.paint_cache.builds, builds + 4);
         view.camera.pixels_per_mm *= 2.;
         frame(&ctx, &board, &mut view, Pos2::new(400., 300.));
-        assert_eq!(view.pcb.paint_cache.builds, builds + 5);
+        assert_eq!(view.pcb.paint_cache.builds, builds + 4);
         view.camera.centre_mm[0] += 100.;
         frame(&ctx, &board, &mut view, Pos2::new(400., 300.));
-        assert_eq!(view.pcb.paint_cache.builds, builds + 5);
+        assert_eq!(view.pcb.paint_cache.builds, builds + 4);
+    }
+    fn settle(ctx: &egui::Context, board: &Board, view: &mut View) {
+        view.pcb.paint_cache.refinement.lock().unwrap().changed =
+            Some(Instant::now() - ZOOM_SETTLE);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while view.pcb.paint_cache.scale != view.camera.pixels_per_mm {
+            assert!(Instant::now() < deadline, "Zoom refinement timed out");
+            frame(ctx, board, view, Pos2::new(400., 300.));
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+    #[test]
+    fn continuous_zoom_reuses_artwork_and_refines_to_fresh_geometry_after_settling() {
+        let ctx = egui::Context::default();
+        let mut fonts = egui::FontDefinitions::default();
+        fonts.families.insert(
+            egui::FontFamily::Name("sch-sans".into()),
+            fonts.families[&egui::FontFamily::Proportional].clone(),
+        );
+        ctx.set_fonts(fonts);
+        let mut board = Board::default();
+        board.items.push(Item::new(
+            TOP,
+            None,
+            Shape::Track {
+                start: Point::mm(-2, 0),
+                end: Point::mm(2, 0),
+                width: 10_000,
+            },
+        ));
+        board.items.push(Item::new(
+            TOP,
+            None,
+            Shape::Text {
+                position: Point::mm(1, 1),
+                text: "PCB zoom".into(),
+                height: 1_000_000,
+                stroke: 100_000,
+                rotation: 30.,
+                mirrored: false,
+                font: "Arial".into(),
+            },
+        ));
+        let original = board.clone();
+        let mut view = View::default();
+        view.camera.fitted = true;
+        view.camera.pixels_per_mm = 20.;
+        view.pcb.initialize(&board);
+        view.pcb.display.connections = false;
+        frame(&ctx, &board, &mut view, Pos2::new(400., 300.));
+        let builds = view.pcb.paint_cache.builds;
+        for scale in [0.5, 0.75, 1.5, 3., 10., 1.25] {
+            let pointer = Pos2::new(330., 270.);
+            view.camera.zoom_at(
+                pointer,
+                Rect::from_min_size(Pos2::ZERO, Vec2::new(800., 600.)),
+                scale,
+            );
+            frame(&ctx, &board, &mut view, pointer);
+            assert_eq!(view.pcb.paint_cache.builds, builds);
+        }
+        settle(&ctx, &board, &mut view);
+        assert_eq!(view.pcb.paint_cache.builds, builds + 1);
+        let refined = view.pcb.paint_cache.clone();
+        view.pcb.paint_cache = Cache::default();
+        frame(&ctx, &board, &mut view, Pos2::new(400., 300.));
+        let meshes = |cache: &Cache| {
+            cache
+                .parts
+                .iter()
+                .filter_map(|p| match p {
+                    Part::Mesh(m) => Some((
+                        m.indices.clone(),
+                        m.vertices
+                            .iter()
+                            .map(|v| (v.pos, v.color))
+                            .collect::<Vec<_>>(),
+                    )),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(meshes(&refined), meshes(&view.pcb.paint_cache));
+        assert_eq!(board, original);
+    }
+    #[test]
+    fn stale_zoom_result_and_disconnected_worker_never_replace_current_artwork() {
+        let ctx = egui::Context::default();
+        let board = Board::default();
+        let mut view = View::default();
+        view.camera.fitted = true;
+        view.camera.pixels_per_mm = 20.;
+        frame(&ctx, &board, &mut view, Pos2::new(400., 300.));
+        let mut cache = std::mem::take(&mut view.pcb.paint_cache);
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let snapshot = cache.refinement.lock().unwrap().snapshot.take().unwrap();
+        sender
+            .send((
+                snapshot,
+                Cache {
+                    scale: 30.,
+                    ..Default::default()
+                },
+            ))
+            .unwrap_or_else(|_| panic!("send failed"));
+        cache.refinement.lock().unwrap().job = Some(ZoomJob {
+            key: cache.key.unwrap(),
+            receiver,
+        });
+        cache.refresh(40., &ctx);
+        assert_eq!(cache.scale, 20.);
+        assert!(cache.refinement.lock().unwrap().snapshot.is_some());
+        assert!(cache.refinement.lock().unwrap().job.is_none());
+        let (sender, receiver) = mpsc::sync_channel(1);
+        drop(sender);
+        cache.refinement.lock().unwrap().job = Some(ZoomJob {
+            key: cache.key.unwrap(),
+            receiver,
+        });
+        cache.refresh(40., &ctx);
+        assert_eq!(cache.scale, 20.);
+        assert!(cache.refinement.lock().unwrap().failed);
+    }
+    #[test]
+    fn content_change_keeps_one_running_worker_and_discards_its_old_snapshot() {
+        let ctx = egui::Context::default();
+        let mut board = Board::default();
+        let mut view = View::default();
+        view.camera.fitted = true;
+        view.camera.pixels_per_mm = 20.;
+        view.pcb.initialize(&board);
+        view.pcb.display.connections = false;
+        frame(&ctx, &board, &mut view, Pos2::new(400., 300.));
+        let shared = view.pcb.paint_cache.refinement.clone();
+        let snapshot = shared.lock().unwrap().snapshot.take().unwrap();
+        let (sender, receiver) = mpsc::sync_channel(1);
+        shared.lock().unwrap().job = Some(ZoomJob {
+            key: view.pcb.paint_cache.key.unwrap(),
+            receiver,
+        });
+        board.items.push(Item::new(
+            TOP,
+            None,
+            Shape::Track {
+                start: Point::mm(1, 1),
+                end: Point::mm(2, 1),
+                width: 200_000,
+            },
+        ));
+        view.pcb.three_d.revision += 1;
+        frame(&ctx, &board, &mut view, Pos2::new(400., 300.));
+        assert!(Arc::ptr_eq(&shared, &view.pcb.paint_cache.refinement));
+        assert!(shared.lock().unwrap().job.is_some());
+        sender
+            .send((
+                snapshot,
+                Cache {
+                    scale: 40.,
+                    ..Default::default()
+                },
+            ))
+            .unwrap_or_else(|_| panic!("send failed"));
+        view.camera.pixels_per_mm = 40.;
+        frame(&ctx, &board, &mut view, Pos2::new(400., 300.));
+        assert_eq!(view.pcb.paint_cache.scale, 20.);
+        assert!(shared.lock().unwrap().job.is_none());
+        assert_eq!(
+            shared.lock().unwrap().snapshot.as_ref().unwrap().board,
+            board
+        );
+        settle(&ctx, &board, &mut view);
+        assert_eq!(view.pcb.paint_cache.scale, 40.);
     }
     #[test]
     fn replacing_ui_atlas_reuses_artwork_but_changing_font_definitions_expires_it() {

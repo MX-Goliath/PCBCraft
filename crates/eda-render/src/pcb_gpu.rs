@@ -1,4 +1,4 @@
-//! Resident 2D artwork buffers. Camera pans update a single small uniform.
+//! Resident 2D artwork buffers. Camera pan and zoom update a single small uniform.
 use egui::{ColorImage, Context, Rect, Vec2, epaint::Mesh};
 use egui_wgpu::{Callback, CallbackResources, CallbackTrait, ScreenDescriptor, wgpu};
 use std::sync::{Arc, Mutex};
@@ -8,6 +8,39 @@ use wgpu::util::DeviceExt;
 /// Headless and other egui integrations keep the ordinary mesh painter.
 pub fn enable_gpu(ctx: &Context, format: wgpu::TextureFormat) {
     ctx.data_mut(|data| data.insert_temp(egui::Id::new("pcb-gpu-format"), format));
+}
+#[derive(Clone)]
+struct Upload {
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+}
+/// Also allow zoom refinement to prepare resident buffers off the UI thread.
+pub fn enable_gpu_with_device(
+    ctx: &Context,
+    format: wgpu::TextureFormat,
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+) {
+    enable_gpu(ctx, format);
+    ctx.data_mut(|data| {
+        data.insert_temp(
+            egui::Id::new("pcb-gpu-upload"),
+            Upload {
+                device: device.clone(),
+                queue: queue.clone(),
+            },
+        )
+    });
+}
+pub(super) fn copy_configuration(from: &Context, to: &Context) {
+    if let Some(format) = format(from) {
+        enable_gpu(to, format);
+    }
+    if let Some(upload) =
+        from.data_mut(|data| data.get_temp::<Upload>(egui::Id::new("pcb-gpu-upload")))
+    {
+        to.data_mut(|data| data.insert_temp(egui::Id::new("pcb-gpu-upload"), upload));
+    }
 }
 pub(crate) fn format(ctx: &Context) -> Option<wgpu::TextureFormat> {
     ctx.data_mut(|data| data.get_temp(egui::Id::new("pcb-gpu-format")))
@@ -42,6 +75,7 @@ impl Scene {
         mesh: usize,
         rect: Rect,
         delta: Vec2,
+        scale: f32,
         dither: bool,
     ) -> egui::Shape {
         egui::Shape::Callback(Callback::new_paint_callback(
@@ -51,9 +85,17 @@ impl Scene {
                 mesh,
                 rect,
                 delta,
+                scale,
                 dither,
             },
         ))
+    }
+    pub(super) fn prepare_background(&self, ctx: &Context) {
+        if let Some(upload) =
+            ctx.data_mut(|data| data.get_temp::<Upload>(egui::Id::new("pcb-gpu-upload")))
+        {
+            *self.prepared.lock().unwrap() = Some(self.prepare(&upload.device, &upload.queue));
+        }
     }
     fn prepare(&self, device: &wgpu::Device, queue: &wgpu::Queue) -> Buffers {
         let uniform = device.create_buffer(&wgpu::BufferDescriptor {
@@ -209,6 +251,7 @@ struct Draw {
     mesh: usize,
     rect: Rect,
     delta: Vec2,
+    scale: f32,
     dither: bool,
 }
 impl CallbackTrait for Draw {
@@ -240,7 +283,7 @@ impl CallbackTrait for Draw {
                 shift.x,
                 shift.y,
                 if self.dither { 1. } else { 0. },
-                0.,
+                self.scale,
                 0.,
                 0.,
             ];
@@ -396,15 +439,22 @@ mod tests {
                 );
                 let scene = Scene::new(vec![Arc::new(mesh.clone())], atlas.clone(), format);
                 let mut buffers = None;
-                for delta in [Vec2::ZERO, Vec2::new(7.5, -3.5), Vec2::new(-2., 4.)] {
+                for (delta, scale) in [
+                    (Vec2::ZERO, 1.),
+                    (Vec2::new(7.5, -3.5), 0.75),
+                    (Vec2::new(-2., 4.), 1.5),
+                ] {
                     let rect = Rect::from_min_max(Pos2::new(3.5, 4.5), Pos2::new(55., 52.));
                     let mut moved = mesh.clone();
-                    moved.translate(delta);
+                    for vertex in &mut moved.vertices {
+                        vertex.pos = (vertex.pos.to_vec2() * scale + delta).to_pos2();
+                    }
                     let cpu = vec![ClippedPrimitive {
                         clip_rect: rect,
                         primitive: Primitive::Mesh(moved),
                     }];
-                    let egui::Shape::Callback(callback) = scene.callback(0, rect, delta, false)
+                    let egui::Shape::Callback(callback) =
+                        scene.callback(0, rect, delta, scale, false)
                     else {
                         unreachable!()
                     };

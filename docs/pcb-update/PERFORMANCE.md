@@ -1,5 +1,69 @@
 # PCB editor performance — 22.10.2026
 
+## PCB 2D zoom stalls, 25.10.2026
+
+Changing zoom invalidated the complete screen-space artwork on every frame.
+The same read-only ReferenceM, 41,475 items and 34 layers, reproduced a 49.56 ms
+mean CPU paint+tessellation time across 120 zoom frames, p95 54.55 ms and
+maximum 128.62 ms. 119 of 120 frames exceeded 33 ms. The baseline is the parent
+commit with the same new zoom sequence added to `pcb_frame_profile`.
+
+Pan and zoom now transform resident vertex buffers with a camera uniform.
+After 120 ms without another scale change, one background worker rebuilds exact
+screen-space detail, including antialiasing, minimum stroke widths, curve
+subdivisions and label thresholds. The previous vector artwork follows the
+current camera immediately while that job runs. Grid, origin, tools and hatching
+remain live in their original draw order; picking and snapping use the current
+camera and document geometry. During a gesture, cached antialias widths and label
+visibility scale with the previous artwork until refinement completes.
+
+The worker owns a render snapshot and an independent egui context with matching
+fonts, DPI and options. On the app's wgpu integration it also prepares GPU
+buffers, atlas and pipeline off the UI thread. Results are published only for
+the current content/display key and exact requested scale. New requests coalesce;
+a content change retains any older running job until it exits, discards its
+result, and prevents parallel refinement jobs for that view. The CPU fallback
+remaps worker texture IDs into its UI context. A failed worker retains the last
+scaled artwork until content/display changes reset refinement.
+
+Release, Linux x86_64, RX 7900 XTX / RADV Vulkan, 1000×800, initial 15 px/mm:
+
+- CPU-only GPU-callback submission probe: zoom mean 7.62 ms, p95 14.48 ms,
+  maximum 18.56 ms; zero of 120 zoom frames exceeded 33 ms.
+- Completed offscreen GPU zoom frames: median 2.46 ms, p95 5.59 ms, maximum
+  9.09 ms. The following idle/refinement phase measured median 2.93 ms,
+  p95 4.42 ms and maximum 6.29 ms, including publication of the rebuilt scene.
+- The native eframe window exercised animated zoom, two settled scales and a
+  framebuffer screenshot. After the first second, CPU median was 2.20 ms,
+  p95 13.38 ms and maximum 51.60 ms; six of 1,530 samples exceeded 33 ms.
+  These runs overlapped compilation and other probes. The native capture was
+  visually inspected after refinement. These are CPU costs/offscreen GPU
+  completion times, not presentation FPS or a claim that every native frame is
+  below 33 ms.
+
+Startup and content/display changes still build synchronously. In these runs,
+arrival of background connection results triggered a separate cold rebuild,
+including a 295 ms frame in the CPU long-pan phase. Snapshot creation adds cold
+frame cost and retained memory. Arbitrary-board/extreme-zoom memory bounds,
+Windows GPU runtime and Altium pixel parity remain unverified. The source PCB
+SHA256 remains `redacted-source-sha256`.
+
+Regressions check continuous zoom without rebuilds, exact refined-vs-fresh
+geometry including lettering and thin tracks, stale scale/content rejection,
+bounded workers across content changes, disconnected workers, and GPU pixels
+and buffer reuse at fractional scales, pan, DPI 1/1.5/2 and gamma/sRGB targets.
+Workspace tests, strict all-target Clippy and formatting pass. The rebuilt
+AppImage opens this PCB in the real desktop session and its SHA256 sidecar
+matches. The already running older AppImage needs to be restarted.
+
+Reproduce with the existing read-only probes:
+
+```sh
+rtk bash scripts/dev.sh run --locked --release -p eda-app --example pcb_frame_profile -- INPUT.PcbDoc --gpu
+rtk bash scripts/dev.sh run --locked --release -p eda-app --example pcb_3d_frame_profile -- INPUT.PcbDoc --2d
+rtk bash scripts/dev.sh run --locked --release -p eda-app --example pcb_3d_frame_profile -- INPUT.PcbDoc --2d --window --capture /tmp/pcbcraft-zoom.png
+```
+
 ## Oblique 3D transparency artifacts, 24.10.2026
 
 The user screenshot showed stripes and large triangular color patches across

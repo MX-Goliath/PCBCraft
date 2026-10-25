@@ -22,8 +22,8 @@ mod geometry;
 mod gpu;
 #[path = "pcb_paint_cache.rs"]
 mod paint_cache;
-pub use gpu::enable_gpu;
 pub(crate) use gpu::format as gpu_format;
+pub use gpu::{enable_gpu, enable_gpu_with_device};
 #[path = "pcb_navigation.rs"]
 mod navigation;
 #[path = "pcb_text.rs"]
@@ -383,40 +383,9 @@ pub fn canvas(ui: &mut egui::Ui, b: &Board, view: &mut View) -> CanvasOutput {
     let key = paint_cache::key(scene, view, ui.ctx());
     let mut artwork = std::mem::take(&mut view.pcb.paint_cache);
     if !artwork.valid(key) {
-        let start = std::time::Instant::now();
-        let mut scene_painter = painter.clone();
-        // Capture offscreen objects as well. Translation only changes the GPU
-        // camera uniform; it must never synchronously rebuild the whole PCB.
-        scene_painter.set_clip_rect(Rect::EVERYTHING);
-        let mut builder = paint_cache::Builder::new(&scene_painter);
-        // A fixed document anchor also makes pixel rounding independent of the
-        // camera position at the moment a scene happens to be rebuilt.
-        let anchor = Bounds::points(&view.pcb.geometry.outline).centre();
-        let camera = Camera {
-            centre_mm: [anchor.x as f64 / 1e6, anchor.y as f64 / 1e6],
-            ..view.camera.clone()
-        };
-        let capture_rect = Rect::from_center_size(Pos2::ZERO, Vec2::splat(2.));
-        paint_scene(
-            &scene_painter,
-            scene,
-            &camera,
-            view,
-            capture_rect,
-            &mut builder,
-        );
-        artwork.finish(builder, &scene_painter, key, &camera, capture_rect);
-        if std::env::var_os("PCBCRAFT_FRAME_PROFILE").is_some() {
-            eprintln!(
-                "pcb_artwork_build n={} cpu_ms={:.2} zoom={:.6} dpi={} revision={} preview={}",
-                artwork.builds,
-                start.elapsed().as_secs_f64() * 1000.,
-                view.camera.pixels_per_mm,
-                ui.ctx().pixels_per_point(),
-                view.pcb.three_d.revision,
-                view.pcb.preview_generation,
-            );
-        }
+        artwork.rebuild(&painter, scene, view, key);
+    } else {
+        artwork.refresh(view.camera.pixels_per_mm, ui.ctx());
     }
     artwork.paint(&painter, scene, view, rect);
     view.pcb.paint_cache = artwork;
