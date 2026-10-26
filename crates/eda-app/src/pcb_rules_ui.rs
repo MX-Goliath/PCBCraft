@@ -903,17 +903,30 @@ fn hole_size_constraints(ui: &mut egui::Ui, r: &mut Fields) {
                 let absolute = text(r, "ABSOLUTEVALUES") != "FALSE";
                 egui::ComboBox::from_id_salt("hole_measurement")
                     .width(95.0)
-                    .selected_text(if absolute { "Absolute" } else { "Relative" })
+                    .selected_text(if absolute { "Absolute" } else { "Percent" })
                     .show_ui(ui, |ui| {
                         if ui.selectable_label(absolute, "Absolute").clicked() {
                             r.insert("ABSOLUTEVALUES".into(), "TRUE".into());
+                            r.entry("MINLIMIT".into()).or_insert_with(|| "1mil".into());
+                            r.entry("MAXLIMIT".into())
+                                .or_insert_with(|| "100mil".into());
                         }
-                        ui.add_enabled(false, egui::Button::new("Relative"));
+                        if ui.selectable_label(!absolute, "Percent").clicked() {
+                            r.insert("ABSOLUTEVALUES".into(), "FALSE".into());
+                            r.entry("MINPERCENT".into()).or_insert_with(|| "20".into());
+                            r.entry("MAXPERCENT".into()).or_insert_with(|| "80".into());
+                        }
                     });
             });
         },
     );
-    for (y, label, key) in [(34.0, "Minimum", "MINLIMIT"), (59.0, "Maximum", "MAXLIMIT")] {
+    let percent = text(r, "ABSOLUTEVALUES") == "FALSE";
+    let keys = if percent {
+        ["MINPERCENT", "MAXPERCENT"]
+    } else {
+        ["MINLIMIT", "MAXLIMIT"]
+    };
+    for (y, label, key) in [(34.0, "Minimum", keys[0]), (59.0, "Maximum", keys[1])] {
         widgets::child(
             ui,
             egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
@@ -923,7 +936,14 @@ fn hole_size_constraints(ui: &mut egui::Ui, r: &mut Fields) {
             |ui| {
                 ui.horizontal(|ui| {
                     ui.add_sized([65.0, 20.0], egui::Label::new(label));
-                    link_dimension(ui, r, key, key, 75.0);
+                    if percent {
+                        let mut value = format!("{}%", text(r, key).trim_end_matches('%'));
+                        if widgets::numeric_edit(ui, key, &mut value, 75.0, false).changed() {
+                            r.insert(key.into(), value.trim().trim_end_matches('%').trim().into());
+                        }
+                    } else {
+                        link_dimension(ui, r, key, key, 75.0);
+                    }
                 });
             },
         );
@@ -2228,7 +2248,7 @@ fn priorities(ctx: &egui::Context, d: &mut Draft) {
 fn constraints(ui: &mut egui::Ui, r: &mut Fields, board: &Board) {
     let kind = text(r, "RULEKIND").to_owned();
     widgets::section(ui, "Constraints");
-    ui.add_space(12.0);
+    ui.add_space(if kind == "LayerPairs" { 3.0 } else { 12.0 });
     if kind == "PolygonConnect" {
         polygon_constraints(ui, r);
         return;
@@ -2247,6 +2267,39 @@ fn constraints(ui: &mut egui::Ui, r: &mut Fields, board: &Board) {
     }
     if kind == "HoleSize" {
         hole_size_constraints(ui, r);
+        return;
+    }
+    if kind == "LayerPairs" {
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(280.0, 26.0), egui::Sense::hover());
+        widgets::child(
+            ui,
+            egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
+                rect.min + egui::vec2(16.0, 0.0),
+                egui::vec2(260.0, 24.0),
+            )),
+            |ui| {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 0.0;
+                    ui.spacing_mut().icon_width = 16.0;
+                    ui.spacing_mut().icon_width_inner = 10.0;
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(184.0, 20.0),
+                        egui::Layout::left_to_right(egui::Align::Center),
+                        |ui| {
+                            ui.set_min_size(egui::vec2(184.0, 20.0));
+                            ui.label("Enforce layer pairs settings");
+                        },
+                    );
+                    let mut value = !matches!(text(r, "ENFORCE"), "FALSE" | "0");
+                    if ui.checkbox(&mut value, "").changed() {
+                        r.insert(
+                            "ENFORCE".into(),
+                            if value { "TRUE" } else { "FALSE" }.into(),
+                        );
+                    }
+                });
+            },
+        );
         return;
     }
     if kind == "MinimumAnnularRing" {
@@ -2604,6 +2657,10 @@ mod tests {
             .iter()
             .map(|(_, _, kind)| rules::default_rule(kind))
             .collect();
+        let mut percent = rules::default_rule("HoleSize");
+        percent.insert("ABSOLUTEVALUES".into(), "FALSE".into());
+        percent.insert("MINPERCENT".into(), "25.5".into());
+        doc.model.pcb.as_mut().unwrap().rules.push(percent);
         doc.pcb_editor.rules.online = false;
         let before = doc.model.clone();
         open(&mut doc);
@@ -2682,6 +2739,28 @@ mod tests {
         let before = doc.model.clone();
         assert!(apply(&mut doc, &mut draft).is_err());
         assert_eq!(before, doc.model);
+    }
+    #[test]
+    fn percent_hole_rule_apply_undo_and_summary_keep_both_measurement_modes() {
+        let mut doc = document();
+        doc.model.pcb.as_mut().unwrap().rules = vec![rules::default_rule("HoleSize")];
+        let before = doc.model.clone();
+        open(&mut doc);
+        let mut draft = doc.pcb_editor.rules.editor.take().unwrap();
+        draft.rules[0].insert("ABSOLUTEVALUES".into(), "FALSE".into());
+        draft.rules[0].insert("MINPERCENT".into(), "25.5".into());
+        draft.rules[0].insert("MAXPERCENT".into(), "82.25".into());
+        assert!(widgets::attributes(&draft.rules[0]).contains("25.5%"));
+        apply(&mut doc, &mut draft).unwrap();
+        assert_eq!(doc.history.revision, 1);
+        let r = &doc.model.pcb.as_ref().unwrap().rules[0];
+        assert_eq!(
+            r["MINLIMIT"],
+            before.pcb.as_ref().unwrap().rules[0]["MINLIMIT"]
+        );
+        assert_eq!(r["MAXPERCENT"], "82.25");
+        doc.history.undo(&mut doc.model);
+        assert_eq!(doc.model, before);
     }
     #[test]
     fn checker_settings_roundtrip_keeps_independent_online_and_batch_selections() {

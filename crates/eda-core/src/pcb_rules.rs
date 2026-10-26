@@ -5,6 +5,12 @@ use uuid::Uuid;
 #[path = "pcb_drc.rs"]
 mod drc;
 pub use drc::{CheckOptions, Report, Violation, check, check_with_options};
+#[path = "pcb_rules_holes.rs"]
+mod holes;
+pub use holes::{hole_percent_limits, hole_size_violation};
+#[path = "pcb_rules_layer_pairs.rs"]
+mod layer_pairs;
+pub use layer_pairs::layer_pairs_violation;
 #[path = "pcb_rules_query.rs"]
 mod membership;
 #[path = "pcb_rules_polygon.rs"]
@@ -33,6 +39,7 @@ pub const KINDS: &[(&str, &str, &str)] = &[
     ("Routing", "Routing Layers", "RoutingLayers"),
     ("Routing", "Routing Via Style", "RoutingVias"),
     ("Manufacturing", "Hole Size", "HoleSize"),
+    ("Manufacturing", "Layer Pairs", "LayerPairs"),
     (
         "Manufacturing",
         "Hole To Hole Clearance",
@@ -273,19 +280,15 @@ pub fn route_check(board: &Board, item: &Item) -> Result<(), String> {
         }
     }
     if let Shape::Via { diameter, hole, .. } = item.shape {
-        if let Some((_, r)) = resolve(board, "HoleSize", item, None)? {
-            if text(r, "ABSOLUTEVALUES") == "FALSE" {
-                return Err(format!(
-                    "{}: relative hole-size constraints are not implemented",
-                    text(r, "NAME")
-                ));
-            }
-            if hole < dimension(r, "MINLIMIT")? || hole > dimension(r, "MAXLIMIT")? {
-                return Err(format!(
-                    "{}: via drill is outside hole-size limits",
-                    text(r, "NAME")
-                ));
-            }
+        if let Some((_, r)) = resolve(board, "LayerPairs", item, None)?
+            && let Some(message) = layer_pairs_violation(board, item, r)?
+        {
+            return Err(message);
+        }
+        if let Some((_, r)) = resolve(board, "HoleSize", item, None)?
+            && let Some(message) = hole_size_violation(board, item, r)?
+        {
+            return Err(message);
         }
         if item.pad_stack.is_none()
             && let Some((_, r)) = resolve(board, "MinimumAnnularRing", item, None)?
@@ -365,6 +368,9 @@ fn route_violation(
 }
 
 pub fn validate_rule(board: &Board, r: &Fields) -> Result<(), String> {
+    if text(r, "RULEKIND") == "LayerPairs" {
+        layer_pairs::validate(r)?;
+    }
     if text(r, "RULEKIND") == "PolygonConnect" {
         polygon::validate_connection(r)?;
     }
@@ -384,7 +390,13 @@ pub fn validate_rule(board: &Board, r: &Fields) -> Result<(), String> {
             query(board, &item, text(r, key))?;
         }
     }
+    if text(r, "RULEKIND") == "HoleSize" && text(r, "ABSOLUTEVALUES") == "FALSE" {
+        hole_percent_limits(r)?;
+    }
     for (key, _) in fields(text(r, "RULEKIND")) {
+        if text(r, "RULEKIND") == "HoleSize" && text(r, "ABSOLUTEVALUES") == "FALSE" {
+            continue;
+        }
         let n = dimension(r, key)?;
         if !((if *key == "EXPANSION" {
             -100_000_000_000
@@ -449,7 +461,9 @@ pub fn validate_rule(board: &Board, r: &Fields) -> Result<(), String> {
             ("MINWIDTH", "WIDTH", "MAXWIDTH"),
             ("MINHOLEWIDTH", "HOLEWIDTH", "MAXHOLEWIDTH"),
         ],
-        "HoleSize" => vec![("MINLIMIT", "MINLIMIT", "MAXLIMIT")],
+        "HoleSize" if text(r, "ABSOLUTEVALUES") != "FALSE" => {
+            vec![("MINLIMIT", "MINLIMIT", "MAXLIMIT")]
+        }
         _ => vec![],
     } {
         if dimension(r, min)? <= 0
@@ -492,6 +506,20 @@ pub fn default_rule(kind: &str) -> Fields {
             }
             .into(),
         );
+    }
+    if kind == "HoleSize" {
+        for (key, value) in [
+            ("ABSOLUTEVALUES", "TRUE"),
+            ("MINPERCENT", "20"),
+            ("MAXPERCENT", "80"),
+            ("MINLIMIT", "1mil"),
+            ("MAXLIMIT", "100mil"),
+        ] {
+            r.insert(key.into(), value.into());
+        }
+    }
+    if kind == "LayerPairs" {
+        r.insert("ENFORCE".into(), "TRUE".into());
     }
     if kind == "ShortCircuit" {
         r.insert("ALLOWED".into(), "FALSE".into());
@@ -819,6 +847,9 @@ impl Board {
                     | "ALLOWUNPOURED"
                     | "CLEARANCETOEXPOSEDCOPPER"
             ) || fields(text(old, "RULEKIND")).iter().any(|(k, _)| k == key)
+                || (text(old, "RULEKIND") == "HoleSize"
+                    && matches!(key.as_str(), "ABSOLUTEVALUES" | "MINPERCENT" | "MAXPERCENT"))
+                || (text(old, "RULEKIND") == "LayerPairs" && key == "ENFORCE")
                 || (text(old, "RULEKIND") == "RoutingLayers" && key.ends_with("_V5"))
                 || (text(old, "RULEKIND") == "PolygonConnect" && polygon::connection_field(key))
                 || (text(old, "RULEKIND") == "Width"

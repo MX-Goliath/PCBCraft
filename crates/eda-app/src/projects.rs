@@ -860,6 +860,7 @@ mod tests {
             about: false,
             layer_stack: None,
             annotation: None,
+            design_sync: None,
             allow_exit: false,
             cursor_mm: None,
             pad_edit: None,

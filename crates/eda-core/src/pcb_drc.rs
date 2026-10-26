@@ -2,6 +2,8 @@ use super::*;
 use crate::{pcb_connectivity, pcb_polygon};
 use geo::{Contains, Distance, Euclidean, Intersects};
 use std::collections::BTreeSet;
+#[path = "pcb_drc_holes.rs"]
+mod holes;
 #[path = "pcb_drc_mask.rs"]
 mod mask;
 #[derive(Clone, Debug)]
@@ -166,6 +168,21 @@ fn check_inner(board: &Board, limit: usize) -> Report {
         }
     }
     for item in &board.items {
+        if item.drill_size() > 0 {
+            match resolve(board, "LayerPairs", item, None) {
+                Ok(Some((n, r))) => match layer_pairs_violation(board, item, r) {
+                    Ok(Some(message)) => out.add(n, r, message, &[item], MULTI_LAYER),
+                    Err(e) => {
+                        out.diagnostics.insert(e);
+                    }
+                    _ => {}
+                },
+                Err(e) => {
+                    out.diagnostics.insert(e);
+                }
+                _ => {}
+            }
+        }
         for kind in ["Width", "RoutingLayers", "RoutingVias"] {
             match route_violation(board, item, kind) {
                 Ok(Some((n, message))) => out.add(n, &board.rules[n], message, &[item], item.layer),
@@ -177,36 +194,13 @@ fn check_inner(board: &Board, limit: usize) -> Report {
         }
         if item.drill_size() > 0 {
             match resolve(board, "HoleSize", item, None) {
-                Ok(Some((n, r))) => {
-                    if text(r, "ABSOLUTEVALUES") == "FALSE" {
-                        out.diagnostics.insert(format!(
-                            "{}: relative hole limits are not checked",
-                            text(r, "NAME")
-                        ));
-                        continue;
+                Ok(Some((n, r))) => match hole_size_violation(board, item, r) {
+                    Ok(Some(message)) => out.add(n, r, message, &[item], item.layer),
+                    Err(e) => {
+                        out.diagnostics.insert(e);
                     }
-                    match dimension(r, "MINLIMIT")
-                        .and_then(|min| Ok((min, dimension(r, "MAXLIMIT")?)))
-                    {
-                        Ok((min, max)) if item.drill_size() < min || item.drill_size() > max => out
-                            .add(
-                                n,
-                                r,
-                                format!(
-                                    "Hole {:.4} mm outside {:.4}..{:.4} mm",
-                                    item.drill_size() as f64 / 1e6,
-                                    min as f64 / 1e6,
-                                    max as f64 / 1e6
-                                ),
-                                &[item],
-                                item.layer,
-                            ),
-                        Err(e) => {
-                            out.diagnostics.insert(e);
-                        }
-                        _ => {}
-                    }
-                }
+                    _ => {}
+                },
                 Err(e) => {
                     out.diagnostics.insert(e);
                 }
@@ -478,57 +472,7 @@ fn check_inner(board: &Board, limit: usize) -> Report {
             }
         }
     }
-    let holes: Vec<_> = board.items.iter().filter(|i| i.drill_size() > 0).collect();
-    'holes: for (a, i) in holes.iter().enumerate() {
-        for j in &holes[a + 1..] {
-            pairs += 1;
-            if pairs > 2_000_000 {
-                out.truncated = true;
-                out.diagnostics
-                    .insert("Pair budget reached; hole DRC is incomplete".into());
-                break 'holes;
-            }
-            match resolve(board, "HoleToHoleClearance", i, Some(j)) {
-                Ok(Some((n, r))) => match dimension(r, "GAP") {
-                    Ok(required) => {
-                        // Drill outlines include slots and rotation.
-                        let polygon = |i: &Item| {
-                            geo::Polygon::new(
-                                i.drill_outline()
-                                    .iter()
-                                    .map(|p| (p.x as f64 / 1e6, p.y as f64 / 1e6))
-                                    .collect::<Vec<_>>()
-                                    .into(),
-                                vec![],
-                            )
-                        };
-                        let distance =
-                            (Euclidean.distance(&polygon(i), &polygon(j)) * 1e6).round() as i64;
-                        if distance + 2 < required {
-                            out.add(
-                                n,
-                                r,
-                                format!(
-                                    "Hole clearance {:.6} mm < {:.6} mm",
-                                    distance as f64 / 1e6,
-                                    required as f64 / 1e6
-                                ),
-                                &[i, j],
-                                MULTI_LAYER,
-                            );
-                        }
-                    }
-                    Err(e) => {
-                        out.diagnostics.insert(e);
-                    }
-                },
-                Err(e) => {
-                    out.diagnostics.insert(e);
-                }
-                _ => {}
-            }
-        }
-    }
+    holes::check_holes(board, &mut out, &mut pairs);
     if board
         .rules
         .iter()

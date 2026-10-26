@@ -10,6 +10,12 @@ use std::{io::Write, path::Path};
 pub fn load(path: &Path) -> Result<Document, String> {
     if path
         .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("SchDoc"))
+    {
+        return altium::load_schematic(path);
+    }
+    if path
+        .extension()
         .is_some_and(|e| e.eq_ignore_ascii_case("PcbDoc"))
     {
         return altium_pcb::load_pcb(path);
@@ -33,16 +39,20 @@ pub fn load(path: &Path) -> Result<Document, String> {
 pub fn save(path: &Path, doc: &Document) -> Result<(), String> {
     if path
         .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("SchDoc"))
+    {
+        return altium::writer::save(path, doc);
+    }
+    if path
+        .extension()
         .is_some_and(|e| e.eq_ignore_ascii_case("PcbDoc"))
     {
         return altium_pcb::writer::save(path, doc, altium_pcb::writer::Format::Preserve);
     }
     if path.extension().is_some_and(|e| {
-        [
-            "SchDoc", "PrjPcb", "SchLib", "SchDot", "IntLib", "PcbLib", "DbLib",
-        ]
-        .iter()
-        .any(|suffix| e.eq_ignore_ascii_case(suffix))
+        ["PrjPcb", "SchLib", "SchDot", "IntLib", "PcbLib", "DbLib"]
+            .iter()
+            .any(|suffix| e.eq_ignore_ascii_case(suffix))
     }) {
         return Err("Native writing for this Altium document type is not implemented. Choose a .pcbcraft.json destination; the original cannot be overwritten.".into());
     }

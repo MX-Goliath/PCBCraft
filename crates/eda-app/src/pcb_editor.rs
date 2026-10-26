@@ -1385,7 +1385,8 @@ fn input(
 }
 impl PcbCraft {
     pub(super) fn poll_pcb_pours(&mut self, ctx: &egui::Context) {
-        let allow_apply = !self.layer_stack_active() && self.annotation.is_none();
+        let allow_apply =
+            !self.layer_stack_active() && self.annotation.is_none() && self.design_sync.is_none();
         let mut errors = vec![];
         for doc in &mut self.documents {
             if doc.model.pcb.is_none() {
@@ -2137,6 +2138,28 @@ impl PcbCraft {
                 }
             }
             "Design" => {
+                let project = self.sync_project_name();
+                self.action(
+                    ui,
+                    &format!(
+                        "Update Schematics in {}",
+                        project.as_deref().unwrap_or("Project")
+                    ),
+                    "",
+                    Command::Synchronize(eda_core::design_sync::Direction::ToSchematic, false),
+                    project.is_some(),
+                );
+                self.action(
+                    ui,
+                    &format!(
+                        "Import Changes From {}",
+                        project.as_deref().unwrap_or("Project")
+                    ),
+                    "",
+                    Command::Synchronize(eda_core::design_sync::Direction::ToPcb, false),
+                    project.is_some(),
+                );
+                ui.separator();
                 self.action(ui, "Rules…", "D, R", Command::Pcb(Action::Rules), true);
                 self.action(
                     ui,

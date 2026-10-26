@@ -1,4 +1,4 @@
-# PCB Rules and DRC — 2026-10-24
+# PCB Rules and DRC — 2026-10-26
 
 Status: partial. This is an independent implementation, not complete Altium parity.
 
@@ -46,7 +46,7 @@ checks class kind, and supports the observed All Nets/Components/Pads superclass
 records. A full query language and class editor are not implemented.
 
 Editable/executed constraints: Clearance, Short Circuit, Un-Routed Net, Modified
-Polygon, Width, Routing Layers, Routing Via Style, Hole Size, Hole-to-Hole
+Polygon, Width, Routing Layers, Routing Via Style, Hole Size, Layer Pairs, Hole-to-Hole
 Clearance, Minimum Annular Ring, Board Outline Clearance, Solder Mask Expansion,
 Paste Mask Expansion, Polygon Connect Style, Minimum Solder Mask Sliver and
 Silk To Solder Mask Clearance (non-text primitives). Mask expansion is consumed by the existing mask renderer;
@@ -146,7 +146,8 @@ polygons completed in approximately 1.58 s. New DRC checks reported 335 violatio
 and 22 unchecked conditions; this is not a native Altium comparison. The first
 mask-check implementation took about 49–50 s on ReferenceA. A spatial/grouping optimization
 is included in this checkpoint, but a subsequent run still took 82.33 s while
-workspace tests were compiling. The slowdown is unresolved; no performance fix is
+workspace tests were compiling. At that checkpoint the slowdown was unresolved (diagnosed and fixed in the
+2026-10-26 section below); no performance fix is
 claimed. All 339 workspace tests, fmt check, and strict all-target Clippy pass at
 this checkpoint.
 
@@ -221,3 +222,131 @@ captures to fail with `window crop is outside captured monitor`. The user report
 the menu. On the next observation attempt, Computer Use reported a physical
 Escape stop and instructed that no further app input be issued in this turn.
 Final comparison remains pending; the task is not complete.
+
+
+## 2026-10-26 — Hole Size Percent and ReferenceA DRC latency
+
+Implementation:
+
+- Hole Size now exposes **Absolute / Percent**, with separate `MINLIMIT` /
+  `MAXLIMIT` and `MINPERCENT` / `MAXPERCENT` values. Switching mode retains the
+  inactive values. Percent values appear in the rule summary and use the same
+  validation in batch/online DRC and interactive via placement. Invalid, negative,
+  non-finite or reversed percentage ranges are rejected before Apply. Percentages
+  over 100 are accepted (a mechanical hole can exceed its land).
+- New Hole Size defaults match the documented 1–100 mil and 20–80% ranges.
+  Existing imported defaults are retained. Apply is one undoable edit; browsing
+  either mode does not modify the draft. Native ReferenceA serialization/reimport keeps
+  the percentage mode and fractional values (25.5 / 82.25) exactly, in memory.
+- Hole-to-hole DRC builds each drill contour once and sweeps bounds expanded by
+  the maximum enabled clearance. Rotation and slot length use drill geometry,
+  not copper bounds. Only candidate pairs consume the explicit pair budget.
+  A full-pair reference comparison covers scoped priorities, coincident holes
+  and rotated slots; 3,000 distant drills no longer consume the budget.
+- Full circular arc strokes now produce a sampled annulus directly, or a disk
+  when the stroke covers the centre. This avoids pathological centreline buffer
+  joins when the inner radius is close to zero. Partial arcs keep their existing
+  path. Geometry tests cover a 1 nm inner hole, zero/negative inner radius, odd
+  stroke widths, translated centres, exact axial bounds and area error below
+  0.011% at the existing 256-segment full-circle resolution.
+
+Observations and measurements:
+
+- Read-only ReferenceA profiling isolated three Top Overlay arcs with radius 75,001 nm
+  and width 150,000 nm. Their generic buffer construction cost 7.84–7.94 seconds
+  each, repeated in board-outline and silk/mask checks. Hole pairing was not the
+  main source of the previously recorded 49–82 second delay.
+- Same Windows optimized debug profile: baseline 49.7204 s; final 1.0234 s.
+  Another final run during Clippy/roundtrip work took 2.4197 s. These are individual
+  measurements, not a latency guarantee. All runs returned 335 violations with
+  identical per-kind counts, 22 diagnostics and no truncation: outline 14,
+  clearance 137, hole-to-hole 1, annular ring 36, mask sliver 22, short circuit 58,
+  silk/mask 16, unrouted 51. Counts do not establish exact marker-coordinate parity.
+- ReferenceA native in-memory roundtrip: 3,331,072 bytes, all rule fields equal after
+  reimport. Source SHA256 remains
+  `redacted-source-sha256`.
+
+Reference and remaining uncertainty:
+
+- Altium's [manufacturing rules documentation](https://www.altium.com/documentation/altium-designer/pcb/design-rule-types/manufacturing)
+  defines the Percent method relative to pad/via size, with 20/80 defaults.
+  **Implementation assumption, not a new Altium observation:** for rectangular
+  lands we use the smaller nominal dimension (independent of rotation), and for
+  varying stacks check each physical copper land. Exact Altium behavior for these
+  cases and slotted/custom pads still needs a controlled comparison.
+- Live AD 24.4.1/PCBCraft window verification could not be completed: Computer Use
+  returned `window.app must be a non-empty string and window.id must be an integer
+  >= 0` on window selection/activation, including the recovery attempt. No new
+  pixel-parity claim is made. No additional PCBCraft instance was launched.
+- Stacked-microvia hole-clearance exemption remains unsupported and now emits an
+  explicit diagnostic when enabled. Other missing rule families, glyph outlines,
+  docked violation browser and UI differences above remain open.
+
+
+Validation for this continuation:
+
+- `cargo fmt --all -- --check` and
+  `cargo clippy --workspace --all-targets -- -D warnings`: pass.
+- `cargo test --workspace`: 458 unit tests passed, one existing GPU test failed:
+  `routing_tail_matches_full_gpu_pixels_and_keeps_buffers_across_bends_vias_and_backtrack`.
+  `Rgba8Unorm`, frame 13, dithering enabled: maximum channel difference 4 versus
+  tolerance 3. All seven added tests passed (six core, one app).
+- The failure reproduced independently on the unchanged `9c60e1c` source exported
+  to `target/rules-head-validation`, using the same Windows GPU. The test tolerance
+  and renderer were not changed. Therefore the full workspace gate remains red
+  on this host for an existing rendering issue, not a newly claimed green run.
+
+
+## 2026-10-26 — Layer Pairs
+
+Observed in AD Enterprise 24.4.1 on the original ReferenceA: Manufacturing → Layer Pairs
+→ LayerPairs; one object scope, a Constraints section and the label **Enforce
+layer pairs settings** to the left of a checked box. The native ReferenceA rule stores
+`ENFORCE=TRUE`; Board properties contain `LAYERPAIR0LOW=TOP`,
+`LAYERPAIR0HIGH=BOTTOM` and one substack GUID. Observation did not edit the rule.
+The owned-modal screenshot must be used for input: main-window activation failed
+intermittently. Closing the Altium dialog later timed out twice, so further
+Altium input stopped; the reference dialog may remain open.
+
+Implemented:
+
+- Layer Pairs is editable in the Rules tree, summaries and wizard and selectable
+  in the Online/Batch checker. The observed label/checkbox order is reproduced.
+- DRC and interactive via placement share scope/priority/enabled/`ENFORCE`
+  resolution. Disabled enforcement skips the check. Via span is compared in
+  physical stack order, accepting reverse traversal. Diameter/drill constraints
+  remain the responsibility of Routing Via Style and Hole Size.
+- An edited typed layer stack is authoritative; its via definitions specify
+  allowed spans. The empty typed table uses the existing manager's default
+  through span. Without a typed stack, imported `LAYERPAIRnLOW/HIGH` values are
+  read without changing board properties. An absent native table uses the
+  default through span. Incomplete/unknown/multiple-substack tables produce
+  explicit diagnostics and routing errors rather than falling through.
+- Drilled pads use their full-stack drill span. Rejected routing transitions
+  preserve the route draft, anchor, layer and backtrack history. Native rule
+  roundtrip retains the `ENFORCE` toggle and unrelated rule/board fields.
+- Five core regressions cover typed/legacy precedence, physical/reverse spans,
+  dimensions independent of span, pad drilling, scoped priorities, disabled
+  enforcement, checker exclusions, malformed input and atomic routing rejection.
+
+ReferenceA validation: 335 violations, no truncation, **21** diagnostics (Layer Pairs is
+now checked), 1.0222 seconds. Native roundtrip after toggling `ENFORCE` in memory:
+3,331,072 bytes; all rule fields equal after reimport; original not written.
+
+Remaining: multi-region/flex substacks, mirrored/skip-microvia definition
+metadata, per-via technology identity and complete native via-type import/editor
+roundtrip are not implemented. The manager's native legacy blind/buried table
+presentation still needs restoration; a typed edited table is checked correctly.
+The whole Rules dialog still differs in outer dimensions, row metrics, fonts and
+icons; no pixel-exact claim is made. Linux runtime was not checked this turn.
+
+
+Layer Pairs validation: Windows build, fmt and strict Clippy pass. Final workspace
+run: 463 passed, one existing GPU dithering test failed with the same 4-versus-3
+mismatch reproduced earlier on unchanged `9c60e1c`; test tolerance unchanged.
+The Windows PCBCraft form, draft toggle and Cancel were exercised on ReferenceA; no
+source save. One live instance is retained after sequential build restarts.
+
+Final Windows rebuild was re-observed with the corrected left-aligned label and
+16 px checkbox. The sole running PCBCraft instance is left on the unchanged
+ReferenceA LayerPairs rule for review. Outer-dialog metric differences remain open.

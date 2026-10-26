@@ -322,6 +322,82 @@ fn segment_copper(a: Point, b: Point, width: i64) -> MultiPolygon<f64> {
 fn circle(c: Point, r: i64) -> MultiPolygon<f64> {
     geo::Point::new(c.x as f64 / 1e6, c.y as f64 / 1e6).buffer(r as f64 / 1e6)
 }
+/// Closed circular strokes have an analytic annulus. Buffering a sampled
+/// centreline is both unnecessary and pathological when radius ~= width / 2:
+/// rounded inward joins collapse onto each other around a nanometre-sized hole.
+fn circular_stroke(centre: Point, radius: i64, width: i64) -> MultiPolygon<f64> {
+    if width <= 0 {
+        return empty();
+    }
+    let radius = radius as f64 / 1e6;
+    let half = width as f64 / 2e6;
+    let ring = |r: f64, clockwise: bool| {
+        let mut points: Vec<Coord<f64>> = (0..256)
+            .map(|n| {
+                let angle = n as f64 * std::f64::consts::TAU / 256.0;
+                Coord {
+                    x: centre.x as f64 / 1e6 + r * angle.cos(),
+                    y: centre.y as f64 / 1e6 + r * angle.sin(),
+                }
+            })
+            .collect();
+        if clockwise {
+            points.reverse();
+        }
+        points.push(points[0]);
+        LineString::new(points)
+    };
+    let holes = if radius > half {
+        vec![ring(radius - half, true)]
+    } else {
+        vec![]
+    };
+    mp(GeoPolygon::new(ring(radius + half, false), holes))
+}
+#[cfg(test)]
+mod circular_stroke_tests {
+    use super::*;
+    use geo::{BoundingRect, Contains};
+    #[test]
+    fn closed_arcs_preserve_tiny_holes_and_become_disks_when_thicker_than_radius() {
+        let centre = Point {
+            x: 224_182_120,
+            y: 65_389_928,
+        };
+        for (radius, width) in [
+            (75_001, 150_000),
+            (75_000, 150_000),
+            (1_001, 150_000),
+            (1_000_000, 10_001),
+        ] {
+            let item = Item::new(
+                TOP_OVERLAY,
+                None,
+                Shape::Arc {
+                    centre,
+                    radius,
+                    width,
+                    start_angle: 19.0,
+                    end_angle: 379.0,
+                },
+            );
+            let material = copper(&item, TOP_OVERLAY);
+            assert_eq!(material.0.len(), 1);
+            let inner = (radius as f64 - width as f64 / 2.0).max(0.0) / 1e6;
+            let outer = (radius as f64 + width as f64 / 2.0) / 1e6;
+            assert_eq!(material.0[0].interiors().len(), usize::from(inner > 0.0));
+            let c = geo::Point::new(centre.x as f64 / 1e6, centre.y as f64 / 1e6);
+            assert_eq!(material.contains(&c), inner == 0.0);
+            assert!(material.contains(&geo::Point::new(c.x() + (inner + outer) / 2.0, c.y())));
+            let expected_area = std::f64::consts::PI * (outer * outer - inner * inner);
+            assert!((material.unsigned_area() / expected_area - 1.0).abs() < 0.00011);
+            let bounds = material.bounding_rect().unwrap();
+            assert!((bounds.max().x - c.x() - outer).abs() < 1e-10);
+            assert!((bounds.min().y - c.y() + outer).abs() < 1e-10);
+            assert_eq!(material.0[0].exterior().0.len(), 257);
+        }
+    }
+}
 pub(crate) fn copper(item: &Item, layer: u16) -> MultiPolygon<f64> {
     // Drills are physical obstacles, never electrical lands/thermal anchors.
     if item.is_drill_only()
@@ -332,6 +408,15 @@ pub(crate) fn copper(item: &Item, layer: u16) -> MultiPolygon<f64> {
     }
     match &item.shape {
         Shape::Track { start, end, width } => segment_copper(*start, *end, *width),
+        Shape::Arc {
+            centre,
+            radius,
+            start_angle,
+            end_angle,
+            width,
+        } if arc_sweep(*start_angle, *end_angle) == 360.0 => {
+            circular_stroke(*centre, *radius, *width)
+        }
         Shape::Arc {
             centre,
             radius,

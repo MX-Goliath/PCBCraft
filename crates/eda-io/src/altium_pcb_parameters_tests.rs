@@ -133,10 +133,76 @@ fn native_import_roundtrip_and_legacy_json_recovery_preserve_parameter_identity(
         .as_mut()
         .unwrap()
         .insert("ID".into(), "217".into());
-    assert!(
-        writer::serialize(&changed, writer::Format::Preserve)
-            .unwrap_err()
-            .contains("component parameters")
+    let bytes = writer::serialize(&changed, writer::Format::Preserve).unwrap();
+    let reread = import_pcb(&bytes, "changed.PcbDoc").unwrap();
+    assert_eq!(
+        reread.pcb.as_ref().unwrap().components[0]
+            .parameters
+            .as_ref()
+            .unwrap()["ID"],
+        "217"
     );
+    let mut cfb = cfb::CompoundFile::open(Cursor::new(bytes)).unwrap();
+    let mut data = vec![];
+    cfb.open_stream("/PrimitiveParameters/Data")
+        .unwrap()
+        .read_to_end(&mut data)
+        .unwrap();
+    let records = property_records(&data, 0).unwrap();
+    assert_eq!(records[1]["VALUE"], "footprint-only");
+    assert_eq!(records[6]["VALUE"], "variant-only");
+    assert_eq!(records[3]["ISIMPORTED"], "TRUE");
     assert!(writer::serialize(&doc, writer::Format::Ascii).is_err());
+}
+
+#[test]
+fn native_base_parameter_add_remove_unicode_and_source_links_roundtrip() {
+    let mut doc = native_document();
+    let c = &mut doc.pcb.as_mut().unwrap().components[0];
+    c.parameters = Some(Fields::from([("Номинал".into(), "12 мкФ".into())]));
+    c.properties
+        .insert("SOURCEUNIQUEID".into(), "/SHEET/NEW_LINK".into());
+    c.properties
+        .insert("SOURCESHEET".into(), "Circuit.SchDoc".into());
+    let bytes = writer::serialize(&doc, writer::Format::Preserve).unwrap();
+    let reread = import_pcb(&bytes, "sync.PcbDoc").unwrap();
+    let c = &reread.pcb.as_ref().unwrap().components[0];
+    assert_eq!(
+        c.parameters.as_ref().unwrap(),
+        &Fields::from([("Номинал".into(), "12 мкФ".into())])
+    );
+    assert_eq!(c.properties["SOURCEUNIQUEID"], "/SHEET/NEW_LINK");
+    assert_eq!(c.properties["SOURCESHEET"], "Circuit.SchDoc");
+    let mut empty = reread;
+    empty.pcb.as_mut().unwrap().components[0].parameters = Some(Fields::new());
+    let bytes = writer::serialize(&empty, writer::Format::Preserve).unwrap();
+    assert!(
+        import_pcb(&bytes, "empty.PcbDoc")
+            .unwrap()
+            .pcb
+            .unwrap()
+            .components[0]
+            .parameters
+            .as_ref()
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn newly_authored_component_parameters_get_a_matching_native_owner() {
+    let mut doc = Document::new(DocumentKind::Board, "new");
+    let mut b = board();
+    b.components[0].properties.remove("UNIQUEID");
+    b.components[0].parameters = Some(Fields::from([("Value".into(), "42".into())]));
+    doc.pcb = Some(b);
+    let bytes = writer::serialize(&doc, writer::Format::Binary).unwrap();
+    let reread = import_pcb(&bytes, "new.PcbDoc").unwrap();
+    assert_eq!(
+        reread.pcb.as_ref().unwrap().components[0]
+            .parameters
+            .as_ref()
+            .unwrap()["Value"],
+        "42"
+    );
 }

@@ -52,7 +52,8 @@ pub struct Schematic {
 pub struct NativeSource {
     pub format: String,
     pub filename: String,
-    /// Unmodified original file, including unknown streams. Never a native writer.
+    /// Unmodified original file, including unknown streams; native writers must
+    /// verify supported scene changes against this archive before replacing it.
     pub original_base64: String,
 }
 

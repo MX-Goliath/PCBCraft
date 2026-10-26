@@ -420,12 +420,29 @@ pub(super) fn tree_row(
 
 pub(super) fn attributes(r: &Fields) -> String {
     let kind = text(r, "RULEKIND");
+    if kind == "LayerPairs" {
+        return format!(
+            "Enforce layer pairs settings = {}",
+            if matches!(text(r, "ENFORCE"), "FALSE" | "0") {
+                "False"
+            } else {
+                "True"
+            }
+        );
+    }
     if kind == "PolygonConnect" {
         return if rules::advanced_connection(r) {
             "Advanced settings".into()
         } else {
             format!("Style = {} Connect", text(r, "CONNECTSTYLE"))
         };
+    }
+    if kind == "HoleSize" && text(r, "ABSOLUTEVALUES") == "FALSE" {
+        return format!(
+            "Min Hole Size = {}%   Max Hole Size = {}%",
+            text(r, "MINPERCENT").trim_end_matches('%'),
+            text(r, "MAXPERCENT").trim_end_matches('%')
+        );
     }
     let fields = rules::fields(kind);
     if fields.is_empty() {

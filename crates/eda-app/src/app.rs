@@ -13,6 +13,8 @@ mod chrome;
 mod components;
 #[path = "cross_probe.rs"]
 mod cross_probe;
+#[path = "design_sync.rs"]
+mod design_sync;
 #[path = "document_bars.rs"]
 mod document_bars;
 #[path = "layer_stack.rs"]
@@ -143,6 +145,7 @@ enum Command {
     Pcb3dCamera(eda_render::pcb_3d::CameraCommand),
     LayerStack,
     Annotate,
+    Synchronize(eda_core::design_sync::Direction, bool),
     ShowComponents,
     ToggleComponents,
     SchPlace(Placement),
@@ -189,6 +192,7 @@ struct PadEdit {
 
 pub struct PcbCraft {
     annotation: Option<annotation::Dialog>,
+    design_sync: Option<design_sync::Dialog>,
     layer_stack: Option<layer_stack::Manager>,
     cross_probe: cross_probe::State,
     file_dialog: rfd::FileDialog,
@@ -245,6 +249,7 @@ impl PcbCraft {
             about: false,
             layer_stack: None,
             annotation: None,
+            design_sync: None,
             allow_exit: false,
             cursor_mm: None,
             pad_edit: None,
@@ -329,7 +334,7 @@ impl PcbCraft {
             self.open_project(path);
             return;
         }
-        if matches!(extension.as_str(), "schlib" | "intlib") {
+        if matches!(extension.as_str(), "schlib" | "intlib" | "pcblib") {
             self.import_library(path, true);
             return;
         }
@@ -352,8 +357,7 @@ impl PcbCraft {
                     .or_else(|| doc.pcb.as_ref().map(|b| b.warnings.clone()))
                     .unwrap_or_default();
                 if native {
-                    let native_path = (extension == "pcbdoc").then(|| path.clone());
-                    self.add_document(doc, native_path);
+                    self.add_document(doc, Some(path.clone()));
                     let opened = self.documents.last_mut().unwrap();
                     opened.source_path = Some(path);
                     opened.mark_saved();
@@ -402,11 +406,9 @@ impl PcbCraft {
                 for warning in &project.warnings {
                     self.message(false, warning.clone());
                 }
-                for entry in project
-                    .documents
-                    .iter()
-                    .filter(|d| d.exists && matches!(d.kind.as_str(), "schlib" | "intlib"))
-                {
+                for entry in project.documents.iter().filter(|d| {
+                    d.exists && matches!(d.kind.as_str(), "schlib" | "intlib" | "pcblib")
+                }) {
                     self.import_library(entry.path.clone(), false);
                 }
                 self.message(
@@ -448,6 +450,13 @@ impl PcbCraft {
             let mut dialog = self.file_dialog.clone();
             if is_pcb {
                 dialog = dialog.add_filter("Altium PCB document", &["PcbDoc"]);
+            } else if doc
+                .model
+                .schematic
+                .as_ref()
+                .is_some_and(|s| s.source.is_some())
+            {
+                dialog = dialog.add_filter("Altium schematic document", &["SchDoc"]);
             }
             dialog = dialog.add_filter("PCBCraft document", &["json"]);
             let filename = if let Some(path) = &doc.path {
@@ -568,7 +577,7 @@ impl PcbCraft {
             self.message(true, "Apply or discard stack changes before quitting");
             return;
         }
-        if self.annotation.is_some() {
+        if self.annotation.is_some() || self.design_sync.is_some() {
             self.message(true, "Close the annotation dialog before another command");
             return;
         }
@@ -582,6 +591,9 @@ impl PcbCraft {
         match command {
             Command::CrossProbe => self.start_cross_probe(),
             Command::Annotate => self.open_annotation(),
+            Command::Synchronize(direction, differences) => {
+                self.open_design_sync(direction, differences)
+            }
             Command::LayerStack => self.open_layer_stack(),
             Command::Pcb3d(enabled) => {
                 self.set_pcb_3d(enabled);
@@ -616,9 +628,11 @@ impl PcbCraft {
                     .clone()
                     .add_filter(
                         "Design documents and libraries",
-                        &["SchDoc", "PcbDoc", "PrjPcb", "SchLib", "IntLib", "json"],
+                        &[
+                            "SchDoc", "PcbDoc", "PrjPcb", "SchLib", "PcbLib", "IntLib", "json",
+                        ],
                     )
-                    .add_filter("Altium libraries", &["SchLib", "IntLib"])
+                    .add_filter("Altium libraries", &["SchLib", "PcbLib", "IntLib"])
                     .add_filter("Altium schematic", &["SchDoc"])
                     .add_filter("Altium PCB", &["PcbDoc"])
                     .add_filter("Altium project", &["PrjPcb"])
@@ -1037,6 +1051,14 @@ impl PcbCraft {
                         }
                     });
                     ui.menu_button("Project", |ui| {
+                        self.action(
+                            ui,
+                            "Show Differences…",
+                            "",
+                            Command::Synchronize(eda_core::design_sync::Direction::ToPcb, true),
+                            self.sync_project_name().is_some(),
+                        );
+                        ui.separator();
                         ui.add_enabled(false, egui::Button::new("Project Options…"));
                     });
                     // The names mirror the observed editor. Unsupported tools are visibly disabled.
@@ -1074,6 +1096,20 @@ impl PcbCraft {
                                         return;
                                     }
                                     ui.separator();
+                                }
+                                if label == "Design" && schematic {
+                                    let project = self.sync_project_name();
+                                    self.action(
+                                        ui,
+                                        "Update PCB Document…",
+                                        "",
+                                        Command::Synchronize(
+                                            eda_core::design_sync::Direction::ToPcb,
+                                            false,
+                                        ),
+                                        project.is_some(),
+                                    );
+                                    return;
                                 }
                                 if label == "Place" && schematic {
                                     self.schematic_place_menu(ui);
@@ -1728,6 +1764,7 @@ impl PcbCraft {
 
     fn shortcuts(&mut self, ctx: &egui::Context) {
         if self.annotation.is_some()
+            || self.design_sync.is_some()
             || self.layer_stack_active()
             || self.pending.is_some()
             || self
@@ -1844,6 +1881,7 @@ impl eframe::App for PcbCraft {
         self.cross_probe_dialog(ctx);
         self.dialogs(ctx);
         self.annotation_dialog(ctx);
+        self.design_sync_dialog(ctx);
         self.resize_edges(ctx);
         if let Some(command) = self.command.take() {
             self.run(command, ctx);

@@ -15,6 +15,8 @@ use uuid::Uuid;
 #[cfg(test)]
 #[path = "altium_pcb_display_tests.rs"]
 mod display_tests;
+#[path = "altium_pcb_library.rs"]
+pub mod library;
 #[cfg(test)]
 #[path = "altium_pcb_stack_tests.rs"]
 mod stack_tests;

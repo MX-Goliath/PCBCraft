@@ -5,6 +5,7 @@ use eda_core::library::Library;
 pub(super) struct Panel {
     pub(super) drag_document: Option<Uuid>,
     pub(super) libraries: Vec<(PathBuf, Library)>,
+    pub(super) footprint_libraries: Vec<(PathBuf, eda_io::altium_pcb::library::Library)>,
     library: usize,
     selected: usize,
     query: String,
@@ -23,6 +24,39 @@ pub(super) struct Panel {
 impl PcbCraft {
     pub(super) fn import_library(&mut self, path: PathBuf, activate: bool) {
         let path = path.canonicalize().unwrap_or(path);
+        if path
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("PcbLib"))
+        {
+            if !self
+                .components_ui
+                .footprint_libraries
+                .iter()
+                .any(|(p, _)| *p == path)
+            {
+                match eda_io::altium_pcb::library::load(&path) {
+                    Ok(library) => {
+                        self.message(
+                            false,
+                            format!(
+                                "{}: {} footprints imported",
+                                path.display(),
+                                library.footprints.len()
+                            ),
+                        );
+                        for warning in &library.warnings {
+                            self.message(false, warning.clone());
+                        }
+                        if !self.settings.libraries.contains(&path) {
+                            self.settings.libraries.push(path.clone());
+                        }
+                        self.components_ui.footprint_libraries.push((path, library));
+                    }
+                    Err(e) => self.message(true, format!("Library {}: {e}", path.display())),
+                }
+            }
+            return;
+        }
         let existing = self
             .components_ui
             .libraries
@@ -70,7 +104,7 @@ impl PcbCraft {
         if let Some(path) = self
             .file_dialog
             .clone()
-            .add_filter("Altium libraries", &["IntLib", "SchLib"])
+            .add_filter("Altium libraries", &["IntLib", "SchLib", "PcbLib"])
             .pick_file()
         {
             self.import_library(path, true);
@@ -99,11 +133,23 @@ impl PcbCraft {
                                     .color(MUTED),
                             );
                         }
+                        for (path, library) in &self.components_ui.footprint_libraries {
+                            ui.label(format!(
+                                "{} ({} footprints)",
+                                path.file_name().unwrap_or_default().to_string_lossy(),
+                                library.footprints.len()
+                            ));
+                            ui.label(
+                                RichText::new(path.display().to_string())
+                                    .small()
+                                    .color(MUTED),
+                            );
+                        }
                     });
                 ui.separator();
                 add = ui
                     .button("Install…")
-                    .on_hover_text("Add a local SchLib or IntLib to PCBCraft")
+                    .on_hover_text("Add a local SchLib, PcbLib or IntLib to PCBCraft")
                     .clicked();
             });
         self.components_ui.available = open;

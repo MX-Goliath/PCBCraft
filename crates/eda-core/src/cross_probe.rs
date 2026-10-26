@@ -117,7 +117,7 @@ fn wire(p: &SchPrimitive) -> Option<&[Point]> {
         _ => None,
     }
 }
-fn touches(a: &SchPrimitive, b: &SchPrimitive) -> bool {
+pub(crate) fn touches(a: &SchPrimitive, b: &SchPrimitive) -> bool {
     match (wire(a), wire(b)) {
         (Some(a), Some(b)) => {
             a.first()

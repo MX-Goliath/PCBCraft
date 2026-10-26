@@ -15,6 +15,8 @@ const MAX_RECORDS: usize = 500_000;
 
 #[path = "altium_library.rs"]
 pub mod library;
+#[path = "altium_sch_write.rs"]
+pub mod writer;
 
 #[derive(Clone, Debug)]
 pub struct ProjectEntry {
@@ -322,10 +324,7 @@ impl Values for Fields {
             .unwrap_or_default()
     }
     fn coord(&self, k: &str) -> i64 {
-        let n = self.n(k) as i128 * 100_000 + self.n(&format!("{k}_FRAC")) as i128;
-        // 1 file unit = 10 mil; _FRAC is 1/100000 of that unit. Round once to nm.
-        let nm = n * 254_000;
-        ((nm + if nm >= 0 { 50_000 } else { -50_000 }) / 100_000) as i64
+        coord_nm(coord_units(self, k))
     }
     fn point(&self, prefix: &str) -> Point {
         Point {
@@ -333,6 +332,14 @@ impl Values for Fields {
             y: self.coord(&format!("{prefix}.Y")),
         }
     }
+}
+
+fn coord_units(fields: &Fields, key: &str) -> i128 {
+    fields.n(key) as i128 * 100_000 + fields.n(&format!("{key}_FRAC")) as i128
+}
+fn coord_nm(units: i128) -> i64 {
+    let nm = units * 254_000;
+    ((nm + if nm >= 0 { 50_000 } else { -50_000 }) / 100_000) as i64
 }
 
 fn segments(data: &[u8]) -> Vec<(&[u8], &[u8])> {
@@ -1180,9 +1187,23 @@ fn primitive_kind(
         }
         2 => {
             let flags = f.n("PINCONGLOMERATE");
+            // Quantize the absolute electrical endpoint once. Rounding position
+            // and length independently can sever a native wire by one nm.
+            let axis = if flags & 1 == 0 {
+                "LOCATION.X"
+            } else {
+                "LOCATION.Y"
+            };
+            let position = coord_units(f, axis);
+            let length = coord_units(f, "PINLENGTH");
+            if length < 0 {
+                return Err("Negative schematic pin length".into());
+            }
+            let endpoint = coord_nm(position + if flags & 2 == 0 { length } else { -length });
+            let length_nm = (endpoint - coord_nm(position)).abs();
             K::Pin {
                 position: a,
-                length_nm: f.coord("PINLENGTH"),
+                length_nm,
                 orientation: (flags & 3) as u32,
                 name: f.text("NAME"),
                 number: f.text("DESIGNATOR"),

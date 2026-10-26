@@ -1072,3 +1072,180 @@ Cause, implementation and validation: docs/pcb-update/INTERACTIVE_ROUTING.md.
   платы, RAM/VRAM, Linux runtime и весь исходный функционал/Altium parity открыты.
 
 Данные: `docs/pcb-update/artwork-groups-performance-2026-10-25.json`.
+
+
+### 2026-10-26 — продолжение PCB Rules после обновления main
+
+- Продолжено с `9c60e1c`; существующие Wizard/Query Builder и ускорение маршрута
+  сохранены. Добавлен рабочий Hole Size Percent: поля режима и сводка, отдельное
+  хранение абсолютных/процентных значений, проверки диапазона, общая проверка
+  DRC/interactive via, атомарный Apply/Undo, нативный PcbDoc roundtrip.
+- База процента для прямоугольных/разных по слоям площадок пока является явно
+  отмеченной гипотезой реализации (меньший номинальный размер каждого слоя).
+  Без новой сверки в AD полное соответствие этих случаев не заявляется.
+- Проверка отверстий кеширует геометрию и отсекает дальние пары; сравнение с
+  полным перебором включает повёрнутые пазы, приоритеты и области правил.
+- Профилирование исходного ReferenceA выявило реальную причину 49-секундного DRC:
+  три полные окружности шелкографии с внутренним радиусом 1 нм. Общий buffer
+  строил каждую почти 8 секунд дважды. Для полных окружностей построение заменено
+  прямым кольцом/диском с сохранением отверстия и 256 сегментами; частичные дуги
+  используют прежний путь. Проверены площадь, границы, очень тонкие кольца и диски.
+- ReferenceA: 49.7204 s до -> 1.0234 s после; повтор под нагрузкой Clippy/roundtrip
+  2.4197 s. Во всех случаях 335 нарушений с теми же счётчиками по типам,
+  22 диагностических сообщения, без усечения. Это не доказательство совпадения
+  координат всех маркеров. Roundtrip: 3,331,072 bytes, все поля rules совпали.
+- Исходный ReferenceA не записывался; SHA256
+  `redacted-source-sha256` сохранён.
+- Новые экземпляры PCBCraft не запускались. Проверка настоящего окна заблокирована
+  ошибкой Computer Use `window.app must be a non-empty string and window.id must
+  be an integer >= 0`, повтор выбора окна не помог. Новая визуальная проверка
+  остаётся незавершённой. Подробности и оставшиеся расхождения: `docs/pcb-update/RULES.md`.
+- Проверки: fmt и строгий Clippy прошли; workspace — 458 unit tests passed,
+  1 failed. Все 7 новых тестов прошли. Сбой существующего GPU-теста
+  `routing_tail_matches_full_gpu_pixels_and_keeps_buffers_across_bends_vias_and_backtrack`
+  (Rgba8Unorm, frame 13, dither=true: 4 вместо допуска 3) воспроизведён и на
+  неизменённом `9c60e1c` в `target/rules-head-validation`. Допуск не ослаблен,
+  рендерер не менялся; полностью зелёный workspace-прогон не заявляется.
+
+
+### 2026-10-26 — продолжение Rules: Layer Pairs
+
+- В AD 24.4.1 на исходном ReferenceA повторно осмотрен Manufacturing → Layer Pairs:
+  одно поле области, Constraints и Enforce layer pairs settings, подпись слева
+  от checkbox. Пара исходного файла: LAYERPAIR0LOW=TOP / HIGH=BOTTOM.
+- Реализованы редактирование ENFORCE, сводка, мастер и Online/Batch-проверка,
+  единое разрешение правил для DRC и interactive via. Проверяется физический
+  диапазон слоёв с поддержкой обратного направления; размер via — отдельное правило.
+- Определения берутся из отредактированного typed stack; без него читаются
+  исходные legacy drill pairs. Пустая таблица соответствует существующему default
+  Thru в manager. Неизвестные/неполные таблицы и несколько substacks дают явную
+  диагностику. Запрещённый переход не меняет трассу и backtrack.
+- 5 новых core-тестов прошли. ReferenceA: 335 нарушений, 21 диагностика, 1.0222 s,
+  без усечения. ENFORCE roundtrip: 3,331,072 bytes, все rules равны после импорта.
+- Windows build и строгий Clippy прошли; полный workspace: 463 pass, 1 existing
+  GPU dithering mismatch (тот же исходный сбой 9c60e1c, допуск не менялся).
+- В реальном PCBCraft проверены форма, переключение Enforce и Cancel без
+  применения изменений. Единственный экземпляр перед обновлением сборки закрыт;
+  затем запущен один новый. Исходный ReferenceA не сохранялся.
+- Полное соответствие Rules пока не достигнуто: outer-dialog/font/icon metrics,
+  native blind/buried via-type presentation/save, multiple substacks и technology
+  metadata остаются в RULES.md. Altium modal Cancel дважды дал timeout; дальнейший
+  ввод в Altium прекращён. Сама форма успешно осмотрена без редактирования.
+
+
+## 2026-10-26 — Schematic ↔ PCB / ECO (в работе)
+
+- Наблюдены обе команды Design на исходном ReferenceA в AD 24.4.1. Прямой ECO:
+  Add Components (12), Add Pins To Nets (22), отдельные Check/Done, missing
+  footprint/pin errors при Validate. Обратный comparator: 47 differences,
+  34 предлагаемых ECO, первая группа Remove Pins From Nets (22).
+  Execute/Save в исходном Altium не нажимались.
+- Добавлен независимый design_sync в eda-core: сравнение, Unique ID, multipart,
+  flat net compilation, реальные компоненты/площадки/корпуса, metadata и nets,
+  обратные свойства и bijective net rename. Ошибки зависимостей и stale sources
+  не подменяются успешными операциями; успешные действия имеют History/Undo.
+- App: Design Import/Update, Project Show Differences, выбор платы внутри
+  проекта, группировка ECO, Validate/Execute, фильтр ошибок, report. Выполненные
+  строки исключены из повторного применения; оставшиеся можно проверить снова.
+- Binary native writer дополнен базовыми параметрами компонентов, Unicode и
+  source links с обратным чтением; вариантные/системные namespaces сохраняются.
+  Пять направленных native parameter tests прошли.
+- Первые тесты после добавления description показали неполный fixture; описание
+  добавлено в fixture. Тест DisableSync исправлен на реальный скрытый параметр,
+  поскольку ParameterValue нового имени создаёт значение без presentation object.
+- Охват и незавершённые функции перечислены в docs/pcb-update/DESIGN_SYNC.md,
+  feature имеет partial. Native SchDoc writer, библиотеки корпусов, иерархия,
+  wire back annotation, classes/rooms/variants и точное UI-соответствие не готовы.
+- Итоговые проверки и реальное окно: проверяются ниже после текущей сборки.
+
+- GUI сверка обнаружила сжатие таблицы egui и отсутствующий glyph ✓ в шрифте.
+  Исправлены удержание ширин, высота строк, backdrop и рисованные Check/Done.
+  В первой проверке успешно выполнены 51 применимая операция в памяти, потом
+  один Undo вернул чистый PCB. Исходный native файл не сохранялся.
+- Новые компоненты теперь упаковываются по реальным bounds корпусов рядом с
+  платой; их положение не зависит от числа уже размещённых элементов схемы.
+- Диагностика BQ1 обнаружила 1 nm разрыв: отдельное округление native position
+  и pin length. Импортёр теперь округляет абсолютный electrical endpoint один
+  раз и выводит из него length_nm. Состав цепей не использует расширенный допуск.
+  Тест 4 направлений × 2 знака прошёл; искусственный 1 nm зазор не соединяется.
+- После исправления ReferenceA: 60 изменений / 49 применимых, 1.3786 s; Add Components
+  (12), Add Pins To Nets (22), ложные Remove Pins C2/C20/BQ1 исчезли. Это не
+  равенство всем 47 native comparator differences: настройки сравнения и
+  источник footprint geometry пока отличаются. Copy of ReferenceA: 97 / 88, 2.3110 s.
+
+- Итоговая проверка после native endpoint fix: fmt --check и строгий workspace
+  all-target Clippy прошли, Windows dev build прошёл. cargo test --workspace:
+  488 pass / 1 fail. Единственный сбой — исходный GPU routing pixel test,
+  Rgba8Unorm/frame13/dither=true, max channel difference 4 при допуске 3;
+  он ранее воспроизведён на неизменённом 9c60e1c. Допуск не ослаблялся.
+  Дополнительно workspace doc-tests прошли (0 примеров). Новые ECO/IO тесты
+  проходят; лог target/eco-native-endpoints-workspace.txt.
+- На последней Windows-сборке проверены обе точки входа: SCH Update с выбором
+  PCB и прямой PCB Import, ширины/группы/Check/Done, Only Show Errors и report.
+  Исходный PCB SHA256 по-прежнему redacted-source-sha256.
+  Один процесс PCBCraft; модальное окно Altium закрыто без Execute/Save.
+
+- На последнем executable после исправления native pin rounding повторены
+  Validate/Execute: 49 применимых операций, корректные Check/Done и Report.
+  Home показывает новые корпуса рядом с платой; однократный Undo возвращает
+  чистый исходный ReferenceA. Последний процесс PCBCraft PID 9212, единственный живой.
+
+- При дополнительной GUI проверке после Undo команда Home/Fit Document дала
+  пустой viewport. View → Fit Board восстановила исходную видимую плату, без
+  dirty-state. Причина не установлена; внесено в DESIGN_SYNC.md как открытое
+  расхождение. Последний оставленный вид — Fit Board, исходный ReferenceA без изменений.
+
+## 2026-10-26 — продолжение ECO: библиотеки корпусов и native SchDoc
+
+- Добавлена запись поддержанных свойств в ASCII/CFB SchDoc: designator/comment,
+  description/type, base parameters, текущие/новые модели корпуса, имена меток.
+  Исходный контейнер и нетронутые payloads сохраняются; результат повторно
+  импортируется и сравнивается со сценой до атомарной замены destination.
+  Неизменённый archive возвращается побайтно, неподдерживаемая геометрия и
+  неизвестные index dependencies не сохраняются под видом поддержанных.
+- Сверка отдельной копии ReferenceA в AD24 поймала ошибку, которую не ловил наш import:
+  глобально добавленные записи за старым Weight не были видны в Altium.
+  Исправлены Weight по фактическому числу записей, вставка внутри owner tree и
+  OWNERINDEX remapping. В AD24 подтверждены новый корпус, Unicode-параметр,
+  comment и description WA1. Родной ReferenceA не сохранялся и не выполнялся в Altium.
+- Многострочный диагностический параметр показывал `~1` буквально в Properties.
+  Пока native encoding не подтверждён, изменённые многострочные параметры
+  отклоняются при SchDoc Save; JSON сохраняет их. Это ограничение, не паритет.
+- Независимый PCB6 PcbLib/IntLib reader: площадки, слои, stack/masks, графика,
+  тексты и доступные встроенные модели. Неизвестный tag/count/encoding не создаёт
+  частичный корпус. ReferenceLibraryA: 29 корпусов с pads и 4 явных graphical/no-pad
+  отказа. TPS22929 PcbLib и IntLib: по 3 корпуса; STEP assembly transforms
+  предупреждаются как неподдержанные. Установка PcbLib проверена через File Open
+  в реальном PCBCraft; исходная плата оставалась чистой.
+- App ECO использует проектные и установленные локальные библиотеки. Копирование
+  footprint из существующего экземпляра больше не скрывает missing-library error.
+  На исходном ReferenceA теперь 60 изменений / 26 применимых, 1.0121 s; все 12 missing
+  footprint операций ошибочны, как в наблюдённом Altium. Предыдущие 49 применимых
+  относились к явному board-reuse эксперименту; CLI оставляет его отдельным флагом.
+- В GUI повторены Validate/Execute (26 в памяти), Undo одним действием и настоящий
+  Fit Document (Ctrl+PageDown). Плата остаётся видимой и чистой. Прежняя запись
+  журнала ошибочно называла Home командой Fit: Home центрирует по указателю.
+  Доказательств ошибки bounds/cache после Undo не получено.
+- Уточнён обратный native ECO: после Remove Pins From Nets (22) идут Remove
+  Component Class Members (12), а не удаление символов. Validate Altium снова дал
+  failed-to-activate; Execute не вызывался, окно закрыто Close. Общие свойства/
+  net renames, которые умеет core, не выдаются за native back annotation: в app
+  они отключены, остаются designator/comment/footprint. Классы, компилированные
+  pin changes и swap-механизм пока не восстановлены.
+- ECO отображает BQ1…TP9…TP17…WA1 в natural order, не меняя execution dependencies.
+  Добавлены проверки native reverse policy, библиотечной зависимости в app,
+  owner/Weight/legacy Unicode и фактической ECO-установки геометрии из контейнеров.
+  До последнего guard многострочных параметров: 500 pass / 1 прежний GPU fail,
+  fmt и строгий Clippy прошли. Финальные результаты последней сборки — ниже.
+
+- Финальный проход после guard, стабильных Unique ID и переноса нерелевантных
+  library warnings из ECO в Messages: fmt --check, строгий all-target Clippy и
+  Windows build прошли. Workspace: 500 pass / 1 прежний GPU fail (тот же
+  Rgba8Unorm/frame13/dither=true/max-channel=4, допуск 3 не менялся).
+  Лог target/eco-completed-stage-tests.txt. Повторные SchDoc save сохраняют
+  идентичные новые ID/байты; тесты проходят для ASCII и CFB.
+  SchDoc SHA256 redacted-source-sha256,
+  PcbDoc SHA256 redacted-source-sha256.
+  Полное соответствие остаётся partial: Comparator/ECO options, классы/rooms/
+  directives/rules/variants, Component Links, hierarchy/buses/hidden pins/swaps,
+  полный native save и точная визуальная проверка всех состояний не завершены.

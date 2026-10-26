@@ -882,6 +882,24 @@ fn section(
 }
 fn component_changes(c: &Component) -> Fields {
     let mut f = Fields::new();
+    for key in [
+        "SOURCEUNIQUEID",
+        "SOURCESHEET",
+        "SOURCEDESCRIPTION",
+        "SOURCELIBREFERENCE",
+        "COMPONENTKINDVERSION2",
+        "SOURCEFOOTPRINTLIBRARY",
+        "SOURCECOMPONENTLIBRARY",
+        "SOURCELIBRARYNAME",
+        "UNIQUEID",
+    ] {
+        if let Some(value) = c.properties.get(key) {
+            f.insert(key.into(), value.clone());
+        }
+    }
+    if c.parameters.as_ref().is_some_and(|p| !p.is_empty()) {
+        f.insert("UNIQUEID".into(), component_uid(c));
+    }
     for (k, v) in [
         ("SOURCEDESIGNATOR", c.designator.clone()),
         ("SOURCECOMMENT", c.comment.clone()),
@@ -895,6 +913,162 @@ fn component_changes(c: &Component) -> Fields {
         f.insert(k.into(), v);
     }
     f
+}
+fn component_uid(c: &Component) -> String {
+    c.properties
+        .get("UNIQUEID")
+        .cloned()
+        .unwrap_or_else(|| c.id.simple().to_string()[..8].to_ascii_uppercase())
+}
+
+/// Rewrite only the base component namespace. Variant/system/footprint groups
+/// and unrelated record fields are retained byte-for-byte when unmodified.
+fn parameter_section(
+    board: &Board,
+    streams: &BTreeMap<String, Vec<u8>>,
+    maps: &Maps,
+) -> Result<(Vec<u8>, usize)> {
+    let raw = streams
+        .get("/PrimitiveParameters/Data")
+        .map(|b| property_blocks(b))
+        .transpose()?
+        .unwrap_or_default();
+    let mut out = vec![];
+    let mut groups = 0;
+    let mut n = 0;
+    let mut owners = BTreeSet::new();
+    while n < raw.len() {
+        let h = fields(&raw[n])?;
+        let count = h
+            .get("COUNT")
+            .ok_or("Parameter group has no count")?
+            .parse::<usize>()
+            .map_err(|_| "Invalid parameter count")?;
+        let end = n
+            .checked_add(1)
+            .and_then(|n| n.checked_add(count))
+            .filter(|end| *end <= raw.len())
+            .ok_or("Truncated parameter group")?;
+        let owner = h
+            .get("ID")
+            .and_then(|s| s.strip_prefix("Component#"))
+            .map(|s| s.parse::<u32>().map_err(|_| "Invalid parameter owner"))
+            .transpose()?;
+        let base = h.get("VARIANTGUID").is_none_or(String::is_empty)
+            && h.get("APPURTENANCE").is_none_or(String::is_empty);
+        if base && let Some(owner) = owner {
+            let c = board
+                .components
+                .iter()
+                .find(|c| c.index == owner)
+                .ok_or("Parameter owner was removed; native reference remapping is required")?;
+            if !owners.insert(owner) {
+                return Err(
+                    "Multiple base parameter groups for one component require consolidation".into(),
+                );
+            }
+            if let Some(parameters) = &c.parameters {
+                let old: Vec<_> = raw[n + 1..end]
+                    .iter()
+                    .map(|b| fields(b))
+                    .collect::<Result<_>>()?;
+                let mut records = vec![];
+                let mut names = BTreeSet::new();
+                for (block, record) in raw[n + 1..end].iter().zip(&old) {
+                    let name = record.get("NAME").ok_or("Parameter has no name")?;
+                    if let Some((key, value)) = parameters
+                        .iter()
+                        .find(|(k, _)| k.eq_ignore_ascii_case(name))
+                    {
+                        if !names.insert(key.to_uppercase()) {
+                            return Err("Duplicate component parameter".into());
+                        }
+                        if record.get("VALUE") == Some(value) && key == name {
+                            records.push(block.clone());
+                        } else {
+                            records.push(patch_fields(
+                                block,
+                                &map_changes(&Fields::from([
+                                    ("NAME".into(), key.clone()),
+                                    ("VALUE".into(), value.clone()),
+                                ])),
+                            )?);
+                        }
+                    }
+                }
+                for (name, value) in parameters {
+                    if names.insert(name.to_uppercase()) {
+                        records.push(patch_fields(
+                            &[],
+                            &map_changes(&Fields::from([
+                                ("NAME".into(), name.clone()),
+                                ("VALUE".into(), value.clone()),
+                                ("ISIMPORTED".into(), "TRUE".into()),
+                            ])),
+                        )?);
+                    }
+                }
+                let changes = Fields::from([
+                    ("COUNT".into(), records.len().to_string()),
+                    (
+                        "ID".into(),
+                        format!("Component#{}", maps.components[&owner]),
+                    ),
+                    ("PRIMITIVEID".into(), component_uid(c)),
+                ]);
+                let header = if changes.iter().all(|(k, v)| h.get(k) == Some(v)) {
+                    raw[n].clone()
+                } else {
+                    patch_fields(&raw[n], &map_changes(&changes))?
+                };
+                out.push(header);
+                out.extend(records);
+            } else {
+                out.extend_from_slice(&raw[n..end]);
+            }
+        } else {
+            out.extend_from_slice(&raw[n..end]);
+        }
+        groups += 1;
+        n = end;
+    }
+    for c in &board.components {
+        if owners.contains(&c.index) {
+            continue;
+        }
+        let Some(parameters) = &c.parameters else {
+            continue;
+        };
+        if parameters.is_empty() {
+            continue;
+        }
+        let header = Fields::from([
+            ("PRIMITIVEID".into(), component_uid(c)),
+            (
+                "ID".into(),
+                format!("Component#{}", maps.components[&c.index]),
+            ),
+            ("VARIANTGUID".into(), String::new()),
+            ("COUNT".into(), parameters.len().to_string()),
+        ]);
+        out.push(patch_fields(&[], &map_changes(&header))?);
+        let mut names = BTreeSet::new();
+        for (name, value) in parameters {
+            if name.is_empty() || !names.insert(name.to_uppercase()) {
+                return Err("Invalid or duplicate component parameter name".into());
+            }
+            out.push(patch_fields(
+                &[],
+                &map_changes(&Fields::from([
+                    ("NAME".into(), name.clone()),
+                    ("VALUE".into(), value.clone()),
+                    ("ISIMPORTED".into(), "TRUE".into()),
+                ])),
+            )?);
+        }
+        groups += 1;
+    }
+    Ok((encode_blocks(&out)?, groups))
 }
 fn supported_dependency_guard(
     old: &Board,
@@ -1221,6 +1395,10 @@ fn encode_binary(
             &encode_blocks(&records)?,
             records.len(),
         )?;
+    }
+    let (parameters, count) = parameter_section(board, &streams, &maps)?;
+    if count > 0 || streams.contains_key("/PrimitiveParameters/Data") {
+        section(&mut c, &streams, "PrimitiveParameters", &parameters, count)?;
     }
     c.flush().map_err(|e| e.to_string())?;
     let bytes = c.into_inner().into_inner();
@@ -1709,6 +1887,21 @@ fn verify_tables(expected: &Board, actual: &Board, maps: Option<&Maps>) -> Resul
             .iter()
             .find(|a| Some(a.index) == index(1, c.index))
             .ok_or("Missing saved component")?;
+        for key in [
+            "SOURCEUNIQUEID",
+            "SOURCESHEET",
+            "SOURCEDESCRIPTION",
+            "COMPONENTKINDVERSION2",
+        ] {
+            if let Some(value) = c.properties.get(key)
+                && a.properties.get(key) != Some(value)
+            {
+                return Err(format!(
+                    "Component {} field {key} write/read verification failed",
+                    c.designator
+                ));
+            }
+        }
         if c.designator != a.designator
             || c.parameters
                 .as_ref()
@@ -2032,11 +2225,15 @@ pub fn serialize(doc: &Document, format: Format) -> Result<Vec<u8>> {
         let original_parameters = old_board
             .and_then(|b| b.components.iter().find(|c| c.index == component.index))
             .and_then(|c| c.parameters.as_ref());
-        if component.parameters.as_ref().is_some_and(|parameters| {
-            !binary && !parameters.is_empty()
-                || parameters != original_parameters.unwrap_or(&Fields::new())
-        }) {
-            return Err("Native writing of changed component parameters is not implemented; keep the edit in PCBCraft JSON".into());
+        if !binary
+            && component.parameters.as_ref().is_some_and(|parameters| {
+                !parameters.is_empty()
+                    || parameters != original_parameters.unwrap_or(&Fields::new())
+            })
+        {
+            return Err(
+                "Changed component parameters require binary PcbDoc or PCBCraft JSON".into(),
+            );
         }
     }
     if !binary {

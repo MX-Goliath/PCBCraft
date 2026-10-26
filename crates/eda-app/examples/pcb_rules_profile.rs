@@ -24,6 +24,22 @@ fn main() -> Result<(), String> {
                 );
             }
         }
+        if !layer_width_only
+            && let Some(rule) = rules
+                .iter_mut()
+                .find(|r| eda_core::pcb_rules::text(r, "RULEKIND") == "HoleSize")
+        {
+            rule.insert("ABSOLUTEVALUES".into(), "FALSE".into());
+            rule.insert("MINPERCENT".into(), "25.5".into());
+            rule.insert("MAXPERCENT".into(), "82.25".into());
+        }
+        if !layer_width_only
+            && let Some(rule) = rules
+                .iter_mut()
+                .find(|r| eda_core::pcb_rules::text(r, "RULEKIND") == "LayerPairs")
+        {
+            rule.insert("ENFORCE".into(), "FALSE".into());
+        }
         // Exercise the field edited by the per-layer Width grid, in addition
         // to metadata. The source PCB is never written by this probe.
         if let Some(rule) = rules.iter_mut().find(|r| {
@@ -53,6 +69,23 @@ fn main() -> Result<(), String> {
     }
     let board = document.pcb.ok_or("Not a PCB")?;
     let args: Vec<_> = std::env::args().collect();
+    if args.iter().any(|a| a == "--stack") {
+        for (key, value) in &board.properties {
+            if key.contains("VIA") || key.contains("DRILL") || key.contains("LAYERPAIR") {
+                println!("{key}={value}");
+            }
+        }
+        println!("typed_stack={:?}", board.layer_stack);
+        return Ok(());
+    }
+    if args.iter().any(|a| a == "--arcs") {
+        for item in &board.items {
+            if matches!(item.shape, eda_core::pcb::Shape::Arc { .. }) {
+                println!("{} layer={} {:?}", item.id, item.layer, item.shape);
+            }
+        }
+        return Ok(());
+    }
     if let Some(pair) = args.windows(2).find(|pair| pair[0] == "--query") {
         let mut matches = std::collections::BTreeMap::<String, usize>::new();
         let mut owners = std::collections::BTreeSet::new();

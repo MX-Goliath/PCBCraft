@@ -9,6 +9,73 @@ use std::io::{Cursor, Write};
 const ASCII: &[u8] = include_bytes!("../../../fixtures/schematic/minimal.SchDoc");
 
 #[test]
+fn fractional_native_pin_endpoints_remain_connected_after_nm_conversion() {
+    use eda_core::schematic_edit::electrical_endpoint;
+    for sign in [1, -1] {
+        for orientation in 0..4 {
+            let backwards = orientation >= 2;
+            let (end, end_frac, expected) = match (sign, backwards) {
+                (1, false) => (1084, 64570, 275_500_008),
+                (1, true) => (1072, 83468, 272_500_009),
+                (-1, false) => (-1072, -83468, -272_500_009),
+                _ => (-1084, -64570, -275_500_008),
+            };
+            let vertical = orientation % 2 == 1;
+            let (axis, other) = if vertical { ("Y", "X") } else { ("X", "Y") };
+            let header = String::from_utf8(ASCII.to_vec())
+                .unwrap()
+                .lines()
+                .take(2)
+                .collect::<Vec<_>>()
+                .join("\r\n");
+            let text = format!(
+                "{header}\r\n|RECORD=1|LIBREFERENCE=Test|PARTCOUNT=1|CURRENTPARTID=1|UNIQUEID=TESTPART\r\n|RECORD=2|OWNERINDEX=1|OWNERPARTID=1|LOCATION.{axis}={}|LOCATION.{axis}_FRAC={}|LOCATION.{other}=100|PINLENGTH=5|PINLENGTH_FRAC=90551|PINCONGLOMERATE={}|DESIGNATOR=1\r\n|RECORD=34|OWNERINDEX=1|OWNERPARTID=-1|TEXT=U1|FONTID=1\r\n|RECORD=27|OWNERINDEX=0|LOCATIONCOUNT=2|{axis}1={end}|{axis}1_FRAC={end_frac}|{other}1=100|{axis}2={end}|{axis}2_FRAC={end_frac}|{other}2=90\r\n|RECORD=25|OWNERINDEX=0|LOCATION.{axis}={end}|LOCATION.{axis}_FRAC={end_frac}|LOCATION.{other}=90|TEXT=GND|FONTID=1\r\n",
+                sign * 1078,
+                sign * 74019,
+                32 + orientation
+            );
+            let doc = import_schematic(text.as_bytes(), "fractional.SchDoc").unwrap();
+            let s = doc.schematic.as_ref().unwrap();
+            let pin = s
+                .primitives
+                .iter()
+                .find(|p| matches!(p.kind, K::Pin { .. }))
+                .unwrap();
+            let at = electrical_endpoint(pin).unwrap();
+            assert_eq!(
+                if vertical { at.y } else { at.x },
+                expected,
+                "sign {sign}, direction {orientation}"
+            );
+            let nets = eda_core::design_sync::compile(&[&doc]).unwrap();
+            assert_eq!(nets.pins[0].net.as_deref(), Some("GND"));
+            // A deliberate one-nm gap in the authored model still stays disconnected.
+            let mut gap = doc.clone();
+            let pin = gap
+                .schematic
+                .as_mut()
+                .unwrap()
+                .primitives
+                .iter_mut()
+                .find(|p| matches!(p.kind, K::Pin { .. }))
+                .unwrap();
+            if let K::Pin { position, .. } = &mut pin.kind {
+                if vertical {
+                    position.x += 1;
+                } else {
+                    position.y += 1;
+                }
+            }
+            assert!(
+                eda_core::design_sync::compile(&[&gap]).unwrap().pins[0]
+                    .net
+                    .is_none()
+            );
+        }
+    }
+}
+
+#[test]
 fn contextual_properties_preserve_raw_parameters_visibility_fonts_models_and_history() {
     use eda_core::{
         History,
@@ -466,13 +533,17 @@ fn damaged_framing_owners_numbers_and_coordinates_are_rejected_without_panics() 
 }
 
 #[test]
-fn native_source_can_never_be_overwritten_by_json_save() {
+fn native_schematic_save_never_writes_json() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("original.SchDoc");
     std::fs::write(&path, ASCII).unwrap();
     let doc = load_schematic(&path).unwrap();
-    assert!(crate::save(&path, &doc).is_err());
-    assert_eq!(std::fs::read(&path).unwrap(), ASCII);
+    crate::save(&path, &doc).unwrap();
+    assert!(std::fs::read(&path).unwrap().starts_with(b"|HEADER="));
+    assert_eq!(
+        crate::load(&path).unwrap().schematic.unwrap().components,
+        doc.schematic.unwrap().components
+    );
 }
 
 #[test]
