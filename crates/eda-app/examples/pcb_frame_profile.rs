@@ -5,10 +5,9 @@ use std::{path::PathBuf, time::Instant};
 
 fn main() -> Result<(), String> {
     let mut args = std::env::args_os().skip(1);
-    let path = PathBuf::from(
-        args.next()
-            .ok_or("Usage: pcb_frame_profile INPUT.PcbDoc [--3d] [--gpu] [--zoom PX_PER_MM]")?,
-    );
+    let path = PathBuf::from(args.next().ok_or(
+        "Usage: pcb_frame_profile INPUT.PcbDoc [--load-only] [--3d] [--gpu] [--zoom PX_PER_MM]",
+    )?);
     let args: Vec<_> = args.collect();
     let three_d = args.iter().any(|a| a == "--3d");
     let zoom = args
@@ -25,6 +24,19 @@ fn main() -> Result<(), String> {
     let doc = eda_io::load(&path)?;
     let board = doc.pcb.as_ref().ok_or("Not a PCB document")?;
     println!("load_ms={:.2}", loading.elapsed().as_secs_f64() * 1000.);
+    if args.iter().any(|a| a == "--load-only") {
+        println!(
+            "items={} components={} layers={} models={}",
+            board.items.len(),
+            board.components.len(),
+            board.layers.len(),
+            board.models.len()
+        );
+        for warning in &board.warnings {
+            println!("{warning}");
+        }
+        return Ok(());
+    }
     let saved = doc.clone();
     let compare = Instant::now();
     for _ in 0..20 {

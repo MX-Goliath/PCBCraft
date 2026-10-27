@@ -76,6 +76,69 @@ DRC, shove/walkaround and dynamic connectivity/ratsnest solving are not implemen
 
 ## Native saving
 
+### Native zero-area outer remnants, Windows 27.10.2026
+
+The exact ReferenceGWorkspace/ReferenceGRevision1.PcbDoc supplied by the user failed in
+Regions6 record 11. Its legacy stream stores 13 vertices: two distinct x
+positions at the same y, with repeated intermediate/closing vertices. The
+ShapeBasedRegions6 counterpart contains the same line and an additional closure
+vertex. Removing duplicate vertices reduced this well-framed native record to
+two points, which then violated the core's minimum contour-size invariant.
+
+The importer now preserves the native repeated vertex sequence if normalization
+would leave fewer than three vertices, and emits a warning. It does not invent
+a filled polygon or weaken the core's vertex/coordinate validation. Exact
+collinearity identifies regions without material. These records remain in the
+model/archive for roundtrips while copper/connectivity, physical cuts, artwork,
+fit bounds and picking exclude their nonexistent area. A zero signed area alone
+is insufficient: non-collinear self-touching contours can have signed-area
+cancellation and are not classified as empty by this change.
+
+Synthetic CFB coverage checks both region families, byte-identical unmodified
+save and exact region-stream preservation after adding a track. Core tests
+verify that a line-only region cannot bridge two copper islands; render tests
+verify no visible/pickable remnant. The original core tests for malformed short
+rings, NaN and truncated native data remain in place. A read-only probe imports
+the exact target in 8,494.63 ms: 20,261 items, 1,271 components, 26 layers and
+98 meshes. This excludes window/rendering time. SHA256 of the input remains
+redacted-source-sha256.
+The pcb_regions example inspects native region framing without loading STEP.
+
+### Native point/line interior contours, Windows 26.10.2026
+
+Correct Altium pour fragments can retain interior contours without area. On
+ReferenceCRevision2, legacy Regions6 and modern ShapeBasedRegions6 records 401
+and 546 each contain a hole that becomes one nanometre-coordinate point. For
+example, record 401 has a valid 2,386-vertex outer contour and 71 interiors;
+interior 32 contains only Point { x: 250987781, y: 70407355 }. Previously the
+core's three-vertex ring invariant rejected the entire PCB with the generic
+`Invalid PCB Region geometry` message. This was an importer compatibility bug,
+not evidence that the source file was invalid.
+
+The native decoder now omits only interiors with fewer than three distinct
+integer-nanometre vertices, after its existing closure/duplicate normalization.
+It emits an explicit import warning. Real holes remain, including tiny contours
+with three distinct points; outer contours and the core editing/JSON invariant
+are unchanged. Invalid coordinates and truncated native blocks still fail.
+Region validation failures now include outer/hole counts, the first invalid
+interior indices and the native stream/record identity for diagnosis.
+
+The original container remains archived. Unmodified native Save returns exactly
+the original bytes. When another primitive is edited, untouched native region
+frames retain their original point/line contours and opaque extensions; the
+normalization does not rewrite these streams. If the region itself is edited,
+its new geometry is serialized by the existing supported-region writer.
+
+Two synthetic CFB tests cover legacy/modern streams, empty/one-point/repeated/
+two-point contours, a normal triangular hole and a 1 nm triangular hole, exact
+unmodified Save and region-stream preservation after adding a track. They also
+check malformed outers, NaN coordinates, truncation and strict core validation.
+The read-only real ReferenceC probe now imports 27,202 items, 1,116 components and
+24 layers in 11,125.64 ms; this excludes the first render. Reproduce with
+`cargo run -p eda-app --example pcb_frame_profile -- INPUT.PcbDoc --load-only`.
+Remaining region kinds/topology, padstack, layer and parameter compatibility
+limits are independent; this does not establish full native interoperability.
+
 Binary PCB6 CFB input remains binary. ASCII input remains ASCII. Cross-format
 conversion of imported documents is refused rather than silently dropping unknown
 records. Source-less scenes have a minimal binary output path; Altium acceptance
@@ -127,6 +190,36 @@ records checks executed after integration.
 `verify_pcb_update.py` uses the committed Cargo.lock with --locked, generates a
 machine-readable local report, and never reports a
 missing compiler or refused native edit as a passed test.
+
+## Additional native import compatibility, 2026-10-27
+
+The second remote Region failure cannot be reproduced directly: the source board
+is not on this computer. Synthetic records now cover all zero-, one- and two-point
+outer contours as well as repeated native rings. One/two-point contours close by
+repeating an existing vertex, without introducing area. Completely empty regions
+remain source-only references in `Board.empty_region_records`; no fake vertex or
+filled material is introduced. Core editable Region validation still requires
+three bounded vertices. Empty outlines with real holes, invalid numeric values,
+oversized counts and truncated payloads still fail explicitly.
+
+The full source remains in native/JSON archives. Tests verify exact original Save,
+JSON recovery and byte-exact region streams after an unrelated track edit,
+including an empty source slot before an editable region. Native saving refuses
+changes to a family containing empty slots and index-remapping edits, rather than
+dropping those records. The UI geometry/3D placement of empty native body records
+is not reconstructed.
+
+Local corpus inspection also identified UID-only PrimitiveParameters headers in
+ReferenceM and PLANE1..16 tokens in ReferenceGTest. Component parameter ownership now resolves
+by a unique PRIMITIVEID when ID is absent, rejects ambiguity, and preserves that
+header form during native edits. Named variants remain distinct. ReferenceD and ReferenceE use
+zero-width native arcs: these retain their radius/angles/width, carry no copper or
+connectivity, and no longer fail geometry validation. Negative widths still fail.
+
+Binary primitive errors include stream, record and byte offset; validation errors
+include item/source/layer and padstack details. File loading adds the import phase
+and full path. The default logger includes the actual `pcbcraft` module, so these
+errors are included by the portable Diagnose.cmd in Data/diagnostic.log.
 
 ## References
 

@@ -476,6 +476,7 @@ fn install_fonts(ctx: &egui::Context) {
 }
 
 pub fn apply(ctx: &egui::Context) {
+    ctx.set_theme(egui::Theme::Dark);
     install_fonts(ctx);
     let mut visuals = egui::Visuals::dark();
     visuals.panel_fill = PANEL;

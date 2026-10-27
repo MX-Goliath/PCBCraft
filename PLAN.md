@@ -1249,3 +1249,175 @@ Cause, implementation and validation: docs/pcb-update/INTERACTIVE_ROUTING.md.
   Полное соответствие остаётся partial: Comparator/ECO options, классы/rooms/
   directives/rules/variants, Component Links, hierarchy/buses/hidden pins/swaps,
   полный native save и точная визуальная проверка всех состояний не завершены.
+
+### 2026-10-26 — локальная Windows portable release
+
+- По запросу пользователя собран Windows x64 MSVC release с Cargo.lock.
+  Добавлен portable.flag: настройки eframe сохраняются в Data/app.ron рядом
+  с исполняемым файлом. Без маркера используется обычное хранилище системы.
+- scripts/build-windows-portable.py создаёт ZIP, SHA256, build-info, лицензии
+  зависимостей и шрифтов, проверяет PE imports и добавляет redistributable CRT
+  из Visual Studio. Системные DLL и графический драйвер не копируются.
+  Архив проверяется testzip; пользовательские настройки в архив не включаются.
+- Результат: dist/PCBCraft-0.1.0-windows-x64-portable.zip, 12 284 166 байт.
+  SHA256 redacted-source-sha256.
+- Распакованный exe запущен из другого рабочего каталога (TEMP), единственным
+  экземпляром. В реальном окне открыты исходные ReferenceA SchDoc и PcbDoc, после
+  штатного закрытия создан локальный Data/app.ron. Документы не сохранялись.
+- fmt --check, строгий workspace/all-targets Clippy и release build прошли.
+  Workspace tests: 500 pass / 1 прежний GPU fail (routing pixels differ by 4,
+  frame13/dither=true). Логи target/windows-portable-*.txt. На чистой Windows
+  без инструментов разработки запуск отдельно не проверен.
+
+### 2026-10-26 — зависание при открытии сложных PCB
+
+- Сообщённая пользователем плата находится на другом устройстве и здесь
+  недоступна. На локальной ReferenceCRevision2 воспроизведено отдельное зависание
+  до первого кадра: robust_triangulation, BOURNS_INDM135125X65N_SRP1265A.STEP,
+  shell 2353. Исходный probe потребил более 56 CPU seconds без результата.
+- Ограничения исходных edges не покрывали внутренние trimming PCurves.
+  Добавлен адаптер поверхностей с общим для модели бюджетом 250 000 вычислений,
+  трёхсекундным deadline и ограниченным surface grid. Ошибка модели даёт
+  предупреждение и прежнюю body projection, STEP сохраняется в source archive.
+  Результаты неудачного импорта также кэшируются; после 15 s модельной библиотеки
+  не запускается следующая модель. Это кооперативные ограничения, не изоляция
+  произвольного parser/topology кода в отдельном принудительно завершаемом процессе.
+- Открытие через File, Recent, Projects tree и аргумент запуска перенесено
+  в один worker; очередь ограничена и объединяет одинаковые пути. Окно загрузки
+  показывает файл, фазу и время; Cancel останавливает очередь и запрещает
+  публикацию результата. До выхода отменённой задачи новый worker не создаётся.
+- Реальный portable release: наблюдалось окно ReferenceC на фазе 3D model 20/141,
+  2.7 s; Cancel убрал загрузку без публикации частичного документа. Следующий
+  клик Recent успешно открыл и отобразил ReferenceA PCB. Приложение штатно закрыто,
+  одновременно запускался только один экземпляр. Первый полный ReferenceC GUI import
+  вернулся с отдельной ошибкой Invalid PCB Region geometry, окно осталось рабочим.
+- Другие крупные локальные файлы выявляют независимые ошибки совместимости:
+  padstack land, parameter group owner, PLANE2. Их исправление не имитировалось
+  отключением валидации. Подробности и границы проверки в PERFORMANCE.md/features.json.
+- Portable ZIP пересобран; Diagnose.cmd включает import/STEP tracing в
+  Data/diagnostic.log для проверки на другом устройстве. Настройки/проекты
+  пользователя в ZIP не включены. ReferenceC SHA256 остаётся
+  redacted-source-sha256,
+  ReferenceA PCB SHA256 redacted-source-sha256.
+- fmt --check, строгий Clippy и release build прошли; workspace: 506 pass /
+  1 прежний GPU fail, тот же routing frame13/dither=true/channel difference 4.
+  Проверены реальный Truck PCurve, curved/planar grids, invalid/deadline budgets,
+  отмена импорта, очередь и сохранение worker slot. Логи target/complex-pcb-*.
+  Точный случай пользователя на другом устройстве остаётся непроверенным.
+
+### 2026-10-26 — ложный Invalid PCB Region geometry на корректных платах
+
+- Уточнена диагностика core: source stream/index, размер внешнего контура и
+  индексы/размеры непригодных внутренних контуров вместо одной общей ошибки.
+  На ReferenceCRevision2 найден Regions6 record 401: внешний контур 2386 точек,
+  71 interior; interior 32 сводится к одной точке (250987781,70407355) nm.
+  Та же особенность есть в record 546 и дублирующих ShapeBasedRegions6.
+- Нативный декодер исключает из редактируемой геометрии только interiors,
+  содержащие менее трёх различных целочисленных nm-точек, с предупреждением.
+  Строгая core/JSON проверка не ослаблена; реальные отверстия, в том числе
+  треугольник 1 nm, остаются. Неисправные внешние контуры, NaN и усечённые
+  блоки по-прежнему отклоняются. Исходные native bytes остаются в archive.
+- Два новых CFB regression tests: legacy/modern region families, пустые,
+  одноточечные, повторяющиеся и двухточечные interiors, обычное и минимальное
+  отверстие. Unmodified native save побайтно равен original; после добавления
+  track оба исходных region streams, включая их opaque tails, побайтно сохранены.
+- Read-only probes: ReferenceC 3.0.7 — 27202 items / 1116 components / 24 layers,
+  11125.64 ms; ReferenceC 3.0.1 — 18128 items / 790 components / 23 layers,
+  17676.31 ms под параллельной сборкой, с предупреждением о 3D time budget.
+  В pcb_frame_profile добавлен --load-only; это время без первого render.
+- Новый portable release открыл ReferenceC 3.0.7 в реальном окне, плата отображается,
+  выбор и PageUp zoom работают, документ чистый. Приложение закрыто без Save;
+  одновременно был только один экземпляр. SHA256 ReferenceC 3.0.7 остаётся
+  redacted-source-sha256.
+- fmt --check, строгий Clippy и release build прошли; 508 workspace tests pass /
+  1 прежний GPU fail (frame13/dither=true/max-channel=4). Первый test build
+  упёрся в Windows file lock запущенного pcb_frame_profile; после завершения
+  probe повторный workspace run выполнен. Логи target/region-*.
+- ZIP пересобран: SHA256
+  redacted-source-sha256.
+  Исправлен подтверждённый вариант interiors, а не все возможные native-region
+  виды/топология. Иные padstack/layer/parameter ограничения остаются отдельными.
+
+### 2026-10-27 — точный ReferenceGWorkspace/ReferenceGRevision1.PcbDoc
+
+- Воспроизведена ошибка на указанном пользователем файле (21 056 512 bytes):
+  Invalid PCB Region geometry, Regions6 record 11, outer vertices=2.
+  Read-only разбор исходных streams показал 13 legacy вершин с двумя различными
+  x на одном y и повторами, а не повреждённую рамку записи. Modern counterpart
+  содержит те же вершины с дополнительным замыканием. Проблема возникала при
+  dedup/удалении closing vertex в импортёре.
+- Если нормализация внешнего контура оставляет <3 вершин, исходная нативная
+  последовательность сохраняется с предупреждением. Core validation размеров
+  и координат не ослаблена. is_empty_region проверяет точную коллинеарность;
+  только такие записи не дают материал/соединения, вырезы, artwork, picking и
+  влияние на Fit. Signed-area=0 не используется как критерий пустоты.
+- Regression CFB legacy/modern: byte-identical unmodified Save, точные исходные
+  region streams после добавления track. Core: remnant не замыкает разорванную
+  цепь, неколлинеарный контур с signed-area cancellation не отбрасывается.
+  Render: пустой контур не видим и не выбирается. pcb_regions — bounded
+  диагностический example для region framing/координат без импорта STEP.
+- Exact read-only import: 8494.63 ms, 20261 items, 1271 components, 26 layers,
+  98 meshes. Исходник не менялся: SHA256
+  redacted-source-sha256.
+- fmt --check, строгий workspace/all-target Clippy, release build проходят.
+  Workspace: 511 pass / 1 прежний GPU routing fail (Rgba8Unorm/frame13/
+  dither=true/channel difference 4). Логи target/ReferenceG-gaz-*.
+- Новый portable ZIP собран и проверен упаковщиком, SHA256
+  redacted-source-sha256.
+  Работающий старый portable exe не перезаписывался/не перезапускался: в реальном
+  окне есть несохранённый Controller.pcbcraft.json, активен ReferenceK.SchDoc. Поэтому
+  GUI нового exe на этой плате не проверен; второй экземпляр не запускался.
+  Для применения исправления нужен пользовательский перезапуск новой сборки.
+
+### 2026-10-27 — повторный удалённый Region-сбой и аудит PCB-импорта
+
+- Пользователь подтвердил текст Invalid PCB Region geometry, но проблемная плата
+  отсутствует на этом компьютере. Точное воспроизведение этого файла невозможно;
+  устранение именно его сбоя не объявляется проверенным.
+- Короткие нативные внешние контуры с 1/2 вершинами замыкаются повтором исходной
+  вершины без создания площади. Полностью пустые Region хранятся как source-only
+  записи empty_region_records с исходным CFB в архиве; фиктивная геометрия не
+  создаётся. Пустой outer с реальными holes, NaN/Inf, выход за координатные пределы,
+  oversized counts и обрезанные payload по-прежнему отклоняются.
+- Native Save сохраняет содержащие пустые слоты семейства побайтно, включая
+  расположенную после пустого слота обычную region-запись. Правки такого семейства
+  и native reindexing блокируются с предложением JSON. Проверены byte-identical
+  Save, JSON recovery, посторонняя track-правка и запрет потери пустых записей.
+- В локальной подборке из 18 различных по SHA256 файлов до правок импортировались
+  14: ReferenceM требовал поддержку UID-only PrimitiveParameters, ReferenceGTest — PLANE2;
+  ReferenceD/ReferenceE содержали дуги нулевой толщины. Добавлено однозначное разрешение владельца
+  по PRIMITIVEID и сохранение UID-only заголовков без дублей; PLANE1..16; нулевые
+  дуги без подмены ширины и без меди/connectivity. Отрицательные ширины запрещены.
+- Ошибки примитивов содержат поток/запись/byte offset; ошибки model validation —
+  item/layer/source, для padstack также размеры/форма/drill. Загрузка файла
+  дополняет сообщение фазой и путём. Логгер включает реальный модуль pcbcraft.
+- fmt --check и строгий workspace/all-target Clippy проходят. Workspace tests:
+  516 pass / 1 прежний GPU routing fail (frame 13, Rgba8Unorm, dither=true,
+  difference 4). Все 98 IO тестов проходят. Логи target/import-audit-*.
+- UI не менялся и второй экземпляр не запускался. Работающий portable PID 45684
+  оставлен без перезапуска и без перезаписи его executable.
+- Итоговый read-only прогон: 18/18 файлов импортированы (до правок 14/18).
+  Все SHA256 до/после совпадают. Машиночитаемый отчёт:
+  docs/pcb-update/import-compatibility-2026-10-27.json. Прогон выполнялся параллельно
+  с release build и не является замером пользовательской задержки открытия.
+- Проверка source-only ссылок использует индекс обычных записей, а не повторный
+  перебор всех items для каждой пустой записи. Финальные fmt/Clippy/workspace
+  проверки после этой правки повторены; 516 pass и тот же GPU fail.
+- Portable release собран и CRC/SHA проверены. Отдельная копия архива:
+  PCBCraft-0.1.0-windows-x64-portable-2026-10-27-import-fix.zip,
+  12 317 060 bytes, SHA256
+  redacted-source-sha256.
+  build-info.json включает UTC-время сборки и SHA256 exe. Старый запущенный
+  экземпляр не заменялся; пользователю требуется открыть новый ZIP отдельно.
+
+### 2026-10-27 — только тёмная тема интерфейса
+
+- Отдельной светлой палитры и переключателя в приложении нет. Однако egui по
+  умолчанию следует теме ОС, а set_visuals меняет только текущий стиль.
+- theme::apply теперь явно выбирает Theme::Dark до настройки палитры/типографики.
+  Это применяется при запуске и Restore Default Layout и исключает автоматическое
+  переключение интерфейса вслед за светлой темой ОС.
+- Внешний вид существующей тёмной палитры не менялся; работающий экземпляр с
+  пользовательскими документами не перезапускался. Portable ZIP этим изменением
+  не пересобирался.
+- Проверки: fmt и строгий Clippy проходят; workspace tests — 516 pass / 1 прежний GPU routing fail (difference 4 при допуске 3).

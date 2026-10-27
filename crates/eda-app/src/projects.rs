@@ -455,7 +455,7 @@ impl PcbCraft {
             self.pad_edit = None;
         }
         if let Some(path) = open {
-            self.open_path(path);
+            self.request_open_path(path);
         }
         if let Some(i) = ctx.data_mut(|d| d.remove_temp::<usize>(Id::new("project_tree_close")))
             && let Some(doc) = self.documents.get(i)
@@ -843,6 +843,7 @@ mod tests {
     #[test]
     fn startup_sizing_does_not_collapse_projects_or_change_width_between_editors() {
         let mut app = PcbCraft {
+            document_loader: Default::default(),
             cross_probe: Default::default(),
             file_dialog: rfd::FileDialog::new(),
             documents: vec![

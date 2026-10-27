@@ -17,6 +17,8 @@ mod cross_probe;
 mod design_sync;
 #[path = "document_bars.rs"]
 mod document_bars;
+#[path = "document_loader.rs"]
+mod document_loader;
 #[path = "layer_stack.rs"]
 mod layer_stack;
 #[path = "pcb_3d.rs"]
@@ -191,6 +193,7 @@ struct PadEdit {
 }
 
 pub struct PcbCraft {
+    document_loader: document_loader::State,
     annotation: Option<annotation::Dialog>,
     design_sync: Option<design_sync::Dialog>,
     layer_stack: Option<layer_stack::Manager>,
@@ -235,6 +238,7 @@ impl PcbCraft {
             settings.grid_nm = 1_000_000;
         }
         let mut app = Self {
+            document_loader: Default::default(),
             cross_probe: Default::default(),
             file_dialog: rfd::FileDialog::new().set_parent(cc),
             documents: vec![],
@@ -263,8 +267,9 @@ impl PcbCraft {
         }
         let mut opened = false;
         if let Some(path) = std::env::args_os().nth(1) {
-            app.open_path(path.into());
-            opened = !app.documents.is_empty() || !app.projects.is_empty();
+            app.request_open_path(path.into());
+            opened =
+                !app.documents.is_empty() || !app.projects.is_empty() || app.document_loader.busy();
         }
         if !opened {
             app.add_document(Document::example(), None);
@@ -338,7 +343,6 @@ impl PcbCraft {
             self.import_library(path, true);
             return;
         }
-        let native = matches!(extension.as_str(), "schdoc" | "pcbdoc");
         let loaded = if extension == "pcbdoc" {
             eda_io::altium_pcb::load_pcb(&path)
         } else if extension == "schdoc" {
@@ -346,6 +350,21 @@ impl PcbCraft {
         } else {
             eda_io::load(&path)
         };
+        self.complete_open_path(path, loaded);
+    }
+
+    fn complete_open_path(&mut self, path: PathBuf, loaded: Result<Document, String>) {
+        // A synchronous dependency lookup may have opened a queued path first.
+        if self
+            .documents
+            .iter()
+            .any(|d| d.path.as_ref() == Some(&path) || d.source_path.as_ref() == Some(&path))
+        {
+            return;
+        }
+        let native = path
+            .extension()
+            .is_some_and(|s| s.eq_ignore_ascii_case("SchDoc") || s.eq_ignore_ascii_case("PcbDoc"));
         match loaded {
             Ok(doc) => {
                 self.message(false, format!("Opened {}", path.display()));
@@ -386,7 +405,14 @@ impl PcbCraft {
                 })
                 .map(|d| d.path.clone())
             {
-                self.open_path(first);
+                if first
+                    .extension()
+                    .is_some_and(|s| s.eq_ignore_ascii_case("PcbDoc"))
+                {
+                    self.request_open_path(first);
+                } else {
+                    self.open_path(first);
+                }
             }
             return;
         }
@@ -422,7 +448,14 @@ impl PcbCraft {
                 self.projects.push(project);
                 self.recent(path);
                 if let Some(first) = first {
-                    self.open_path(first);
+                    if first
+                        .extension()
+                        .is_some_and(|s| s.eq_ignore_ascii_case("PcbDoc"))
+                    {
+                        self.request_open_path(first);
+                    } else {
+                        self.open_path(first);
+                    }
                 } else {
                     self.active = None;
                 }
@@ -638,7 +671,7 @@ impl PcbCraft {
                     .add_filter("Altium project", &["PrjPcb"])
                     .pick_file()
                 {
-                    self.open_path(path);
+                    self.request_open_path(path);
                 }
             }
             Command::OpenProject => {
@@ -648,7 +681,7 @@ impl PcbCraft {
                     .add_filter("Altium PCB project", &["PrjPcb"])
                     .pick_file()
                 {
-                    self.open_path(path);
+                    self.request_open_path(path);
                 }
             }
             Command::Save | Command::SaveAs => {
@@ -853,7 +886,7 @@ impl PcbCraft {
                             ui.menu_button("Recent Documents", |ui| {
                                 for path in recent {
                                     if ui.button(path.display().to_string()).clicked() {
-                                        self.open_path(path);
+                                        self.request_open_path(path);
                                         ui.close();
                                     }
                                 }
@@ -1609,7 +1642,7 @@ impl PcbCraft {
                     }
                     for path in recent {
                         if ui.link(path.display().to_string()).clicked() {
-                            self.open_path(path);
+                            self.request_open_path(path);
                         }
                     }
                     ui.add_space(35.0);
@@ -1823,6 +1856,7 @@ impl PcbCraft {
 
 impl eframe::App for PcbCraft {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.poll_document_loader(ctx);
         if std::env::var_os("PCBCRAFT_FRAME_PROFILE").is_some()
             && let Some(seconds) = _frame.info().cpu_usage
         {
@@ -1882,6 +1916,7 @@ impl eframe::App for PcbCraft {
         self.dialogs(ctx);
         self.annotation_dialog(ctx);
         self.design_sync_dialog(ctx);
+        self.document_loading_dialog(ctx);
         self.resize_edges(ctx);
         if let Some(command) = self.command.take() {
             self.run(command, ctx);

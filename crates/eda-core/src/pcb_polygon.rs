@@ -283,7 +283,10 @@ pub fn pad_outline_radius(
 }
 /// True if an item has copper on the target layer. Blind vias obey the physical stack.
 pub fn on_layer(board: &Board, item: &Item, layer: u16) -> bool {
-    if item.is_drill_only() {
+    if item.is_drill_only()
+        || item.is_empty_region()
+        || matches!(item.shape, Shape::Arc { width: 0, .. })
+    {
         return false;
     }
     if item.layer != MULTI_LAYER {
@@ -399,6 +402,9 @@ mod circular_stroke_tests {
     }
 }
 pub(crate) fn copper(item: &Item, layer: u16) -> MultiPolygon<f64> {
+    if item.is_empty_region() || matches!(item.shape, Shape::Arc { width: 0, .. }) {
+        return empty();
+    }
     // Drills are physical obstacles, never electrical lands/thermal anchors.
     if item.is_drill_only()
         && let Shape::Pad { position, hole, .. } = &item.shape

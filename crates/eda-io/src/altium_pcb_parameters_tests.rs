@@ -206,3 +206,73 @@ fn newly_authored_component_parameters_get_a_matching_native_owner() {
         "42"
     );
 }
+
+#[test]
+fn legacy_uid_only_parameter_groups_roundtrip_and_edit_without_duplicate_groups() {
+    let doc = native_document();
+    let bytes = writer::serialize(&doc, writer::Format::Preserve).unwrap();
+    let mut cfb = cfb::CompoundFile::open(Cursor::new(bytes)).unwrap();
+    let legacy = blocks(&[
+        "|PRIMITIVEID=ABCDEFGH|VARIANTGUID=|COUNT=1",
+        "|NAME=Value|VALUE=original",
+        "|PRIMITIVEID=ABCDEFGH|VARIANTGUID=variant|COUNT=1",
+        "|NAME=Value|VALUE=variant-value",
+    ]);
+    cfb.create_stream("/PrimitiveParameters/Data")
+        .unwrap()
+        .write_all(&legacy)
+        .unwrap();
+    cfb.create_stream("/PrimitiveParameters/Header")
+        .unwrap()
+        .write_all(&2u32.to_le_bytes())
+        .unwrap();
+    let original = cfb.into_inner().into_inner();
+    let mut read = import_pcb(&original, "legacy.PcbDoc").unwrap();
+    assert_eq!(
+        read.pcb.as_ref().unwrap().components[0]
+            .parameters
+            .as_ref()
+            .unwrap()["Value"],
+        "original"
+    );
+    assert_eq!(
+        writer::serialize(&read, writer::Format::Preserve).unwrap(),
+        original
+    );
+    read.pcb.as_mut().unwrap().components[0]
+        .parameters
+        .as_mut()
+        .unwrap()
+        .insert("Value".into(), "edited".into());
+    let saved = writer::serialize(&read, writer::Format::Preserve).unwrap();
+    let reread = import_pcb(&saved, "edited.PcbDoc").unwrap();
+    assert_eq!(
+        reread.pcb.as_ref().unwrap().components[0]
+            .parameters
+            .as_ref()
+            .unwrap()["Value"],
+        "edited"
+    );
+    let mut cfb = cfb::CompoundFile::open(Cursor::new(saved)).unwrap();
+    let mut raw = vec![];
+    cfb.open_stream("/PrimitiveParameters/Data")
+        .unwrap()
+        .read_to_end(&mut raw)
+        .unwrap();
+    let records = property_records(&raw, 0).unwrap();
+    assert_eq!(records.len(), 4);
+    assert!(!records[0].contains_key("ID"));
+    assert_eq!(records[3]["VALUE"], "variant-value");
+}
+
+#[test]
+fn uid_only_parameter_owner_must_be_unambiguous() {
+    let mut b = board();
+    let mut duplicate = b.components[0].clone();
+    duplicate.index = 1;
+    b.components.push(duplicate);
+    let before = b.clone();
+    let error = import(&mut b, &blocks(&["|PRIMITIVEID=ABCDEFGH|COUNT=0"])).unwrap_err();
+    assert!(error.contains("Ambiguous"));
+    assert_eq!(b, before);
+}

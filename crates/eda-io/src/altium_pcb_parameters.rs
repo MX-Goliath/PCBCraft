@@ -4,6 +4,41 @@ use super::*;
 #[path = "altium_pcb_parameters_tests.rs"]
 mod tests;
 
+/// Older native files identify parameter owners only by their unique ID.
+/// Never infer an owner from record order, and reject ambiguous identities.
+pub(super) fn component_owner(board: &Board, header: &Fields) -> Result<Option<u32>> {
+    let uid = header
+        .get("PRIMITIVEID")
+        .filter(|v| !v.is_empty())
+        .ok_or("Parameter group has no primitive identity")?;
+    if let Some(id) = header.get("ID") {
+        let Some(index) = id.strip_prefix("Component#") else {
+            return Ok(None);
+        };
+        let index = index
+            .parse::<u32>()
+            .map_err(|_| "Invalid parameter component index")?;
+        let component = board
+            .components
+            .iter()
+            .find(|c| c.index == index)
+            .ok_or("Parameters refer to missing component")?;
+        if component.properties.get("UNIQUEID") != Some(uid) {
+            return Err("Parameter component identity does not match".into());
+        }
+        return Ok(Some(index));
+    }
+    let mut matches = board
+        .components
+        .iter()
+        .filter(|c| c.properties.get("UNIQUEID") == Some(uid));
+    let owner = matches.next().map(|c| c.index);
+    if matches.next().is_some() {
+        return Err("Ambiguous parameter component identity".into());
+    }
+    Ok(owner)
+}
+
 pub(super) fn import(board: &mut Board, data: &[u8]) -> Result<()> {
     let records = property_records(data, 0)?;
     let mut n = 0;
@@ -21,26 +56,13 @@ pub(super) fn import(board: &mut Board, data: &[u8]) -> Result<()> {
             .and_then(|n| n.checked_add(count))
             .filter(|end| *end <= records.len())
             .ok_or("Truncated parameter group")?;
-        if !header.contains_key("ID") || !header.contains_key("PRIMITIVEID") {
-            return Err("Invalid parameter group owner".into());
-        }
         // Footprint/System parameters and named variants are distinct namespaces.
         // Retain their native records, but do not use them as base component values.
         if header.get("VARIANTGUID").is_none_or(String::is_empty)
             && header.get("APPURTENANCE").is_none_or(String::is_empty)
-            && let Some(index) = header["ID"].strip_prefix("Component#")
+            && let Some(index) = component_owner(board, header)
+                .map_err(|error| format!("PrimitiveParameters/Data record {n}: {error}"))?
         {
-            let index = index
-                .parse::<u32>()
-                .map_err(|_| "Invalid parameter component index")?;
-            let component = board
-                .components
-                .iter()
-                .find(|c| c.index == index)
-                .ok_or("Parameters refer to missing component")?;
-            if component.properties.get("UNIQUEID") != header.get("PRIMITIVEID") {
-                return Err("Parameter component identity does not match".into());
-            }
             let fields = parameters.entry(index).or_default();
             for record in &records[n + 1..end] {
                 let name = record

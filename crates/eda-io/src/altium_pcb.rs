@@ -18,6 +18,9 @@ mod display_tests;
 #[path = "altium_pcb_library.rs"]
 pub mod library;
 #[cfg(test)]
+#[path = "altium_pcb_region_tests.rs"]
+mod region_tests;
+#[cfg(test)]
 #[path = "altium_pcb_stack_tests.rs"]
 mod stack_tests;
 #[path = "altium_pcb_write.rs"]
@@ -35,12 +38,53 @@ const LIMIT: usize = 128 * 1024 * 1024;
 const MAX_BLOCK: usize = 16 * 1024 * 1024;
 const MAGIC: &[u8] = &[0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1];
 type Result<T> = std::result::Result<T, String>;
+/// Cooperative cancellation and current phase for the editor's import worker.
+#[derive(Clone, Default)]
+pub struct ImportControl {
+    cancelled: Arc<std::sync::atomic::AtomicBool>,
+    phase: Arc<std::sync::Mutex<String>>,
+}
+impl ImportControl {
+    pub fn cancel(&self) {
+        self.cancelled
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+    pub fn phase(&self) -> String {
+        self.phase.lock().unwrap().clone()
+    }
+    pub(crate) fn check(&self, phase: &str) -> Result<()> {
+        if self.cancelled.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err("PCB import cancelled".into());
+        }
+        let mut current = self.phase.lock().unwrap();
+        if current.as_str() == phase {
+            return Ok(());
+        }
+        *current = phase.to_owned();
+        if std::env::var_os("PCBCRAFT_IMPORT_PROFILE").is_some() {
+            eprintln!("PCB import: {phase}");
+        }
+        Ok(())
+    }
+}
 pub fn load_pcb(path: &Path) -> Result<Document> {
+    load_pcb_controlled(path, &ImportControl::default())
+}
+pub fn load_pcb_controlled(path: &Path, control: &ImportControl) -> Result<Document> {
+    control.check("Reading PCB file")?;
     let bytes = crate::altium::read_bounded(path)?;
-    import_pcb(
+    import_pcb_controlled(
         &bytes,
         &path.file_name().unwrap_or_default().to_string_lossy(),
+        control,
     )
+    .map_err(|error| {
+        format!(
+            "{error}\nImport phase: {}\nFile: {}",
+            control.phase(),
+            path.display()
+        )
+    })
 }
 /// Older PCBCraft JSON archives retained embedded STEP bytes but no meshes.
 /// Recover only the model library; preserve the current edited PCB primitives.
@@ -87,16 +131,22 @@ pub(crate) fn upgrade_models(board: &mut Board) {
     step_io::read_models(&streams, board);
 }
 pub fn import_pcb(bytes: &[u8], name: &str) -> Result<Document> {
+    import_pcb_controlled(bytes, name, &ImportControl::default())
+}
+fn import_pcb_controlled(bytes: &[u8], name: &str, control: &ImportControl) -> Result<Document> {
     if bytes.len() > LIMIT {
         return Err("PCB file exceeds 128 MiB import limit".into());
     }
+    control.check("Decoding PCB records")?;
     let namespace = Uuid::new_v5(&Uuid::NAMESPACE_OID, bytes);
     let mut board = if bytes.starts_with(MAGIC) {
-        binary(bytes, namespace)?
+        binary(bytes, namespace, control)?
     } else {
         ascii(bytes, namespace)?
     };
+    control.check("Preparing PCB layers and geometry")?;
     finish(&mut board)?;
+    control.check("Preparing polygons")?;
     upgrade_polygons(&mut board, namespace)?;
     board.source = Some(Arc::new(SourceArchive {
         filename: name.to_owned(),
@@ -112,6 +162,7 @@ pub fn import_pcb(bytes: &[u8], name: &str) -> Result<Document> {
         &mut board,
         "Compatibility is limited to the documented PCB6 fields and supported modern layer identities; stack regions, native design rules and full Altium interactions are not implemented",
     );
+    control.check("Validating PCB")?;
     board.validate()?;
     let bounds = board.bounds();
     let mut doc = Document::new(DocumentKind::Board, name);
@@ -122,6 +173,7 @@ pub fn import_pcb(bytes: &[u8], name: &str) -> Result<Document> {
     };
     doc.pcb = Some(board);
     doc.validate()?;
+    control.check("PCB ready")?;
     Ok(doc)
 }
 /// Extract the exact ORIGINAL file, not a serialization of the edited board.
@@ -411,7 +463,10 @@ pub fn layer_id(name: &str) -> Result<u16> {
                     return Err(invalid());
                 }
                 1 + n
-            } else if let Some(n) = s.strip_prefix("INTERNALPLANE") {
+            } else if let Some(n) = s
+                .strip_prefix("INTERNALPLANE")
+                .or_else(|| s.strip_prefix("PLANE"))
+            {
                 let n = n.parse::<u16>().map_err(|_| invalid())?;
                 if !(1..=16).contains(&n) {
                     return Err(invalid());
@@ -506,7 +561,7 @@ fn check_count(streams: &BTreeMap<String, Vec<u8>>, family: &str, actual: usize)
     }
     Ok(())
 }
-fn binary(bytes: &[u8], ns: Uuid) -> Result<Board> {
+fn binary(bytes: &[u8], ns: Uuid, control: &ImportControl) -> Result<Board> {
     let mut cfb = cfb::CompoundFile::open(Cursor::new(bytes))
         .map_err(|e| format!("Invalid PCB compound file: {e}"))?;
     if !cfb.is_stream("/Board6/Data") {
@@ -545,6 +600,7 @@ fn binary(bytes: &[u8], ns: Uuid) -> Result<Board> {
         ..Board::default()
     };
     for (path, len) in paths {
+        control.check(&format!("Reading {path}"))?;
         let family = path.trim_start_matches('/').split('/').next().unwrap_or("");
         if known.contains(&family) {
             if len > LIMIT as u64 {
@@ -580,6 +636,7 @@ fn binary(bytes: &[u8], ns: Uuid) -> Result<Board> {
         "Polygons6",
         "Classes6",
     ] {
+        control.check(&format!("Decoding {family}"))?;
         let Some(data) = streams.get(&format!("/{family}/Data")) else {
             continue;
         };
@@ -637,42 +694,62 @@ fn binary(bytes: &[u8], ns: Uuid) -> Result<Board> {
         let mut reader = Bytes::new(data);
         let mut n = 0;
         while reader.remaining() > 0 {
+            if n % 1024 == 0 {
+                control.check(&format!("Decoding {family}"))?;
+            }
             if reader.u8()? != tag {
                 return Err(format!("{family}: invalid primitive tag in record {n}"));
             }
-            let mut item = if family == "Pads6" {
-                let mut blocks = vec![];
-                for _ in 0..6 {
-                    blocks.push(reader.block()?);
-                }
-                pad(blocks.as_slice(), &mut board)?
-            } else {
-                let payload = reader.block()?;
-                if family == "Texts6" {
-                    let text = reader.block()?;
-                    text_item(payload, text, &wide, &board)?
-                } else if matches!(tag, 11 | 12) {
-                    let mut item =
-                        region_item(payload, family.starts_with("ShapeBased"), &mut board)?;
-                    if tag == 12 {
-                        item.properties
-                            .insert("PCBCRAFT_BODY_PROJECTION".into(), "TRUE".into());
-                        item.net = None;
-                        item.polygon = None;
+            let offset = reader.pos - 1;
+            let mut item = (|| -> Result<Item> {
+                Ok(if family == "Pads6" {
+                    let mut blocks = vec![];
+                    for _ in 0..6 {
+                        blocks.push(reader.block()?);
                     }
-                    item
+                    pad(blocks.as_slice(), &mut board)?
                 } else {
-                    primitive(family, payload)?
-                }
-            };
+                    let payload = reader.block()?;
+                    if family == "Texts6" {
+                        let text = reader.block()?;
+                        text_item(payload, text, &wide, &board)?
+                    } else if matches!(tag, 11 | 12) {
+                        let mut item =
+                            region_item(payload, family.starts_with("ShapeBased"), &mut board)?;
+                        if tag == 12 {
+                            item.properties
+                                .insert("PCBCRAFT_BODY_PROJECTION".into(), "TRUE".into());
+                            item.net = None;
+                            item.polygon = None;
+                        }
+                        item
+                    } else {
+                        primitive(family, payload)?
+                    }
+                })
+            })()
+            .map_err(|error| format!("{family}/Data record {n}, byte {offset}: {error}"))?;
             item.id = stable(ns, family, n);
             item.source = Some(SourceRecord {
                 stream: family.into(),
                 index: n as u32,
             });
-            board.items.push(item);
+            if matches!(&item.shape, Shape::Region { contour, holes, .. } if contour.is_empty() && holes.is_empty())
+            {
+                board
+                    .empty_region_records
+                    .push(item.source.clone().unwrap());
+                warn(
+                    &mut board,
+                    format!(
+                        "{family}/Data record {n}: empty region retained in source archive; no material geometry"
+                    ),
+                );
+            } else {
+                board.items.push(item);
+            }
             n += 1;
-            if board.items.len() > MAX_ITEMS {
+            if board.items.len() + board.empty_region_records.len() > MAX_ITEMS {
                 return Err("PCB primitive limit exceeded".into());
             }
         }
@@ -728,7 +805,8 @@ fn binary(bytes: &[u8], ns: Uuid) -> Result<Board> {
             "Design rules imported; PCB Rules/DRC supports a subset of constraints and queries. See unchecked conditions in the DRC report",
         );
     }
-    step_io::read_models(&streams, &mut board);
+    step_io::read_models_controlled(&streams, &mut board, control);
+    control.check("Finishing PCB import")?;
     if !board.polygons.is_empty() {
         warn(
             &mut board,
@@ -1056,9 +1134,27 @@ fn region_item(p: &[u8], extended: bool, board: &mut Board) -> Result<Item> {
         }
         holes.push(hole);
     }
-    contour.dedup();
-    if contour.len() > 1 && contour.first() == contour.last() {
-        contour.pop();
+    let mut normalized = contour.clone();
+    normalized.dedup();
+    if normalized.len() > 1 && normalized.first() == normalized.last() {
+        normalized.pop();
+    }
+    if normalized.len() >= 3 {
+        contour = normalized;
+    } else if let Some(first) = contour.first().copied() {
+        // Altium can retain closed zero-area remnants as repeated vertices.
+        // Keep that native ring instead of turning a valid framed record into
+        // a structurally invalid two-vertex editable region. Material/rendering
+        // queries exclude collinear regions; native serialization retains them.
+        warn(
+            board,
+            "Native region has a point/line-only outer contour; closed with existing vertices without treating it as filled material; source record preserved",
+        );
+        // A one/two-vertex native remnant is closed by repeating the existing
+        // first vertex. This introduces no position or material area.
+        if contour.len() < 3 {
+            contour.resize(3, first);
+        }
     }
     for hole in &mut holes {
         hole.dedup();
@@ -1066,8 +1162,30 @@ fn region_item(p: &[u8], extended: bool, board: &mut Board) -> Result<Item> {
             hole.pop();
         }
     }
+    // Native pour fragments may retain point/line-only interior contours. They
+    // have no representable area, but are valid records in Altium's container.
+    // Keep the editable geometry strict without rejecting the entire board;
+    // unchanged native records (including these contours) remain in the archive.
+    let before = holes.len();
+    holes.retain(|hole| {
+        let Some(first) = hole.first() else {
+            return false;
+        };
+        let Some(second) = hole.iter().find(|p| *p != first) else {
+            return false;
+        };
+        hole.iter().any(|p| p != first && p != second)
+    });
+    if holes.len() != before {
+        warn(
+            board,
+            format!(
+                "Native region: {} interior contour(s) have fewer than three distinct nanometre vertices and no representable area; omitted from editable geometry, original records preserved",
+                before - holes.len()
+            ),
+        );
+    }
     let cutout = f.yes("ISBOARDCUTOUT") || f.num("KIND", 0.0)? != 0.0;
-    let _ = board;
     let mut i = common(
         p,
         Shape::Region {
@@ -1539,6 +1657,72 @@ mod tests {
             import_pcb(board(), "test.PcbDoc").unwrap(),
             import_pcb(board(), "test.PcbDoc").unwrap()
         );
+    }
+    #[test]
+    fn legacy_plane_names_match_internal_plane_identities() {
+        for n in 1..=16 {
+            assert_eq!(
+                layer_id(&format!("PLANE{n}")).unwrap(),
+                layer_id(&format!("Internal Plane {n}")).unwrap()
+            );
+        }
+        for name in ["PLANE0", "PLANE17", "PLANE", "PLANEx"] {
+            assert!(layer_id(name).is_err());
+        }
+    }
+    #[test]
+    fn native_zero_width_arcs_keep_their_geometry_and_do_not_become_copper() {
+        for end_angle in [180.0, 360.0] {
+            let item = Item::new(
+                TOP,
+                None,
+                Shape::Arc {
+                    centre: Point::mm(3, 3),
+                    radius: 1_000_000,
+                    start_angle: 0.0,
+                    end_angle,
+                    width: 0,
+                },
+            );
+            let mut doc = Document::new(DocumentKind::Board, "hairline");
+            doc.pcb = Some(Board {
+                items: vec![item],
+                ..Default::default()
+            });
+            let bytes = writer::serialize(&doc, writer::Format::Binary).unwrap();
+            let read = import_pcb(&bytes, "hairline.PcbDoc").unwrap();
+            let b = read.pcb.as_ref().unwrap();
+            assert!(matches!(b.items[0].shape, Shape::Arc { width: 0, .. }));
+            assert!(!eda_core::pcb_polygon::on_layer(b, &b.items[0], TOP));
+            assert_eq!(
+                writer::serialize(&read, writer::Format::Preserve).unwrap(),
+                bytes
+            );
+            let Shape::Arc { width, .. } = &mut doc.pcb.as_mut().unwrap().items[0].shape else {
+                unreachable!()
+            };
+            *width = -1;
+            assert!(doc.validate().is_err());
+        }
+    }
+    #[test]
+    fn cancelled_import_does_not_read_or_publish_a_partial_document() {
+        let control = ImportControl::default();
+        control.cancel();
+        assert!(
+            load_pcb_controlled(Path::new("not-opened.PcbDoc"), &control)
+                .unwrap_err()
+                .contains("cancelled")
+        );
+        assert!(
+            import_pcb_controlled(board(), "cancelled.PcbDoc", &control)
+                .unwrap_err()
+                .contains("cancelled")
+        );
+        let fresh = ImportControl::default();
+        let loaded = import_pcb_controlled(board(), "ready.PcbDoc", &fresh).unwrap();
+        assert_eq!(fresh.phase(), "PCB ready");
+        assert_eq!(loaded, import_pcb(board(), "ready.PcbDoc").unwrap());
     }
     #[test]
     fn truncations_fail_without_panicking() {

@@ -602,6 +602,7 @@ fn build_reusing(board: &Board, components: bool, previous: &Scene) -> Scene {
     scene.mask_faces = mask_start..scene.faces.len();
     for (item_index, item) in board.items.iter().enumerate() {
         if item.keepout
+            || item.is_empty_region()
             || item.properties.contains_key("PCBCRAFT_BODY_PROJECTION")
             || item
                 .properties

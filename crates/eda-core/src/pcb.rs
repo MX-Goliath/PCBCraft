@@ -227,6 +227,32 @@ pub struct Item {
     pub masks: Option<Box<MaskSettings>>,
 }
 impl Item {
+    /// A native region record may describe only a point or a line, with repeated
+    /// vertices. Retain the record for native roundtrips, but it has no material.
+    /// Test collinearity, not signed area: a self-touching ring may have area
+    /// cancellation while still bounding real surfaces.
+    pub fn is_empty_region(&self) -> bool {
+        let Shape::Region { contour, .. } = &self.shape else {
+            return false;
+        };
+        let Some(first) = contour.first() else {
+            return true;
+        };
+        let Some(second) = contour.iter().find(|p| *p != first) else {
+            return true;
+        };
+        if !first.valid() || !second.valid() {
+            return false;
+        }
+        let (dx, dy) = (
+            second.x as i128 - first.x as i128,
+            second.y as i128 - first.y as i128,
+        );
+        contour.iter().all(|p| {
+            p.valid()
+                && dx * (p.y as i128 - first.y as i128) == dy * (p.x as i128 - first.x as i128)
+        })
+    }
     /// Altium percentages refer to half of the shortest pad side.
     pub fn pad_corner_percent(&self, layer: u16) -> u8 {
         self.properties
@@ -425,6 +451,10 @@ pub struct Board {
     pub polygon_model_version: u8,
     #[serde(default)]
     pub warnings: Vec<String>,
+    /// Framed native region records with no outer vertices or holes. They have
+    /// no editable/material geometry; their bytes remain in the source archive.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub empty_region_records: Vec<SourceRecord>,
     #[serde(default)]
     pub pours_stale: bool,
     #[serde(default)]
@@ -456,6 +486,7 @@ impl Default for Board {
             polygon_pours: vec![],
             polygon_model_version: 1,
             warnings: vec![],
+            empty_region_records: vec![],
             pours_stale: false,
             source: None,
         }
@@ -538,10 +569,36 @@ impl Board {
             stack.validate_for_board(self)?;
         }
         if self.items.len() > MAX_ITEMS
+            || self.empty_region_records.len() > MAX_ITEMS.saturating_sub(self.items.len())
             || self.components.len() > MAX_ITEMS
             || self.nets.len() > MAX_ITEMS
         {
             return Err("PCB entity limit exceeded".into());
+        }
+        let mut empty_records = BTreeSet::new();
+        let item_records: BTreeSet<_> = if self.empty_region_records.is_empty() {
+            BTreeSet::new()
+        } else {
+            self.items
+                .iter()
+                .filter_map(|item| item.source.as_ref().map(|s| (&s.stream, s.index)))
+                .collect()
+        };
+        for record in &self.empty_region_records {
+            if self.source.is_none()
+                || !matches!(
+                    record.stream.as_str(),
+                    "Regions6"
+                        | "ShapeBasedRegions6"
+                        | "ComponentBodies6"
+                        | "ShapeBasedComponentBodies6"
+                )
+                || record.index as usize >= MAX_ITEMS
+                || !empty_records.insert((&record.stream, record.index))
+                || item_records.contains(&(&record.stream, record.index))
+            {
+                return Err("Invalid archived empty region reference".into());
+            }
         }
         if self.outline.len() > MAX_ITEMS || self.layers.len() > 4096 {
             return Err("PCB outline/layer limit exceeded".into());
@@ -599,7 +656,14 @@ impl Board {
             if i.component.is_some_and(|c| !comps.contains(&c)) {
                 return Err(format!("{} refers to missing component", i.kind()));
             }
-            i.validate_geometry()?;
+            i.validate_geometry().map_err(|error| {
+                format!(
+                    "{error}; item={}, layer={}, source={:?}",
+                    i.kind(),
+                    i.layer,
+                    i.source
+                )
+            })?;
         }
         Ok(())
     }
@@ -634,7 +698,7 @@ impl Board {
             b.include(p);
         }
         for item in &self.items {
-            if !self.text_visible(item) {
+            if !self.text_visible(item) || item.is_empty_region() {
                 continue;
             }
             b.union(item.bounds());
@@ -907,7 +971,7 @@ impl Item {
             } => {
                 valid_point(*centre)
                     && positive(*radius)
-                    && positive(*width)
+                    && (0..=MAX_COORD).contains(width)
                     && start_angle.is_finite()
                     && end_angle.is_finite()
             }
@@ -976,6 +1040,23 @@ impl Item {
             }
         };
         if !ok {
+            if let Shape::Region { contour, holes, .. } = &self.shape {
+                return Err(format!(
+                    "Invalid PCB Region geometry: outer vertices={}, holes={}, invalid holes={:?}, source={:?}",
+                    contour.len(),
+                    holes.len(),
+                    holes
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, h)| h.len() < 3
+                            || h.len() > MAX_ITEMS
+                            || h.iter().any(|p| !valid_point(*p)))
+                        .take(8)
+                        .map(|(n, h)| (n, h.len(), h.iter().take(3).copied().collect::<Vec<_>>()))
+                        .collect::<Vec<_>>(),
+                    self.source
+                ));
+            }
             return Err(format!("Invalid PCB {} geometry", self.kind()));
         }
         Ok(())

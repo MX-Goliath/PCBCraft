@@ -33,6 +33,19 @@ cargo run -p eda-app -- fixtures/schematic/editing-demo.pcbcraft.json
 `.tools` не входит в репозиторий. На другом компьютере установить Rust
 обычным способом; основной Cargo workspace не зависит от локального linker.
 
+### Portable на Windows x64
+
+```powershell
+python scripts/build-windows-portable.py
+```
+
+Для упаковки готовой release-сборки добавьте `--no-build`. ZIP и SHA256
+появятся в `dist/PCBCraft-0.1.0-windows-x64-portable.zip`. Упаковке нужны
+Python 3.11+ и redistributable CRT из Visual Studio; путь можно передать
+через `--crt-dir`. На компьютере пользователя установка не нужна:
+распаковать всю папку и запустить `pcbcraft.exe`. При наличии `portable.flag`
+рядом с exe настройки сохраняются в `Data/app.ron` в этой же папке.
+
 ### Linux
 
 Для Ubuntu/Debian подготовить зависимости оконной системы:

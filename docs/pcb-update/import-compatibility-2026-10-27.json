@@ -1,0 +1,150 @@
+{
+  "date": "2026-10-27",
+  "scope": "Read-only CPU import, 18 distinct native PcbDoc files, GUI not restarted. Run overlaps release build; timings are not performance benchmarks. Remote failing board unavailable.",
+  "before": {
+    "passed": 14,
+    "total": 18
+  },
+  "after": {
+    "passed": 18,
+    "total": 18
+  },
+  "source_hashes_unchanged": true,
+  "checks": {
+    "fmt": "pass",
+    "clippy_workspace_all_targets": "pass",
+    "workspace_tests": {
+      "passed": 516,
+      "failed": 1,
+      "known_failure": "GPU routing frame 13 Rgba8Unorm dither=true: channel difference 4 exceeds tolerance 3"
+    }
+  },
+  "files": [
+    {
+      "filename": "ReferenceGVariant.PcbDoc",
+      "sha256": "redacted-source-sha256",
+      "before_success": true,
+      "after_success": true,
+      "imported": "items=35671 components=1270 layers=26 models=103"
+    },
+    {
+      "filename": "ReferenceGRevision1.PcbDoc",
+      "sha256": "redacted-source-sha256",
+      "before_success": true,
+      "after_success": true,
+      "imported": "items=24263 components=1472 layers=31 models=92"
+    },
+    {
+      "filename": "ReferenceGRevision1.PcbDoc",
+      "sha256": "redacted-source-sha256",
+      "before_success": true,
+      "after_success": true,
+      "imported": "items=20261 components=1271 layers=26 models=58"
+    },
+    {
+      "filename": "ReferenceDRevision1.PcbDoc",
+      "sha256": "redacted-source-sha256",
+      "before_success": false,
+      "after_success": true,
+      "imported": "items=29362 components=829 layers=31 models=43"
+    },
+    {
+      "filename": "ReferenceERevision1.PcbDoc",
+      "sha256": "redacted-source-sha256",
+      "before_success": false,
+      "after_success": true,
+      "imported": "items=41409 components=881 layers=24 models=33"
+    },
+    {
+      "filename": "ReferenceGTest.PcbDoc",
+      "sha256": "redacted-source-sha256",
+      "before_success": false,
+      "after_success": true,
+      "imported": "items=31257 components=2215 layers=24 models=93"
+    },
+    {
+      "filename": "ReferenceFRevision1.PcbDoc",
+      "sha256": "redacted-source-sha256",
+      "before_success": true,
+      "after_success": true,
+      "imported": "items=40610 components=1546 layers=28 models=41"
+    },
+    {
+      "filename": "ReferenceMBoard.PcbDoc",
+      "sha256": "redacted-source-sha256",
+      "before_success": false,
+      "after_success": true,
+      "imported": "items=41475 components=362 layers=34 models=1"
+    },
+    {
+      "filename": "ReferenceH.PcbDoc",
+      "sha256": "redacted-source-sha256",
+      "before_success": true,
+      "after_success": true,
+      "imported": "items=7601 components=175 layers=18 models=0"
+    },
+    {
+      "filename": "Copy of ReferenceHCopy.PcbDoc",
+      "sha256": "redacted-source-sha256",
+      "before_success": true,
+      "after_success": true,
+      "imported": "items=4811 components=176 layers=18 models=0"
+    },
+    {
+      "filename": "Copy of ReferenceH.PcbDoc",
+      "sha256": "redacted-source-sha256",
+      "before_success": true,
+      "after_success": true,
+      "imported": "items=4811 components=176 layers=18 models=0"
+    },
+    {
+      "filename": "PCB1.PcbDoc",
+      "sha256": "redacted-source-sha256",
+      "before_success": true,
+      "after_success": true,
+      "imported": "items=9983 components=388 layers=14 models=2"
+    },
+    {
+      "filename": "PCB2.PcbDoc",
+      "sha256": "redacted-source-sha256",
+      "before_success": true,
+      "after_success": true,
+      "imported": "items=18937 components=436 layers=24 models=3"
+    },
+    {
+      "filename": "ReferenceH.PcbDoc",
+      "sha256": "redacted-source-sha256",
+      "before_success": true,
+      "after_success": true,
+      "imported": "items=7668 components=177 layers=18 models=0"
+    },
+    {
+      "filename": "ReferenceCRevision1.PcbDoc",
+      "sha256": "redacted-source-sha256",
+      "before_success": true,
+      "after_success": true,
+      "imported": "items=18128 components=790 layers=23 models=64"
+    },
+    {
+      "filename": "ReferenceCRevision2.PcbDoc",
+      "sha256": "redacted-source-sha256",
+      "before_success": true,
+      "after_success": true,
+      "imported": "items=27202 components=1116 layers=24 models=69"
+    },
+    {
+      "filename": "ReferenceA.PcbDoc",
+      "sha256": "redacted-source-sha256",
+      "before_success": true,
+      "after_success": true,
+      "imported": "items=982 components=56 layers=16 models=16"
+    },
+    {
+      "filename": "Copy of ReferenceA.PcbDoc",
+      "sha256": "redacted-source-sha256",
+      "before_success": true,
+      "after_success": true,
+      "imported": "items=1075 components=66 layers=14 models=17"
+    }
+  ]
+}

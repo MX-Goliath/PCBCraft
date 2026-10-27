@@ -1041,6 +1041,7 @@ dependencies = [
  "tempfile",
  "truck-meshalgo",
  "truck-stepio",
+ "truck-topology",
  "uuid",
 ]
 

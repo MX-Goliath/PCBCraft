@@ -10,6 +10,8 @@ use ruststep::ast::{EntityInstance, Name, Parameter, Record};
 use std::{collections::BTreeMap, io::Read, sync::Arc};
 use truck_meshalgo::prelude::*;
 use truck_stepio::r#in::{Table, alias::Curve3D};
+#[path = "pcb_step_surface.rs"]
+mod surface;
 
 // Truck's adaptive curve division can recurse 100 levels. A non-finite or
 // discontinuous curve never satisfies its tolerance and can allocate billions
@@ -118,7 +120,11 @@ fn color(id: u64, records: &BTreeMap<u64, &Record>, depth: usize) -> Option<[u8;
         .find_map(|id| color(id, records, depth + 1))
 }
 pub(super) fn mesh(source: &str, name: String) -> Result<Model, String> {
+    let profiling = std::env::var_os("PCBCRAFT_IMPORT_PROFILE").is_some();
     let exchange = ruststep::parser::parse(source).map_err(|e| format!("STEP syntax: {e}"))?;
+    if profiling {
+        eprintln!("STEP parsed {name}");
+    }
     let data = exchange.data.first().ok_or("STEP has no DATA section")?;
     if data.entities.len() > 500_000 {
         return Err("STEP entity limit".into());
@@ -204,6 +210,7 @@ pub(super) fn mesh(source: &str, name: String) -> Result<Model, String> {
     let mut shells: Vec<_> = table.shell.iter().collect();
     shells.sort_by_key(|(id, _)| **id);
     let mut remaining = MAX_MODEL_SAMPLES;
+    let mut surface_budget = None;
     for (id, shell) in shells {
         let face_ids = records
             .get(id)
@@ -212,6 +219,13 @@ pub(super) fn mesh(source: &str, name: String) -> Result<Model, String> {
         let mut shell = table
             .to_compressed_shell(shell)
             .map_err(|e| format!("STEP topology: {e}"))?;
+        if profiling {
+            eprintln!(
+                "STEP shell {id}: {} edges {} faces",
+                shell.edges.len(),
+                shell.faces.len()
+            );
+        }
         if shell.faces.len() != face_ids.len() {
             return Err("STEP dropped faces".into());
         }
@@ -242,7 +256,40 @@ pub(super) fn mesh(source: &str, name: String) -> Result<Model, String> {
                 }
             }
         }
-        let mesh = shell.robust_triangulation(tolerance);
+        if profiling {
+            eprintln!("STEP triangulate shell {id}");
+        }
+        let Some(first) = shell.faces.first() else {
+            continue;
+        };
+        let budget =
+            surface_budget.get_or_insert_with(|| surface::Limited::first(first.surface.clone()));
+        let shell = truck_topology::compress::CompressedShell {
+            vertices: shell.vertices,
+            edges: shell.edges,
+            faces: shell
+                .faces
+                .into_iter()
+                .map(|face| truck_topology::compress::CompressedFace {
+                    boundaries: face.boundaries,
+                    orientation: face.orientation,
+                    surface: surface::Limited::new(face.surface, budget),
+                })
+                .collect(),
+        };
+        let mesh = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            shell.robust_triangulation(tolerance)
+        }))
+        .map_err(|error| {
+            if error.is::<surface::SurfaceLimit>() {
+                "STEP surface subdivision budget exceeded".to_owned()
+            } else {
+                "CAD tessellation failed".to_owned()
+            }
+        })?;
+        if profiling {
+            eprintln!("STEP triangulated shell {id}");
+        }
         for (i, face) in mesh.faces.iter().enumerate() {
             let poly = face
                 .surface
@@ -276,6 +323,13 @@ pub(super) fn mesh(source: &str, name: String) -> Result<Model, String> {
     Ok(model)
 }
 pub(super) fn read_models(streams: &BTreeMap<String, Vec<u8>>, board: &mut Board) {
+    read_models_controlled(streams, board, &super::ImportControl::default());
+}
+pub(super) fn read_models_controlled(
+    streams: &BTreeMap<String, Vec<u8>>,
+    board: &mut Board,
+    control: &super::ImportControl,
+) {
     let Some(data) = streams.get("/Models/Data") else {
         return;
     };
@@ -286,9 +340,12 @@ pub(super) fn read_models(streams: &BTreeMap<String, Vec<u8>>, board: &mut Board
             return;
         }
     };
-    let mut cache = BTreeMap::<Vec<u8>, Arc<Model>>::new();
+    let mut cache = BTreeMap::<&[u8], Result<Arc<Model>, String>>::new();
     let mut total = 0;
+    let library_started = std::time::Instant::now();
     for (index, f) in records.iter().enumerate() {
+        let profiling = std::env::var_os("PCBCRAFT_IMPORT_PROFILE").is_some();
+        let started = std::time::Instant::now();
         let Some(id) = f.get("ID") else { continue };
         if board.models.contains_key(id) {
             continue;
@@ -296,23 +353,55 @@ pub(super) fn read_models(streams: &BTreeMap<String, Vec<u8>>, board: &mut Board
         let Some(compressed) = streams.get(&format!("/Models/{index}")) else {
             continue;
         };
-        if let Some(m) = cache.get(compressed) {
-            board.models.insert(id.clone(), m.clone());
-            continue;
+        if control
+            .check(&format!(
+                "3D model {}/{}: {}",
+                index + 1,
+                records.len(),
+                f.get("NAME").map_or("", String::as_str)
+            ))
+            .is_err()
+        {
+            return;
         }
-        let result = std::panic::catch_unwind(|| {
-            let mut bytes = Vec::new();
-            ZlibDecoder::new(compressed.as_slice())
-                .take(32 * 1024 * 1024 + 1)
-                .read_to_end(&mut bytes)
-                .map_err(|e| e.to_string())?;
-            if bytes.len() > 32 * 1024 * 1024 {
-                return Err("Expanded STEP exceeds 32 MiB".into());
-            }
-            let source = String::from_utf8_lossy(&bytes);
-            mesh(&source, f.get("NAME").cloned().unwrap_or_default())
-        })
-        .unwrap_or_else(|_| Err("CAD tessellation failed".into()));
+        if library_started.elapsed() > std::time::Duration::from_secs(15) {
+            warn(
+                board,
+                "3D model import time budget exceeded; remaining original STEP models are retained in the source archive and shown as body projections",
+            );
+            break;
+        }
+        let result = if let Some(cached) = cache.get(compressed.as_slice()) {
+            cached.clone()
+        } else {
+            std::panic::catch_unwind(|| {
+                if profiling {
+                    eprintln!(
+                        "STEP begin {index}: {}",
+                        f.get("NAME").map_or(id.as_str(), String::as_str)
+                    );
+                }
+                let mut bytes = Vec::new();
+                ZlibDecoder::new(compressed.as_slice())
+                    .take(32 * 1024 * 1024 + 1)
+                    .read_to_end(&mut bytes)
+                    .map_err(|e| e.to_string())?;
+                if bytes.len() > 32 * 1024 * 1024 {
+                    return Err("Expanded STEP exceeds 32 MiB".into());
+                }
+                let source = String::from_utf8_lossy(&bytes);
+                mesh(&source, f.get("NAME").cloned().unwrap_or_default()).map(Arc::new)
+            })
+            .unwrap_or_else(|_| Err("CAD tessellation failed".into()))
+        };
+        if profiling {
+            eprintln!(
+                "STEP end {index}: {:.3}s {}",
+                started.elapsed().as_secs_f64(),
+                result.as_ref().map_or_else(|e| e.as_str(), |_| "ok")
+            );
+        }
+        cache.insert(compressed.as_slice(), result.clone());
         match result {
             Ok(m) => {
                 total += m.triangles.len();
@@ -320,8 +409,6 @@ pub(super) fn read_models(streams: &BTreeMap<String, Vec<u8>>, board: &mut Board
                     warn(board, "3D mesh budget exceeded");
                     break;
                 }
-                let m = Arc::new(m);
-                cache.insert(compressed.clone(), m.clone());
                 board.models.insert(id.clone(), m);
             }
             Err(e) => warn(

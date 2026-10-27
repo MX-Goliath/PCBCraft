@@ -15,5 +15,6 @@ flate2 = "1.1"
 serde_json.workspace = true
 tempfile = "3.23"
 truck-stepio = "0.3"
+truck-topology = "0.6"
 truck-meshalgo = { version = "0.4", default-features = false, features = ["tessellation"] }
 ruststep = "0.4"

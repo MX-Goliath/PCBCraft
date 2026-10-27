@@ -327,7 +327,10 @@ impl Item {
                             || g.size.x != g.size.y
                             || g.offset != Point::default()))
             {
-                return Err("Invalid padstack land size, shape or offset".into());
+                return Err(format!(
+                    "Invalid padstack land size, shape or offset: layer={layer}, geometry={g:?}, drill={}",
+                    self.drill_size()
+                ));
             }
         }
         if s.drill_shape == DrillShape::Slot && s.slot_length < self.drill_size() {

@@ -74,6 +74,8 @@ fn connection_net(board: &Board, item: &Item) -> Option<u32> {
         })
     })?;
     if item.keepout
+        || item.is_empty_region()
+        || matches!(item.shape, Shape::Arc { width: 0, .. })
         || item.is_drill_only()
         || matches!(
             item.shape,
@@ -257,6 +259,55 @@ pub fn connections(board: &Board) -> Vec<Connection> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn point_line_regions_do_not_bridge_copper_islands() {
+        let a = Point::mm(1, 0);
+        let b = Point::mm(4, 0);
+        let remnant = Item::new(
+            TOP,
+            Some(0),
+            Shape::Region {
+                contour: vec![a, b, b, b, a],
+                holes: vec![],
+                cutout: false,
+            },
+        );
+        assert!(remnant.is_empty_region());
+        let board = Board {
+            nets: vec![Net {
+                index: 0,
+                name: "N".into(),
+                properties: Fields::new(),
+            }],
+            items: vec![
+                track(TOP, 0, Point::mm(0, 0), a),
+                track(TOP, 0, b, Point::mm(5, 0)),
+                remnant,
+            ],
+            ..Default::default()
+        };
+        board.validate().unwrap();
+        assert!(pcb_polygon::copper(&board.items[2], TOP).0.is_empty());
+        assert_eq!(connections(&board).len(), 1);
+        let crossed = Item::new(
+            TOP,
+            None,
+            Shape::Region {
+                contour: vec![
+                    Point::mm(0, 0),
+                    Point::mm(2, 2),
+                    Point::mm(0, 2),
+                    Point::mm(2, 0),
+                ],
+                holes: vec![],
+                cutout: false,
+            },
+        );
+        assert!(
+            !crossed.is_empty_region(),
+            "Signed-area cancellation is not collinearity"
+        );
+    }
     #[test]
     fn detached_snapshot_matches_physical_geometry_and_is_independent_of_later_edits() {
         let mut board = Board {

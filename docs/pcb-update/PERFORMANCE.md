@@ -299,6 +299,48 @@ full Altium pixel/FPS parity are not established by these measurements.
 
 ## PCB opening hang on ReferenceM, 24.10.2026
 
+### Windows complex-board opening, 26.10.2026
+
+The reported failing PCB is on another device and is not available here. A
+separate read-only reproduction on local ReferenceCRevision2 (27.6 MB) stalled
+before the first 2D frame. Import profiling located it in Truck's robust
+triangulation of shell 2353 in BOURNS_INDM135125X65N_SRP1265A.STEP. The initial
+probe consumed over 56 CPU seconds without returning. Finite source-edge checks
+did not cover the new PCurves generated internally to close trimming loops.
+
+The surface adapter now shares 250,000 evaluations and a three-second deadline
+across one model's shells, including generated trimming PCurves. Surface grids
+use bounded subdivision and at most 16,384 grid positions; the same 0.02 mm
+sampling tolerance is retained. Exceeding the budget unwinds into an explicit
+model warning, preserves archived STEP bytes and uses the existing body
+projection. This is a bounded approximation, not a claim of complete BRep
+conversion or equivalence to Altium's tessellator. A 15-second library budget
+stops starting additional models; it is checked between models and is not a
+hard process timeout. Failed models are cached as well as successful models.
+Parser/topology operations remain subject to the existing input limits and
+are not isolated in a killable process.
+
+Interactive File/Open, recent entries, project-tree and startup document
+requests run on one worker. A bounded queue coalesces paths. Progress shows the
+file, current import phase and elapsed time; Cancel clears queued requests,
+sets a cooperative cancellation flag and prevents publication. The worker slot
+remains occupied until the cancelled job actually exits, preventing repeated
+cancels from starting unlimited CPU jobs. Synchronous internal dependency
+lookups for ECO/cross-probing retain their existing behavior.
+
+The ReferenceC probe now returns an independent region-geometry compatibility error
+instead of stalling in STEP. Other local large samples reveal separate padstack,
+parameter-owner and plane-alias compatibility errors. These are not silently
+accepted or counted as successful opening. The user's remote PCB still needs
+verification. The portable package includes Diagnose.cmd: close other PCBCraft
+instances, launch it and open the file, or drag a PCB onto it. Import phases and
+STEP model timings are written locally to Data/diagnostic.log.
+
+Regression coverage invokes Truck's actual PCurve subdivision with an exhausted
+shared surface budget, checks planar and curved grid approximation, non-finite
+surfaces/deadlines, cancelled imports and the single-worker queue. Stage results
+and real-window verification are recorded in PLAN.md.
+
 The Linux release AppImage hung while opening `ReferenceMBoard.PcbDoc` from
 the user's ReferenceMHardware project, before rendering any 2D frame. Import eagerly
 tessellates embedded STEP models even when 3D Layout Mode is disabled.

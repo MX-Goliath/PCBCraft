@@ -273,9 +273,11 @@ impl BoardView {
         self.polygons_visible = true;
     }
     pub fn is_visible(&self, item: &Item) -> bool {
-        item.properties
-            .get("PCBCRAFT_LEGACY_REGION_DUPLICATE")
-            .is_none_or(|v| v != "TRUE")
+        !item.is_empty_region()
+            && item
+                .properties
+                .get("PCBCRAFT_LEGACY_REGION_DUPLICATE")
+                .is_none_or(|v| v != "TRUE")
             && self.display.alpha(item) > 0
             && self.visible.contains(&item.layer)
             && (self.single_layer != 2
@@ -1699,6 +1701,32 @@ fn polygon(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn native_point_line_remnants_are_not_painted_or_pickable() {
+        let item = Item::new(
+            TOP,
+            None,
+            Shape::Region {
+                contour: vec![
+                    Point::mm(1, 1),
+                    Point::mm(2, 1),
+                    Point::mm(2, 1),
+                    Point::mm(1, 1),
+                ],
+                holes: vec![],
+                cutout: false,
+            },
+        );
+        let board = Board {
+            items: vec![item],
+            ..Default::default()
+        };
+        board.validate().unwrap();
+        let mut view = BoardView::default();
+        view.initialize(&board);
+        assert!(!view.is_visible(&board.items[0]));
+        assert!(!view.selectable(&board.items[0]));
+    }
     #[test]
     fn component_filter_selects_body_between_locked_pads_independently_of_primitive_filters() {
         let mut b = Board::default();

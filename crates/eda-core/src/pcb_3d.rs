@@ -271,9 +271,11 @@ fn polygon(points: &[Point]) -> Polygon<f64> {
     Polygon::new(LineString::new(p), vec![])
 }
 fn physical_cutout(item: &Item) -> bool {
-    item.properties
-        .get("ISBOARDCUTOUT")
-        .is_some_and(|v| v.eq_ignore_ascii_case("TRUE"))
+    !item.is_empty_region()
+        && item
+            .properties
+            .get("ISBOARDCUTOUT")
+            .is_some_and(|v| v.eq_ignore_ascii_case("TRUE"))
         && !item.properties.contains_key("PCBCRAFT_BODY_PROJECTION")
         && !item
             .properties

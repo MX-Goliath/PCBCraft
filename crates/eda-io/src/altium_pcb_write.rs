@@ -949,13 +949,13 @@ fn parameter_section(
             .and_then(|n| n.checked_add(count))
             .filter(|end| *end <= raw.len())
             .ok_or("Truncated parameter group")?;
-        let owner = h
-            .get("ID")
-            .and_then(|s| s.strip_prefix("Component#"))
-            .map(|s| s.parse::<u32>().map_err(|_| "Invalid parameter owner"))
-            .transpose()?;
         let base = h.get("VARIANTGUID").is_none_or(String::is_empty)
             && h.get("APPURTENANCE").is_none_or(String::is_empty);
+        let owner = if base {
+            parameters::component_owner(board, &h)?
+        } else {
+            None
+        };
         if base && let Some(owner) = owner {
             let c = board
                 .components
@@ -1008,7 +1008,7 @@ fn parameter_section(
                         )?);
                     }
                 }
-                let changes = Fields::from([
+                let mut changes = Fields::from([
                     ("COUNT".into(), records.len().to_string()),
                     (
                         "ID".into(),
@@ -1016,6 +1016,9 @@ fn parameter_section(
                     ),
                     ("PRIMITIVEID".into(), component_uid(c)),
                 ]);
+                if !h.contains_key("ID") {
+                    changes.remove("ID");
+                }
                 let header = if changes.iter().all(|(k, v)| h.get(k) == Some(v)) {
                     raw[n].clone()
                 } else {
@@ -1188,6 +1191,11 @@ fn encode_binary(
                 .filter(|s| s.stream == *name)
                 .map_or((1, u32::MAX), |s| (0, s.index))
         });
+        if old_board.is_some_and(|old| old.empty_region_records.iter().any(|s| s.stream == *name)) {
+            // This entire family is retained verbatim below, including empty
+            // slots; its editable source indices therefore do not move.
+            continue;
+        }
         let mut seen = BTreeSet::new();
         for (n, i) in items.iter().enumerate() {
             if let Some(src) = &i.source
@@ -1225,6 +1233,18 @@ fn encode_binary(
         .ok_or("Wide-string index overflow")?;
     let mut expected = Vec::new();
     for (name, tag, block_count) in FAMILIES {
+        if let Some(old) = old_board
+            && old.empty_region_records.iter().any(|s| s.stream == name)
+        {
+            let before: Vec<_> = old.items.iter().filter(|i| family(i) == name).collect();
+            let after: Vec<_> = board.items.iter().filter(|i| family(i) == name).collect();
+            if reindexed || before != after {
+                return Err(format!(
+                    "Native {name} contains archived empty regions; changing this family or reindexing native records requires PCBCraft JSON"
+                ));
+            }
+            continue;
+        }
         let frames = streams
             .get(&format!("/{name}/Data"))
             .map(|b| parse_frames(b, tag, block_count))
@@ -2168,6 +2188,12 @@ pub fn serialize(doc: &Document, format: Format) -> Result<Vec<u8>> {
         })
         .transpose()?;
     let old_board = old.as_ref().and_then(|d| d.pcb.as_ref());
+    if !board.empty_region_records.is_empty() && original.is_none() {
+        return Err("Empty native regions require their original source archive".into());
+    }
+    if old_board.is_some_and(|old| old.empty_region_records != board.empty_region_records) {
+        return Err("Archived empty region references were changed; native save refused".into());
+    }
     let binary_source = original.as_ref().is_some_and(|b| b.starts_with(MAGIC));
     let binary = match format {
         Format::Binary => true,
