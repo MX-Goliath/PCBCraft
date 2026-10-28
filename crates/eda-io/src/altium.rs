@@ -34,7 +34,75 @@ pub struct Project {
     pub variants: Vec<String>,
     pub virtual_bom: bool,
     pub sheet_children: BTreeMap<PathBuf, Vec<PathBuf>>,
+    pub sheet_numbers: BTreeMap<PathBuf, usize>,
+    pub netlist_options: eda_core::design_sync::ProjectOptions,
     pub warnings: Vec<String>,
+}
+
+impl Project {
+    /// Resolve the current editable sheets, not the cached project-tree snapshot.
+    pub fn compile_options(
+        &self,
+        sheets: &[(&Path, &Document)],
+    ) -> Result<eda_core::design_sync::ProjectOptions, String> {
+        use eda_core::design_sync::SheetLink;
+        let mut options = self.netlist_options.clone();
+        let mut links = vec![];
+        for (path, doc) in sheets {
+            if let Some(entry) = self.documents.iter().find(|e| e.path == *path) {
+                options
+                    .sheet_paths
+                    .insert(doc.id, entry.original_path.replace('\\', "/"));
+            }
+            options
+                .sheet_numbers
+                .insert(doc.id, self.sheet_number(path).unwrap_or(1));
+            for p in &doc
+                .schematic
+                .as_ref()
+                .ok_or("Expected schematic")?
+                .primitives
+            {
+                if let SchPrimitiveKind::SheetSymbol { filename, .. } = &p.kind {
+                    let entry = self.resolve_sheet(path, filename).ok_or_else(|| {
+                        format!(
+                            "{}: child sheet {filename} is missing or outside the project",
+                            doc.name
+                        )
+                    })?;
+                    let child = sheets
+                        .iter()
+                        .find(|(path, _)| *path == entry.path)
+                        .ok_or_else(|| format!("Child sheet {filename} was not loaded"))?;
+                    links.push(SheetLink {
+                        parent: doc.id,
+                        symbol: p.id,
+                        child: child.1.id,
+                    });
+                }
+            }
+        }
+        options.links = Some(links);
+        Ok(options)
+    }
+    pub fn sheet_number(&self, path: &Path) -> Option<usize> {
+        self.sheet_numbers.get(path).copied().or_else(|| {
+            self.documents
+                .iter()
+                .filter(|e| e.kind == "schdoc")
+                .position(|e| e.path == path)
+                .map(|n| n + 1)
+        })
+    }
+
+    /// Resolve relative to the owning schematic, never by an ambiguous basename.
+    pub fn resolve_sheet(&self, owner: &Path, filename: &str) -> Option<&ProjectEntry> {
+        let path = resolve_path(owner.parent()?, filename);
+        let path = path.canonicalize().unwrap_or(path);
+        self.documents
+            .iter()
+            .find(|e| e.kind == "schdoc" && e.path == path)
+    }
 }
 
 pub fn read_bounded(path: &Path) -> Result<Vec<u8>, String> {
@@ -199,12 +267,47 @@ pub fn load_project(path: &Path) -> Result<Project, String> {
         });
     }
     let mut variants = Vec::new();
+    let mut netlist_options = eda_core::design_sync::ProjectOptions {
+        allow_port_names: false,
+        allow_entry_names: true,
+        power_names_priority: false,
+        higher_level_names_priority: false,
+        hierarchical_net_names: false,
+        single_pin_nets: false,
+        merge_duplicate_net_names: true,
+        connection_precision_nm: Some(2_540),
+        review_annotation: true,
+        ..Default::default()
+    };
     let mut section = String::new();
     let mut virtual_bom = false;
     for line in text.lines().map(str::trim) {
         if line.starts_with('[') && line.ends_with(']') {
             section = line[1..line.len() - 1].to_ascii_lowercase();
         } else if let Some((key, value)) = line.split_once('=') {
+            if section == "design" {
+                let flag = value.trim() == "1";
+                match key.trim().to_ascii_lowercase().as_str() {
+                    "allowportnetnames" => netlist_options.allow_port_names = flag,
+                    "allowsheetentrynetnames" => netlist_options.allow_entry_names = flag,
+                    "powerportnamestakepriority" => netlist_options.power_names_priority = flag,
+                    "higherlevelnamestakepriority" => {
+                        netlist_options.higher_level_names_priority = flag
+                    }
+                    "namenetshierarchically" if flag => {
+                        netlist_options.unsupported_connectivity = Some("Native NameNetsHierarchically=1 naming semantics are not yet verified; connectivity changes are disabled".into());
+                    }
+                    "appendsheetnumbertolocalnets" => netlist_options.append_sheet_number = flag,
+                    "netlistsinglepinnets" => netlist_options.single_pin_nets = flag,
+                    "hierarchymode" if value.trim() != "0" => {
+                        netlist_options.unsupported_connectivity = Some(format!(
+                            "Native HierarchyMode={} is not yet verified; connectivity changes are disabled",
+                            value.trim()
+                        ))
+                    }
+                    _ => {}
+                }
+            }
             if section == "design" && key.eq_ignore_ascii_case("IsVirtualBomDocumentRemoved") {
                 virtual_bom = value.trim() == "0";
             }
@@ -237,6 +340,62 @@ pub fn load_project(path: &Path) -> Result<Project, String> {
             }
         }
     }
+    let mut sheet_numbers = BTreeMap::new();
+    if let Ok(bytes) = read_bounded(&path.with_extension("PrjPcbStructure")) {
+        let mut candidates = vec![
+            WINDOWS_1251.decode(&bytes).0.into_owned(),
+            WINDOWS_1252.decode(&bytes).0.into_owned(),
+        ];
+        if let Ok(text) = std::str::from_utf8(&bytes) {
+            candidates.push(text.to_owned());
+        }
+        if bytes.starts_with(&[0xff, 0xfe])
+            && bytes.len().is_multiple_of(2)
+            && let Ok(text) = String::from_utf16(
+                &bytes[2..]
+                    .chunks_exact(2)
+                    .map(|b| u16::from_le_bytes([b[0], b[1]]))
+                    .collect::<Vec<_>>(),
+            )
+        {
+            candidates.push(text);
+        }
+        for text in candidates {
+            let mut numbers = BTreeMap::new();
+            let mut used = BTreeSet::new();
+            for line in text.lines() {
+                let fields: BTreeMap<_, _> = line
+                    .trim_start_matches('\u{feff}')
+                    .split('|')
+                    .filter_map(|s| s.split_once('='))
+                    .map(|(k, v)| (k.to_ascii_uppercase(), v))
+                    .collect();
+                if let (Some(file), Some(number)) = (
+                    fields.get("FILENAME"),
+                    fields
+                        .get("SHEETNUMBER")
+                        .and_then(|v| v.parse::<usize>().ok()),
+                ) && (1..=10_000).contains(&number)
+                {
+                    let sheet = resolve_path(base, file);
+                    let sheet = sheet.canonicalize().unwrap_or(sheet);
+                    if documents
+                        .iter()
+                        .any(|e| e.kind == "schdoc" && e.path == sheet)
+                        && used.insert(number)
+                    {
+                        numbers.entry(sheet).or_insert(number);
+                    }
+                }
+            }
+            if numbers.len() > sheet_numbers.len() {
+                sheet_numbers = numbers;
+            }
+        }
+    }
+    for children in sheet_children.values_mut() {
+        children.sort_by_key(|path| sheet_numbers.get(path).copied().unwrap_or(usize::MAX));
+    }
     Ok(Project {
         path: path.to_owned(),
         name: path
@@ -249,6 +408,8 @@ pub fn load_project(path: &Path) -> Result<Project, String> {
         variants,
         virtual_bom,
         sheet_children,
+        sheet_numbers,
+        netlist_options,
         warnings,
     })
 }
@@ -427,6 +588,8 @@ fn validate_numeric(f: &Fields) -> Result<(), String> {
         "OWNERPARTID",
         "OWNERPARTDISPLAYMODE",
         "CURRENTPARTID",
+        "COMPONENTKIND",
+        "COMPONENTKINDVERSION2",
         "PARTCOUNT",
         "DISPLAYMODE",
         "FONTID",
@@ -839,7 +1002,13 @@ fn build_document(
                 models: models.remove(&(r.index as usize)).unwrap_or_default(),
                 rotation: r.fields.n("ORIENTATION") as u32 % 4,
                 part_count: (r.fields.n("PARTCOUNT") - 1).clamp(1, 1024) as u32,
-                kind: r.fields.n("COMPONENTKIND") as u32,
+                kind: r
+                    .fields
+                    .n(if r.fields.contains_key("COMPONENTKINDVERSION2") {
+                        "COMPONENTKINDVERSION2"
+                    } else {
+                        "COMPONENTKIND"
+                    }) as u32,
                 source: r.fields.text("SOURCELIBRARYNAME"),
                 design_item_id: r.fields.text("DESIGNITEMID"),
                 designator_locked: r.fields.yes("DESIGNATORLOCKED"),
@@ -950,6 +1119,15 @@ fn build_document(
             }
             let p = SchPrimitive {
                 presentation: eda_core::schematic::Presentation {
+                    parent: matches!(r.record_type, 16 | 32 | 33)
+                        .then(|| uuid(id, owner(f) as u32)),
+                    alignment: (r.record_type == 18).then(|| f.n("ALIGNMENT") as u32),
+                    text_color: (r.record_type == 18).then(|| f.n("TEXTCOLOR") as u32),
+                    harness_type: if matches!(r.record_type, 16 | 18) {
+                        f.text("HARNESSTYPE")
+                    } else {
+                        String::new()
+                    },
                     record_type: r.record_type,
                     url: f.text("URL"),
                     name: if r.record_type == 34 {
@@ -979,12 +1157,18 @@ fn build_document(
                 source_index: r.index,
                 component,
                 color,
-                fill: if f.yes("ISSOLID") && !f.yes("TRANSPARENT") {
+                fill: if (f.yes("ISSOLID") || matches!(r.record_type, 16 | 18))
+                    && !f.yes("TRANSPARENT")
+                {
                     Some(f.n("AREACOLOR") as u32)
                 } else {
                     None
                 },
-                width_nm: match f.n("LINEWIDTH") {
+                width_nm: match f.n(if r.record_type == 18 {
+                    "BORDERWIDTH"
+                } else {
+                    "LINEWIDTH"
+                }) {
                     0 => 101_600,
                     1 => 254_000,
                     2 => 508_000,
@@ -1019,6 +1203,15 @@ fn build_document(
         sheet,
         fonts,
         components,
+        compile_masks: records
+            .iter()
+            .filter(|r| r.record_type == 211)
+            .map(|r| CompileMask {
+                a: r.fields.point("LOCATION"),
+                b: r.fields.point("CORNER"),
+                collapsed: r.fields.yes("COLLAPSED"),
+            })
+            .collect(),
         primitives,
         parameter_objects,
         records: records.into(),
@@ -1077,12 +1270,10 @@ fn primitive_kind(
                 });
             }
             if r.record_type == 5 {
-                if points.len() != 4 {
-                    return Err("Bezier requires four points".into());
+                if points.len() < 4 || !(points.len() - 1).is_multiple_of(3) {
+                    return Err("Bezier requires a 3n+1 control-point chain".into());
                 }
-                K::Bezier {
-                    points: points.try_into().unwrap(),
-                }
+                K::Bezier { points }
             } else {
                 K::Polyline {
                     points,
@@ -1230,20 +1421,38 @@ fn primitive_kind(
         },
         18 => K::Port {
             position: a,
-            width_nm: f.coord("WIDTH"),
-            height_nm: f.coord("HEIGHT").max(2_540_000),
+            width_nm: {
+                let (axis, origin) = if f.n("STYLE") >= 4 {
+                    ("LOCATION.Y", a.y)
+                } else {
+                    ("LOCATION.X", a.x)
+                };
+                coord_nm(coord_units(f, axis) + coord_units(f, "WIDTH")) - origin
+            },
+            height_nm: if f.contains_key("HEIGHT") {
+                f.coord("HEIGHT")
+            } else {
+                2_540_000
+            },
             style: f.n("STYLE") as u32,
             io_type: f.n("IOTYPE") as u32,
             name: f.text("NAME"),
             font,
         },
-        15 => K::Rectangle {
+        15 => K::SheetSymbol {
             a,
             b: Point {
-                x: a.x + f.coord("XSIZE"),
-                y: a.y - f.coord("YSIZE"),
+                x: coord_nm(coord_units(f, "LOCATION.X") + coord_units(f, "XSIZE")),
+                y: coord_nm(coord_units(f, "LOCATION.Y") - coord_units(f, "YSIZE")),
             },
-            radius: Point::default(),
+            designator: records
+                .iter()
+                .find(|child| child.record_type == 32 && owner(&child.fields) == r.index as usize)
+                .map_or(String::new(), |child| child.fields.text("TEXT")),
+            filename: records
+                .iter()
+                .find(|child| child.record_type == 33 && owner(&child.fields) == r.index as usize)
+                .map_or(String::new(), |child| child.fields.text("TEXT")),
         },
         16 => {
             let parent = &records
@@ -1252,32 +1461,47 @@ fn primitive_kind(
                 .fields;
             let loc = parent.point("LOCATION");
             let side = f.n("SIDE");
-            let d = f.coord("DISTANCEFROMTOP");
+            // Unlike schematic LOCATION fields, this is measured in 100 mil
+            // units, with a millionth fractional field named _FRAC1.
+            let units =
+                f.n("DISTANCEFROMTOP") as i128 * 1_000_000 + f.n("DISTANCEFROMTOP_FRAC1") as i128;
+            let d_units = units * 10;
+            let absolute = |origin: &str, size: Option<&str>, sign: i128| {
+                let units = (coord_units(parent, origin)
+                    + size.map_or(0, |key| coord_units(parent, key)))
+                    * 10
+                    + sign * d_units;
+                let scaled = units * 254_000;
+                ((scaled + if scaled < 0 { -500_000 } else { 500_000 }) / 1_000_000) as i64
+            };
             let p = match side {
                 0 => Point {
                     x: loc.x,
-                    y: loc.y - d,
+                    y: absolute("LOCATION.Y", None, -1),
                 },
                 1 => Point {
-                    x: loc.x + parent.coord("XSIZE"),
-                    y: loc.y - d,
+                    x: absolute("LOCATION.X", Some("XSIZE"), 0),
+                    y: absolute("LOCATION.Y", None, -1),
                 },
                 2 => Point {
-                    x: loc.x + d,
+                    x: absolute("LOCATION.X", None, 1),
                     y: loc.y,
                 },
                 _ => Point {
-                    x: loc.x + d,
-                    y: loc.y - parent.coord("YSIZE"),
+                    x: absolute("LOCATION.X", None, 1),
+                    y: coord_nm(coord_units(parent, "LOCATION.Y") - coord_units(parent, "YSIZE")),
                 },
             };
-            *unsupported.entry(16).or_default() += 1;
-            K::Text {
+            K::SheetEntry {
                 position: p,
-                text: f.text("NAME"),
-                font,
-                orientation: 0,
-                justification: 3,
+                side: side as u32,
+                io_type: f.n("IOTYPE") as u32,
+                name: f.text("NAME"),
+                font: f
+                    .get("TEXTFONTID")
+                    .map_or(font, |_| f.n("TEXTFONTID").max(1) as usize - 1),
+                text_color: f.n("TEXTCOLOR") as u32,
+                arrow_kind: f.text("ARROWKIND"),
             }
         }
         29 => K::Junction {

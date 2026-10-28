@@ -1,6 +1,6 @@
 # Schematic ↔ PCB / Engineering Change Order
 
-Working implementation, 2026-10-26. Full Altium parity is **not** established.
+Working implementation, 2026-10-27. Full Altium parity is **not** established.
 Altium Designer Enterprise 24.4.1 is an observation reference; no Altium process
 is used to compile or execute PCBCraft changes.
 
@@ -37,12 +37,24 @@ Primary behavioral references:
   components are excluded; Standard, Net Tie and Standard (No BOM) participate.
 - Native pin endpoints are rounded in source fractional coordinates before deriving
   the integer-nm pin length; independent rounding previously severed ReferenceA BQ1-2,
-  C2-1 and C20-2 by one nm. No wire-connection tolerance was widened.
-- Flat electrical compilation uses exact document coordinates, an R-tree and
-  disjoint sets. Wire T endpoints and junctions connect; bare interior crossings
-  do not. Repeated physical pin numbers in multipart symbols are unified.
-  Named power objects merge across sheets; labels remain sheet-local. A collision
-  between different sheet-local names is an error, not an implicit PCB net merge.
+  C2-1 and C20-2 by one nm. Standalone topology remains exact; native project compilation applies the bounded tolerance described below.
+- Project compilation resolves current Sheet Symbol filenames relative to their
+  owning documents. Full Sheet Symbol/component UID paths and scoped pin IDs
+  distinguish equal basenames, duplicate local references and multipart units.
+  Entry/Port connections, automatic scope, port/entry naming flags, power-name
+  priority, local sheet numbering and single-pin output settings are independent.
+  A Power Port wired to a Port becomes sheet-local before global power union.
+- Expanded Compile Masks exclude completely enclosed objects; collapsed masks
+  and boundary-touching components remain active. Native mask records are kept
+  verbatim. Standalone topology is exact. Native project compilation uses a
+  2,540 nm hotspot-to-segment tolerance, calibrated against this ReferenceG corpus's
+  fractional-coordinate gaps (including 10–1,580 nm offsets). It does not move
+  or rewrite geometry and does not connect bare wire interior crossings. This
+  empirical tolerance is not a proven universal AD compiler constant.
+- Native project export can merge distinct source islands with the same exported
+  name, as observed in ReferenceG; standalone compilation retains strict collision checks.
+  Names use case-insensitive lowercase ordering, natural pin reference ordering,
+  and deterministic upper-sheet spelling for otherwise equal naming candidates.
 - SCH → PCB: add/remove components, designators, comments, descriptions, component
   types, parameters and source links; real footprint geometry replacement at the
   previous pose/side; net creation/removal and all pads of each logical pin.
@@ -92,7 +104,7 @@ Primary behavioral references:
 
 - No DbLib/Workspace lookup, manual Component
   Links editor, per-row bidirectional comparator, native ECO generation options,
-  class/room/rule/variant propagation, bus/harness/hierarchical instances or
+  class/room/rule/variant propagation, bus/harness/repeated sheet instances or
   pin/gate swaps. Unsupported connectivity is diagnosed and is not applied.
 - Native hidden-pin connectivity is absent from the current schematic importer;
   a schematic containing such records cannot silently overwrite PCB pin nets.
@@ -161,3 +173,75 @@ actual core ECO insertion, plus unknown primitive/count/truncation rejection.
 Real ReferenceLibraryA PcbLib: 29 electrical footprints, four graphical patterns
 explicitly unavailable because they have no pads. Real TPS22929 PcbLib and IntLib:
 three footprints each; unsupported STEP assembly transforms remain a warning.
+
+## ReferenceG hierarchical validation (2026-10-27)
+
+The original 9-sheet ReferenceG project and ReferenceGRevision1 PCB were read without saving them.
+The old app blanket rejection of hierarchical projects is removed. Expanded masks
+explain the apparent duplicate/unannotated components in the raw source; inactive
+parts no longer enter ECO. Modern COMPONENTKINDVERSION2 overrides its legacy field,
+with a legacy fallback for older PCB component kinds. PCB Layer metadata is retained
+without being back-annotated. Native ComponentLink<n>URL values escape `=` as `{}`;
+the importer/writer now decode/encode that namespace and preserve untouched records.
+
+AD24.4.1 exported a Protel project netlist into Project Outputs for ReferenceG/ReferenceG.NET.
+Its reference has 478 unique net names / 2,647 pin memberships. The independent
+compiler matches every membership and exported name ignoring case; no reference
+pin is missing. Exact capitalization still differs on 79 memberships across
+three equivalent net names (3V3_MCU, PROG, MCU_ON); comparison preserves the
+existing PCB spelling and does not propose case-only pin changes. Some original PCB single-pin nets differ from this export. Native
+ECO had displayed four room additions only; exact comparator-option/ECO agreement
+for those single-pin differences is **not established**. Project-review ECO
+explicitly disables their removal operations and explains the uncertainty;
+export omission alone cannot disconnect existing PCB pins. Do not describe the
+new compiler as complete Altium parity on that basis. Floating source pins absent from
+a footprint no longer generate a spurious disconnect/Unknown Pin operation.
+
+Comparison and validation of the original ReferenceG take about 1.8 seconds in the dev
+profile, after removing per-row clones of all nine sheets and repeated full PCB
+geometry validation. Scalar operations preflight before mutating private staged
+state; geometry operations clone only affected documents. Final documents still
+validate before History commits. Locked components/pads remain explicitly reported.
+
+`hierarchical_sync_roundtrip` is an isolated native persistence diagnostic: DD1 is
+unlocked in the in-memory QA board only, its comment changes forward and backward,
+TCK is renamed to QA_TCK with net index and nontext copper/items unchanged, and
+Undo/Redo returns the exact document states. Native SchDoc/PcbDoc save reimports
+before replacement. QA destinations must be new directories. No original source
+file is written. The latest run/check results are recorded in PLAN.md.
+
+Computer Use observed the native ECO and exported the reference netlist. On
+2026-10-28 a reset of the Computer Use JavaScript kernel recovered capture after
+manual foregrounding alone had failed. The old dirty Main was preserved as
+`target/session-recovery-20261028/Main-before-restart.pcbcraft.json` (410 Entries
+and source archive retained), and the old process closed before launching the
+new build. Only one PCBCraft instance was used throughout.
+
+On the isolated QA ReferenceG, Design/Update PCB opened a project ECO with all nine sheets
+loaded. Four uncertain single-pin removals were explicitly unavailable. Editing
+DD1's Comment in MCU, Validate Changes and Execute Changes transferred the value
+to PCB. Tools/Cross Probe located that DD1 and its Properties showed the changed
+value. Editing the PCB comment and Design/Update Schematics produced one enabled
+comment operation targeting ReferenceK.SchDoc. Validate/Execute succeeded; the child
+sheet Properties, menu Undo and Ctrl+Y confirmed the before/after values. The
+other eight sheets remained clean. Save All wrote the QA SchDoc/PcbDoc, and a
+fresh read-only comparison returned only the same four unavailable baseline rows.
+Altium opened both QA files and displayed the new DD1 comment in both editors.
+
+This live native reopen also exposed an existing persistence defect: unchanged
+component fields were re-encoded on any save. Legacy Cyrillic footprint/library
+bytes became numeric HTML entities, and native numeric spellings were normalized;
+Altium then displayed incorrect metadata. Components6 now patches only fields
+whose semantic values changed, preserving native numeric spelling, legacy text,
+Unicode shadows and opaque fields for the rest. A binary save/reopen regression
+covers a comment ECO and an unrelated track edit. The fixed original-source QA-d reopened in AD24.4.1 with Rotation 270, Height
+1.6mm, Design Item ID 5696, Source DB.DbLib and correct Cyrillic footprint/library
+metadata. A raw CFB audit found 1270 component records byte-identical; DD1 differs
+only in the intended QA unlock and comment. This preservation fix does not
+establish native encoding parity for newly changed Unicode/numeric fields.
+
+Native Save All is synchronous: the QA GUI stopped responding for roughly 20 s
+while serializing/validating the PCB, then recovered with clean documents. That
+responsiveness issue remains open. GUI checks cover unique-instance ReferenceG, not the
+unsupported hierarchy modes and connectivity listed above. Final check results
+and the follow-up native reopen after the preservation fix are recorded in PLAN.md.

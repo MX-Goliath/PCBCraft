@@ -77,6 +77,7 @@ fn status_icon(ui: &mut egui::Ui, result: Option<bool>) {
 }
 
 pub(super) struct Dialog {
+    options: sync::ProjectOptions,
     project: String,
     sheets: Vec<Uuid>,
     boards: Vec<Uuid>,
@@ -142,11 +143,12 @@ impl Dialog {
         // Like native ECO, new/replaced patterns must resolve in available
         // libraries. Existing board instances do not install a missing library.
         let footprints = self.library_footprints.clone();
-        self.plan = Some(sync::compare(
+        self.plan = Some(sync::compare_project(
             &sheets,
             &board.model,
             self.direction,
             footprints,
+            &self.options,
         )?);
         self.plan
             .as_mut()
@@ -247,10 +249,7 @@ impl PcbCraft {
                     .into(),
             );
         }
-        let p = ps[0];
-        if !p.sheet_children.is_empty() {
-            return Err("Hierarchical project synchronization requires sheet-instance compilation; it is not yet available".into());
-        }
+        let p = ps[0].clone();
         let project = p.name.clone();
         let mut library_paths: Vec<_> = p
             .documents
@@ -332,7 +331,24 @@ impl PcbCraft {
         }
         let selected = boards.iter().position(|id| *id == active).unwrap_or(0);
         let choose = !boards.contains(&active) || differences;
+        let compile_sheets: Vec<_> = self
+            .documents
+            .iter()
+            .filter(|d| sheets.contains(&d.session_id))
+            .map(|d| {
+                (
+                    d.source_path
+                        .as_ref()
+                        .or(d.path.as_ref())
+                        .unwrap()
+                        .as_path(),
+                    &d.model,
+                )
+            })
+            .collect();
+        let options = p.compile_options(&compile_sheets)?;
         let mut dialog = Dialog {
+            options,
             project,
             sheets,
             boards,
@@ -413,7 +429,13 @@ impl PcbCraft {
                         for (label,enabled) in [("Enable All",true),("Disable All",false)]{if ui.small_button(label).clicked(){if let Some(p)=&mut d.plan{for c in &mut p.changes{if !c.done{c.enabled=enabled&&c.supported();}}p.reset_validation();}d.validated=false;}}
                     }
                 });
-                if let Some(p)=&d.plan{for w in &p.warnings{ui.colored_label(Color32::from_rgb(245,170,110),w);}}
+                if let Some(p)=&d.plan && !p.warnings.is_empty() {
+                    egui::CollapsingHeader::new(format!("Compilation diagnostics ({})",p.warnings.len())).id_salt("eco_diagnostics").show(ui,|ui| {
+                        egui::ScrollArea::vertical().id_salt("eco_diagnostics_rows").max_height(90.0).show(ui,|ui| {
+                            for w in &p.warnings { ui.colored_label(Color32::from_rgb(245,170,110),w); }
+                        });
+                    });
+                }
                 ui.separator();
                 ui.horizontal(|ui|{
                     if d.differences {if ui.button("Create Engineering Change Order").clicked(){d.differences=false;}}
@@ -492,6 +514,75 @@ impl PcbCraft {
 mod tests {
     use super::*;
     #[test]
+    fn project_scope_accepts_hierarchy_and_commits_only_the_selected_board_with_undo() {
+        use eda_io::altium::{Project, ProjectEntry};
+        let (_, mut docs) = dialog();
+        let base = std::env::temp_dir().join(Uuid::new_v4().to_string());
+        let child_path = base.join("Circuit.SchDoc");
+        let board_path = base.join("Board.PcbDoc");
+        let main_path = base.join("Main.SchDoc");
+        docs[0].model.name = "Circuit.SchDoc".into();
+        docs[0].source_path = Some(child_path.clone());
+        docs[0].path = Some(child_path.clone());
+        docs[1].source_path = Some(board_path.clone());
+        docs[1].path = Some(board_path.clone());
+        let mut main = Document::new(eda_core::DocumentKind::Schematic, "Main.SchDoc");
+        main.schematic
+            .as_mut()
+            .unwrap()
+            .primitives
+            .push(eda_core::schematic_edit::primitive(
+                eda_core::schematic::SchPrimitiveKind::SheetSymbol {
+                    a: Point::mm(0, 10),
+                    b: Point::mm(10, 0),
+                    filename: "Circuit.SchDoc".into(),
+                    designator: "U_Child".into(),
+                },
+                None,
+            ));
+        docs.push(OpenDocument::new(main, Some(main_path.clone())));
+        let mut app = super::super::schematic_editor::tests::app();
+        app.documents = docs;
+        app.active = Some(3);
+        app.projects = vec![Project {
+            path: base.join("Test.PrjPcb"),
+            name: "Test.PrjPcb".into(),
+            documents: [
+                (&main_path, "schdoc"),
+                (&child_path, "schdoc"),
+                (&board_path, "pcbdoc"),
+            ]
+            .into_iter()
+            .map(|(p, k)| ProjectEntry {
+                path: p.clone(),
+                original_path: p.file_name().unwrap().to_string_lossy().into(),
+                kind: k.into(),
+                exists: true,
+            })
+            .collect(),
+            generated_documents: vec![],
+            variants: vec![],
+            virtual_bom: false,
+            sheet_children: std::collections::BTreeMap::from([(main_path, vec![child_path])]),
+            sheet_numbers: Default::default(),
+            netlist_options: Default::default(),
+            warnings: vec![],
+        }];
+        let source = app.documents[0].model.clone();
+        let original = app.documents[1].model.clone();
+        let mut dialog = app.sync_scope(Direction::ToPcb, false).unwrap();
+        assert_eq!(dialog.sheets.len(), 2);
+        dialog.compare(&app.documents).unwrap();
+        dialog.validate(&app.documents).unwrap();
+        dialog.validated = true;
+        assert!(dialog.execute(&mut app.documents).unwrap() > 0);
+        assert_eq!(app.documents[0].model, source);
+        assert_ne!(app.documents[1].model, original);
+        let pcb = &mut app.documents[1];
+        pcb.history.undo(&mut pcb.model);
+        assert_eq!(pcb.model, original);
+    }
+    #[test]
     fn eco_rows_follow_native_reference_order_without_integer_overflow() {
         let mut references = vec![
             "WA1", "TP27", "C9", "TP18", "TP9", "BQ1", "L5", "C6", "JVD1", "TP17", "L4", "C8",
@@ -569,6 +660,7 @@ mod tests {
             d.mark_saved();
         }
         let d = Dialog {
+            options: Default::default(),
             project: "Test".into(),
             sheets: vec![docs[0].session_id],
             boards: vec![docs[1].session_id],

@@ -1,4 +1,5 @@
 use super::*;
+use crate::schematic_edit::electrical_endpoint as pin_end;
 
 fn add(s: &mut Schematic, points: &[(i64, i64)]) -> Uuid {
     let p = primitive(

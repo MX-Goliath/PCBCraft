@@ -55,6 +55,7 @@ fn font_index(p: &SchPrimitive) -> Option<usize> {
         K::Text { font, .. }
         | K::TextFrame { font, .. }
         | K::Pin { font, .. }
+        | K::SheetEntry { font, .. }
         | K::Port { font, .. }
         | K::PowerPort { font, .. } => Some(font),
         _ => None,
@@ -87,6 +88,11 @@ impl Draft {
                 component
                     .as_ref()
                     .is_some_and(|c| p.component == Some(c.id))
+                    || primitive.as_ref().is_some_and(|owner| {
+                        matches!(owner.kind, K::SheetSymbol { .. })
+                            && p.presentation.parent == Some(owner.id)
+                            && matches!(p.kind, K::Text { .. })
+                    })
             })
             .cloned()
             .collect();
@@ -201,6 +207,8 @@ fn caption(p: &SchPrimitive) -> &'static str {
         K::TextFrame { .. } => "Text Frame",
         K::Pin { .. } => "Pin",
         K::PowerPort { .. } => "Power Port",
+        K::SheetSymbol { .. } => "Sheet Symbol",
+        K::SheetEntry { .. } => "Sheet Entry",
         K::Port { .. } => "Port",
         K::Polyline {
             electrical, closed, ..
@@ -275,6 +283,13 @@ impl PcbCraft {
         } else if context == "Port" {
             tabs(ui, &mut panel.port_parameters, "General", "Parameters");
             panel.port_parameters
+        } else if context == "Sheet Symbol" {
+            ui.horizontal(|ui| {
+                ui.add(egui::Button::new("General").selected(true));
+                ui.add_enabled(false, egui::Button::new("Parameters"))
+                    .on_hover_text("Sheet Symbol parameters are not yet editable");
+            });
+            false
         } else {
             false
         };
@@ -303,7 +318,7 @@ impl PcbCraft {
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 ui.set_min_width(ui.available_width());
-                if doc.sch_editor.active() {
+                if doc.sch_editor.active() && !doc.sch_editor.hierarchy_pick {
                     placement_options(ui, doc);
                 } else if count > 1 {
                     section(ui, "Properties", &query, |ui| {
@@ -364,6 +379,18 @@ impl PcbCraft {
                         );
                     }
                 } else if let Some(p) = &mut draft.primitive {
+                    if matches!(p.kind, K::SheetSymbol { .. }) {
+                        commit |= sheet_symbol_properties(
+                            ui,
+                            p,
+                            &mut draft.related,
+                            doc.model.schematic.as_ref().unwrap(),
+                            self.settings.units,
+                            &query,
+                            &mut choose,
+                        );
+                        return;
+                    }
                     commit |= primitive_properties(
                         ui,
                         p,
@@ -1553,6 +1580,238 @@ fn pins(ui: &mut egui::Ui, c: &Component, s: &Schematic, choose: &mut Option<Uui
 }
 
 #[allow(clippy::too_many_arguments)]
+fn sheet_symbol_properties(
+    ui: &mut egui::Ui,
+    p: &mut SchPrimitive,
+    related: &mut [SchPrimitive],
+    s: &Schematic,
+    units: Units,
+    query: &str,
+    choose: &mut Option<Uuid>,
+) -> bool {
+    let K::SheetSymbol {
+        a,
+        b,
+        designator,
+        filename,
+    } = &mut p.kind
+    else {
+        return false;
+    };
+    let mut changed = false;
+    section(ui, "Location", query, |ui| {
+        let old = *a;
+        changed |= xy(ui, a, units);
+        b.x += a.x - old.x;
+        b.y += a.y - old.y;
+    });
+    section(ui, "Properties", query, |ui| {
+        for (label, value, record) in [
+            ("Designator", designator, 32),
+            ("File Name", &mut *filename, 33),
+        ] {
+            row(ui, label, |ui| {
+                ui.allocate_ui(egui::vec2(ui.available_width() - 26.0, 22.0), |ui| {
+                    changed |= text(ui, value);
+                });
+                if let Some(child) = related
+                    .iter_mut()
+                    .find(|c| c.presentation.record_type == record)
+                {
+                    let mut visible = !child.presentation.hidden;
+                    if small_icon(ui, "eye", &mut visible) {
+                        child.presentation.hidden = !visible;
+                        changed = true;
+                    }
+                }
+            });
+        }
+        row(ui, "Bus Text Style", |ui| {
+            ui.add_enabled(false, egui::Button::new("Full                 ▾"));
+        });
+        row(ui, "Width", |ui| {
+            let mut width = b.x - a.x;
+            ui.allocate_ui(
+                egui::vec2((ui.available_width() - 52.0) / 2.0, 22.0),
+                |ui| {
+                    changed |= numeric(ui, &mut width, units);
+                },
+            );
+            ui.label("Height");
+            let mut height = a.y - b.y;
+            changed |= numeric(ui, &mut height, units);
+            if width > 0 && height > 0 {
+                b.x = a.x + width;
+                b.y = a.y - height;
+            }
+        });
+        row(ui, "Line Style", |ui| {
+            ui.allocate_ui(egui::vec2(ui.available_width() - 26.0, 22.0), |ui| {
+                changed |= width_combo(ui, &mut p.width_nm);
+            });
+            changed |= color(ui, &mut p.color);
+        });
+        changed |= fill_row(ui, &mut p.fill);
+    });
+    section(ui, "Source", query, |ui| {
+        ui.horizontal(|ui| {
+            let width = (ui.available_width() - 8.0) / 3.0;
+            ui.add_sized([width, 22.0], egui::Button::new("Local").selected(true));
+            for name in ["Device", "Managed"] {
+                ui.add_enabled_ui(false, |ui| {
+                    ui.add_sized([width, 22.0], egui::Button::new(name));
+                });
+            }
+        });
+        row(ui, "File Name", |ui| readonly(ui, filename));
+    });
+    section(ui, "Sheet Entries", query, |ui| {
+        let table_width = (ui.available_width() - 4.0).max(100.0);
+        let column_width = (table_width - 12.0) / 2.0;
+        egui::Frame::NONE
+            .stroke(Stroke::new(1.0, theme::BORDER))
+            .show(ui, |ui| {
+                ui.set_width(table_width);
+                egui::ScrollArea::vertical()
+                    .id_salt("symbol_entries")
+                    .auto_shrink([false, false])
+                    .min_scrolled_height(112.0)
+                    .max_height(112.0)
+                    .show(ui, |ui| {
+                        egui::Grid::new("symbol_entry_rows")
+                            .num_columns(2)
+                            .min_col_width(column_width)
+                            .max_col_width(column_width)
+                            .spacing([8.0, 0.0])
+                            .striped(true)
+                            .show(ui, |ui| {
+                                ui.add_sized([column_width, 20.0], egui::Label::new("Name"));
+                                ui.label("PortIO");
+                                ui.end_row();
+                                for entry in s
+                                    .primitives
+                                    .iter()
+                                    .filter(|entry| entry.presentation.parent == Some(p.id))
+                                {
+                                    if let K::SheetEntry { name, io_type, .. } = &entry.kind {
+                                        if ui
+                                            .add_sized(
+                                                [column_width, 20.0],
+                                                egui::Button::new(name).frame(false),
+                                            )
+                                            .clicked()
+                                        {
+                                            *choose = Some(entry.id);
+                                        }
+                                        ui.label(
+                                            ["Unspecified", "Output", "Input", "Bidirectional"]
+                                                .get(*io_type as usize)
+                                                .copied()
+                                                .unwrap_or("Custom"),
+                                        );
+                                        ui.end_row();
+                                    }
+                                }
+                            });
+                    });
+                let entry_font = s.primitives.iter().find_map(|entry| {
+                    if entry.presentation.parent == Some(p.id)
+                        && let K::SheetEntry { font, .. } = entry.kind
+                    {
+                        s.fonts.get(font)
+                    } else {
+                        None
+                    }
+                });
+                if let Some(font) = entry_font {
+                    ui.label(format!(
+                        "{}, {}",
+                        font.name,
+                        font.height_nm as f64 / 254_000.0
+                    ));
+                }
+                ui.allocate_ui_with_layout(
+                    egui::vec2(table_width, 24.0),
+                    egui::Layout::right_to_left(Align::Center),
+                    |ui| {
+                        tool_button(ui, "trash", false);
+                        ui.add_enabled(
+                            false,
+                            egui::Button::new("Add").min_size(egui::vec2(72.0, 22.0)),
+                        );
+                    },
+                );
+            });
+    });
+    changed
+}
+
+fn sheet_entry_properties(
+    ui: &mut egui::Ui,
+    p: &mut SchPrimitive,
+    font: &mut SchFont,
+    query: &str,
+) -> bool {
+    let K::SheetEntry {
+        name,
+        io_type,
+        text_color,
+        arrow_kind,
+        ..
+    } = &mut p.kind
+    else {
+        return false;
+    };
+    let mut changed = false;
+    section(ui, "Properties", query, |ui| {
+        changed |= text_row(ui, "Name", name);
+        row(ui, "I/O Type", |ui| {
+            changed |= combo(
+                ui,
+                "entry_io",
+                io_type,
+                &["Unspecified", "Output", "Input", "Bidirectional"],
+            );
+        });
+        changed |= text_row(ui, "Harness Type", &mut p.presentation.harness_type);
+        row(ui, "Cross Ref", |ui| {
+            ui.add_enabled(false, egui::Button::new("◎"));
+        });
+        divider(ui);
+        changed |= font_editor(ui, font, Some(text_color));
+        divider(ui);
+        row(ui, "Kind", |ui| {
+            egui::ComboBox::from_id_salt("entry_kind")
+                .width(ui.available_width() - 8.0)
+                .selected_text(if arrow_kind.is_empty() {
+                    "Block & Triangle"
+                } else {
+                    arrow_kind.as_str()
+                })
+                .show_ui(ui, |ui| {
+                    for kind in ["Block & Triangle", "Triangle", "Arrow", "Arrow Tail"] {
+                        // Other native forms still need a verified renderer.
+                        ui.add_enabled_ui(kind == "Block & Triangle", |ui| {
+                            changed |= ui.selectable_value(arrow_kind, kind.into(), kind).changed();
+                        });
+                    }
+                });
+        });
+        row(ui, "Border Color", |ui| {
+            changed |= color(ui, &mut p.color);
+            ui.label("Fill Color");
+            let mut fill = p.fill.unwrap_or(0x80ffff);
+            if color(ui, &mut fill) {
+                p.fill = Some(fill);
+                changed = true;
+            }
+        });
+    });
+    net_sections(ui, query);
+    changed
+}
+
+#[allow(clippy::too_many_arguments)]
 fn primitive_properties(
     ui: &mut egui::Ui,
     p: &mut SchPrimitive,
@@ -1569,6 +1828,9 @@ fn primitive_properties(
         net_sections(ui, query);
         changed |= vertices(ui, p, units, query);
         return changed;
+    }
+    if matches!(p.kind, K::SheetEntry { .. }) {
+        return sheet_entry_properties(ui, p, font, query);
     }
     let mut pos = primitive_anchor(p);
     let mut turns = match &p.kind {
@@ -1798,12 +2060,14 @@ fn primitive_properties(
             changed |= line_style(ui, &mut p.line_style);
             changed |= fill_row(ui, &mut p.fill);
         }
+        K::SheetSymbol { .. } | K::SheetEntry { .. } => {
+            unreachable!("hierarchy properties have a dedicated form")
+        }
         K::Port {
             name,
             width_nm,
             height_nm,
             io_type,
-            style,
             ..
         } => {
             changed |= text_row(ui, "Name", name);
@@ -1815,32 +2079,27 @@ fn primitive_properties(
                     &["Unspecified", "Output", "Input", "Bidirectional"],
                 )
             });
-            row(ui, "Harness Type", |ui| readonly(ui, "[No Harness Type]"));
+            changed |= text_row(ui, "Harness Type", &mut p.presentation.harness_type);
             row(ui, "Cross Ref", |ui| {
                 ui.add_enabled(false, egui::Button::new("◎"));
             });
-            ui.add_space(20.0);
-            row(ui, "Style", |ui| {
-                changed |= combo(
-                    ui,
-                    "port_style",
-                    style,
-                    &[
-                        "None",
-                        "Left",
-                        "Right",
-                        "Left & Right",
-                        "Left (Large)",
-                        "Right (Large)",
-                        "Left & Right (Large)",
-                    ],
-                )
-            });
-            ui.add_space(20.0);
             changed |= numeric_row(ui, "Width", width_nm, units);
             changed |= numeric_row(ui, "Height", height_nm, units);
             divider(ui);
-            changed |= font_editor(ui, font, Some(&mut p.color));
+            let mut text_color = p.presentation.text_color.unwrap_or(p.color);
+            if font_editor(ui, font, Some(&mut text_color)) {
+                p.presentation.text_color = Some(text_color);
+                changed = true;
+            }
+            row(ui, "Alignment", |ui| {
+                let alignment = p.presentation.alignment.unwrap_or(0);
+                for (n, label) in [(1, "Left"), (0, "Center"), (2, "Right")] {
+                    if ui.selectable_label(alignment == n, label).clicked() {
+                        p.presentation.alignment = Some(n);
+                        changed = true;
+                    }
+                }
+            });
             divider(ui);
             changed |= border_row(ui, &mut p.width_nm, &mut p.color);
             changed |= fill_row(ui, &mut p.fill);
@@ -1962,11 +2221,13 @@ fn primitive_anchor(p: &SchPrimitive) -> Point {
         K::Polyline { points, .. } => points.first().copied().unwrap_or_default(),
         K::Bezier { points } => points[0],
         K::Rectangle { a, .. }
+        | K::SheetSymbol { a, .. }
         | K::TextFrame { a, .. }
         | K::Image { a, .. }
         | K::Unsupported { a, .. } => *a,
         K::Arc { centre, .. } => *centre,
         K::Text { position, .. }
+        | K::SheetEntry { position, .. }
         | K::Pin { position, .. }
         | K::PowerPort { position, .. }
         | K::Port { position, .. }

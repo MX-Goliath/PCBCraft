@@ -32,12 +32,38 @@ pub(super) fn pin_end(p: &SchPrimitive) -> Option<Point> {
                 y: position.y.checked_add(y)?,
             })
         }
-        K::PowerPort { position, .. } | K::Port { position, .. } | K::Junction { position, .. } => {
-            Some(position)
-        }
+        K::PowerPort { position, .. }
+        | K::Port { position, .. }
+        | K::SheetEntry { position, .. }
+        | K::Junction { position, .. } => Some(position),
         K::Text { position, .. } if p.text_role == Some(TextRole::NetLabel) => Some(position),
         _ => None,
     }
+}
+pub(super) fn pin_ends(p: &SchPrimitive) -> impl Iterator<Item = Point> {
+    let second = if let K::Port {
+        position,
+        width_nm,
+        style,
+        ..
+    } = p.kind
+    {
+        if style >= 4 {
+            position
+                .y
+                .checked_add(width_nm)
+                .map(|y| Point { x: position.x, y })
+        } else {
+            position
+                .x
+                .checked_add(width_nm)
+                .map(|x| Point { x, y: position.y })
+        }
+        .filter(|q| q != &position)
+    } else {
+        None
+    };
+    pin_end(p).into_iter().chain(second)
 }
 pub(super) fn wire(p: &SchPrimitive) -> Option<&[Point]> {
     match &p.kind {
@@ -151,7 +177,7 @@ pub fn connected_transform(
     }
     let mut moved = BTreeMap::<Node, (Point, Uuid)>::new();
     for p in &selected.primitives {
-        if let Some(at) = pin_end(p) {
+        for at in pin_ends(p) {
             let to = transform_point(at, pivot, turns, delta)?;
             if to != at {
                 moved.insert(key(at), (to, p.id));
@@ -165,7 +191,7 @@ pub fn connected_transform(
                 .iter()
                 .filter(|p| !seen.contains(&p.id))
                 .flat_map(|p| {
-                    let mut nodes: Vec<_> = pin_end(p).into_iter().collect();
+                    let mut nodes: Vec<_> = pin_ends(p).collect();
                     if let Some(path) = wire(p) {
                         nodes.extend(path.first().into_iter().chain(path.last()).copied());
                     }
@@ -192,7 +218,7 @@ pub fn connected_transform(
         if seen.contains(&p.id) {
             continue;
         }
-        if let Some(at) = pin_end(p) {
+        for at in pin_ends(p) {
             // A dot alone can accompany a pin. Shared net terminals remain fixed.
             if !matches!(p.kind, K::Junction { .. }) {
                 fixed.insert(key(at));
@@ -240,7 +266,7 @@ pub(super) fn stretch_wires(
     let (pivot, turns, delta) = transform;
     let mut anchors: BTreeSet<_> = moved.keys().copied().collect();
     for p in &s.primitives {
-        if let Some(at) = pin_end(p) {
+        for at in pin_ends(p) {
             anchors.insert(key(at));
         }
         if let Some(path) = wire(p) {

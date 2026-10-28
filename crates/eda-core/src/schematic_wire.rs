@@ -1,5 +1,5 @@
 //! Wire handles and derived local junctions. All geometry is in document nanometres.
-use super::drag::{clean, key, pin_end, point, reroute, stretch_wires, wire};
+use super::drag::{clean, key, pin_ends, point, reroute, stretch_wires, wire};
 use super::*;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -51,7 +51,7 @@ pub fn connection_at(s: &Schematic, at: Point) -> bool {
         .iter()
         .filter(|p| !p.presentation.hidden)
         .any(|p| {
-            pin_end(p) == Some(at)
+            pin_ends(p).any(|p| p == at)
                 || wire(p).is_some_and(|path| path.windows(2).any(|e| at.on_segment(e[0], e[1])))
         })
 }
@@ -70,11 +70,13 @@ pub fn junctions<'a>(primitives: impl Iterator<Item = &'a SchPrimitive>) -> Vec<
     for p in &primitives {
         if let K::Junction { position, .. } = p.kind {
             manual.insert(key(position));
-        } else if let Some(at) = pin_end(p) {
-            if !matches!(p.kind, K::Text { .. }) {
-                terminals.insert(key(at));
+        } else {
+            for at in pin_ends(p) {
+                if !matches!(p.kind, K::Text { .. }) {
+                    terminals.insert(key(at));
+                }
+                candidates.insert(key(at));
             }
-            candidates.insert(key(at));
         }
     }
     for (_, path) in &wires {
@@ -157,7 +159,7 @@ pub fn wire_drag(
                 if p.id == id {
                     continue;
                 }
-                if let Some(at) = pin_end(p).filter(|at| at.on_segment(e[0], e[1])) {
+                for at in pin_ends(p).filter(|at| at.on_segment(e[0], e[1])) {
                     moved.insert(
                         key(at),
                         (transform_point(at, Point::default(), 0, offset)?, id),
@@ -203,10 +205,10 @@ pub fn wire_drag(
     // Labels, ports and component pin hotspots are anchors, not movable decorations.
     // A stem retains a connection when a selected handle leaves one of these points.
     for p in &s.primitives {
-        if !matches!(p.kind, K::Junction { .. } | K::NoErc { .. })
-            && let Some(at) = pin_end(p)
-        {
-            fixed.insert(key(at));
+        if !matches!(p.kind, K::Junction { .. } | K::NoErc { .. }) {
+            for at in pin_ends(p) {
+                fixed.insert(key(at));
+            }
         }
     }
     moved.retain(|node, (to, _)| *to != point(*node));

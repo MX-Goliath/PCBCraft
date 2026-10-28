@@ -117,7 +117,7 @@ fn wire(p: &SchPrimitive) -> Option<&[Point]> {
         _ => None,
     }
 }
-pub(crate) fn touches(a: &SchPrimitive, b: &SchPrimitive) -> bool {
+pub fn touches(a: &SchPrimitive, b: &SchPrimitive) -> bool {
     match (wire(a), wire(b)) {
         (Some(a), Some(b)) => {
             a.first()
@@ -129,9 +129,12 @@ pub(crate) fn touches(a: &SchPrimitive, b: &SchPrimitive) -> bool {
                     .chain(b.last())
                     .any(|p| a.windows(2).any(|e| p.on_segment(e[0], e[1])))
         }
-        (Some(w), None) => node(b).is_some_and(|p| w.windows(2).any(|e| p.on_segment(e[0], e[1]))),
-        (None, Some(w)) => node(a).is_some_and(|p| w.windows(2).any(|e| p.on_segment(e[0], e[1]))),
-        _ => node(a).is_some() && node(a) == node(b),
+        (Some(w), None) => crate::schematic_edit::electrical_endpoints(b)
+            .any(|p| w.windows(2).any(|e| p.on_segment(e[0], e[1]))),
+        (None, Some(w)) => crate::schematic_edit::electrical_endpoints(a)
+            .any(|p| w.windows(2).any(|e| p.on_segment(e[0], e[1]))),
+        _ => crate::schematic_edit::electrical_endpoints(a)
+            .any(|p| crate::schematic_edit::electrical_endpoints(b).any(|q| p == q)),
     }
 }
 /// Local electrical topology: T junctions connect; bare interior crossings do not.
@@ -153,9 +156,10 @@ fn connected(s: &Schematic, seeds: &[Uuid]) -> Vec<Uuid> {
         for b in &nodes {
             if !seen.contains(&b.id)
                 && (touches(a, b)
-                    || name(a)
-                        .zip(name(b))
-                        .is_some_and(|(a, b)| a.eq_ignore_ascii_case(b)))
+                    || std::mem::discriminant(&a.kind) == std::mem::discriminant(&b.kind)
+                        && name(a)
+                            .zip(name(b))
+                            .is_some_and(|(a, b)| a.eq_ignore_ascii_case(b)))
             {
                 seen.insert(b.id);
                 found.push(b.id);

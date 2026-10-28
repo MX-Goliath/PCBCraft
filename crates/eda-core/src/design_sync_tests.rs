@@ -1,4 +1,6 @@
 use super::*;
+#[path = "design_sync_hierarchy_tests.rs"]
+mod hierarchy;
 use crate::{
     DocumentKind, History,
     schematic::SchPrimitiveKind as K,
@@ -395,6 +397,117 @@ fn buses_and_hierarchy_do_not_produce_destructive_flat_netlists() {
 }
 
 #[test]
+fn hierarchical_entries_join_child_ports_without_merging_duplicate_local_designators() {
+    let mut main = Document::new(DocumentKind::Schematic, "Main.SchDoc");
+    let (mut child, _) = fixture();
+    child.name = "Child.SchDoc".into();
+    let (mut other, _) = fixture();
+    other.name = "Other.SchDoc".into();
+    let mut children = vec![child, other];
+    for (n, child) in children.iter_mut().enumerate() {
+        let endpoint = child
+            .schematic
+            .as_ref()
+            .unwrap()
+            .primitives
+            .iter()
+            .find_map(|p| {
+                matches!(&p.kind,K::Pin{number,..} if number=="1")
+                    .then(|| edit::electrical_endpoint(p).unwrap())
+            })
+            .unwrap();
+        child
+            .schematic
+            .as_mut()
+            .unwrap()
+            .primitives
+            .push(edit::primitive(
+                K::Port {
+                    position: endpoint,
+                    width_nm: 5_000_000,
+                    height_nm: 2_000_000,
+                    style: 0,
+                    io_type: 2,
+                    name: "SIGNAL".into(),
+                    font: 0,
+                },
+                None,
+            ));
+        let s = main.schematic.as_mut().unwrap();
+        let a = Point::mm(10 + n as i64 * 30, 50);
+        let b = Point::mm(30 + n as i64 * 30, 20);
+        let mut symbol = edit::primitive(
+            K::SheetSymbol {
+                a,
+                b,
+                designator: format!("S{n}"),
+                filename: child.name.clone(),
+            },
+            None,
+        );
+        symbol.presentation.record_type = 15;
+        let id = symbol.id;
+        s.primitives.push(symbol);
+        let at = Point {
+            x: a.x,
+            y: a.y - 5_000_000,
+        };
+        let mut entry = edit::primitive(
+            K::SheetEntry {
+                position: at,
+                side: 0,
+                io_type: 2,
+                name: "SIGNAL".into(),
+                font: 0,
+                text_color: 128,
+                arrow_kind: "Block & Triangle".into(),
+            },
+            None,
+        );
+        entry.presentation.record_type = 16;
+        entry.presentation.parent = Some(id);
+        s.primitives.push(entry);
+        let mut label = edit::primitive(
+            K::Text {
+                position: at,
+                text: format!("PARENT_{n}"),
+                font: 0,
+                orientation: 0,
+                justification: 0,
+            },
+            None,
+        );
+        label.text_role = Some(schematic::TextRole::NetLabel);
+        s.primitives.push(label);
+    }
+    let nets = compile(&[&main, &children[0], &children[1]]).unwrap();
+    for (n, child) in children.iter().enumerate() {
+        let pin = nets
+            .pins
+            .iter()
+            .find(|p| p.sheet == child.id && p.designator == "R1" && p.number == "1")
+            .unwrap();
+        assert_eq!(pin.net.as_deref(), Some(format!("PARENT_{n}").as_str()));
+    }
+    let entry = main
+        .schematic
+        .as_mut()
+        .unwrap()
+        .primitives
+        .iter_mut()
+        .find(|p| matches!(p.kind, K::SheetEntry { .. }))
+        .unwrap();
+    if let K::SheetEntry { name, .. } = &mut entry.kind {
+        *name = "MISSING".into();
+    }
+    assert!(
+        compile(&[&main, &children[0], &children[1]])
+            .unwrap_err()
+            .contains("no matching port")
+    );
+}
+
+#[test]
 fn non_electrical_components_are_preserved_and_no_bom_parts_sync() {
     for kind in [1, 2] {
         let (mut s, b) = fixture();
@@ -412,6 +525,24 @@ fn non_electrical_components_are_preserved_and_no_bom_parts_sync() {
         .properties
         .insert("COMPONENTKINDVERSION2".into(), "5".into());
     assert!(plan(&s, &b, Direction::ToPcb).changes.is_empty());
+}
+
+#[test]
+fn duplicate_local_references_are_rejected_before_pin_union() {
+    let (mut doc, _) = fixture();
+    let s = doc.schematic.as_mut().unwrap();
+    let mut duplicate = s.components[0].clone();
+    duplicate.id = Uuid::new_v4();
+    duplicate.source_index = u32::MAX;
+    s.components.push(duplicate);
+    let error = compile(&[&doc]).unwrap_err();
+    assert!(error.contains("Duplicate local designator R1"), "{error}");
+    let s = doc.schematic.as_mut().unwrap();
+    for (n, c) in s.components.iter_mut().enumerate() {
+        c.settings.part_count = 2;
+        c.part = n as u32 + 1;
+    }
+    assert!(compile(&[&doc]).is_ok());
 }
 
 #[test]

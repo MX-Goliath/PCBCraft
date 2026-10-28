@@ -285,6 +285,7 @@ pub struct CanvasOutput {
 
 #[derive(Default)]
 pub struct SchematicInput {
+    pub double_clicked: bool,
     /// Pointer over the unobscured canvas, including a drag originating in another panel.
     pub drop_point: Option<Point>,
     pub point: Option<Point>,

@@ -13,6 +13,7 @@ struct Patch {
     added: Vec<Fields>,
     namespace: Uuid,
     used_uids: BTreeSet<String>,
+    authored: BTreeMap<u32, Uuid>,
 }
 
 fn insertion_points(source: &Schematic, patch: &Patch) -> Result<Vec<usize>, String> {
@@ -103,6 +104,203 @@ fn set(f: &mut Fields, key: &str, value: String) {
 }
 fn boolean(value: bool) -> String {
     if value { "T" } else { "F" }.into()
+}
+
+fn native_units(nm: i64) -> i128 {
+    let scaled = nm as i128 * 100_000;
+    (scaled + if scaled < 0 { -127_000 } else { 127_000 }) / 254_000
+}
+fn coordinate_units(f: &mut Fields, key: &str, units: i128) {
+    set(f, key, (units / 100_000).to_string());
+    set(f, &format!("{key}_FRAC"), (units % 100_000).to_string());
+}
+fn location(f: &mut Fields, p: Point) {
+    coordinate_units(f, "LOCATION.X", native_units(p.x));
+    coordinate_units(f, "LOCATION.Y", native_units(p.y));
+}
+fn hierarchy_changes(
+    patch: &mut Patch,
+    source: &Schematic,
+    target: &Schematic,
+) -> Result<(), String> {
+    for old in &source.primitives {
+        if target.primitive(old.id).is_none()
+            && (matches!(
+                old.kind,
+                K::SheetSymbol { .. } | K::SheetEntry { .. } | K::Port { .. }
+            ) || old.presentation.parent.is_some())
+        {
+            patch.remove_tree(old.source_index as usize);
+        }
+    }
+    for p in &target.primitives {
+        let old = source.primitive(p.id);
+        if old == Some(p) {
+            continue;
+        }
+        let supported = matches!(
+            p.kind,
+            K::SheetSymbol { .. } | K::SheetEntry { .. } | K::Port { .. }
+        ) || p.presentation.parent.is_some()
+            || matches!(&p.kind,K::Polyline{electrical,..} if electrical=="Wire");
+        if !supported {
+            continue;
+        }
+        let index = if old.is_some() {
+            p.source_index
+        } else if matches!(p.kind, K::SheetEntry { .. } | K::Port { .. })
+            && p.source_index == eda_core::schematic_edit::AUTHORED
+        {
+            let owner = if let Some(id) = p.presentation.parent {
+                target
+                    .primitive(id)
+                    .filter(|p| p.source_index != eda_core::schematic_edit::AUTHORED)
+                    .ok_or("New Sheet Entry requires an existing native Sheet Symbol")?
+                    .source_index
+            } else {
+                0
+            };
+            let kind = if matches!(p.kind, K::SheetEntry { .. }) {
+                16
+            } else {
+                18
+            };
+            let uid = patch.fresh_uid(owner, kind, &p.id.to_string())?;
+            let index = patch.add(kind, owner);
+            patch.authored.insert(index, p.id);
+            let f = patch.added.last_mut().unwrap();
+            set(f, "UNIQUEID", uid);
+            index
+        } else {
+            continue;
+        };
+        let f = if index as usize >= patch.records.len() {
+            let n = index as usize - patch.records.len();
+            &mut patch.added[n]
+        } else {
+            patch.record(index)?
+        };
+        match &p.kind {
+            K::SheetSymbol { a, b, .. } => {
+                location(f, *a);
+                coordinate_units(f, "XSIZE", native_units(b.x) - native_units(a.x));
+                coordinate_units(f, "YSIZE", native_units(a.y) - native_units(b.y));
+            }
+            K::SheetEntry {
+                position,
+                side,
+                io_type,
+                name,
+                font,
+                text_color,
+                arrow_kind,
+            } => {
+                let parent = target
+                    .primitive(p.presentation.parent.ok_or("Missing entry parent")?)
+                    .ok_or("Missing Sheet Symbol")?;
+                let K::SheetSymbol { a, .. } = parent.kind else {
+                    return Err("Invalid entry parent".into());
+                };
+                let distance = if *side <= 1 {
+                    native_units(a.y) - native_units(position.y)
+                } else {
+                    native_units(position.x) - native_units(a.x)
+                };
+                set(f, "SIDE", side.to_string());
+                set(f, "IOTYPE", io_type.to_string());
+                set(f, "NAME", name.clone());
+                set(f, "TEXTFONTID", (font + 1).to_string());
+                set(f, "TEXTCOLOR", text_color.to_string());
+                set(f, "ARROWKIND", arrow_kind.clone());
+                set(f, "HARNESSTYPE", p.presentation.harness_type.clone());
+                set(f, "DISTANCEFROMTOP", (distance / 1_000_000).to_string());
+                set(
+                    f,
+                    "DISTANCEFROMTOP_FRAC1",
+                    (distance % 1_000_000).to_string(),
+                );
+            }
+            K::Port {
+                position,
+                width_nm,
+                height_nm,
+                style,
+                io_type,
+                name,
+                font,
+            } => {
+                location(f, *position);
+                let (origin, end) = if *style >= 4 {
+                    (position.y, position.y + width_nm)
+                } else {
+                    (position.x, position.x + width_nm)
+                };
+                coordinate_units(f, "WIDTH", native_units(end) - native_units(origin));
+                coordinate_units(f, "HEIGHT", native_units(*height_nm));
+                set(f, "STYLE", style.to_string());
+                set(f, "IOTYPE", io_type.to_string());
+                set(f, "NAME", name.clone());
+                set(f, "HARNESSTYPE", p.presentation.harness_type.clone());
+                set(
+                    f,
+                    "TEXTCOLOR",
+                    p.presentation.text_color.unwrap_or(p.color).to_string(),
+                );
+                set(f, "FONTID", (font + 1).to_string());
+                set(
+                    f,
+                    "ALIGNMENT",
+                    p.presentation.alignment.unwrap_or(0).to_string(),
+                );
+            }
+            K::Text {
+                position,
+                text,
+                font,
+                orientation,
+                justification,
+            } => {
+                location(f, *position);
+                set(f, "TEXT", text.clone());
+                set(f, "FONTID", (font + 1).to_string());
+                set(f, "ORIENTATION", orientation.to_string());
+                set(f, "JUSTIFICATION", justification.to_string());
+                set(f, "ISHIDDEN", boolean(p.presentation.hidden));
+            }
+            K::Polyline {
+                points, electrical, ..
+            } if electrical == "Wire" => {
+                set(f, "LOCATIONCOUNT", points.len().to_string());
+                for (n, p) in points.iter().enumerate() {
+                    coordinate_units(f, &format!("X{}", n + 1), native_units(p.x));
+                    coordinate_units(f, &format!("Y{}", n + 1), native_units(p.y));
+                }
+            }
+            _ => continue,
+        }
+        set(f, "COLOR", p.color.to_string());
+        set(f, "ISSOLID", boolean(p.fill.is_some()));
+        if let Some(color) = p.fill {
+            set(f, "AREACOLOR", color.to_string());
+        }
+        set(
+            f,
+            if matches!(p.kind, K::Port { .. }) {
+                "BORDERWIDTH"
+            } else {
+                "LINEWIDTH"
+            },
+            match p.width_nm {
+                101_600 => "0",
+                254_000 => "1",
+                508_000 => "2",
+                1_016_000 => "3",
+                _ => return Err("Unsupported native schematic stroke width".into()),
+            }
+            .into(),
+        );
+    }
+    Ok(())
 }
 
 fn parameters(
@@ -260,6 +458,7 @@ fn changes(original: &Document, doc: &Document) -> Result<Patch, String> {
             .map(|r| r.fields.text("UNIQUEID").to_uppercase())
             .filter(|v| !v.is_empty())
             .collect(),
+        authored: BTreeMap::new(),
     };
     if source.components.len() != target.components.len() {
         return Err(
@@ -277,7 +476,20 @@ fn changes(original: &Document, doc: &Document) -> Result<Patch, String> {
             set(f, "COMPONENTDESCRIPTION", c.description.clone());
         }
         if old.settings.kind != c.settings.kind {
-            set(f, "COMPONENTKIND", c.settings.kind.to_string());
+            if f.contains_key("COMPONENTKINDVERSION2") || c.settings.kind >= 5 {
+                set(f, "COMPONENTKINDVERSION2", c.settings.kind.to_string());
+                set(
+                    f,
+                    "COMPONENTKIND",
+                    if c.settings.kind >= 5 {
+                        "0".into()
+                    } else {
+                        c.settings.kind.to_string()
+                    },
+                );
+            } else {
+                set(f, "COMPONENTKIND", c.settings.kind.to_string());
+            }
         }
         if old.designator != c.designator {
             let suffix = char::from_u32('A' as u32 + c.part - 1).ok_or("Invalid component part")?;
@@ -328,11 +540,11 @@ fn changes(original: &Document, doc: &Document) -> Result<Patch, String> {
         let text = match (&old.kind, &p.kind) {
             (K::Text { .. }, K::Text { text, .. }) if p.presentation.record_type == 25 => text,
             (K::PowerPort { .. }, K::PowerPort { text, .. }) => text,
-            (K::Port { .. }, K::Port { name, .. }) => name,
             _ => continue,
         };
         set(patch.record(p.source_index)?, "TEXT", text.clone());
     }
+    hierarchy_changes(&mut patch, source, target)?;
     Ok(patch)
 }
 
@@ -401,6 +613,7 @@ fn verify(
     doc: &Document,
     bytes: &[u8],
     old_indices: &[Option<u32>],
+    authored_indices: &BTreeMap<u32, Uuid>,
 ) -> Result<(), String> {
     let mut actual = import_schematic(bytes, &doc.name)?;
     let source = original.schematic.as_ref().unwrap();
@@ -428,22 +641,132 @@ fn verify(
             old_indices
                 .get(p.source_index as usize)
                 .is_some_and(Option::is_some)
+                || authored_indices.contains_key(&p.source_index)
         });
         for p in primitives {
-            let index = old_indices[p.source_index as usize].unwrap();
-            let old = source
-                .primitives
-                .iter()
-                .chain(&source.parameter_objects)
-                .find(|p| p.source_index == index)
-                .ok_or("Unexpected serialized primitive")?;
+            let old = if let Some(index) = old_indices[p.source_index as usize] {
+                source
+                    .primitives
+                    .iter()
+                    .chain(&source.parameter_objects)
+                    .find(|p| p.source_index == index)
+            } else {
+                authored_indices
+                    .get(&p.source_index)
+                    .and_then(|id| doc.schematic.as_ref()?.primitive(*id))
+            }
+            .ok_or("Unexpected serialized primitive")?;
+            ids.insert(p.id, old.id);
             p.id = old.id;
-            p.source_index = index;
+            p.source_index = old.source_index;
             p.component = p
                 .component
                 .map(|id| ids.get(&id).copied().ok_or("Missing component owner"))
                 .transpose()?;
+            p.presentation.parent = p
+                .presentation
+                .parent
+                .map(|id| ids.get(&id).copied().ok_or("Missing Sheet Symbol owner"))
+                .transpose()?;
         }
+    }
+    let expected_scene = doc.schematic.as_ref().unwrap();
+    for expected in &expected_scene.primitives {
+        if source.primitive(expected.id) == Some(expected) {
+            continue;
+        }
+        let Some(read) = scene.primitive(expected.id) else {
+            continue;
+        };
+        if matches!(expected.kind, K::SheetEntry { .. } | K::Port { .. })
+            || matches!(&expected.kind,K::Polyline{electrical,..} if electrical=="Wire")
+        {
+            let a: BTreeSet<_> = expected_scene
+                .primitives
+                .iter()
+                .filter(|p| p.id != expected.id && eda_core::cross_probe::touches(expected, p))
+                .map(|p| p.id)
+                .collect();
+            let b: BTreeSet<_> = scene
+                .primitives
+                .iter()
+                .filter(|p| p.id != read.id && eda_core::cross_probe::touches(read, p))
+                .map(|p| p.id)
+                .collect();
+            if a != b {
+                return Err("Native SchDoc coordinate quantization changed electrical attachments; choose PCBCraft JSON".into());
+            }
+        }
+    }
+    let near = |a: Point, b: Point| (a.x - b.x).abs() <= 2 && (a.y - b.y).abs() <= 2;
+    for read in &mut scene.primitives {
+        let Some(expected) = expected_scene.primitive(read.id) else {
+            continue;
+        };
+        match (&mut read.kind, &expected.kind) {
+            (K::SheetSymbol { a, b, .. }, K::SheetSymbol { a: x, b: y, .. })
+                if near(*a, *x) && near(*b, *y) =>
+            {
+                *a = *x;
+                *b = *y;
+            }
+            (K::SheetEntry { position, .. }, K::SheetEntry { position: p, .. })
+                if near(*position, *p) =>
+            {
+                *position = *p
+            }
+            (
+                K::Port {
+                    position,
+                    width_nm,
+                    height_nm,
+                    ..
+                },
+                K::Port {
+                    position: p,
+                    width_nm: w,
+                    height_nm: h,
+                    ..
+                },
+            ) if near(*position, *p)
+                && (*width_nm - *w).abs() <= 2
+                && (*height_nm - *h).abs() <= 2 =>
+            {
+                *position = *p;
+                *width_nm = *w;
+                *height_nm = *h;
+            }
+            (K::Text { position, .. }, K::Text { position: p, .. })
+                if read.presentation.parent.is_some() && near(*position, *p) =>
+            {
+                *position = *p
+            }
+            (
+                K::Polyline {
+                    points, electrical, ..
+                },
+                K::Polyline { points: p, .. },
+            ) if electrical == "Wire"
+                && points.len() == p.len()
+                && points.iter().zip(p).all(|(a, b)| near(*a, *b)) =>
+            {
+                *points = p.clone()
+            }
+            _ => {}
+        }
+    }
+    // New entries are serialized inside their owner's native subtree. Match
+    // their model order only after validating identity, ownership and topology.
+    if !authored_indices.is_empty() {
+        let order: BTreeMap<_, _> = expected_scene
+            .primitives
+            .iter()
+            .enumerate()
+            .map(|(n, p)| (p.id, n))
+            .collect();
+        scene
+            .primitives
+            .sort_by_key(|p| order.get(&p.id).copied().unwrap_or(usize::MAX));
     }
     actual.id = doc.id;
     let mut expected = doc.clone();
@@ -453,6 +776,11 @@ fn verify(
         s.records = Default::default();
         s.warnings.clear();
         s.source_modified = false;
+        for p in &mut s.primitives {
+            if matches!(p.kind, K::Port { .. }) && p.presentation.text_color.is_none() {
+                p.presentation.text_color = Some(p.color);
+            }
+        }
     }
     if actual != expected {
         return Err("Native SchDoc verification found unsupported scene changes; choose PCBCraft JSON. The destination was not modified".into());
@@ -584,15 +912,22 @@ pub fn serialize(doc: &Document) -> Result<Vec<u8>, String> {
         });
     let mut remap = BTreeMap::new();
     let mut old_indices = vec![];
+    let mut authored_indices = BTreeMap::new();
     for stream in ["FileHeader", "Additional"] {
         for (_, _, index) in output.get(stream).into_iter().flatten() {
             if let Some(index) = index {
+                if let Some(id) = patch.authored.get(index) {
+                    authored_indices.insert(old_indices.len() as u32, *id);
+                }
                 remap.insert(*index, old_indices.len() as u32);
                 old_indices.push((*index < record as u32).then_some(*index));
             }
         }
     }
     let shifted = remap.iter().any(|(a, b)| a != b);
+    // Text frames (209) and Additional-stream drawing regions (225) have
+    // ordinary property payloads. Preserve them byte-for-byte unless their
+    // explicit OWNERINDEX changes; unknown index dependencies still fail below.
     if shifted
         && original
             .schematic
@@ -601,9 +936,8 @@ pub fn serialize(doc: &Document) -> Result<Vec<u8>, String> {
             .records
             .iter()
             .any(|r| {
-                r.stream != "FileHeader"
-                    || r.record_type == u32::MAX
-                    || !matches!(r.record_type, 1..=18|22|25..=34|37|39|41|43..=48)
+                !matches!(r.stream.as_str(), "FileHeader" | "Additional")
+                    || !matches!(r.record_type, 1..=18|22|25..=34|37|39|41|43..=48|209|225)
             })
     {
         return Err(
@@ -669,7 +1003,7 @@ pub fn serialize(doc: &Document) -> Result<Vec<u8>, String> {
     if result.len() > MAX_FILE {
         return Err("Native schematic exceeds save limit".into());
     }
-    verify(&original, doc, &result, &old_indices)?;
+    verify(&original, doc, &result, &old_indices, &authored_indices)?;
     Ok(result)
 }
 

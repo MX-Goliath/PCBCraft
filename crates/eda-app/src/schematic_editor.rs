@@ -7,10 +7,11 @@ const CLIPBOARD_PREFIX: &str = "PCBCraft schematic clipboard v1\n";
 
 #[cfg(test)]
 #[path = "schematic_editor_tests.rs"]
-mod tests;
+pub(super) mod tests;
 
 #[derive(Default)]
 pub(super) struct Editor {
+    pub(super) hierarchy_pick: bool,
     tool: Tool,
     move_popup: Option<egui::Pos2>,
     pub kind: Option<Placement>,
@@ -63,9 +64,10 @@ enum Tool {
 
 impl Editor {
     pub fn active(&self) -> bool {
-        !matches!(self.tool, Tool::Select)
+        self.hierarchy_pick || !matches!(self.tool, Tool::Select)
     }
     pub fn cancel(&mut self, view: &mut View) {
+        self.hierarchy_pick = false;
         self.tool = Tool::Select;
         self.move_popup = None;
         self.kind = None;
@@ -694,6 +696,12 @@ impl PcbCraft {
         input: eda_render::SchematicInput,
         ctx: &egui::Context,
     ) {
+        if self.documents[index].sch_editor.hierarchy_pick && input.clicked {
+            if let Some(id) = input.hit {
+                self.navigate_hierarchy(index, id);
+            }
+            return;
+        }
         let doc = &mut self.documents[index];
         if ctx.input(|i| !i.focused || i.key_down(Key::Escape)) {
             if matches!(

@@ -241,6 +241,7 @@ mod tests {
     use eda_core::{pcb::Shape, schematic::SchPrimitiveKind as K};
     fn app() -> PcbCraft {
         let mut app = PcbCraft {
+            sheet_sync: Default::default(),
             document_loader: Default::default(),
             cross_probe: Default::default(),
             file_dialog: rfd::FileDialog::new(),
@@ -408,6 +409,8 @@ mod tests {
                 variants: vec![],
                 virtual_bom: false,
                 sheet_children: Default::default(),
+                sheet_numbers: Default::default(),
+                netlist_options: Default::default(),
                 documents: vec![eda_io::altium::ProjectEntry {
                     path: app.documents[i].path.clone().unwrap(),
                     original_path: "design".into(),

@@ -54,6 +54,56 @@ fn base_parameters_keep_names_values_and_ignore_other_namespaces() {
 }
 
 #[test]
+fn component_link_urls_decode_native_equals_escaping_and_encode_on_edit() {
+    let mut doc = native_document();
+    let params = doc.pcb.as_mut().unwrap().components[0]
+        .parameters
+        .as_mut()
+        .unwrap();
+    params.insert(
+        "ComponentLink1URL".into(),
+        "https://example.test/?id=1&part=2".into(),
+    );
+    params.insert("Literal".into(), "a{}b=c".into());
+    let bytes = writer::serialize(&doc, writer::Format::Preserve).unwrap();
+    let read = import_pcb(&bytes, "link.PcbDoc").unwrap();
+    assert_eq!(
+        read.pcb.as_ref().unwrap().components[0].parameters,
+        doc.pcb.as_ref().unwrap().components[0].parameters
+    );
+    let mut cfb = cfb::CompoundFile::open(Cursor::new(&bytes)).unwrap();
+    let mut raw = vec![];
+    cfb.open_stream("/PrimitiveParameters/Data")
+        .unwrap()
+        .read_to_end(&mut raw)
+        .unwrap();
+    let records = property_records(&raw, 0).unwrap();
+    assert!(records.iter().any(|r| {
+        r.get("VALUE")
+            .is_some_and(|v| v == "https://example.test/?id{}1&part{}2")
+    }));
+    assert_eq!(
+        writer::serialize(&read, writer::Format::Preserve).unwrap(),
+        bytes
+    );
+    let mut edited = read;
+    edited.pcb.as_mut().unwrap().components[0]
+        .parameters
+        .as_mut()
+        .unwrap()
+        .insert(
+            "ComponentLink1URL".into(),
+            "https://example.test/?id=3".into(),
+        );
+    let bytes = writer::serialize(&edited, writer::Format::Preserve).unwrap();
+    let read = import_pcb(&bytes, "edited.PcbDoc").unwrap();
+    assert_eq!(
+        read.pcb.as_ref().unwrap().components[0].parameters,
+        edited.pcb.as_ref().unwrap().components[0].parameters
+    );
+}
+
+#[test]
 fn malformed_groups_and_wrong_owners_fail_atomically() {
     for data in [
         blocks(&[

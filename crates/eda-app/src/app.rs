@@ -1,4 +1,8 @@
 use crate::theme::{self, ACCENT, MUTED};
+#[path = "schematic_hierarchy.rs"]
+mod schematic_hierarchy;
+#[path = "schematic_sync.rs"]
+mod schematic_sync;
 use eda_core::{Document, DocumentKind, History, Layer, Units};
 use eda_render::{View, layer_color};
 use egui::{Color32, Key, RichText};
@@ -142,6 +146,8 @@ impl Default for Settings {
 
 #[derive(Clone, Copy)]
 enum Command {
+    SynchronizeEntries(bool),
+    NavigateHierarchy,
     CrossProbe,
     Pcb3d(bool),
     Pcb3dCamera(eda_render::pcb_3d::CameraCommand),
@@ -193,6 +199,7 @@ struct PadEdit {
 }
 
 pub struct PcbCraft {
+    sheet_sync: schematic_sync::State,
     document_loader: document_loader::State,
     annotation: Option<annotation::Dialog>,
     design_sync: Option<design_sync::Dialog>,
@@ -238,6 +245,7 @@ impl PcbCraft {
             settings.grid_nm = 1_000_000;
         }
         let mut app = Self {
+            sheet_sync: Default::default(),
             document_loader: Default::default(),
             cross_probe: Default::default(),
             file_dialog: rfd::FileDialog::new().set_parent(cc),
@@ -396,7 +404,8 @@ impl PcbCraft {
             if let Some(first) = project
                 .documents
                 .iter()
-                .find(|d| d.kind == "schdoc" && d.exists)
+                .filter(|d| d.kind == "schdoc" && d.exists)
+                .min_by_key(|d| project.sheet_number(&d.path).unwrap_or(usize::MAX))
                 .or_else(|| {
                     project
                         .documents
@@ -421,7 +430,8 @@ impl PcbCraft {
                 let first = project
                     .documents
                     .iter()
-                    .find(|d| d.kind == "schdoc" && d.exists)
+                    .filter(|d| d.kind == "schdoc" && d.exists)
+                    .min_by_key(|d| project.sheet_number(&d.path).unwrap_or(usize::MAX))
                     .or_else(|| {
                         project
                             .documents
@@ -610,8 +620,8 @@ impl PcbCraft {
             self.message(true, "Apply or discard stack changes before quitting");
             return;
         }
-        if self.annotation.is_some() || self.design_sync.is_some() {
-            self.message(true, "Close the annotation dialog before another command");
+        if self.annotation.is_some() || self.design_sync.is_some() || self.sheet_sync.busy() {
+            self.message(true, "Close the active dialog before another command");
             return;
         }
         if self.layer_stack_active() {
@@ -622,6 +632,8 @@ impl PcbCraft {
             self.cross_probe.enabled = false;
         }
         match command {
+            Command::SynchronizeEntries(selected) => self.start_sheet_sync(selected),
+            Command::NavigateHierarchy => self.start_hierarchy_navigation(),
             Command::CrossProbe => self.start_cross_probe(),
             Command::Annotate => self.open_annotation(),
             Command::Synchronize(direction, differences) => {
@@ -1108,14 +1120,25 @@ impl PcbCraft {
                         ] {
                             ui.menu_button(label, |ui| {
                                 if label == "Tools" {
-                                    self.action(
-                                        ui,
-                                        "Cross Probe",
-                                        "T, C",
-                                        Command::CrossProbe,
-                                        true,
-                                    );
                                     if schematic {
+                                        self.action(
+                                            ui,
+                                            "Up/Down Hierarchy",
+                                            "",
+                                            Command::NavigateHierarchy,
+                                            true,
+                                        );
+                                        ui.separator();
+                                        for label in [
+                                            "Parameter Manager...",
+                                            "Footprint Manager...",
+                                            "Update From Libraries...",
+                                            "Update Selected From Libraries...",
+                                            "Update Parameters From Database...",
+                                            "Item Manager...",
+                                        ] {
+                                            ui.add_enabled(false, egui::Button::new(label));
+                                        }
                                         ui.separator();
                                         ui.menu_button("Annotation", |ui| {
                                             self.action(
@@ -1126,6 +1149,45 @@ impl PcbCraft {
                                                 true,
                                             );
                                         });
+                                        ui.separator();
+                                        ui.add_enabled(
+                                            false,
+                                            egui::Button::new("Signal Integrity..."),
+                                        );
+                                        ui.separator();
+                                        ui.add_enabled(
+                                            false,
+                                            egui::Button::new("Convert                         ▸"),
+                                        );
+                                        ui.separator();
+                                    }
+                                    self.action(
+                                        ui,
+                                        "Cross Probe",
+                                        "T, C",
+                                        Command::CrossProbe,
+                                        true,
+                                    );
+                                    if schematic {
+                                        for label in [
+                                            "Cross Select Mode     Shift+Ctrl+X",
+                                            "Select PCB Components",
+                                        ] {
+                                            ui.add_enabled(false, egui::Button::new(label));
+                                        }
+                                        ui.separator();
+                                        ui.add_enabled(
+                                            false,
+                                            egui::Button::new("Configure Pin Swapping..."),
+                                        );
+                                        ui.separator();
+                                        self.action(
+                                            ui,
+                                            "Preferences...",
+                                            "",
+                                            Command::Preferences,
+                                            true,
+                                        );
                                         return;
                                     }
                                     ui.separator();
@@ -1140,6 +1202,14 @@ impl PcbCraft {
                                             eda_core::design_sync::Direction::ToPcb,
                                             false,
                                         ),
+                                        project.is_some(),
+                                    );
+                                    ui.separator();
+                                    self.action(
+                                        ui,
+                                        "Synchronize Sheet Entries and Ports",
+                                        "",
+                                        Command::SynchronizeEntries(false),
                                         project.is_some(),
                                     );
                                     return;
@@ -1575,6 +1645,8 @@ impl PcbCraft {
                     let pcb_input = doc.view.pcb.input.take();
                     self.cursor_mm = output.cursor_mm;
                     if let Some(input) = output.schematic_input
+                        && !self.sheet_sync_input(index, &input, ctx)
+                        && !self.hierarchy_click(index, &input, ctx)
                         && !self.cross_probe_input(
                             index,
                             input.hit,
@@ -1796,6 +1868,12 @@ impl PcbCraft {
     }
 
     fn shortcuts(&mut self, ctx: &egui::Context) {
+        if self.sheet_sync.busy() {
+            if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Escape)) {
+                self.sheet_sync_escape();
+            }
+            return;
+        }
         if self.annotation.is_some()
             || self.design_sync.is_some()
             || self.layer_stack_active()
@@ -1916,6 +1994,8 @@ impl eframe::App for PcbCraft {
         self.dialogs(ctx);
         self.annotation_dialog(ctx);
         self.design_sync_dialog(ctx);
+        self.sheet_sync_dialog(ctx);
+        self.sheet_sync_context_menu(ctx);
         self.document_loading_dialog(ctx);
         self.resize_edges(ctx);
         if let Some(command) = self.command.take() {

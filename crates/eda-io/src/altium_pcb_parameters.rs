@@ -4,6 +4,27 @@ use super::*;
 #[path = "altium_pcb_parameters_tests.rs"]
 mod tests;
 
+fn component_link_url(name: &str) -> bool {
+    let name = name.to_ascii_uppercase();
+    name.strip_prefix("COMPONENTLINK")
+        .and_then(|s| s.strip_suffix("URL"))
+        .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+}
+pub(super) fn decode_value(name: &str, value: &str) -> String {
+    if component_link_url(name) {
+        value.replace("{}", "=")
+    } else {
+        value.to_owned()
+    }
+}
+pub(super) fn encode_value(name: &str, value: &str) -> String {
+    if component_link_url(name) {
+        value.replace('=', "{}")
+    } else {
+        value.to_owned()
+    }
+}
+
 /// Older native files identify parameter owners only by their unique ID.
 /// Never infer an owner from record order, and reject ambiguous identities.
 pub(super) fn component_owner(board: &Board, header: &Fields) -> Result<Option<u32>> {
@@ -73,7 +94,7 @@ pub(super) fn import(board: &mut Board, data: &[u8]) -> Result<()> {
                 if fields.keys().any(|key| key.eq_ignore_ascii_case(name)) {
                     return Err("Duplicate component parameter".into());
                 }
-                fields.insert(name.clone(), value.clone());
+                fields.insert(name.clone(), decode_value(name, value));
             }
         }
         n = end;

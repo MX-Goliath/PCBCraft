@@ -36,6 +36,8 @@ pub struct Schematic {
     pub sheet: Sheet,
     pub fonts: Vec<SchFont>,
     pub components: Vec<Component>,
+    #[serde(default)]
+    pub compile_masks: Vec<CompileMask>,
     pub primitives: Vec<SchPrimitive>,
     /// Hidden parameter objects have identity and editable presentation as well.
     #[serde(default)]
@@ -55,6 +57,14 @@ pub struct NativeSource {
     /// Unmodified original file, including unknown streams; native writers must
     /// verify supported scene changes against this archive before replacing it.
     pub original_base64: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CompileMask {
+    pub a: Point,
+    pub b: Point,
+    pub collapsed: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -219,6 +229,12 @@ pub struct ComponentModel {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Presentation {
+    /// Sheet Symbol ownership for entries and its designator/filename texts.
+    pub parent: Option<Uuid>,
+    pub alignment: Option<u32>,
+    /// Port label ink is independent of its outline colour.
+    pub text_color: Option<u32>,
+    pub harness_type: String,
     pub record_type: u32,
     pub url: String,
     pub name: String,
@@ -272,6 +288,21 @@ pub enum SchPrimitiveKind {
         b: Point,
         radius: Point,
     },
+    SheetSymbol {
+        a: Point,
+        b: Point,
+        designator: String,
+        filename: String,
+    },
+    SheetEntry {
+        position: Point,
+        side: u32,
+        io_type: u32,
+        name: String,
+        font: usize,
+        text_color: u32,
+        arrow_kind: String,
+    },
     Arc {
         centre: Point,
         radii: Point,
@@ -279,7 +310,7 @@ pub enum SchPrimitiveKind {
         end: f64,
     },
     Bezier {
-        points: [Point; 4],
+        points: Vec<Point>,
     },
     Text {
         position: Point,
@@ -383,6 +414,7 @@ impl Schematic {
                 underline: false,
             }],
             components: vec![],
+            compile_masks: vec![],
             primitives: vec![],
             parameter_objects: vec![],
             records: Arc::default(),
@@ -392,6 +424,14 @@ impl Schematic {
         }
     }
     pub fn validate(&self) -> Result<(), String> {
+        if self.compile_masks.len() > 500_000
+            || self
+                .compile_masks
+                .iter()
+                .any(|m| !m.a.valid() || !m.b.valid())
+        {
+            return Err("Invalid schematic compile mask".into());
+        }
         if self.records.len() > 500_000
             || self.primitives.len() + self.parameter_objects.len() > 500_000
             || self.components.len() > 100_000
@@ -438,6 +478,7 @@ impl Schematic {
                 | SchPrimitiveKind::TextFrame { font, .. }
                 | SchPrimitiveKind::PowerPort { font, .. }
                 | SchPrimitiveKind::Port { font, .. } => *font < self.fonts.len(),
+                SchPrimitiveKind::SheetEntry { font, .. } => *font < self.fonts.len(),
                 SchPrimitiveKind::Pin {
                     font, number_font, ..
                 } => *font < self.fonts.len() && number_font.is_none_or(|n| n < self.fonts.len()),
@@ -458,6 +499,15 @@ impl Schematic {
                 SchPrimitiveKind::Rectangle { a, b, radius } => {
                     a.valid() && b.valid() && radius.valid()
                 }
+                SchPrimitiveKind::SheetSymbol { a, b, .. } => {
+                    a.valid() && b.valid() && a.x < b.x && a.y > b.y
+                }
+                SchPrimitiveKind::SheetEntry {
+                    position,
+                    side,
+                    io_type,
+                    ..
+                } => position.valid() && *side <= 3 && *io_type <= 3,
                 SchPrimitiveKind::Arc {
                     centre,
                     radii,
@@ -473,7 +523,12 @@ impl Schematic {
                         && start.abs() <= 360_000.0
                         && end.abs() <= 360_000.0
                 }
-                SchPrimitiveKind::Bezier { points } => points.iter().all(|p| p.valid()),
+                SchPrimitiveKind::Bezier { points } => {
+                    points.len() >= 4
+                        && points.len() <= 100_000
+                        && (points.len() - 1).is_multiple_of(3)
+                        && points.iter().all(|p| p.valid())
+                }
                 SchPrimitiveKind::Text { position, .. } | SchPrimitiveKind::NoErc { position } => {
                     position.valid()
                 }
@@ -509,6 +564,17 @@ impl Schematic {
                     "Invalid schematic geometry at record {}",
                     p.source_index
                 ));
+            }
+            if let Some(parent) = p.presentation.parent {
+                if p.component.is_some()
+                    || !self.primitives.iter().any(|p| {
+                        p.id == parent && matches!(p.kind, SchPrimitiveKind::SheetSymbol { .. })
+                    })
+                {
+                    return Err("Invalid Sheet Symbol owner".into());
+                }
+            } else if matches!(p.kind, SchPrimitiveKind::SheetEntry { .. }) {
+                return Err("Sheet Entry requires a Sheet Symbol owner".into());
             }
         }
         Ok(())

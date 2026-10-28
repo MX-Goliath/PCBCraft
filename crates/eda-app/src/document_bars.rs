@@ -117,16 +117,7 @@ impl PcbCraft {
                                 .then(|| {
                                     let path = doc.source_path.as_ref().or(doc.path.as_ref());
                                     self.projects.iter().find_map(|project| {
-                                        project
-                                            .documents
-                                            .iter()
-                                            .filter(|entry| {
-                                                entry.path.extension().is_some_and(|e| {
-                                                    e.eq_ignore_ascii_case("SchDoc")
-                                                })
-                                            })
-                                            .position(|entry| Some(&entry.path) == path)
-                                            .map(|n| n + 1)
+                                        path.and_then(|path| project.sheet_number(path))
                                     })
                                 })
                                 .flatten();

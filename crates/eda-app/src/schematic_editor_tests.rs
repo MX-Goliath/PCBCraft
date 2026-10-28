@@ -1,8 +1,9 @@
 use super::*;
 use eda_render::SchematicInput;
 
-fn app() -> PcbCraft {
+pub(in crate::app) fn app() -> PcbCraft {
     PcbCraft {
+        sheet_sync: Default::default(),
         document_loader: Default::default(),
         cross_probe: Default::default(),
         file_dialog: rfd::FileDialog::new(),
@@ -30,6 +31,122 @@ fn app() -> PcbCraft {
         pcb_clipboard: None,
         components_ui: Default::default(),
     }
+}
+
+#[test]
+fn hierarchy_navigation_is_project_scoped_and_does_not_open_unrelated_sheets() {
+    use eda_io::altium::{Project, ProjectEntry};
+    let mut app = app();
+    let base = std::env::temp_dir().join(Uuid::new_v4().to_string());
+    let parent = base.join("Main.SchDoc");
+    let child = base.join("child").join("Child.SchDoc");
+    let other = base.join("other").join("Child.SchDoc");
+    let symbol = edit::primitive(
+        K::SheetSymbol {
+            a: Point::mm(20, 40),
+            b: Point::mm(40, 20),
+            designator: "Child1".into(),
+            filename: "child/Child.SchDoc".into(),
+        },
+        None,
+    );
+    let mut entry = edit::primitive(
+        K::SheetEntry {
+            position: Point::mm(20, 35),
+            side: 0,
+            io_type: 2,
+            name: "SIGNAL".into(),
+            font: 0,
+            text_color: 0,
+            arrow_kind: "Block & Triangle".into(),
+        },
+        None,
+    );
+    entry.presentation.parent = Some(symbol.id);
+    let entry_id = entry.id;
+    app.documents[0].source_path = Some(parent.clone());
+    app.documents[0].model.name = "Main.SchDoc".into();
+    app.documents[0]
+        .model
+        .schematic
+        .as_mut()
+        .unwrap()
+        .primitives
+        .extend([symbol, entry]);
+    let mut child_doc = Document::new(DocumentKind::Schematic, "Child.SchDoc");
+    let port = edit::primitive(
+        K::Port {
+            position: Point::mm(15, 20),
+            width_nm: 5_000_000,
+            height_nm: 2_540_000,
+            style: 0,
+            io_type: 2,
+            name: "SIGNAL".into(),
+            font: 0,
+        },
+        None,
+    );
+    let port_id = port.id;
+    child_doc.schematic.as_mut().unwrap().primitives.push(port);
+    app.documents
+        .push(OpenDocument::new(child_doc.clone(), Some(child.clone())));
+    child_doc.id = Uuid::new_v4();
+    app.documents
+        .push(OpenDocument::new(child_doc, Some(other.clone())));
+    app.projects.push(Project {
+        path: base.join("Test.PrjPcb"),
+        name: "Test".into(),
+        documents: [parent.clone(), child]
+            .into_iter()
+            .map(|path| ProjectEntry {
+                original_path: path.to_string_lossy().into(),
+                path,
+                kind: "schdoc".into(),
+                exists: true,
+            })
+            .collect(),
+        generated_documents: vec![],
+        variants: vec![],
+        virtual_bom: false,
+        sheet_children: Default::default(),
+        sheet_numbers: Default::default(),
+        netlist_options: Default::default(),
+        warnings: vec![],
+    });
+    let before: Vec<_> = app.documents.iter().map(|d| d.model.clone()).collect();
+    let ctx = egui::Context::default();
+    let _ = ctx.run(
+        egui::RawInput {
+            modifiers: egui::Modifiers {
+                ctrl: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        |_| {},
+    );
+    let mut click = SchematicInput {
+        hit: Some(entry_id),
+        clicked: true,
+        ..Default::default()
+    };
+    assert!(app.hierarchy_click(0, &click, &ctx));
+    assert_eq!(app.active, Some(0)); // First click must not cross-probe into PCB.
+    click.double_clicked = true;
+    assert!(app.hierarchy_click(0, &click, &ctx));
+    assert_eq!(app.active, Some(1));
+    assert_eq!(app.documents[1].view.selected, Some(port_id));
+    assert!(app.navigate_hierarchy(1, port_id));
+    assert_eq!(app.active, Some(0));
+    assert_eq!(app.documents[0].view.selected, Some(entry_id));
+    assert_eq!(app.documents.len(), 3);
+    assert_eq!(
+        app.documents
+            .iter()
+            .map(|d| d.model.clone())
+            .collect::<Vec<_>>(),
+        before
+    );
 }
 
 fn pointer(point: Point, clicked: bool) -> SchematicInput {

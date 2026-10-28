@@ -97,15 +97,13 @@ impl PcbCraft {
             }
             let mut sources = Vec::new();
             let mut settings = std::collections::BTreeMap::<&str, Vec<Node>>::new();
-            let mut sheet = 0;
             for entry in &project.documents {
-                if entry.kind == "schdoc" {
-                    sheet += 1;
-                }
                 let n = self.project_file(
                     entry,
                     id.with(&entry.path),
-                    (entry.kind == "schdoc").then_some(sheet),
+                    (entry.kind == "schdoc")
+                        .then(|| project.sheet_number(&entry.path))
+                        .flatten(),
                 );
                 if matches!(entry.kind.as_str(), "schdoc" | "pcbdoc" | "bomdoc") {
                     sources.push(n);
@@ -843,6 +841,7 @@ mod tests {
     #[test]
     fn startup_sizing_does_not_collapse_projects_or_change_width_between_editors() {
         let mut app = PcbCraft {
+            sheet_sync: Default::default(),
             document_loader: Default::default(),
             cross_probe: Default::default(),
             file_dialog: rfd::FileDialog::new(),

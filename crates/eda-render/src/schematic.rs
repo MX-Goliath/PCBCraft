@@ -74,6 +74,7 @@ fn auto_junctions(cache: &mut JunctionCache, primitives: Vec<&SchPrimitive>) -> 
             K::Junction { position, .. }
             | K::PowerPort { position, .. }
             | K::Port { position, .. }
+            | K::SheetEntry { position, .. }
             | K::Text { position, .. } => {
                 position.x.hash(&mut hash);
                 position.y.hash(&mut hash);
@@ -419,6 +420,74 @@ impl Scene<'_> {
                     self.poly(points, *closed, fill, stroke)
                 }
             }
+            K::SheetSymbol { a, b, .. } => {
+                let rect = Rect::from_two_pos(self.screen(*a), self.screen(*b));
+                self.poly(
+                    vec![
+                        rect.left_top(),
+                        rect.right_top(),
+                        rect.right_bottom(),
+                        rect.left_bottom(),
+                    ],
+                    true,
+                    fill,
+                    stroke,
+                );
+                hit = pointer.is_some_and(|p| rect.expand(3.0).contains(p));
+                rect
+            }
+            K::SheetEntry {
+                position,
+                side,
+                io_type,
+                name,
+                font,
+                text_color,
+                arrow_kind,
+            } => {
+                let at = self.screen(*position);
+                let inward = match side {
+                    0 => Vec2::RIGHT,
+                    1 => Vec2::LEFT,
+                    2 => Vec2::DOWN,
+                    _ => Vec2::UP,
+                };
+                let normal = Vec2::new(-inward.y, inward.x);
+                let length = self.nm(2_540_000);
+                let half = self.nm(635_000);
+                let arrows = !arrow_kind.eq_ignore_ascii_case("Block");
+                let input = arrows && matches!(io_type, 2 | 3);
+                let output = arrows && matches!(io_type, 1 | 3);
+                let local = [
+                    (if output { half } else { 0.0 }, -half),
+                    (length - if input { half } else { 0.0 }, -half),
+                    (length, 0.0),
+                    (length - if input { half } else { 0.0 }, half),
+                    (if output { half } else { 0.0 }, half),
+                    (0.0, 0.0),
+                ];
+                let shape = self.poly(
+                    local
+                        .into_iter()
+                        .map(|(x, y)| at + inward * x + normal * y)
+                        .collect(),
+                    true,
+                    Some(fill.unwrap_or(Color32::from_rgb(255, 255, 128))),
+                    stroke,
+                );
+                let label = at + inward * (length + self.nm(508_000));
+                let text = self.label(
+                    label,
+                    name,
+                    *font,
+                    if *side >= 2 { 1 } else { 0 },
+                    if matches!(side, 1 | 2) { 5 } else { 3 },
+                    color(*text_color),
+                );
+                let bounds = shape.union(text);
+                hit = pointer.is_some_and(|p| bounds.expand(2.0).contains(p));
+                bounds
+            }
             K::Rectangle { a, b, radius } => {
                 let rect = Rect::from_two_pos(self.screen(*a), self.screen(*b));
                 if radius.x == 0 && radius.y == 0 {
@@ -476,16 +545,20 @@ impl Scene<'_> {
                 self.poly(points, sweep >= 359.99 && fill.is_some(), fill, stroke)
             }
             K::Bezier { points } => {
-                let p = points.map(|p| self.screen(p));
-                let points: Vec<_> = (0..=32)
-                    .map(|i| {
-                        let t = i as f32 / 32.0;
-                        let u = 1.0 - t;
-                        Pos2::ZERO
-                            + (p[0].to_vec2() * u * u * u
-                                + p[1].to_vec2() * 3.0 * u * u * t
-                                + p[2].to_vec2() * 3.0 * u * t * t
-                                + p[3].to_vec2() * t * t * t)
+                let points: Vec<_> = points
+                    .windows(4)
+                    .step_by(3)
+                    .flat_map(|control| {
+                        let p: Vec<_> = control.iter().map(|p| self.screen(*p)).collect();
+                        (0..=32).map(move |i| {
+                            let t = i as f32 / 32.0;
+                            let u = 1.0 - t;
+                            Pos2::ZERO
+                                + (p[0].to_vec2() * u * u * u
+                                    + p[1].to_vec2() * 3.0 * u * u * t
+                                    + p[2].to_vec2() * 3.0 * u * t * t
+                                    + p[3].to_vec2() * t * t * t)
+                        })
                     })
                     .collect();
                 if let Some(pos) = pointer {
@@ -806,13 +879,15 @@ impl Scene<'_> {
                 let w = self.nm(*width_nm);
                 let h = self.nm(*height_nm);
                 let slope = h * 0.5;
+                let left_arrow = matches!(io_type, 1 | 3);
+                let right_arrow = matches!(io_type, 2 | 3);
                 let offsets = vec![
-                    Vec2::new(0.0, -h / 2.0),
-                    Vec2::new(w - slope, -h / 2.0),
+                    Vec2::new(if left_arrow { slope } else { 0.0 }, -h / 2.0),
+                    Vec2::new(w - if right_arrow { slope } else { 0.0 }, -h / 2.0),
                     Vec2::new(w, 0.0),
-                    Vec2::new(w - slope, h / 2.0),
-                    Vec2::new(0.0, h / 2.0),
-                    Vec2::new(if *io_type == 3 { -slope } else { 0.0 }, 0.0),
+                    Vec2::new(w - if right_arrow { slope } else { 0.0 }, h / 2.0),
+                    Vec2::new(if left_arrow { slope } else { 0.0 }, h / 2.0),
+                    Vec2::ZERO,
                 ];
                 let points: Vec<_> = offsets
                     .into_iter()
@@ -824,7 +899,23 @@ impl Scene<'_> {
                     Some(fill.unwrap_or(Color32::from_rgb(255, 255, 128))),
                     stroke,
                 );
-                self.label(bounds.center(), name, *font, u32::from(vertical), 4, c);
+                let along = if vertical { Vec2::UP } else { Vec2::RIGHT };
+                let (offset, justification) = match p.presentation.alignment {
+                    Some(1) => (self.nm(508_000) + if left_arrow { slope } else { 0.0 }, 3),
+                    Some(2) => (
+                        w - self.nm(508_000) - if right_arrow { slope } else { 0.0 },
+                        5,
+                    ),
+                    _ => (w / 2.0, 4),
+                };
+                self.label(
+                    a + along * offset,
+                    name,
+                    *font,
+                    u32::from(vertical),
+                    justification,
+                    color(p.presentation.text_color.unwrap_or(p.color)),
+                );
                 hit = pointer.is_some_and(|p| bounds.contains(p));
                 bounds
             }
@@ -1268,6 +1359,9 @@ pub(super) fn paint(
                 && ((view.selected.is_some()
                     && (view.selected == Some(primitive.id)
                         || view.selected == primitive.component))
+                    || primitive.presentation.parent.is_some_and(|id| {
+                        view.selected == Some(id) || view.sch_selection.contains(&id)
+                    })
                     || view.sch_selection.contains(&primitive.id)
                     || primitive
                         .component
@@ -1478,6 +1572,7 @@ pub(super) fn paint(
                 )
             }),
             clicked: response.clicked(),
+            double_clicked: response.double_clicked(),
             secondary_clicked: response.secondary_clicked(),
             drag_started: response.drag_started_by(egui::PointerButton::Primary),
             dragging: response.dragged_by(egui::PointerButton::Primary),
@@ -1541,6 +1636,71 @@ mod tests {
         ctx.set_fonts(fonts);
         ctx.set_pixels_per_point(pixels_per_point);
         ctx
+    }
+
+    #[test]
+    fn port_native_alignment_and_label_ink_render_independently_of_outline() {
+        let ctx = text_context(1.0);
+        let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 600.0));
+        let camera = Camera {
+            pixels_per_mm: 10.0,
+            ..Default::default()
+        };
+        let mut schematic = Schematic::blank();
+        schematic.fonts[0].name = "Arial".into();
+        let mut origins = vec![];
+        for alignment in [1, 0, 2] {
+            let output = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(rect),
+                    ..Default::default()
+                },
+                |ctx| {
+                    let scene = Scene {
+                        painter: ctx.layer_painter(egui::LayerId::background()),
+                        camera: &camera,
+                        rect,
+                        schematic: Some(&schematic),
+                        document_id: Uuid::nil(),
+                        library_preview: false,
+                    };
+                    let mut p = eda_core::schematic_edit::primitive(
+                        K::Port {
+                            position: Point::mm(0, 0),
+                            width_nm: 30_000_000,
+                            height_nm: 2_540_000,
+                            style: 0,
+                            io_type: 0,
+                            name: "Signal".into(),
+                            font: 0,
+                        },
+                        None,
+                    );
+                    p.color = 128;
+                    p.presentation.text_color = Some(0xff0000);
+                    p.presentation.alignment = Some(alignment);
+                    scene.primitive(&p, None);
+                },
+            );
+            let label = output
+                .shapes
+                .iter()
+                .find_map(|s| match &s.shape {
+                    Shape::Text(t) => Some(t),
+                    _ => None,
+                })
+                .unwrap();
+            assert_eq!(label.fallback_color, Color32::BLUE);
+            origins.push(label.pos.x + label.galley.rect.left());
+        }
+        assert!(
+            origins[0] < origins[1] && origins[1] < origins[2],
+            "Left, Center, Right: {origins:?}"
+        );
+        assert!(
+            (origins[0] - 405.08).abs() < 0.1,
+            "Left uses the native 20 mil inset"
+        );
     }
 
     fn rendered_text(

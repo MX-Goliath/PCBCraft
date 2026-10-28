@@ -983,14 +983,18 @@ fn parameter_section(
                         if !names.insert(key.to_uppercase()) {
                             return Err("Duplicate component parameter".into());
                         }
-                        if record.get("VALUE") == Some(value) && key == name {
+                        if record
+                            .get("VALUE")
+                            .is_some_and(|v| parameters::decode_value(name, v) == *value)
+                            && key == name
+                        {
                             records.push(block.clone());
                         } else {
                             records.push(patch_fields(
                                 block,
                                 &map_changes(&Fields::from([
                                     ("NAME".into(), key.clone()),
-                                    ("VALUE".into(), value.clone()),
+                                    ("VALUE".into(), parameters::encode_value(key, value)),
                                 ])),
                             )?);
                         }
@@ -1002,7 +1006,7 @@ fn parameter_section(
                             &[],
                             &map_changes(&Fields::from([
                                 ("NAME".into(), name.clone()),
-                                ("VALUE".into(), value.clone()),
+                                ("VALUE".into(), parameters::encode_value(name, value)),
                                 ("ISIMPORTED".into(), "TRUE".into()),
                             ])),
                         )?);
@@ -1064,7 +1068,7 @@ fn parameter_section(
                 &[],
                 &map_changes(&Fields::from([
                     ("NAME".into(), name.clone()),
-                    ("VALUE".into(), value.clone()),
+                    ("VALUE".into(), parameters::encode_value(name, value)),
                     ("ISIMPORTED".into(), "TRUE".into()),
                 ])),
             )?);
@@ -1381,7 +1385,19 @@ fn encode_binary(
                 let fallback = patch_fields(&[], &map_changes(&comp.properties))?;
                 let base = raw.get(*index as usize).unwrap_or(&fallback);
                 let mut f = component_changes(comp);
-                f.insert("ID".into(), new_index.to_string());
+                // Re-encoding equal fields can change native legacy text and
+                // numeric spellings even though our importer reads them alike.
+                // A comment ECO must leave the footprint/library/transform bytes
+                // intact, including their native Unicode shadow records.
+                if let Some(original) =
+                    old_board.and_then(|old| old.components.iter().find(|c| c.index == *index))
+                {
+                    let before = component_changes(original);
+                    f.retain(|key, value| before.get(key) != Some(value));
+                }
+                if raw.get(*index as usize).is_none() || index != new_index {
+                    f.insert("ID".into(), new_index.to_string());
+                }
                 records.push(patch_fields(base, &map_changes(&f))?);
             }
         } else if old_board.is_some_and(|old| old.polygons.len() > old.polygon_pours.len()) {
@@ -2420,6 +2436,49 @@ mod tests {
         c.insert("KNOWN".into(), string("new"));
         let b = patch_fields(raw, &c).unwrap();
         assert_eq!(b, b"|KNOWN=new|CUSTOM=one|CUSTOM=two|OPAQUE=\xff\0");
+    }
+    #[test]
+    fn comment_eco_preserves_native_component_numeric_and_legacy_unicode_bytes() {
+        let raw = b"|SOURCEDESIGNATOR=DD1|SOURCECOMMENT=old|UNICODE=EXISTS|PATTERN=\xd2\xc5\xd1\xd2|UNICODE__PATTERN=1058,1045,1057,1058|SOURCEFOOTPRINTLIBRARY=Y:\\lib\\\xcd.PcbLib|UNICODE__SOURCEFOOTPRINTLIBRARY=89,58,92,108,105,98,92,1053,46,80,99,98,76,105,98|ROTATION= 2.70000000000000E+0002|X=3679.6063mil|Y=3562.4803mil|HEIGHT=62.9921mil|LAYER=TOP|LOCKED=TRUE|CUSTOM=one|CUSTOM=two\0";
+        let mut d = doc();
+        d.pcb
+            .as_mut()
+            .unwrap()
+            .components
+            .push(component(fields(raw).unwrap(), d.id, 0).unwrap());
+        let bytes = serialize(&d, Format::Binary).unwrap();
+        let mut native = cfb::CompoundFile::open(Cursor::new(bytes)).unwrap();
+        write_stream(
+            &mut native,
+            "/Components6/Data",
+            &encode_blocks(&[raw.to_vec()]).unwrap(),
+        )
+        .unwrap();
+        let bytes = native.into_inner().into_inner();
+        let mut imported = import_pcb(&bytes, "native.PcbDoc").unwrap();
+        imported.pcb.as_mut().unwrap().components[0].comment = "new comment".into();
+        let edited = serialize(&imported, Format::Preserve).unwrap();
+        let streams = read_streams(&edited).unwrap();
+        let records = property_blocks(&streams["/Components6/Data"]).unwrap();
+        assert_eq!(
+            records[0],
+            patch_fields(
+                raw,
+                &BTreeMap::from([("SOURCECOMMENT".into(), Some("new comment".into()))])
+            )
+            .unwrap()
+        );
+        // An unrelated geometry edit must not rewrite any component field.
+        let mut imported = import_pcb(&bytes, "native.PcbDoc").unwrap();
+        if let Shape::Track { end, .. } = &mut imported.pcb.as_mut().unwrap().items[0].shape {
+            *end = Point::mm(15, 3);
+        }
+        let edited = serialize(&imported, Format::Preserve).unwrap();
+        let streams = read_streams(&edited).unwrap();
+        assert_eq!(
+            property_blocks(&streams["/Components6/Data"]).unwrap()[0],
+            raw
+        );
     }
     #[test]
     fn binary_create_edit_save_reopen_and_untouched_exact() {

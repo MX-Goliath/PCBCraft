@@ -9,6 +9,17 @@ fn main() -> Result<(), String> {
         .filter(|e| e.kind == "schdoc")
         .map(|e| eda_io::altium::load_schematic(&e.path))
         .collect::<Result<_, _>>()?;
+    let sheet_entries: Vec<_> = project
+        .documents
+        .iter()
+        .filter(|e| e.kind == "schdoc")
+        .collect();
+    let compile_sheets: Vec<_> = sheet_entries
+        .iter()
+        .zip(&sheets)
+        .map(|(e, d)| (e.path.as_path(), d))
+        .collect();
+    let options = project.compile_options(&compile_sheets)?;
     let sheets: Vec<_> = sheets.iter().collect();
     let mut available = vec![];
     let mut library_paths: Vec<_> = project
@@ -87,6 +98,89 @@ fn main() -> Result<(), String> {
     for entry in project.documents.iter().filter(|e| e.kind == "pcbdoc") {
         let d = eda_io::load(&entry.path)?;
         let b = d.pcb.as_ref().ok_or("PCB missing")?;
+        if let Some(name) =
+            std::env::args().find_map(|a| a.strip_prefix("--params=").map(str::to_owned))
+        {
+            for doc in &sheets {
+                for c in doc
+                    .schematic
+                    .as_ref()
+                    .unwrap()
+                    .components
+                    .iter()
+                    .filter(|c| c.designator == name)
+                {
+                    println!("SCH params {:?}", c.parameters);
+                }
+            }
+            for c in b.components.iter().filter(|c| c.designator == name) {
+                println!("PCB params {:?}", c.parameters);
+            }
+        }
+        if std::env::args().any(|a| a == "--net-audit") {
+            let nets = design_sync::compile_project(&sheets, &options)?;
+            let mut differences = std::collections::BTreeMap::<String, usize>::new();
+            let mut matched = 0;
+            let mut missing = 0;
+            for pin in &nets.pins {
+                if std::env::args().any(|a| a == "--pin-table") {
+                    println!(
+                        "PINTAB\t{}\t{}\t{}",
+                        pin.designator,
+                        pin.number,
+                        pin.net.as_deref().unwrap_or("")
+                    );
+                }
+                let scene = sheets
+                    .iter()
+                    .find(|d| d.id == pin.sheet)
+                    .unwrap()
+                    .schematic
+                    .as_ref()
+                    .unwrap();
+                let c = scene
+                    .components
+                    .iter()
+                    .find(|c| c.id == pin.component)
+                    .unwrap();
+                let uid = scene
+                    .records
+                    .iter()
+                    .find(|r| r.index == c.source_index)
+                    .and_then(|r| r.fields.get("UNIQUEID"))
+                    .cloned()
+                    .unwrap_or_else(|| c.id.to_string());
+                let targets: Vec<_> = b
+                    .components
+                    .iter()
+                    .filter(|c| {
+                        c.properties.get("SOURCEUNIQUEID").is_some_and(|v| {
+                            v.rsplit(['/', '\\'])
+                                .next()
+                                .unwrap()
+                                .eq_ignore_ascii_case(&uid)
+                        })
+                    })
+                    .collect();
+                if targets.len() != 1 {
+                    missing += 1;
+                    continue;
+                }
+                for pad in b.items.iter().filter(|i|i.component==Some(targets[0].index)&&matches!(&i.shape,eda_core::pcb::Shape::Pad{name,..}if name.eq_ignore_ascii_case(&pin.number))) {
+                    let actual=pad.net.map(|n|b.net_name(Some(n)));
+                    if actual.map(str::to_uppercase)==pin.net.as_ref().map(|n|n.to_uppercase()) {matched+=1;} else {
+                        *differences.entry(format!("{:?} -> {:?}",actual,pin.net)).or_default()+=1;
+                    }
+                }
+            }
+            println!(
+                "Pin audit: {matched} matching pad memberships, {missing} unmatched source pins, {} unresolved source pins",
+                nets.unresolved_pins.len()
+            );
+            for (name, count) in differences {
+                println!("{count} pins: {name}");
+            }
+        }
         let mut footprints = available.clone();
         if std::env::args().any(|a| a == "--reuse-board-footprints") {
             println!(
@@ -104,8 +198,26 @@ fn main() -> Result<(), String> {
             Direction::ToPcb
         };
         let start = std::time::Instant::now();
-        let mut p = design_sync::compare(&sheets, &d, direction, footprints)?;
+        let mut p = design_sync::compare_project(&sheets, &d, direction, footprints, &options)?;
         p.restrict_native_back_annotation();
+        println!(
+            "{}: comparison prepared {} rows in {:?}",
+            d.name,
+            p.changes.len(),
+            start.elapsed()
+        );
+        let mut groups = std::collections::BTreeMap::new();
+        for c in &p.changes {
+            *groups.entry(c.group).or_insert(0usize) += 1;
+        }
+        println!("Groups: {groups:?}");
+        if std::env::args().any(|a| a == "--no-validate") {
+            print!("{}", p.report());
+            for warning in &p.warnings {
+                println!("Warning: {warning}");
+            }
+            continue;
+        }
         let mut docs = vec![&d];
         docs.extend(&sheets);
         let prepared = p.validate(&docs)?;

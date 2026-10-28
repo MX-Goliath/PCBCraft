@@ -1,5 +1,5 @@
 //! Selection transactions, including logical wire spans between bends and junctions.
-use super::drag::{clean, pin_end, wire};
+use super::drag::{clean, pin_ends, wire};
 use super::*;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -33,7 +33,7 @@ fn roots(s: &Schematic, selection: &Selection) -> Result<Selection, String> {
             return Err("Selected object no longer exists".into());
         }
         if s.primitive(*id)
-            .and_then(|p| p.component)
+            .and_then(|p| p.component.or(p.presentation.parent))
             .is_some_and(|id| selection.ids.contains(&id))
         {
             continue;
@@ -115,7 +115,7 @@ fn segment_edges(s: &Schematic, id: Uuid) -> Option<Vec<(Point, Point)>> {
     let path = wire(s.primitive(id)?)?;
     let mut nodes = Vec::new();
     for p in &s.primitives {
-        nodes.extend(pin_end(p));
+        nodes.extend(pin_ends(p));
         if p.id != id
             && let Some(path) = wire(p)
         {

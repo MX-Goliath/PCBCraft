@@ -9,6 +9,131 @@ use std::io::{Cursor, Write};
 const ASCII: &[u8] = include_bytes!("../../../fixtures/schematic/minimal.SchDoc");
 
 #[test]
+fn native_compile_masks_preserve_expanded_and_collapsed_state_and_archive_bytes() {
+    let bytes=[ASCII,b"\n|RECORD=211|LOCATION.X=0|LOCATION.Y=0|CORNER.X=100|CORNER.Y=100\n|RECORD=211|LOCATION.X=200|LOCATION.Y=0|CORNER.X=300|CORNER.Y=100|COLLAPSED=T\n"].concat();
+    let doc = import_schematic(&bytes, "Masks.SchDoc").unwrap();
+    let masks = &doc.schematic.as_ref().unwrap().compile_masks;
+    assert_eq!(masks.len(), 2);
+    assert!(!masks[0].collapsed && masks[1].collapsed);
+    assert_eq!(
+        masks[0].b,
+        Point {
+            x: 25_400_000,
+            y: 25_400_000
+        }
+    );
+    assert_eq!(writer::serialize(&doc).unwrap(), bytes);
+}
+
+#[test]
+fn project_compilation_resolves_current_symbols_relative_to_owner_and_imports_net_preferences() {
+    use eda_core::{Document, DocumentKind, schematic_edit::primitive};
+    let dir = tempfile::tempdir().unwrap();
+    for folder in ["a", "b"] {
+        std::fs::create_dir(dir.path().join(folder)).unwrap();
+    }
+    let paths = [
+        dir.path().join("Main.SchDoc"),
+        dir.path().join("a/Child.SchDoc"),
+        dir.path().join("b/Child.SchDoc"),
+    ];
+    for path in &paths {
+        std::fs::write(path, b"").unwrap();
+    }
+    let path = dir.path().join("Project.PrjPcb");
+    std::fs::write(&path,"[Design]\nHierarchyMode=0\nAllowPortNetNames=0\nAllowSheetEntryNetNames=1\nPowerPortNamesTakePriority=0\nNameNetsHierarchically=0\nNetlistSinglePinNets=0\nAppendSheetNumberToLocalNets=1\n[Document1]\nDocumentPath=Main.SchDoc\n[Document2]\nDocumentPath=a/Child.SchDoc\n[Document3]\nDocumentPath=b/Child.SchDoc\n").unwrap();
+    let project = load_project(&path).unwrap();
+    let mut main = Document::new(DocumentKind::Schematic, "Main.SchDoc");
+    let a = Document::new(DocumentKind::Schematic, "Child.SchDoc");
+    let b = Document::new(DocumentKind::Schematic, "Child.SchDoc");
+    for folder in ["a", "b"] {
+        main.schematic.as_mut().unwrap().primitives.push(primitive(
+            K::SheetSymbol {
+                a: Point::mm(0, 10),
+                b: Point::mm(10, 0),
+                designator: folder.into(),
+                filename: format!("{folder}/Child.SchDoc"),
+            },
+            None,
+        ));
+    }
+    let sheets: Vec<_> = project
+        .documents
+        .iter()
+        .zip([&main, &a, &b])
+        .map(|(e, d)| (e.path.as_path(), d))
+        .collect();
+    let options = project.compile_options(&sheets).unwrap();
+    let links = options.links.as_ref().unwrap();
+    assert_eq!(links.len(), 2);
+    assert_eq!(links[0].child, a.id);
+    assert_eq!(links[1].child, b.id);
+    assert!(
+        !options.allow_port_names && options.allow_entry_names && !options.power_names_priority
+    );
+    assert!(
+        !options.hierarchical_net_names && !options.single_pin_nets && options.append_sheet_number
+    );
+    assert!(options.review_annotation);
+    assert_eq!(options.sheet_paths[&b.id], "b/Child.SchDoc");
+    if let K::SheetSymbol { filename, .. } =
+        &mut main.schematic.as_mut().unwrap().primitives[0].kind
+    {
+        *filename = "missing.SchDoc".into();
+    }
+    let sheets: Vec<_> = project
+        .documents
+        .iter()
+        .zip([&main, &a, &b])
+        .map(|(e, d)| (e.path.as_path(), d))
+        .collect();
+    assert!(
+        project
+            .compile_options(&sheets)
+            .unwrap_err()
+            .contains("missing or outside")
+    );
+}
+
+#[test]
+fn native_port_preserves_alignment_fill_border_height_and_far_connection() {
+    let header = std::str::from_utf8(ASCII)
+        .unwrap()
+        .lines()
+        .take(2)
+        .collect::<Vec<_>>()
+        .join("\n");
+    let text = format!(
+        "{header}\n|RECORD=18|LOCATION.X=442|LOCATION.X_FRAC=91340|LOCATION.Y=305|LOCATION.Y_FRAC=11812|WIDTH=49|WIDTH_FRAC=21260|HEIGHT=9|HEIGHT_FRAC=84252|IOTYPE=1|ALIGNMENT=2|BORDERWIDTH=1|AREACOLOR=8454143|COLOR=128|NAME=KL30|FONTID=1\n|RECORD=27|LOCATIONCOUNT=2|X1=492|X1_FRAC=12600|Y1=305|Y1_FRAC=11812|X2=600|Y2=305|Y2_FRAC=11812\n"
+    );
+    let doc = import_schematic(text.as_bytes(), "Ports.SchDoc").unwrap();
+    let s = doc.schematic.as_ref().unwrap();
+    let port = s
+        .primitives
+        .iter()
+        .find(|p| matches!(p.kind, K::Port { .. }))
+        .unwrap();
+    assert_eq!(port.presentation.alignment, Some(2));
+    assert_eq!(port.fill, Some(8454143));
+    assert_eq!(port.width_nm, 254_000);
+    assert!(matches!(
+        port.kind,
+        K::Port {
+            height_nm: 2_500_000,
+            ..
+        }
+    ));
+    // A native 12.5 mm-wide KL30 Port connects at its right-hand edge.
+    let wire = s
+        .primitives
+        .iter()
+        .find(|p| matches!(p.kind, K::Polyline { .. }))
+        .unwrap();
+    assert!(eda_core::cross_probe::touches(port, wire));
+    assert_eq!(writer::serialize(&doc).unwrap(), text.as_bytes());
+}
+
+#[test]
 fn fractional_native_pin_endpoints_remain_connected_after_nm_conversion() {
     use eda_core::schematic_edit::electrical_endpoint;
     for sign in [1, -1] {
@@ -494,13 +619,26 @@ fn project_sheet_tree_reads_references_without_importing_geometry() {
     let path = dir.path().join("tree.PrjPcb");
     std::fs::write(
         &path,
-        "[Design]\n[Document1]\nDocumentPath=main.SchDoc\n[Document2]\nDocumentPath=child.SchDoc\n",
+        "[Design]\n[Document1]\nDocumentPath=child.SchDoc\n[Document2]\nDocumentPath=main.SchDoc\n",
     )
     .unwrap();
+    std::fs::write(path.with_extension("PrjPcbStructure"), "Record=TopLevelDocument|FileName=main.SchDoc|SheetNumber=1\nRecord=SheetSymbol|SourceDocument=main.SchDoc|FileName=child.SchDoc|SheetNumber=2\n").unwrap();
     let p = load_project(&path).unwrap();
     assert_eq!(
-        p.sheet_children[&p.documents[0].path],
-        [p.documents[1].path.clone()]
+        p.sheet_children[&p.documents[1].path],
+        [p.documents[0].path.clone()]
+    );
+    assert_eq!(p.sheet_number(&p.documents[1].path), Some(1));
+    assert_eq!(p.sheet_number(&p.documents[0].path), Some(2));
+    assert_eq!(
+        p.resolve_sheet(&p.documents[1].path, "child.SchDoc")
+            .unwrap()
+            .path,
+        p.documents[0].path
+    );
+    assert!(
+        p.resolve_sheet(&p.documents[1].path, "other/child.SchDoc")
+            .is_none()
     );
 }
 

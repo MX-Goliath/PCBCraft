@@ -1,5 +1,61 @@
 use super::*;
 
+#[test]
+fn port_far_end_connects_snaps_and_drags_without_using_io_direction() {
+    for style in [0, 4] {
+        for io_type in 0..4 {
+            let mut doc = Document::new(DocumentKind::Schematic, "Ports");
+            let at = Point::mm(40, 40);
+            let port = primitive(
+                K::Port {
+                    position: at,
+                    width_nm: 10_000_000,
+                    height_nm: 2_500_000,
+                    style,
+                    io_type,
+                    name: "SIGNAL".into(),
+                    font: 0,
+                },
+                None,
+            );
+            let end = if style == 0 {
+                Point::mm(50, 40)
+            } else {
+                Point::mm(40, 50)
+            };
+            let id = port.id;
+            doc.schematic.as_mut().unwrap().primitives.push(port);
+            let s = doc.schematic.as_ref().unwrap();
+            assert!(connection_at(s, end));
+            assert_eq!(
+                snap_point(
+                    s,
+                    Point {
+                        x: end.x + 100,
+                        y: end.y + 100
+                    },
+                    1_000_000,
+                    500
+                ),
+                end
+            );
+            let wire_id = add_wire(&mut doc, vec![end, Point::mm(70, 60)]);
+            let s = doc.schematic.as_ref().unwrap();
+            assert!(crate::cross_probe::touches(
+                s.primitive(id).unwrap(),
+                s.primitive(wire_id).unwrap()
+            ));
+            let moved = preview(&doc, &command(vec![id], 0, Point::mm(5, 5))).unwrap();
+            let scene = moved.schematic.as_ref().unwrap();
+            assert!(crate::cross_probe::touches(
+                scene.primitive(id).unwrap(),
+                scene.primitive(wire_id).unwrap()
+            ));
+            assert_eq!(path(&moved, wire_id).last(), Some(&Point::mm(70, 60)));
+        }
+    }
+}
+
 fn fixture() -> (Document, Uuid, Point, Point) {
     let mut doc = Document::new(DocumentKind::Schematic, "Connected drag");
     let f = place(Placement::Resistor, Point::mm(40, 40), 0, "R1", "10k", 0).unwrap();

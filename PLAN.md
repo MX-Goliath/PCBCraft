@@ -1421,3 +1421,304 @@ Cause, implementation and validation: docs/pcb-update/INTERACTIVE_ROUTING.md.
   пользовательскими документами не перезапускался. Portable ZIP этим изменением
   не пересобирался.
 - Проверки: fmt и строгий Clippy проходят; workspace tests — 516 pass / 1 прежний GPU routing fail (difference 4 при допуске 3).
+
+### 2026-10-27 — иерархическая схема ReferenceG, продолжаемый этап
+
+- Перед началом изменения импорта/portable/темы закоммичены: 68eb55e. Новые
+  изменения иерархии остаются в рабочем дереве; отдельного push пользователь
+  в этом запросе не поручал.
+- Источник: ReferenceGWorkspace/ReferenceG.PrjPcb. Импортированы все 9 SchDoc, верхний
+  Main содержит 8 Sheet Symbols, 410 Entries и 410 wires; дочерние листы —
+  410 Ports. Keys ранее отклонялся из-за четырёх 13-точечных Bezier: теперь
+  поддержаны цепочки кубических сегментов 3n+1.
+- Sheet Symbol/Entry получили типизированную модель и parent identity,
+  принадлежащие подписи имени/файла, корректные единицы DistanceFromTop
+  (100 mil, _FRAC1 / 1e6), однократное округление абсолютной координаты.
+  Перемещение/resize/редактирование имени, групповое копирование/удаление,
+  перетаскивание с проводами проходят через core History.
+- Native SchDoc writer сохраняет поддержанные изменения существующих Symbol,
+  Entry, подписей и wires; проверяет parent ID и точные связи после повторного
+  импорта. Добавлены ASCII/CFB roundtrip, Unicode filename, group move/delete
+  и copy identity regression tests. Вставка новых native hierarchy пока не
+  поддержана; размещение и синхронизация Entries отключены.
+- Навигация Tools > Up/Down Hierarchy и Ctrl+double-click связывает блок/Entry
+  с дочерним листом/Port и Port с родительским Entry. Используется только
+  текущий проект, относительный путь владельца, загружаются только необходимые
+  листы. Неоднозначные экземпляры отклоняются явно. PrjPcbStructure задаёт
+  исходные номера листов в Projects и вкладках, Main открывается первым.
+- 27 октября Computer Use восстановился после остановки по Escape. На живом
+  Altium 24.4.1 просмотрены U_Connector и Entry KL30, 4 формы Kind; Up/Down
+  Hierarchy открыл Connector.SchDoc на KL30. В PCBCraft проверено отображение
+  Main (все 8 блоков), выбор блока и переход Entry ACC → Connector Port ACC.
+  По наблюдениям исправляются Properties и порядок меню; Parameters Symbol,
+  неотрисованные формы Kind, Device/Managed и прочие неподдержанные действия
+  показаны отключёнными. Оригиналы SchDoc в Altium не изменялись.
+- Компилятор соединяет Entry/Port по явному owner/имени; повторные локальные
+  designators разных листов больше не замыкают pins между собой. Тест с двумя
+  дочерними R1 и одинаковыми именами локальных Ports проверяет разделение.
+  Multichannel/buses/harness не объявлены поддержанными.
+- Полная электрическая проверка ReferenceG пока не завершена: compile сообщает
+  конфликт GND/1V8; 68 Entries не совпадают точно с концами wires (например
+  ширина блока даёт x=199999600 nm против wire x=200000006 nm). Автоматического
+  объединения по близости нет. Полное соответствие Altium не заявляется.
+
+- Дополнительный read-only trace нашёл путь ложного GND/1V8 объединения:
+  ReferenceJ record 24078 GND → wire 27710 → C386-1 record 24353 → другой
+  C386-1 record 22702 → wire 27585 → 1V8 record 22759. Это два отдельных
+  односекционных компонента с одинаковым локальным designator. Компилятор
+  теперь явно отклоняет такую неоднозначность до объединения pins; отдельный
+  regression проверяет отказ и сохранение поддержки настоящих разных parts.
+  Полная compiled annotation/Component Links для этого проекта ещё не восстановлена.
+- Первый полный прогон после навигации: 520 pass / тот же прежний GPU routing
+  failure (Rgba8Unorm frame 13, dither=true, difference 4). После проверки
+  дубликатов и исправления ширины таблицы Sheet Entries выполняется повторный
+  финальный прогон. Строгий Clippy и fmt проходят.
+
+- Финальный повтор: fmt --check и строгий workspace/all-target Clippy проходят;
+  cargo test --workspace — 521 pass, 1 прежний GPU fail с теми же параметрами.
+  Dev executable собран; Computer Use проверил в финальном окне Main [1],
+  U_Connector Properties, исправленные колонки Entries и выбор KL30 из таблицы.
+  Новая сборка оставлена в одном экземпляре, без записи исходного проекта.
+  Логи: target/hierarchy-{clippy,workspace-tests,build,navigation-tests,trace}.txt.
+
+- Последняя живая сверка дочернего Connector/KL30 обнаружила старый Port bug:
+  Output рисовался вправо вместо влево, Unspecified имел стрелку, высота 2.5 mm
+  подменялась 2.54 mm, игнорировались BorderWidth/Alignment/fill. Исправлены
+  импорт и отрисовка; Alignment показан в Properties вместо неподходящего Style.
+  Учитываются обе концевые точки Port в connectivity RTree, cross-probe,
+  wire handles/junctions, snapping и drag; I/O type не меняет электрические точки.
+  Разные типы net identifiers не соединяются только по одинаковому имени.
+  Официальная справка (поведение I/O и Direction, net scope):
+  https://www.altium.com/documentation/altium-designer/schematic/multi-sheet-hierarchical-designs
+  https://www.altium.com/documentation/altium-designer/schematic/creating-circuit-connectivity
+- После Port: fmt --check и строгий Clippy проходят. Полный workspace прогон:
+  523 pass / один прежний GPU routing fail (difference 4). Native KL30 far-end
+  roundtrip и горизонтальный/вертикальный Port snap/drag со всеми I/O проходят.
+  Port Direction preference, legacy styles, полные project naming/net-scope
+  настройки и локализация power ports остаются отдельными расхождениями.
+
+- В окне финальной сборки повторен Entry KL30 → Connector/KL30: открылись
+  только Main [1] и Connector [7]; стрелка Output направлена влево, Gnd без
+  стрелки, Properties показывает 12.5 × 2.5 mm, Small border, Right alignment.
+  Повторный read-only ReferenceG probe теперь останавливается на первом дубликате VD12
+  в ReferenceL.SchDoc до расчёта связей (в ReferenceJ также есть ранее найденный C386).
+  Все 9 листов загружаются; исходные документы не записывались.
+
+### 2026-10-27 — Synchronize Sheet Entries and Ports
+
+- Эталон: живой AD Enterprise 24.4.1, Design > Synchronize Sheet Entries
+  and Ports и all-matched состояние исходного ReferenceG. Диалог 864×511, три списка,
+  вкладки блоков, фильтр unmatched, направленный перенос, unlink, add/delete
+  и немедленный Undo в изменённом документе. Поведение дополнительно сверено
+  с официальной Multi-sheet & Hierarchical Designs (Synchronizing the Ports
+  and Sheet Entries):
+  https://www.altium.com/documentation/altium-designer/schematic/multi-sheet-hierarchical-designs
+- eda-core сравнивает Name/I/O Type/Harness Type, готовит транзакции переноса
+  без изменения геометрии существующего объекта и проводов; размещает
+  отсутствующие Ports и Entries группой на выбранной стороне владельца.
+- Приложение: весь проект или один Sheet Symbol, три списка и вкладки,
+  Ctrl/Shift/drag/Select All, unlink/relink, перенос в обе стороны, add/delete.
+  Preview не меняет документ; click/Enter размещает, Esc/right-click отменяет
+  и возвращает диалог. История отдельная для каждого листа; session/revision
+  guards отклоняют устаревшее размещение. При добавлении Entries камера
+  фокусируется на нужном блоке. Harness Type редактируется в Properties.
+- Native SchDoc: новые записи 16/18, существующие Name/IO/Harness и геометрия
+  Port, удаление, tree insertion/Weight/owner remap, стабильный UID при повторном
+  Save и rename без перезагрузки source archive. Text frames 209 и Additional
+  drawing regions 225 сохраняются; неизвестные index dependencies по-прежнему
+  блокируют небезопасную запись. Проверка точных электрических касаний
+  выполняется до допустимой нормализации округления координат.
+- Исходный ReferenceG: все 410 Entry/Port пар совпали. В отдельном каталоге
+  target/entry-sync-qa-20261027-a сохранены копии девяти SchDoc. В живом PCBCraft
+  Add Ports создал QA_ENTRY_ONLY, P → E согласовал KL30 (Output → Input),
+  Add Sheet Entries создал QA_PORT_ONLY на U_Connector. Диалог показал all
+  matched; Save All записал обе копии. Свежий импорт с диска подтвердил
+  412 пар / 0 unmatched. Исходные пользовательские SchDoc не записывались.
+- GUI QA обнаружила раздувание Links по горизонтали, конфликт Esc и deadlock
+  context input/memory при открытии подменю. Исправлены вертикальная компоновка,
+  обработка Esc и получение состояния popup до input closure; регрессии
+  проверяют длинный список, Esc, клики подменю, перенос в обе стороны,
+  unlink/relink, отмену, stale guards и Undo. Native тесты также проверяют
+  ASCII/CFB/Unicode, insert/update/delete и сохранность Additional payload.
+- Полное визуальное совпадение не объявляется: остаются native icons,
+  типографика и изменение ширины колонок. Live Altium reopen этой QA копии
+  не подтверждён: файловый диалог возвращал тайм-ауты activate_window/click;
+  после recovery дальнейший ввод в Altium остановлен. Linux не проверялся.
+  Metadata Harness Type не означает готовность bus/harness compilation.
+- Финальные проверки синхронизации: cargo fmt --all -- --check и строгий
+  workspace/all-target Clippy проходят. cargo test --workspace --no-fail-fast:
+  534 pass / один прежний GPU routing fail (Rgba8Unorm, frame 13, dither=true,
+  difference 4). Все 6 новых app interaction tests, 3 core sync tests и
+  11 native writer tests проходят. Dev executable собран.
+  Логи: target/entry-sync-{fmt,clippy,workspace-tests,build,reopened-qa}.txt.
+- Последующая живая проверка: контекстный вызов одного U_Connector,
+  отображение его matched-списка, Esc и глобальные 8 вкладок работают;
+  исходный Main остаётся без изменений. Быстрое протягивание дополнено
+  обработкой press/move/release в одном кадре; один interaction test
+  проверяет как объединённые, так и раздельные события.
+
+- После закрытия блокирующего файлового окна Computer Use восстановился.
+  AD24.4.1 открыл SheetSync_QA.PrjPcb и обе сохранённые схемы: all matched,
+  8 вкладок; U_Connector/KL30 — Input. В Links присутствуют QA_ENTRY_ONLY и
+  QA_PORT_ONLY, оба Input. Новый Entry виден на Main, новый Port — на Connector
+  в 70 / 122.5 mm. Это живая проверка native reopen, не только наш reimport.
+- По живому диалогу уточнены 864×511, размеры/отступы трёх списков, строки
+  17 px, кнопки переноса и вкладки. Колонки теперь изменяют ширину;
+  interaction regression проверяет resize без случайного выбора строки.
+  Иконки нарисованы собственными векторами; точное растровое совпадение
+  и все настройки размещения не подтверждены.
+- Properties созданного Port в Altium подтвердил ALIGNMENT=0 как Center
+  (1 — Left, 2 — Right). Исправлены renderer и Properties. TEXTCOLOR теперь
+  независим от COLOR: импорт отсутствующего поля даёт native black,
+  новые синхронизированные Ports получают красную подпись, native save
+  сохраняет отдельный цвет. ASCII/CFB regression проверяет раздельные
+  изменения подписи/контура и выравнивание. FONTID=2 и SYSTEMFONT=2 в копии
+  корректно ссылаются на Altium GOST Type A; менять таблицу шрифтов не нужно.
+  В живом Altium Font combo пуст и у исходного KL30, поэтому это состояние
+  не свидетельствует об ошибке FONTID созданного Port.
+- Повторная проверка после правок Port: 536 unit tests проходят; остаётся
+  единственный прежний GPU routing/dither fail (frame 13, difference 4 при
+  допуске 3). Допуск не изменён. Новый renderer regression проверяет фактические
+  позиции подписей Left/Center/Right и независимый цвет текста.
+- Окно новой сборки проверено на исходном ReferenceG: диалог 864×511, all matched,
+  затем все восемь вкладок и заполненные Links. Быстрое CU-перетаскивание
+  разделителя выявило потерю изменения ширины при объединённых событиях;
+  добавлено отслеживание исходного press и последней координаты, тест
+  расширен на press/move/release в одном кадре. Документы остаются чистыми.
+- Финальная Windows-сборка: быстрый CU drag границы Links с x1242 на x1260
+  действительно изменяет ширину, строки не выбираются. Fmt и строгий Clippy
+  проходят, workspace сохраняет 536 pass / один прежний GPU fail. Запущен один
+  PCBCraft на исходном ReferenceG, пользовательские схемы не записывались.
+
+
+### 2026-10-27 — hierarchical schematic/PCB ECO on ReferenceG
+
+- Implemented: removed the app's blanket hierarchy rejection. Current editable
+  Sheet Symbol filenames resolve relative to their owners; full symbol/component
+  UID paths and sheet/component pin identities prevent cross-sheet collisions.
+  Duplicate/unannotated source can be reviewed without losing stable linked
+  components; unsupported source nets are protected from silent destructive edits.
+- Implemented: project scope/naming flags, Entry/Port union, localized power,
+  multipart logical reference folding, native Compile Masks (expanded/collapsed,
+  fully enclosed objects and strict mask boundaries), legacy/modern component
+  kinds, preserved PCB Layer metadata, native ComponentLink URL `=`/`{}` codec.
+  Native nonzero HierarchyMode and NameNetsHierarchically=1 are explicitly disabled
+  pending observation; repeated sheet/multichannel instances and bus/harness/hidden
+  pins remain unsupported. A masked Sheet Symbol requires whole-child exclusion
+  and is diagnosed, not partially compiled.
+- Observed: native ReferenceG fractional hotspots differ from attached wires by 10–1580 nm.
+  Implemented: project compiler-only 2540 nm hotspot-to-segment tolerance; drawing
+  and native source geometry stay unchanged, bare interior crossings stay separate.
+  This is a corpus-calibrated compatibility rule, not a proven universal AD constant.
+- Observed: AD24.4.1 exported the original ReferenceG project as Protel netlist,
+  478 distinct names and 2647 pin memberships. Independent compilation matches
+  all memberships/names ignoring case, with no missing native pins. Lowercase
+  name ordering resolves TR_WK vs TRANSP_WK and Uni_*_PU_* aliases. Root-sheet
+  spelling is deterministic for equal folded names. Exact case is audited below.
+- Observed: the native ECO displayed four Add Rooms only, with no Execute Changes.
+  The exported netlist omits single-pin HSM_OE/Shutdown present in the PCB. Exact
+  native ECO/comparator-option agreement is therefore NOT established. The app
+  retains explicit review/selection; unrelated floating source pins missing in
+  the footprint no longer produce a spurious Unknown Pin disconnect.
+- Implemented: scalar ECO operations preflight then mutate private staged state;
+  geometric edits clone only affected documents. Final full validation and History
+  guards remain. Original ReferenceG comparison+validation fell from minutes of per-row
+  full-project clones to about 1.8 seconds in the dev profile.
+- Verified: isolated target/hierarchy-eco-qa-20261027-c. DD1 unlocked only in the
+  in-memory QA copy; forward comment + TCK→QA_TCK, reverse child-sheet comment,
+  unchanged nontext PCB items/copper and net index, exact Undo/Redo, all nine native
+  SchDoc saves/reimports and native PcbDoc save/reimport. Source project hashes
+  checked independently. Regression tests cover identities, masks/boundaries,
+  power scope, naming, tolerance, parameter namespaces, kind versions and staging.
+- GUI limitation: later CU activation failed (`failed to activate captured window`);
+  fresh captures of Altium and PCBCraft were black. Asked the user to unlock the
+  session/close the old PCBCraft. A separate dev executable was prepared in
+  target/hierarchy-qa/pcbcraft.exe without launching another instance. Final live
+  window verification remains pending. No native source project was saved.
+- Final check results and reference audit follow below.
+
+- Safety follow-up: original ReferenceG's remaining four single-pin-removal rows are
+  explicitly unavailable in project review, with the native ECO uncertainty
+  explained. Export omission is not treated as authorization to disconnect PCB
+  pins. A regression ensures no changed document is staged from such rows.
+- Reference spelling audit: 79 memberships across 3V3_MCU/PROG/MCU_ON still use
+  different case from Altium's export; all 478 names/2647 memberships agree
+  case-insensitively. No case-only PCB pin update is generated. Exact native
+  capitalization selection is not claimed.
+
+- Final verification: fmt check and strict workspace/all-target Clippy PASS.
+  Full workspace: 554 unit tests PASS; one previously existing GPU routing
+  Rgba8Unorm frame-13/dither failure remains (pixel difference 4, tolerance 3).
+  No tolerance in that test was changed. Original ReferenceG: 4 review-only unavailable
+  single-pin rows, 0 applicable destructive operations, compare+validate ~1.8 s.
+  Final reference audit: 2647/2647 memberships, 478/478 names ignoring case,
+  no missing reference pins. All 11 original source SHA256 hashes unchanged.
+  Native QA roundtrip PASS in target/hierarchy-eco-qa-20261027-c.
+  Latest dev executable: target/hierarchy-qa/pcbcraft.exe (built successfully
+  with an alternate rustc output path because the old debug executable is running).
+  Logs: target/hierarchy-{fmt-final,clippy-final,workspace-final,build-final,
+  net-audit-final,reference-audit,roundtrip}.txt.
+
+
+### 2026-10-28 — resumed live hierarchy ECO verification
+
+- Windows session became accessible. The old debug PCBCraft had unsaved Main
+  changes; saved them through File/Save As to
+  target/session-recovery-20261028/Main-before-restart.pcbcraft.json. The source
+  archive and all 410 Sheet Entries are retained. Original 11 source files still
+  match their prior SHA256 hashes. Closed the old app cleanly after that save.
+- sky.launch_app twice failed before starting a process (`accessibility
+  window-opened handler did not become ready`). A normal development-process
+  launch started target/hierarchy-qa/pcbcraft.exe with isolated QA project
+  target/hierarchy-eco-qa-20261027-c/ReferenceG.PrjPcb, after checking zero live instances.
+  Exactly one new PCBCraft is running, initially titled ReferenceK.SchDoc.
+- After launch, capture/activation failed twice despite refreshing selection:
+  `foreground window did not report a process id`. Asked the user to foreground
+  PCBCraft manually. No automated inputs followed the failed recovery. Final live
+  ECO execution/reopen is still pending; prior core/native QA checks remain valid.
+
+
+### 2026-10-28 — live hierarchical ECO and native component preservation
+
+- Resetting the Computer Use JS kernel recovered capture after manual
+  foregrounding. On isolated QA ReferenceG-c, all nine sheets and PCB loaded through
+  Design/Update PCB. Baseline ECO showed four explicitly unavailable single-pin
+  removal rows. No baseline destructive operation was executable.
+- GUI forward QA: MCU/DD1 Comment -> GUI Forward Hierarchy QA; Validate/Execute
+  succeeded. Tools/Cross Probe located PCB DD1 and Properties confirmed the value.
+  GUI reverse QA: PCB DD1 Comment -> GUI Reverse Hierarchy QA; Design/Update
+  Schematics produced exactly one enabled comment row targeting ReferenceK.SchDoc.
+  Validate/Execute, child-sheet Properties, menu Undo and Ctrl+Y all confirmed it.
+  Other eight sheets stayed clean. Save All wrote QA native files; fresh comparison
+  returned the same four unavailable baseline rows. AD24.4.1 opened both files
+  and showed the changed DD1 comment in both editors.
+- Native reopening exposed a persistence defect: Components6 rewrote equal
+  fields on unrelated edits. Cyrillic legacy fields became numeric HTML entities,
+  and numeric spellings changed; AD then showed corrupt library metadata,
+  rotation 0 and height 0 on DD1. Fix: delta-patch only semantically changed
+  component fields, leaving unchanged native bytes and ID spelling intact.
+  Added a binary regression for a comment ECO and unrelated track edit, including
+  scientific notation, mil units, legacy Cyrillic, Unicode shadows and duplicates.
+- New original-source QA roundtrip in target/hierarchy-eco-qa-20261028-d PASS:
+  forward comment/net rename, reverse comment to correct MCU child, native
+  save/reimport and exact Undo/Redo. Independent raw CFB audit: 1270/1271 component
+  blocks byte-identical; DD1 changes only intentional LOCKED and SOURCECOMMENT.
+  The entire remaining DD1 byte sequence is preserved, not merely decoded values.
+- AD24.4.1 reopened fixed QA-d: DD1 Comment = PCBCraft reverse hierarchy QA;
+  Rotation = 270, Height = 1.6mm, Design Item ID = 5696, Source = DB.DbLib;
+  Cyrillic footprint and library path plus description now display correctly.
+  This does not verify all newly changed Unicode/numeric native values.
+- fmt check and strict workspace/all-target Clippy PASS. Workspace unit tests:
+  555 PASS, 1 existing GPU routing dither mismatch (Rgba8Unorm, frame 13,
+  difference 4 versus tolerance 3). Tolerance unchanged. Latest build succeeded
+  at target/hierarchy-qa/pcbcraft.exe; old app closed cleanly before launching
+  exactly one replacement on QA-d. Logs: target/hierarchy-{fmt-gui,clippy-gui,
+  workspace-gui,roundtrip-gui,build-gui,native-fields-fixed,gui-save-audit}.txt.
+- Remaining responsiveness issue: native Save All blocked GUI for about 20 s
+  while PCB serialization/verification ran, then recovered with clean documents.
+  Native comparator single-pin/rooms parity, exact capitalization, multichannel,
+  buses/harnesses, nondefault scopes and all other listed limits remain open.
+- Final fresh-window check: replacement PCBCraft PID 35832 loaded QA-d MCU
+  cleanly and responds; exactly one live instance. Altium also shows the reverse
+  comment on QA-d MCU/DD1. All 11 original SCH/PCB/PrjPcb SHA256 hashes remain
+  unchanged after both native reopen checks. No commit or push performed.

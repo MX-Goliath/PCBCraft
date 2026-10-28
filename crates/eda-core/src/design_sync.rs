@@ -6,7 +6,10 @@ use uuid::Uuid;
 
 #[path = "design_sync_netlist.rs"]
 mod netlist;
-pub use netlist::{Netlist, Pin, compile};
+pub use netlist::{Netlist, Pin, compile, compile_project};
+#[path = "design_sync_project.rs"]
+mod project;
+pub use project::{NetScope, ProjectOptions, SheetLink};
 #[cfg(test)]
 #[path = "design_sync_tests.rs"]
 mod tests;
@@ -31,6 +34,7 @@ struct LogicalComponent {
     library_source: String,
     library_reference: String,
     kind: u32,
+    annotation_error: Option<String>,
 }
 fn field<'a>(fields: &'a pcb::Fields, key: &str) -> Option<&'a str> {
     fields
@@ -39,12 +43,21 @@ fn field<'a>(fields: &'a pcb::Fields, key: &str) -> Option<&'a str> {
         .map(|(_, v)| v.trim())
         .filter(|v| !v.is_empty())
 }
+fn pcb_kind(c: &pcb::Component) -> u32 {
+    field(&c.properties, "COMPONENTKINDVERSION2")
+        .or_else(|| field(&c.properties, "COMPONENTKIND"))
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0)
+}
 fn uid_matches(a: &str, b: &str) -> bool {
-    a.eq_ignore_ascii_case(b)
-        || a.rsplit(['/', '\\'])
-            .next()
-            .unwrap()
-            .eq_ignore_ascii_case(b.rsplit(['/', '\\']).next().unwrap())
+    let a = a.trim_matches(['/', '\\']).replace('/', "\\");
+    let b = b.trim_matches(['/', '\\']).replace('/', "\\");
+    a.eq_ignore_ascii_case(&b)
+        || !(a.contains('\\') && b.contains('\\'))
+            && a.rsplit('\\')
+                .next()
+                .unwrap()
+                .eq_ignore_ascii_case(b.rsplit('\\').next().unwrap())
 }
 fn footprint(c: &schematic::Component) -> String {
     let models: Vec<_> = c
@@ -60,13 +73,49 @@ fn footprint(c: &schematic::Component) -> String {
         .map(|m| m.name.clone())
         .unwrap_or_default()
 }
-fn components(sheets: &[&Document]) -> Result<Vec<LogicalComponent>, String> {
+fn components(
+    sheets: &[&Document],
+    options: &ProjectOptions,
+) -> Result<Vec<LogicalComponent>, String> {
+    let graph = project::hierarchy(sheets, options)?;
+    let excluded: HashMap<_, _> = sheets
+        .iter()
+        .map(|d| {
+            (
+                d.id,
+                crate::schematic_compile::exclusions(d.schematic.as_ref().unwrap()),
+            )
+        })
+        .collect();
+    let mut slots = HashSet::new();
+    let mut ambiguous = HashSet::new();
+    for doc in sheets {
+        for c in doc
+            .schematic
+            .as_ref()
+            .unwrap()
+            .components
+            .iter()
+            .filter(|c| {
+                !matches!(c.settings.kind, 1 | 2) && !excluded[&doc.id].components.contains(&c.id)
+            })
+        {
+            let name = project::logical_designator(c).to_uppercase();
+            if !slots.insert((name.clone(), c.part)) {
+                ambiguous.insert(name);
+            }
+        }
+    }
     let mut result: Vec<LogicalComponent> = vec![];
     let mut parts: HashMap<String, HashSet<u32>> = HashMap::new();
     let mut unique_owners = HashMap::new();
     for doc in sheets {
         let s = doc.schematic.as_ref().ok_or("Expected a schematic sheet")?;
-        for c in &s.components {
+        for c in s
+            .components
+            .iter()
+            .filter(|c| !excluded[&doc.id].components.contains(&c.id))
+        {
             // Mechanical and graphical symbols have no electrical PCB counterpart.
             if matches!(c.settings.kind, 1 | 2) {
                 continue;
@@ -74,13 +123,16 @@ fn components(sheets: &[&Document]) -> Result<Vec<LogicalComponent>, String> {
             if c.settings.kind > 6 {
                 return Err(format!("Unsupported component type on {}", c.designator));
             }
-            if c.designator.trim().is_empty() || c.designator.contains('?') {
+            let designator = project::logical_designator(c);
+            if !options.review_annotation
+                && (designator.trim().is_empty() || designator.contains('?'))
+            {
                 return Err(format!(
                     "Annotate {} before synchronization ({})",
                     doc.name, c.designator
                 ));
             }
-            let key = c.designator.to_uppercase();
+            let key = designator.to_uppercase();
             let unique = s
                 .records
                 .iter()
@@ -88,6 +140,11 @@ fn components(sheets: &[&Document]) -> Result<Vec<LogicalComponent>, String> {
                 .and_then(|r| field(&r.fields, "UNIQUEID"))
                 .map(str::to_owned)
                 .unwrap_or_else(|| c.id.to_string());
+            let unique = if graph.paths[&doc.id].is_empty() {
+                unique
+            } else {
+                format!("{}\\{}", graph.paths[&doc.id], unique)
+            };
             if unique_owners
                 .insert(unique.to_uppercase(), key.clone())
                 .is_some_and(|owner| owner != key)
@@ -127,10 +184,10 @@ fn components(sheets: &[&Document]) -> Result<Vec<LogicalComponent>, String> {
                     c.designator
                 ));
             }
-            if let Some(old) = result
-                .iter_mut()
-                .find(|p| p.designator.eq_ignore_ascii_case(&c.designator))
-            {
+            if let Some(old) = result.iter_mut().find(|p| {
+                p.designator.eq_ignore_ascii_case(designator)
+                    && !(options.review_annotation && ambiguous.contains(&key))
+            }) {
                 let first = sheets
                     .iter()
                     .find_map(|d| {
@@ -163,7 +220,7 @@ fn components(sheets: &[&Document]) -> Result<Vec<LogicalComponent>, String> {
                 result.push(LogicalComponent {
                     parts: vec![(doc.id, c.id)],
                     unique_ids: vec![unique],
-                    designator: c.designator.clone(),
+                    designator: designator.to_owned(),
                     comment: c.comment.clone(),
                     description: c.description.clone(),
                     footprint: footprint(c),
@@ -173,6 +230,7 @@ fn components(sheets: &[&Document]) -> Result<Vec<LogicalComponent>, String> {
                     library_source: c.settings.source.clone(),
                     library_reference: c.library_reference.clone(),
                     kind: c.settings.kind,
+                    annotation_error: if designator.trim().is_empty() || designator.contains('?') { Some(format!("Annotate {} on {} before transferring this component",designator,doc.name)) } else if ambiguous.contains(&designator.to_uppercase()) { Some(format!("Duplicate schematic designator {} on {}; annotate the distinct components",designator,doc.name)) } else { None },
                 });
             }
         }
@@ -387,15 +445,56 @@ impl Plan {
             if !c.enabled {
                 continue;
             }
-            let mut candidate = next.clone();
+            let required_footprint = match &c.operation {
+                Operation::AddComponent(component, ..) => Some(&component.footprint),
+                Operation::PcbValue(_, Value::Footprint(name)) => Some(name),
+                _ => None,
+            };
+            if let Some(name) = required_footprint
+                && !self
+                    .footprints
+                    .iter()
+                    .any(|f| f.name().eq_ignore_ascii_case(name))
+            {
+                c.check = Some(Err(format!("Footprint Not Found {name}")));
+                continue;
+            }
+            if scalar_pcb_operation(&c.operation) {
+                // These operations validate all dependencies before mutating.
+                // Full geometry validation still runs on the final private result.
+                let result = apply_pcb_scalar(
+                    &c.operation,
+                    next.iter_mut()
+                        .find(|d| d.id == self.pcb)
+                        .and_then(|d| d.pcb.as_mut())
+                        .ok_or("PCB missing")?,
+                );
+                c.check = Some(result.clone());
+                if result.is_ok() {
+                    rows.push(n);
+                }
+                continue;
+            }
+            let affected = |d: &&Document| match &c.operation {
+                Operation::SchValue(parts, _) => parts.iter().any(|(id, _)| *id == d.id),
+                Operation::SchNet { primitives, .. } => {
+                    primitives.iter().any(|(id, _)| *id == d.id)
+                }
+                _ => d.id == self.pcb,
+            };
+            let mut candidate: Vec<_> = next.iter().filter(affected).cloned().collect();
             let result = apply(&c.operation, self.pcb, &self.footprints, &mut candidate)
                 .and_then(|()| candidate.iter().try_for_each(Document::validate));
             c.check = Some(result.clone());
             if result.is_ok() {
-                next = candidate;
+                for doc in candidate {
+                    let id = doc.id;
+                    *next.iter_mut().find(|d| d.id == id).unwrap() = doc;
+                }
                 rows.push(n);
             }
         }
+        next.iter().try_for_each(Document::validate)?;
         // Designator swaps are legal; the final result must still be unique.
         let b = next
             .iter()
@@ -407,12 +506,7 @@ impl Plan {
         let mut seen = HashSet::new();
         if b.components
             .iter()
-            .filter(|c| {
-                !matches!(
-                    field(&c.properties, "COMPONENTKINDVERSION2"),
-                    Some("1" | "2")
-                )
-            })
+            .filter(|c| !matches!(pcb_kind(c), 1 | 2))
             .any(|c| !seen.insert(c.designator.to_uppercase()))
         {
             return Err("Selected changes create duplicate PCB designators; include both sides of a rename/swap".into());
@@ -460,6 +554,22 @@ pub fn compare(
     direction: Direction,
     footprints: Vec<Footprint>,
 ) -> Result<Plan, String> {
+    compare_project(
+        sheets,
+        board,
+        direction,
+        footprints,
+        &ProjectOptions::default(),
+    )
+}
+
+pub fn compare_project(
+    sheets: &[&Document],
+    board: &Document,
+    direction: Direction,
+    footprints: Vec<Footprint>,
+    options: &ProjectOptions,
+) -> Result<Plan, String> {
     board.validate()?;
     let mut document_ids = HashSet::from([board.id]);
     for s in sheets {
@@ -472,7 +582,7 @@ pub fn compare(
     if sheets.is_empty() {
         return Err("Project has no schematic sheets".into());
     }
-    let cs = components(sheets)?;
+    let cs = components(sheets, options)?;
     let mut snapshots = vec![board.clone()];
     snapshots.extend(sheets.iter().map(|d| (*d).clone()));
     let mut p = Plan {
@@ -483,7 +593,7 @@ pub fn compare(
         pcb: board.id,
         footprints,
     };
-    let mut links: HashMap<String, Uuid> = HashMap::new();
+    let mut links: HashMap<(Uuid, Uuid), Uuid> = HashMap::new();
     let mut used = HashSet::new();
     let bounds = b.bounds();
     let origin_x = bounds.max.x + 2_540_000;
@@ -494,6 +604,18 @@ pub fn compare(
     let mut row_height = 0;
     let mut new_column = 0;
     for s in &cs {
+        if let Some(reason) = &s.annotation_error {
+            p.warnings.push(reason.clone());
+            if direction == Direction::ToPcb {
+                p.push(
+                    "Annotation",
+                    "Annotate",
+                    s.designator.clone(),
+                    s.sheet.clone(),
+                    Operation::Unsupported(reason.clone()),
+                );
+            }
+        }
         let by_uid: Vec<_> = b
             .components
             .iter()
@@ -523,7 +645,9 @@ pub fn compare(
                     c.designator
                 ));
             }
-            links.insert(s.designator.to_uppercase(), c.id);
+            for &part in &s.parts {
+                links.insert(part, c.id);
+            }
             let mut values = vec![];
             let pcb_description = field(&c.properties, "SOURCEDESCRIPTION").unwrap_or("");
             if pcb_description != s.description {
@@ -537,10 +661,7 @@ pub fn compare(
                     s.designator.clone(),
                 ));
             }
-            let pcb_kind = field(&c.properties, "COMPONENTKINDVERSION2")
-                .unwrap_or("0")
-                .parse::<u32>()
-                .unwrap_or(0);
+            let pcb_kind = pcb_kind(c);
             if pcb_kind != s.kind {
                 values.push((
                     "Change Component Types",
@@ -552,7 +673,9 @@ pub fn compare(
                     s.designator.clone(),
                 ));
             }
-            if c.designator != s.designator {
+            if c.designator != s.designator
+                && (direction == Direction::ToSchematic || s.annotation_error.is_none())
+            {
                 values.push((
                     "Change Component Designators",
                     Value::Designator(if direction == Direction::ToPcb {
@@ -626,14 +749,20 @@ pub fn compare(
             if let Some(params) = &c.parameters {
                 let synced: pcb::Fields = params
                     .iter()
-                    .filter(|(k, _)| !s.excluded_parameters.contains(&k.to_uppercase()))
+                    .filter(|(k, _)| {
+                        !k.eq_ignore_ascii_case("Layer")
+                            && !s.excluded_parameters.contains(&k.to_uppercase())
+                    })
                     .map(|(k, v)| (k.clone(), v.clone()))
                     .collect();
                 let mut target = s.parameters.clone();
                 target.extend(
                     params
                         .iter()
-                        .filter(|(k, _)| s.excluded_parameters.contains(&k.to_uppercase()))
+                        .filter(|(k, _)| {
+                            k.eq_ignore_ascii_case("Layer")
+                                || s.excluded_parameters.contains(&k.to_uppercase())
+                        })
                         .map(|(k, v)| (k.clone(), v.clone())),
                 );
                 if synced != s.parameters {
@@ -642,7 +771,7 @@ pub fn compare(
                         Value::Parameters(if direction == Direction::ToPcb {
                             target
                         } else {
-                            params.clone()
+                            synced
                         }),
                         s.designator.clone(),
                     ));
@@ -665,7 +794,12 @@ pub fn compare(
             }
         } else if direction == Direction::ToPcb {
             let id = Uuid::new_v4();
-            links.insert(s.designator.to_uppercase(), id);
+            if s.annotation_error.is_some() {
+                continue;
+            }
+            for &part in &s.parts {
+                links.insert(part, id);
+            }
             let extent = p
                 .footprints
                 .iter()
@@ -701,10 +835,7 @@ pub fn compare(
         }
     }
     for c in &b.components {
-        if matches!(
-            field(&c.properties, "COMPONENTKINDVERSION2"),
-            Some("1" | "2")
-        ) {
+        if matches!(pcb_kind(c), 1 | 2) {
             continue;
         }
         if sheets
@@ -747,8 +878,70 @@ pub fn compare(
             );
         }
     }
-    match compile(sheets) {
-        Ok(nets) => net_changes(&mut p, &nets, b, &links, board),
+    match compile_project(sheets, options) {
+        Ok(nets) => {
+            p.warnings.extend(nets.warnings.iter().cloned());
+            for issue in &nets.issues {
+                p.warnings.push(issue.clone());
+                p.push(
+                    "Connectivity",
+                    "Resolve",
+                    "Project connectivity".into(),
+                    board.name.clone(),
+                    Operation::Unsupported(issue.clone()),
+                );
+            }
+            net_changes(&mut p, &nets, b, &links, board);
+            if options.review_annotation {
+                // Native exported netlists and native ECO differ for omitted
+                // single-pin nets. Do not infer destructive ECO from export loss.
+                let omitted: HashSet<_> = nets
+                    .omitted_single_pin_pins
+                    .iter()
+                    .filter_map(|(sheet, c, pin)| {
+                        links.get(&(*sheet, *c)).map(|id| (*id, pin.clone()))
+                    })
+                    .collect();
+                let omitted_nets: HashSet<_> = b
+                    .items
+                    .iter()
+                    .filter_map(|item| {
+                        let pcb::Shape::Pad { name, .. } = &item.shape else {
+                            return None;
+                        };
+                        let component = b
+                            .components
+                            .iter()
+                            .find(|c| Some(c.index) == item.component)?;
+                        omitted
+                            .contains(&(component.id, name.to_uppercase()))
+                            .then_some(item.net)
+                            .flatten()
+                    })
+                    .collect();
+                let reason = "The project netlist omits single-pin nets, but native ECO removal semantics are not yet verified; retain this existing PCB connection and review it manually";
+                let mut blocked = false;
+                for row in &mut p.changes {
+                    let uncertain = match &row.operation {
+                        Operation::PadNet {
+                            component,
+                            pin,
+                            net: None,
+                        } => omitted.contains(&(*component, pin.to_uppercase())),
+                        Operation::RemoveNet(n) => omitted_nets.contains(n),
+                        _ => false,
+                    };
+                    if uncertain {
+                        row.operation = Operation::Unsupported(reason.into());
+                        row.enabled = false;
+                        blocked = true;
+                    }
+                }
+                if blocked {
+                    p.warnings.push(reason.into());
+                }
+            }
+        }
         Err(e) => {
             p.warnings.push(e.clone());
             p.push(
@@ -769,13 +962,46 @@ fn net_changes(
     p: &mut Plan,
     nets: &Netlist,
     b: &pcb::Board,
-    links: &HashMap<String, Uuid>,
+    links: &HashMap<(Uuid, Uuid), Uuid>,
     doc: &Document,
 ) {
+    let mut protected: HashSet<_> = nets
+        .unresolved_pins
+        .iter()
+        .filter_map(|(sheet, c, pin)| links.get(&(*sheet, *c)).map(|id| (*id, pin.clone())))
+        .collect();
+    let protected_nets: HashSet<_> = b
+        .items
+        .iter()
+        .filter_map(|i| {
+            let pcb::Shape::Pad { name, .. } = &i.shape else {
+                return None;
+            };
+            let c = b.components.iter().find(|c| Some(c.index) == i.component)?;
+            protected
+                .contains(&(c.id, name.to_uppercase()))
+                .then_some(i.net)
+                .flatten()
+        })
+        .collect();
+    for i in b
+        .items
+        .iter()
+        .filter(|i| i.net.is_some_and(|n| protected_nets.contains(&n)))
+    {
+        if let pcb::Shape::Pad { name, .. } = &i.shape
+            && let Some(c) = b.components.iter().find(|c| Some(c.index) == i.component)
+        {
+            protected.insert((c.id, name.to_uppercase()));
+        }
+    }
     let mut known: BTreeSet<String> = b.nets.iter().map(|n| n.name.to_uppercase()).collect();
     let mut desired: BTreeMap<(Uuid, String), Option<String>> = BTreeMap::new();
     for pin in &nets.pins {
-        if let Some(&id) = links.get(&pin.designator.to_uppercase()) {
+        if let Some(&id) = links.get(&(pin.sheet, pin.component)) {
+            if protected.contains(&(id, pin.number.to_uppercase())) {
+                continue;
+            }
             desired.insert((id, pin.number.to_uppercase()), pin.net.clone());
         }
     }
@@ -803,12 +1029,18 @@ fn net_changes(
             continue;
         }
         if let pcb::Shape::Pad { name, .. } = &item.shape {
+            if protected.contains(&(c.id, name.to_uppercase())) {
+                continue;
+            }
             desired.entry((c.id, name.to_uppercase())).or_insert(None);
         }
     }
     if p.direction == Direction::ToPcb {
         let mut renamed = BTreeMap::new();
         for n in &b.nets {
+            if protected_nets.contains(&n.index) {
+                continue;
+            }
             let pads: Vec<_> = b
                 .items
                 .iter()
@@ -867,20 +1099,33 @@ fn net_changes(
             let footprint_changed = p.changes.iter().any(
                 |row| matches!(&row.operation,Operation::PcbValue(c,Value::Footprint(_)) if c==id),
             );
+            if net.is_none() && pads.is_empty() && !footprint_changed {
+                continue;
+            }
             if footprint_changed
                 || pads.is_empty()
                 || pads.iter().any(|i| {
-                    i.net.map(|n| {
+                    let current = i.net.map(|n| {
                         renamed
                             .get(&n)
                             .cloned()
                             .unwrap_or_else(|| b.net_name(Some(n)).to_owned())
-                    }) != *net
+                    });
+                    match (&current, net) {
+                        (Some(a), Some(b)) => !a.eq_ignore_ascii_case(b),
+                        (None, None) => false,
+                        _ => true,
+                    }
                 })
             {
-                let designator = c
-                    .map(|c| c.designator.as_str())
-                    .unwrap_or_else(|| links.iter().find(|(_, v)| **v == *id).unwrap().0.as_str());
+                let designator = c.map(|c| c.designator.as_str()).unwrap_or_else(|| {
+                    nets.pins
+                        .iter()
+                        .find(|p| links.get(&(p.sheet, p.component)) == Some(id))
+                        .unwrap()
+                        .designator
+                        .as_str()
+                });
                 p.push(
                     if net.is_some() {
                         "Add Pins To Nets"
@@ -905,7 +1150,8 @@ fn net_changes(
             }
         }
         for n in &b.nets {
-            if !renamed.contains_key(&n.index)
+            if !protected_nets.contains(&n.index)
+                && !renamed.contains_key(&n.index)
                 && !nets.names.iter().any(|v| v.eq_ignore_ascii_case(&n.name))
             {
                 p.push(
@@ -929,7 +1175,7 @@ fn net_changes(
             let mut targets = BTreeSet::new();
             let mut missing = false;
             for pin in &pins {
-                let id = links.get(&pin.designator.to_uppercase());
+                let id = links.get(&(pin.sheet, pin.component));
                 let c = b.components.iter().find(|c| Some(&c.id) == id);
                 let pads:Vec<_>=b.items.iter().filter(|i|c.is_some_and(|c|i.component==Some(c.index)) && matches!(&i.shape,pcb::Shape::Pad{name,..} if name.eq_ignore_ascii_case(&pin.number))).collect();
                 if pads.is_empty() {
@@ -976,6 +1222,148 @@ fn net_changes(
     }
 }
 
+fn scalar_pcb_operation(op: &Operation) -> bool {
+    matches!(op,Operation::PcbValue(_,v) if !matches!(v,Value::Footprint(_)))
+        || matches!(
+            op,
+            Operation::AddNet(_)
+                | Operation::RemoveNet(_)
+                | Operation::RenameNet(..)
+                | Operation::PadNet { .. }
+        )
+}
+fn apply_pcb_scalar(op: &Operation, b: &mut pcb::Board) -> Result<(), String> {
+    match op {
+        Operation::PcbValue(id, value) => return apply_pcb_metadata(b, *id, value),
+        Operation::AddNet(name) => {
+            if b.nets.iter().any(|n| n.name.eq_ignore_ascii_case(name)) {
+                return Ok(());
+            }
+            if b.nets.len() >= pcb::MAX_ITEMS {
+                return Err("PCB entity limit exceeded".into());
+            }
+            let index = match b.nets.iter().map(|n| n.index).max() {
+                Some(n) => n.checked_add(1).ok_or("Net index overflow")?,
+                None => 0,
+            };
+            b.nets.push(pcb::Net {
+                index,
+                name: name.clone(),
+                properties: Default::default(),
+            });
+        }
+        Operation::RemoveNet(index) => {
+            // Only remove the net after its pads were successfully transferred.
+            if b.items
+                .iter()
+                .any(|i| i.net == Some(*index) && matches!(i.shape, pcb::Shape::Pad { .. }))
+            {
+                return Err("Net still contains pads; execute its pin changes first".into());
+            }
+            for i in &mut b.items {
+                if i.net == Some(*index) {
+                    i.net = None;
+                }
+            }
+            for polygon in &mut b.polygon_pours {
+                if polygon.net == Some(*index) {
+                    polygon.net = None;
+                }
+            }
+            b.nets.retain(|n| n.index != *index);
+        }
+        Operation::RenameNet(index, name) => {
+            b.nets
+                .iter_mut()
+                .find(|n| n.index == *index)
+                .ok_or("Net missing")?
+                .name = name.clone()
+        }
+        Operation::PadNet {
+            component,
+            pin,
+            net,
+        } => {
+            let c = b
+                .components
+                .iter()
+                .find(|c| c.id == *component)
+                .ok_or_else(|| format!("Unknown Pin: component for pin {pin} is missing"))?;
+            let pads:Vec<_>=b.items.iter().enumerate().filter(|(_,i)|i.component==Some(c.index)&&matches!(&i.shape,pcb::Shape::Pad{name,..} if name.eq_ignore_ascii_case(pin))).map(|(n,_)|n).collect();
+            if pads.is_empty() {
+                return Err(format!("Unknown Pin: Pin {}-{pin}", c.designator));
+            }
+            if pads.iter().any(|&n| b.items[n].locked) {
+                return Err("Pad is locked".into());
+            }
+            let target = match net {
+                Some(name) => Some(
+                    b.nets
+                        .iter()
+                        .find(|n| n.name.eq_ignore_ascii_case(name))
+                        .ok_or_else(|| format!("Net {name} is missing; enable Add Net"))?
+                        .index,
+                ),
+                None => None,
+            };
+            for n in pads {
+                b.items[n].net = target;
+            }
+        }
+        _ => return Err("Geometry operations require a private candidate".into()),
+    }
+    b.pours_stale |= !b.polygon_pours.is_empty();
+    Ok(())
+}
+
+fn apply_pcb_metadata(b: &mut pcb::Board, id: Uuid, value: &Value) -> Result<(), String> {
+    let c = b
+        .components
+        .iter_mut()
+        .find(|c| c.id == id)
+        .ok_or("Component missing")?;
+    if c.locked {
+        return Err("Component is locked".into());
+    }
+    match value {
+        Value::Designator(v) => c.designator = v.clone(),
+        Value::Comment(v) => c.comment = v.clone(),
+        Value::Parameters(v) => c.parameters = Some(v.clone()),
+        Value::Description(v) => {
+            c.properties.insert("SOURCEDESCRIPTION".into(), v.clone());
+        }
+        Value::Kind(v) => {
+            c.properties
+                .insert("COMPONENTKINDVERSION2".into(), v.to_string());
+        }
+        Value::Link(uid, sheet) => {
+            c.properties.insert("SOURCEUNIQUEID".into(), uid.clone());
+            c.properties.insert("SOURCESHEET".into(), sheet.clone());
+        }
+        Value::Footprint(_) => {
+            return Err("Footprint geometry requires a staged library transaction".into());
+        }
+    }
+    for i in b.items.iter_mut().filter(|i| i.component == Some(c.index)) {
+        if let pcb::Shape::Text { text, .. } = &mut i.shape {
+            if i.properties
+                .get("DESIGNATOR")
+                .is_some_and(|v| v.eq_ignore_ascii_case("TRUE"))
+            {
+                *text = c.designator.clone();
+            }
+            if i.properties
+                .get("COMMENT")
+                .is_some_and(|v| v.eq_ignore_ascii_case("TRUE"))
+            {
+                *text = c.comment.clone();
+            }
+        }
+    }
+    b.pours_stale |= !b.polygon_pours.is_empty();
+    Ok(())
+}
+
 fn apply(
     op: &Operation,
     pcb_id: Uuid,
@@ -1004,9 +1392,14 @@ fn apply(
                     if c.settings.designator_locked {
                         return Err("Schematic designator is locked".into());
                     }
+                    let designator = if project::logical_designator(c) != c.designator {
+                        format!("{v}{}", c.designator.chars().last().unwrap())
+                    } else {
+                        v.clone()
+                    };
                     vec![schematic_edit::Edit::ComponentProperties {
                         id: *id,
-                        designator: v.clone(),
+                        designator,
                         comment: c.comment.clone(),
                     }]
                 }
@@ -1220,74 +1613,11 @@ fn apply(
             }
             *b = crate::pcb_tools::edit_component(b, c)?;
         }
-        Operation::AddNet(name) => {
-            if b.nets.iter().any(|n| n.name.eq_ignore_ascii_case(name)) {
-                return Ok(());
-            }
-            let index = b.nets.iter().map(|n| n.index).max().map_or(0, |n| n + 1);
-            b.nets.push(pcb::Net {
-                index,
-                name: name.clone(),
-                properties: Default::default(),
-            });
-        }
-        Operation::RemoveNet(index) => {
-            // Only remove the net after its pads were successfully transferred.
-            if b.items
-                .iter()
-                .any(|i| i.net == Some(*index) && matches!(i.shape, pcb::Shape::Pad { .. }))
-            {
-                return Err("Net still contains pads; execute its pin changes first".into());
-            }
-            for i in &mut b.items {
-                if i.net == Some(*index) {
-                    i.net = None;
-                }
-            }
-            for polygon in &mut b.polygon_pours {
-                if polygon.net == Some(*index) {
-                    polygon.net = None;
-                }
-            }
-            b.nets.retain(|n| n.index != *index);
-        }
-        Operation::RenameNet(index, name) => {
-            b.nets
-                .iter_mut()
-                .find(|n| n.index == *index)
-                .ok_or("Net missing")?
-                .name = name.clone()
-        }
-        Operation::PadNet {
-            component,
-            pin,
-            net,
-        } => {
-            let c = b
-                .components
-                .iter()
-                .find(|c| c.id == *component)
-                .ok_or_else(|| format!("Unknown Pin: component for pin {pin} is missing"))?;
-            let pads:Vec<_>=b.items.iter().enumerate().filter(|(_,i)|i.component==Some(c.index)&&matches!(&i.shape,pcb::Shape::Pad{name,..} if name.eq_ignore_ascii_case(pin))).map(|(n,_)|n).collect();
-            if pads.is_empty() {
-                return Err(format!("Unknown Pin: Pin {}-{pin}", c.designator));
-            }
-            if pads.iter().any(|&n| b.items[n].locked) {
-                return Err("Pad is locked".into());
-            }
-            let target = match net {
-                Some(name) => Some(
-                    b.nets
-                        .iter()
-                        .find(|n| n.name.eq_ignore_ascii_case(name))
-                        .ok_or_else(|| format!("Net {name} is missing; enable Add Net"))?
-                        .index,
-                ),
-                None => None,
-            };
-            for n in pads {
-                b.items[n].net = target;
-            }
+        Operation::AddNet(_)
+        | Operation::RemoveNet(_)
+        | Operation::RenameNet(..)
+        | Operation::PadNet { .. } => {
+            return apply_pcb_scalar(op, b);
         }
         _ => unreachable!(),
     }

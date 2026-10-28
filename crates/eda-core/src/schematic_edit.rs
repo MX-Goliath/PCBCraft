@@ -15,6 +15,10 @@ pub use drag::connected_transform;
 pub fn electrical_endpoint(p: &SchPrimitive) -> Option<Point> {
     drag::pin_end(p)
 }
+/// Both ends of a Port are connection points; I/O type changes ERC/graphics only.
+pub fn electrical_endpoints(p: &SchPrimitive) -> impl Iterator<Item = Point> {
+    drag::pin_ends(p)
+}
 #[path = "schematic_wire.rs"]
 mod wire_edit;
 pub use wire_edit::{WireHandle, connection_at, junctions, wire_drag, wire_handle_at};
@@ -133,6 +137,7 @@ pub fn preview(doc: &Document, edit: &Edit) -> Result<Document, String> {
         .as_mut()
         .ok_or("Schematic scene is unavailable")?;
     apply(s, &mut next.size, edit, 0)?;
+    refresh_hierarchy(s, doc.schematic.as_ref().unwrap())?;
     wire_cleanup::optimize(s, doc.schematic.as_ref().unwrap());
     refresh_parameters(s);
     if s != doc.schematic.as_ref().unwrap() && s.source.is_some() {
@@ -140,6 +145,188 @@ pub fn preview(doc: &Document, edit: &Edit) -> Result<Document, String> {
     }
     next.validate()?;
     Ok(next)
+}
+
+fn refresh_hierarchy(s: &mut Schematic, before: &Schematic) -> Result<(), String> {
+    let symbols: Vec<_> = s
+        .primitives
+        .iter()
+        .filter(|p| matches!(p.kind, K::SheetSymbol { .. }))
+        .cloned()
+        .collect();
+    for symbol in symbols {
+        let K::SheetSymbol {
+            a,
+            b,
+            mut designator,
+            mut filename,
+        } = symbol.kind
+        else {
+            unreachable!()
+        };
+        if a.x >= b.x || a.y <= b.y {
+            return Err("Sheet Symbol width and height must be positive".into());
+        }
+        let old = before.primitive(symbol.id);
+        let old_rect = old.and_then(|p| {
+            if let K::SheetSymbol { a, b, .. } = p.kind {
+                Some((a, b))
+            } else {
+                None
+            }
+        });
+        for child in s
+            .primitives
+            .iter_mut()
+            .filter(|p| p.presentation.parent == Some(symbol.id))
+        {
+            let previous = before.primitive(child.id);
+            let unchanged = previous == Some(child);
+            let geometry_unchanged = previous.is_some_and(|p| match (&p.kind, &child.kind) {
+                (
+                    K::SheetEntry {
+                        position: a,
+                        side: x,
+                        ..
+                    },
+                    K::SheetEntry {
+                        position: b,
+                        side: y,
+                        ..
+                    },
+                ) => a == b && x == y,
+                (K::Text { position: a, .. }, K::Text { position: b, .. }) => a == b,
+                _ => unchanged,
+            });
+            if geometry_unchanged
+                && let Some((old_a, old_b)) = old_rect
+                && (old_a != a || old_b != b)
+            {
+                if let K::SheetEntry { position, side, .. } = &mut child.kind {
+                    let offset = if *side <= 1 {
+                        old_a.y - position.y
+                    } else {
+                        position.x - old_a.x
+                    };
+                    *position = match side {
+                        0 => Point {
+                            x: a.x,
+                            y: a.y - offset,
+                        },
+                        1 => Point {
+                            x: b.x,
+                            y: a.y - offset,
+                        },
+                        2 => Point {
+                            x: a.x + offset,
+                            y: a.y,
+                        },
+                        _ => Point {
+                            x: a.x + offset,
+                            y: b.y,
+                        },
+                    };
+                } else {
+                    transform_primitive(
+                        child,
+                        Point::default(),
+                        0,
+                        Point {
+                            x: a.x - old_a.x,
+                            y: a.y - old_a.y,
+                        },
+                    )?;
+                }
+            }
+            if let K::SheetEntry { position, side, .. } = &mut child.kind {
+                if let Some(previous) = previous
+                    && let K::SheetEntry {
+                        position: old_at,
+                        side: old_side,
+                        ..
+                    } = previous.kind
+                    && old_side == *side
+                    && old_at != *position
+                    && old_rect == Some((a, b))
+                {
+                    let distances = [
+                        (position.x - a.x).abs(),
+                        (position.x - b.x).abs(),
+                        (position.y - a.y).abs(),
+                        (position.y - b.y).abs(),
+                    ];
+                    *side = distances
+                        .iter()
+                        .enumerate()
+                        .min_by_key(|(_, d)| *d)
+                        .unwrap()
+                        .0 as u32;
+                }
+                if !unchanged || old_rect.is_some_and(|r| r != (a, b)) {
+                    match side {
+                        0 => {
+                            position.x = a.x;
+                            position.y = position.y.clamp(b.y, a.y)
+                        }
+                        1 => {
+                            position.x = b.x;
+                            position.y = position.y.clamp(b.y, a.y)
+                        }
+                        2 => {
+                            position.y = a.y;
+                            position.x = position.x.clamp(a.x, b.x)
+                        }
+                        _ => {
+                            position.y = b.y;
+                            position.x = position.x.clamp(a.x, b.x)
+                        }
+                    }
+                }
+            }
+            if let K::Text { text, .. } = &mut child.kind {
+                let target = match child.presentation.record_type {
+                    32 => &mut designator,
+                    33 => &mut filename,
+                    _ => continue,
+                };
+                let symbol_text_changed = old.is_some_and(|p| match &p.kind {
+                    K::SheetSymbol {
+                        designator: old_name,
+                        filename: old_file,
+                        ..
+                    } => {
+                        if child.presentation.record_type == 32 {
+                            old_name != target
+                        } else {
+                            old_file != target
+                        }
+                    }
+                    _ => false,
+                });
+                if symbol_text_changed {
+                    *text = target.clone();
+                } else {
+                    *target = text.clone();
+                }
+            }
+        }
+        if let Some(p) = s.primitives.iter_mut().find(|p| p.id == symbol.id)
+            && let K::SheetSymbol {
+                designator: name,
+                filename: file,
+                ..
+            } = &mut p.kind
+        {
+            *name = designator;
+            *file = filename;
+        }
+    }
+    for p in &mut s.primitives {
+        if let K::SheetEntry { name, .. } = &p.kind {
+            p.presentation.name = name.clone();
+        }
+    }
+    Ok(())
 }
 
 fn intern_edited_font(s: &mut Schematic, value: &SchFont) -> usize {
@@ -152,6 +339,7 @@ fn intern_edited_font(s: &mut Schematic, value: &SchFont) -> usize {
             K::Text { font, .. }
             | K::TextFrame { font, .. }
             | K::PowerPort { font, .. }
+            | K::SheetEntry { font, .. }
             | K::Port { font, .. } => {
                 used.insert(*font);
             }
@@ -249,6 +437,7 @@ fn apply(s: &mut Schematic, size: &mut Point, edit: &Edit, depth: usize) -> Resu
             match &mut p.kind {
                 K::Text { font, .. }
                 | K::TextFrame { font, .. }
+                | K::SheetEntry { font, .. }
                 | K::Port { font, .. }
                 | K::PowerPort { font, .. }
                 | K::Pin { font, .. } => *font = index,
@@ -291,6 +480,7 @@ fn apply(s: &mut Schematic, size: &mut Point, edit: &Edit, depth: usize) -> Resu
                 || std::mem::discriminant(&value.kind) != std::mem::discriminant(&p.kind)
                 || value.text_role != p.text_role
                 || value.presentation.record_type != p.presentation.record_type
+                || value.presentation.parent != p.presentation.parent
             {
                 return Err("Object identity cannot change through Properties".into());
             }
@@ -428,17 +618,17 @@ fn apply(s: &mut Schematic, size: &mut Point, edit: &Edit, depth: usize) -> Resu
             if !found {
                 return Err("Selected object no longer exists".into());
             }
-            let removed_images = referenced_images(
-                s.primitives
-                    .iter()
-                    .chain(&s.parameter_objects)
-                    .filter(|p| p.id == *id || p.component == Some(*id)),
-            );
+            let removed_images =
+                referenced_images(s.primitives.iter().chain(&s.parameter_objects).filter(|p| {
+                    p.id == *id || p.component == Some(*id) || p.presentation.parent == Some(*id)
+                }));
             s.components.retain(|c| c.id != *id);
-            s.primitives
-                .retain(|p| p.id != *id && p.component != Some(*id));
-            s.parameter_objects
-                .retain(|p| p.id != *id && p.component != Some(*id));
+            s.primitives.retain(|p| {
+                p.id != *id && p.component != Some(*id) && p.presentation.parent != Some(*id)
+            });
+            s.parameter_objects.retain(|p| {
+                p.id != *id && p.component != Some(*id) && p.presentation.parent != Some(*id)
+            });
             let remaining = referenced_images(s.primitives.iter().chain(&s.parameter_objects));
             if removed_images
                 .iter()
@@ -475,7 +665,7 @@ fn apply(s: &mut Schematic, size: &mut Point, edit: &Edit, depth: usize) -> Resu
                 }
             }
             for p in s.primitives.iter_mut().chain(&mut s.parameter_objects) {
-                if p.id == *id || p.component == Some(*id) {
+                if p.id == *id || p.component == Some(*id) || p.presentation.parent == Some(*id) {
                     transform_primitive(p, *pivot, *quarter_turns, *delta)?;
                     found = true;
                 }
@@ -561,7 +751,7 @@ fn apply(s: &mut Schematic, size: &mut Point, edit: &Edit, depth: usize) -> Resu
                 K::Text { text: value, .. }
                 | K::TextFrame { text: value, .. }
                 | K::PowerPort { text: value, .. } => *value = text.clone(),
-                K::Port { name, .. } => *name = text.clone(),
+                K::Port { name, .. } | K::SheetEntry { name, .. } => *name = text.clone(),
                 _ => return Err("Selected object has no editable text".into()),
             }
             if p.presentation.raw_text.is_some() {
@@ -677,6 +867,23 @@ pub fn transform_primitive(
                 std::mem::swap(&mut radius.x, &mut radius.y);
             }
         }
+        K::SheetSymbol { a, b, .. } => {
+            tx(a)?;
+            tx(b)?;
+            let (left, right, top, bottom) =
+                (a.x.min(b.x), a.x.max(b.x), a.y.max(b.y), a.y.min(b.y));
+            *a = Point { x: left, y: top };
+            *b = Point {
+                x: right,
+                y: bottom,
+            };
+        }
+        K::SheetEntry { position, side, .. } => {
+            tx(position)?;
+            for _ in 0..turns {
+                *side = [3, 2, 0, 1][*side as usize];
+            }
+        }
         K::Arc {
             centre,
             radii,
@@ -745,11 +952,13 @@ pub fn anchor(s: &Schematic, id: Uuid) -> Option<Point> {
                 K::Polyline { points, .. } => points.first().copied(),
                 K::Bezier { points } => Some(points[0]),
                 K::Rectangle { a, .. }
+                | K::SheetSymbol { a, .. }
                 | K::TextFrame { a, .. }
                 | K::Image { a, .. }
                 | K::Unsupported { a, .. } => Some(*a),
                 K::Arc { centre, .. } => Some(*centre),
                 K::Text { position, .. }
+                | K::SheetEntry { position, .. }
                 | K::Pin { position, .. }
                 | K::PowerPort { position, .. }
                 | K::Port { position, .. }
@@ -774,7 +983,7 @@ pub fn extract(s: &Schematic, id: Uuid) -> Result<Fragment, String> {
             .primitives
             .iter()
             .chain(&s.parameter_objects)
-            .filter(|p| p.id == id || p.component == Some(id))
+            .filter(|p| p.id == id || p.component == Some(id) || p.presentation.parent == Some(id))
             .cloned()
             .collect(),
     };
@@ -829,6 +1038,7 @@ fn remap_fonts(kind: &mut K, map: &[usize]) -> Result<(), String> {
         K::Text { font, .. }
         | K::TextFrame { font, .. }
         | K::PowerPort { font, .. }
+        | K::SheetEntry { font, .. }
         | K::Port { font, .. } => remap(font)?,
         K::Pin {
             font, number_font, ..
@@ -854,9 +1064,17 @@ impl Fragment {
             c.source_index = AUTHORED;
         }
         for p in &mut f.primitives {
+            let old = p.id;
             p.id = Uuid::new_v4();
+            ids.insert(old, p.id);
             p.component = p.component.and_then(|id| ids.get(&id).copied());
             p.source_index = AUTHORED;
+        }
+        for p in &mut f.primitives {
+            p.presentation.parent = p
+                .presentation
+                .parent
+                .map(|id| ids.get(&id).copied().unwrap_or(id));
         }
         f
     }
@@ -918,7 +1136,7 @@ pub fn snap_point(s: &Schematic, raw: Point, step: i64, radius: i64) -> Point {
         .iter()
         .filter(|p| !p.presentation.hidden && s.sheet.options.electrical_snap)
     {
-        if let Some(at) = drag::pin_end(p) {
+        for at in drag::pin_ends(p) {
             consider(at);
         }
         match &p.kind {
