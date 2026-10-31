@@ -1312,6 +1312,13 @@ impl PcbCraft {
                         ui.label(RichText::new("Cross Probe · Esc exits").strong())
                             .on_hover_text(&self.cross_probe.status);
                     }
+                    if let Some(status) = self
+                        .active
+                        .and_then(|i| self.documents[i].sch_editor.path_status())
+                    {
+                        ui.separator();
+                        ui.label(RichText::new(status).size(11.0));
+                    }
                     if let Some(status) = self.active.and_then(|i| {
                         self.documents[i]
                             .pcb_editor
@@ -1676,6 +1683,9 @@ impl PcbCraft {
                     {
                         self.pcb_input(index, input, ctx);
                     }
+                    if self.documents[index].model.kind == DocumentKind::Schematic {
+                        self.schematic_harness_overlay(ctx, canvas, index);
+                    }
                     if !self.documents[index].view.pcb.three_d.enabled {
                         self.active_bar(ctx, canvas);
                     }
@@ -1893,6 +1903,12 @@ impl PcbCraft {
             return;
         }
         if ctx.wants_keyboard_input() {
+            if let Some(index) = self.active
+                && self.documents[index].sch_editor.paused
+                && ctx.input(|i| i.key_pressed(Key::Escape))
+            {
+                self.documents[index].sch_editor.paused = false;
+            }
             if let Some(index) = self.active
                 && self.documents[index].pcb_editor.routing_paused()
                 && ctx.input(|i| i.key_pressed(Key::Escape))

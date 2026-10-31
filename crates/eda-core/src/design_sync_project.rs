@@ -20,6 +20,7 @@ pub struct SheetLink {
 
 #[derive(Clone, Debug)]
 pub struct ProjectOptions {
+    pub harness_definitions: Vec<crate::schematic_harness::Definition>,
     /// None is the legacy standalone API; project callers resolve relative paths.
     pub links: Option<Vec<SheetLink>>,
     pub scope: NetScope,
@@ -43,6 +44,7 @@ pub struct ProjectOptions {
 impl Default for ProjectOptions {
     fn default() -> Self {
         Self {
+            harness_definitions: vec![],
             links: None,
             scope: NetScope::Automatic,
             allow_port_names: true,

@@ -139,6 +139,7 @@ pub fn preview(doc: &Document, edit: &Edit) -> Result<Document, String> {
     apply(s, &mut next.size, edit, 0)?;
     refresh_hierarchy(s, doc.schematic.as_ref().unwrap())?;
     wire_cleanup::optimize(s, doc.schematic.as_ref().unwrap());
+    crate::schematic_harness::refresh(s, doc.schematic.as_ref().unwrap())?;
     refresh_parameters(s);
     if s != doc.schematic.as_ref().unwrap() && s.source.is_some() {
         s.source_modified = true;
@@ -322,7 +323,7 @@ fn refresh_hierarchy(s: &mut Schematic, before: &Schematic) -> Result<(), String
         }
     }
     for p in &mut s.primitives {
-        if let K::SheetEntry { name, .. } = &p.kind {
+        if let K::SheetEntry { name, .. } | K::Port { name, .. } = &p.kind {
             p.presentation.name = name.clone();
         }
     }
@@ -339,6 +340,7 @@ fn intern_edited_font(s: &mut Schematic, value: &SchFont) -> usize {
             K::Text { font, .. }
             | K::TextFrame { font, .. }
             | K::PowerPort { font, .. }
+            | K::HarnessEntry { font, .. }
             | K::SheetEntry { font, .. }
             | K::Port { font, .. } => {
                 used.insert(*font);
@@ -437,6 +439,7 @@ fn apply(s: &mut Schematic, size: &mut Point, edit: &Edit, depth: usize) -> Resu
             match &mut p.kind {
                 K::Text { font, .. }
                 | K::TextFrame { font, .. }
+                | K::HarnessEntry { font, .. }
                 | K::SheetEntry { font, .. }
                 | K::Port { font, .. }
                 | K::PowerPort { font, .. }
@@ -751,7 +754,9 @@ fn apply(s: &mut Schematic, size: &mut Point, edit: &Edit, depth: usize) -> Resu
                 K::Text { text: value, .. }
                 | K::TextFrame { text: value, .. }
                 | K::PowerPort { text: value, .. } => *value = text.clone(),
-                K::Port { name, .. } | K::SheetEntry { name, .. } => *name = text.clone(),
+                K::Port { name, .. }
+                | K::SheetEntry { name, .. }
+                | K::HarnessEntry { name, .. } => *name = text.clone(),
                 _ => return Err("Selected object has no editable text".into()),
             }
             if p.presentation.raw_text.is_some() {
@@ -867,6 +872,33 @@ pub fn transform_primitive(
                 std::mem::swap(&mut radius.x, &mut radius.y);
             }
         }
+        K::HarnessConnector {
+            a,
+            b,
+            side,
+            primary_nm,
+            ..
+        } => {
+            let old_terminal = crate::schematic_harness::edge(*a, *b, *side, *primary_nm);
+            let terminal = transform_point(old_terminal, pivot, turns, delta)?;
+            tx(a)?;
+            tx(b)?;
+            let (left, right, top, bottom) =
+                (a.x.min(b.x), a.x.max(b.x), a.y.max(b.y), a.y.min(b.y));
+            *a = Point { x: left, y: top };
+            *b = Point {
+                x: right,
+                y: bottom,
+            };
+            for _ in 0..turns {
+                *side = [3, 2, 0, 1][*side as usize];
+            }
+            *primary_nm = if *side <= 1 {
+                a.y - terminal.y
+            } else {
+                terminal.x - a.x
+            };
+        }
         K::SheetSymbol { a, b, .. } => {
             tx(a)?;
             tx(b)?;
@@ -878,7 +910,7 @@ pub fn transform_primitive(
                 y: bottom,
             };
         }
-        K::SheetEntry { position, side, .. } => {
+        K::HarnessEntry { position, side, .. } | K::SheetEntry { position, side, .. } => {
             tx(position)?;
             for _ in 0..turns {
                 *side = [3, 2, 0, 1][*side as usize];
@@ -952,12 +984,14 @@ pub fn anchor(s: &Schematic, id: Uuid) -> Option<Point> {
                 K::Polyline { points, .. } => points.first().copied(),
                 K::Bezier { points } => Some(points[0]),
                 K::Rectangle { a, .. }
+                | K::HarnessConnector { a, .. }
                 | K::SheetSymbol { a, .. }
                 | K::TextFrame { a, .. }
                 | K::Image { a, .. }
                 | K::Unsupported { a, .. } => Some(*a),
                 K::Arc { centre, .. } => Some(*centre),
                 K::Text { position, .. }
+                | K::HarnessEntry { position, .. }
                 | K::SheetEntry { position, .. }
                 | K::Pin { position, .. }
                 | K::PowerPort { position, .. }
@@ -1038,6 +1072,7 @@ fn remap_fonts(kind: &mut K, map: &[usize]) -> Result<(), String> {
         K::Text { font, .. }
         | K::TextFrame { font, .. }
         | K::PowerPort { font, .. }
+        | K::HarnessEntry { font, .. }
         | K::SheetEntry { font, .. }
         | K::Port { font, .. } => remap(font)?,
         K::Pin {
@@ -1142,7 +1177,7 @@ pub fn snap_point(s: &Schematic, raw: Point, step: i64, radius: i64) -> Point {
         match &p.kind {
             K::Polyline {
                 points, electrical, ..
-            } if electrical == "Wire" || electrical == "Bus" => {
+            } if matches!(electrical.as_str(), "Wire" | "Bus" | "Signal Harness") => {
                 for p in points {
                     consider(*p);
                 }
@@ -1172,6 +1207,13 @@ pub enum Placement {
     Resistor,
     Capacitor,
     Wire,
+    Bus,
+    BusEntry,
+    SignalHarness,
+    HarnessConnector,
+    HarnessEntry,
+    Port,
+    SheetEntry,
     NetLabel,
     Text,
     Ground,
@@ -1184,6 +1226,13 @@ impl Placement {
             Self::Resistor => "Resistor",
             Self::Capacitor => "Capacitor",
             Self::Wire => "Wire",
+            Self::Bus => "Bus",
+            Self::BusEntry => "Bus Entry",
+            Self::SignalHarness => "Signal Harness",
+            Self::HarnessConnector => "Harness Connector",
+            Self::HarnessEntry => "Harness Entry",
+            Self::Port => "Port",
+            Self::SheetEntry => "Sheet Entry",
             Self::NetLabel => "Net Label",
             Self::Text => "Text String",
             Self::Ground => "Power Port",
@@ -1368,7 +1417,48 @@ pub fn place(
             },
             None,
         )),
-        Placement::Wire | Placement::Line => {
+        Placement::BusEntry => {
+            let mut p = primitive(
+                K::Polyline {
+                    points: vec![
+                        Point::default(),
+                        Point {
+                            x: 2_540_000,
+                            y: 2_540_000,
+                        },
+                    ],
+                    electrical: "Bus Entry".into(),
+                    closed: false,
+                },
+                None,
+            );
+            p.presentation.record_type = 37;
+            f.primitives.push(p);
+        }
+        Placement::Port => {
+            let mut p = primitive(
+                K::Port {
+                    position: Point::default(),
+                    width_nm: 7_620_000,
+                    height_nm: 2_540_000,
+                    style: 2,
+                    io_type: 0,
+                    name: value.into(),
+                    font,
+                },
+                None,
+            );
+            p.presentation.record_type = 18;
+            p.presentation.name = value.into();
+            p.presentation.alignment = Some(0);
+            p.presentation.text_color = Some(0x800000);
+            p.fill = Some(0x80ffff);
+            f.primitives.push(p);
+        }
+        Placement::HarnessConnector | Placement::HarnessEntry | Placement::SheetEntry => {
+            return Err("Placement requires a connector or sheet symbol".into());
+        }
+        Placement::Wire | Placement::Bus | Placement::SignalHarness | Placement::Line => {
             return Err("A wire requires at least two points".into());
         }
     }

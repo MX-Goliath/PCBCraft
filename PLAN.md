@@ -1788,6 +1788,54 @@ Cause, implementation and validation: docs/pcb-update/INTERACTIVE_ROUTING.md.
   dev build PASS. Registry/docs updated. Full routing parity/native route save
   remains unverified as above; no commit/push.
 
+### 2026-10-31 — schematic signal harnesses
+
+- Observed the running Altium Enterprise 24.4.1 Place/Harness menu, connector,
+  entry, Signal Harness and Predefined Connector Properties/dialogs. Created
+  isolated HarnessReference.SchDoc; the user's original project was not edited
+  or saved. Native Additional records establish IDs 215-218 and local owner
+  indexing, including omitted zero owners and the 100mil entry-distance scale.
+- Added core Connector/Entry geometry and ownership, constrained entry drag,
+  same-carrier connected drag, transforms/copy/delete and validated history.
+  Signal Harness, Bus, Bus Entry, Port and Sheet Entry placement is enabled.
+  Harness Properties, entry management/fonts, Predefined reuse with optional
+  line/port, Tab pause, 90/45/any-angle paths, backtrack and Esc repeat work.
+- Project compilation expands independent leaf channels through physical paths,
+  scoped ports and unique-instance hierarchy. Nested harnesses, numeric bus
+  bits/entries, harness-label net names and connector-free LOCKED definitions
+  are supported; cycles/type/definition/bit conflicts are explicit diagnostics.
+  Local cross-probing follows channel joins. No external EDA execution engine.
+- Native preserving writer supports harness insert/edit/delete, hidden type and
+  font changes, owner remaps across FileHeader/Additional, attachment verification
+  and repeated saves. Sibling .Harness generation preserves LOCKED definitions
+  and native nested syntax. General authored Port/wire/label writes support the
+  reused group; unknown native index dependencies still refuse unsafe Save.
+- GUI QA caught issues missed by the first tests: Properties/Add used a distinct
+  authored sync default; writing DISABLESYNC fixes native Save. Power Port
+  SHOWNETNAME remains separate from parameter SHOWNAME. The Predefined dialog's
+  two columns require explicit top-down child layouts; a bounded-size regression
+  now catches the overflow. Dirty graphical definitions supersede stale unlocked
+  sidecars in the reuse dialog.
+- Final Windows GUI on target/routing-check/HarnessGui.SchDoc: Add entry 0,
+  Save, Predefined Serial + three entries + 500mil line + HarnessPort, one-step
+  Undo/Redo and Save. Altium reopened the saved file and visibly displays the new
+  entry, all three connectors and HarnessPort. No save was performed in Altium
+  after reopening. Final QA file SHA256:
+  redacted-source-sha256
+  (the final group version is retained on disk).
+- Required gates PASS: cargo fmt --all -- --check; cargo clippy --workspace
+  --all-targets -- -D warnings; all 585 workspace unit tests. Linux GNU
+  all-target check PASS; runtime not checked. Test log is
+  target/routing-check/harness-workspace-tests.txt. Windows binary linked under
+  target/debug/deps; root copy fails because the old pcbcraft.exe is running
+  with unsaved user PCB edits. Preserved it, launched a separately named final
+  binary, and closed intermediate harness QA windows without saving their drafts.
+- Full Altium parity is still partial: Auto Wire/look-ahead preferences,
+  classes/multichannel sheets, Device Sheet folders, Active Bar hold menus and
+  context actions, exact brace/selection/table/font/DPI rendering. Native creation
+  without a source archive remains unsupported. See docs/schematic-harnesses.md
+  and schematic.signal_harnesses in docs/features.json. No commit or push.
+
 ### 2026-10-31 — follow-up: route across polygon pours of other nets
 
 - Previous same-net inheritance fix was incomplete: foreign generated pour

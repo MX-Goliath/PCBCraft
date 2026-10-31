@@ -4,6 +4,48 @@ use eda_core::schematic_edit::{self as edit, Edit, Fragment, Placement, Request,
 use eda_geom::Point;
 
 const CLIPBOARD_PREFIX: &str = "PCBCraft schematic clipboard v1\n";
+#[path = "schematic_harness_ui.rs"]
+mod harness_ui;
+
+fn place_sheet_entry(s: &Schematic, at: Point, name: &str) -> Result<Fragment, String> {
+    let p=s.primitives.iter().find(|p|matches!(p.kind,K::SheetSymbol{a,b,..} if (a.x..=b.x).contains(&at.x)&&(b.y..=a.y).contains(&at.y))).ok_or("Sheet Entry must be placed inside a Sheet Symbol")?;
+    let K::SheetSymbol { a, b, .. } = p.kind else {
+        unreachable!()
+    };
+    let side = [
+        (at.x - a.x).abs(),
+        (at.x - b.x).abs(),
+        (at.y - a.y).abs(),
+        (at.y - b.y).abs(),
+    ]
+    .iter()
+    .enumerate()
+    .min_by_key(|(_, d)| *d)
+    .unwrap()
+    .0 as u32;
+    let distance = if side <= 1 { a.y - at.y } else { at.x - a.x };
+    let mut e = edit::primitive(
+        K::SheetEntry {
+            position: eda_core::schematic_harness::edge(a, b, side, distance),
+            side,
+            io_type: 0,
+            name: name.into(),
+            font: s.sheet.system_font,
+            text_color: 128,
+            arrow_kind: "Block & Triangle".into(),
+        },
+        None,
+    );
+    e.presentation.parent = Some(p.id);
+    e.presentation.record_type = 16;
+    e.color = 128;
+    e.fill = Some(0x80ffff);
+    e.width_nm = 101_600;
+    Ok(Fragment {
+        primitives: vec![e],
+        ..Default::default()
+    })
+}
 
 #[cfg(test)]
 #[path = "schematic_editor_tests.rs"]
@@ -18,6 +60,20 @@ pub(super) struct Editor {
     pub value: String,
     pub designator: String,
     pointer: Option<Point>,
+    pub(super) harness_width: i64,
+    pub(super) harness_color: u32,
+    pub(super) paused: bool,
+    pub(super) place_prefix: Option<u8>,
+    pub(super) predefined: bool,
+    pub(super) predefined_selected: usize,
+    pub(super) predefined_line: bool,
+    pub(super) predefined_port: bool,
+    pub(super) predefined_name: String,
+    pub(super) predefined_width: i64,
+    pub(super) predefined_length: i64,
+    pub(super) predefined_auto: bool,
+    pub(super) predefined_sort: bool,
+    pub(super) predefined_filter: String,
 }
 
 #[derive(Default)]
@@ -46,9 +102,15 @@ enum Tool {
         turns: u32,
         revision: u64,
     },
+    Connector {
+        start: Option<Point>,
+        turns: u32,
+        revision: u64,
+    },
     Path {
         points: Vec<Point>,
         vertical_first: bool,
+        angle_mode: u8,
         revision: u64,
     },
     Move {
@@ -63,6 +125,17 @@ enum Tool {
 }
 
 impl Editor {
+    pub(super) fn path_status(&self) -> Option<&'static str> {
+        if let Tool::Path { angle_mode, .. } = self.tool {
+            Some(match angle_mode {
+                0 => "90 Degrees | Shift+Space: mode | Space: corner",
+                1 => "45 Degrees | Shift+Space: mode | Space: corner",
+                _ => "Any Angle | Shift+Space: mode",
+            })
+        } else {
+            None
+        }
+    }
     pub fn active(&self) -> bool {
         self.hierarchy_pick || !matches!(self.tool, Tool::Select)
     }
@@ -71,6 +144,8 @@ impl Editor {
         self.tool = Tool::Select;
         self.move_popup = None;
         self.kind = None;
+        self.paused = false;
+        self.place_prefix = None;
         view.sch_preview = None;
         view.sch_tool_active = false;
         view.cancel_schematic_gesture();
@@ -316,9 +391,14 @@ impl PcbCraft {
         }
     }
     pub(super) fn schematic_place_menu(&mut self, ui: &mut egui::Ui) {
-        for label in ["Bus", "Bus Entry"] {
-            ui.add_enabled(false, egui::Button::new(label));
-        }
+        self.action(ui, "Bus", "P, B", Command::SchPlace(Placement::Bus), true);
+        self.action(
+            ui,
+            "Bus Entry",
+            "P, U",
+            Command::SchPlace(Placement::BusEntry),
+            true,
+        );
         ui.menu_button("Part…", |ui| {
             self.action(ui, "Components", "", Command::ShowComponents, true);
             ui.separator();
@@ -336,18 +416,44 @@ impl PcbCraft {
         ] {
             self.action(ui, label, shortcut, Command::SchPlace(kind), true);
         }
-        for label in [
-            "Port",
-            "Off Sheet Connector",
-            "Sheet Symbol",
-            "Sheet Entry",
-            "Device Sheet Symbol",
-            "Reuse Block…",
-            "Harness",
-            "Directives",
-        ] {
+        self.action(ui, "Port", "P, R", Command::SchPlace(Placement::Port), true);
+        for label in ["Off Sheet Connector", "Sheet Symbol"] {
             ui.add_enabled(false, egui::Button::new(label));
         }
+        self.action(
+            ui,
+            "Sheet Entry",
+            "P, E",
+            Command::SchPlace(Placement::SheetEntry),
+            true,
+        );
+        for label in ["Device Sheet Symbol", "Reuse Block…"] {
+            ui.add_enabled(false, egui::Button::new(label));
+        }
+        ui.menu_button("Harness", |ui| {
+            for (label, key, kind) in [
+                ("Signal Harness", "P, H, H", Placement::SignalHarness),
+                ("Harness Connector", "P, H, C", Placement::HarnessConnector),
+                ("Harness Entry", "P, H, E", Placement::HarnessEntry),
+            ] {
+                self.action(ui, label, key, Command::SchPlace(kind), true);
+            }
+            if ui.button("Predefined Harness Connector").clicked() {
+                if let Some(i) = self.active {
+                    let editor = &mut self.documents[i].sch_editor;
+                    if editor.predefined_width == 0 {
+                        editor.predefined_width = 12_700_000;
+                        editor.predefined_length = 12_700_000;
+                        editor.predefined_name = "HarnessPort".into();
+                        editor.predefined_line = true;
+                        editor.predefined_port = true;
+                        editor.predefined_sort = true;
+                    }
+                    editor.predefined = true;
+                }
+                ui.close();
+            }
+        });
         self.action(
             ui,
             "Text String",
@@ -399,6 +505,10 @@ impl PcbCraft {
             Placement::Capacitor => "100nF",
             Placement::Ground => "GND",
             Placement::NetLabel => "Net1",
+            Placement::Port => "Port",
+            Placement::SheetEntry => "Entry",
+            Placement::HarnessEntry => "0",
+            Placement::HarnessConnector => "*",
             Placement::Text => "Text",
             _ => "",
         }
@@ -411,10 +521,22 @@ impl PcbCraft {
                 "R"
             },
         );
-        doc.sch_editor.tool = if matches!(kind, Placement::Wire | Placement::Line) {
+        doc.sch_editor.harness_width = 508_000;
+        doc.sch_editor.harness_color = eda_core::schematic_harness::SIGNAL_COLOR;
+        doc.sch_editor.tool = if kind == Placement::HarnessConnector {
+            Tool::Connector {
+                start: None,
+                turns: 0,
+                revision: doc.history.revision,
+            }
+        } else if matches!(
+            kind,
+            Placement::Wire | Placement::Bus | Placement::SignalHarness | Placement::Line
+        ) {
             Tool::Path {
                 points: vec![],
                 vertical_first: false,
+                angle_mode: 0,
                 revision: doc.history.revision,
             }
         } else {
@@ -575,6 +697,52 @@ impl PcbCraft {
         if self.documents[i].model.kind != DocumentKind::Schematic {
             return false;
         }
+        if self.documents[i].sch_editor.predefined {
+            return false;
+        }
+        if self.documents[i].sch_editor.active()
+            && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Tab))
+        {
+            self.documents[i].sch_editor.paused = true;
+            return true;
+        }
+        if let Some(prefix) = self.documents[i].sch_editor.place_prefix {
+            let mut chosen = None;
+            for (key, kind) in if prefix == 1 {
+                vec![
+                    (Key::H, Placement::SignalHarness),
+                    (Key::C, Placement::HarnessConnector),
+                    (Key::E, Placement::HarnessEntry),
+                ]
+            } else {
+                vec![
+                    (Key::B, Placement::Bus),
+                    (Key::U, Placement::BusEntry),
+                    (Key::R, Placement::Port),
+                    (Key::E, Placement::SheetEntry),
+                    (Key::W, Placement::Wire),
+                ]
+            } {
+                if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, key)) {
+                    chosen = Some(kind);
+                    break;
+                }
+            }
+            if prefix == 0 && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::H)) {
+                self.documents[i].sch_editor.place_prefix = Some(1);
+                return true;
+            }
+            if let Some(kind) = chosen {
+                self.start_schematic_tool(kind);
+                return true;
+            }
+        }
+        if !self.documents[i].sch_editor.active()
+            && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::P))
+        {
+            self.documents[i].sch_editor.place_prefix = Some(0);
+            return true;
+        }
         if self.documents[i].sch_editor.move_popup.is_some() {
             for (key, action) in [(Key::D, SchAction::Drag), (Key::M, SchAction::Move)] {
                 if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, key)) {
@@ -629,6 +797,43 @@ impl PcbCraft {
         }
         if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Escape)) {
             let doc = &mut self.documents[i];
+            if doc.sch_editor.paused {
+                doc.sch_editor.paused = false;
+                return true;
+            }
+            if let Tool::Path {
+                points, revision, ..
+            } = &doc.sch_editor.tool
+                && points.len() > 1
+            {
+                let primitive = path_primitive(
+                    doc.sch_editor.kind,
+                    points.clone(),
+                    doc.sch_editor.harness_width,
+                    doc.sch_editor.harness_color,
+                );
+                let revision = *revision;
+                match doc.edit_schematic(
+                    Edit::Insert(Fragment {
+                        primitives: vec![primitive],
+                        ..Default::default()
+                    }),
+                    revision,
+                ) {
+                    Ok(_) => {
+                        if let Tool::Path {
+                            points, revision, ..
+                        } = &mut doc.sch_editor.tool
+                        {
+                            points.clear();
+                            *revision = doc.history.revision;
+                        }
+                        doc.view.sch_preview = None;
+                    }
+                    Err(error) => self.message(true, error),
+                }
+                return true;
+            }
             if doc.sch_editor.active() || doc.sch_editor.move_popup.is_some() {
                 doc.sch_editor.cancel(&mut doc.view);
             } else {
@@ -649,9 +854,18 @@ impl PcbCraft {
             }
             return true;
         }
+        if matches!(self.documents[i].sch_editor.tool, Tool::Path { .. })
+            && ctx.input_mut(|i| i.consume_key(egui::Modifiers::SHIFT, Key::Space))
+        {
+            if let Tool::Path { angle_mode, .. } = &mut self.documents[i].sch_editor.tool {
+                *angle_mode = (*angle_mode + 1) % 3;
+            }
+            return true;
+        }
         if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Space)) {
             match &mut self.documents[i].sch_editor.tool {
-                Tool::Place { turns, .. }
+                Tool::Connector { turns, .. }
+                | Tool::Place { turns, .. }
                 | Tool::Move { turns, .. }
                 | Tool::Library { turns, .. } => *turns = (*turns + 1) % 4,
                 Tool::Path { vertical_first, .. } => *vertical_first = !*vertical_first,
@@ -703,10 +917,22 @@ impl PcbCraft {
             return;
         }
         let doc = &mut self.documents[index];
-        if ctx.input(|i| !i.focused || i.key_down(Key::Escape)) {
+        if doc.sch_editor.paused || doc.sch_editor.predefined {
+            return;
+        }
+        // Escape is processed by schematic_shortcuts, including finishing a path.
+        // Do not immediately cancel the next path during the same held key.
+        if ctx.input(|i| i.key_down(Key::Escape)) {
+            return;
+        }
+        if ctx.input(|i| !i.focused) {
             if matches!(
                 doc.sch_editor.tool,
-                Tool::Move { .. } | Tool::WireDrag { .. } | Tool::Pick { .. } | Tool::Path { .. }
+                Tool::Move { .. }
+                    | Tool::Connector { .. }
+                    | Tool::WireDrag { .. }
+                    | Tool::Pick { .. }
+                    | Tool::Path { .. }
             ) {
                 doc.sch_editor.cancel(&mut doc.view);
             }
@@ -916,23 +1142,101 @@ impl PcbCraft {
                     finish = true;
                 }
             }
+            Tool::Connector {
+                start,
+                turns,
+                revision,
+            } => {
+                if let Some(at) = point {
+                    let clicked = input.clicked
+                        || ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Enter));
+                    if let Some(origin) = *start {
+                        let a = Point {
+                            x: origin.x.min(at.x),
+                            y: origin.y.max(at.y),
+                        };
+                        let b = Point {
+                            x: origin.x.max(at.x),
+                            y: origin.y.min(at.y),
+                        };
+                        if let Ok(mut fragment) = eda_core::schematic_harness::connector(
+                            a,
+                            b,
+                            s.sheet.system_font,
+                            &doc.sch_editor.value,
+                        ) {
+                            if let K::HarnessConnector {
+                                side, primary_nm, ..
+                            } = &mut fragment.primitives[0].kind
+                            {
+                                for _ in 0..*turns {
+                                    *side = [3, 2, 0, 1][*side as usize];
+                                }
+                                *primary_nm = if *side <= 1 {
+                                    (a.y - b.y) / 2
+                                } else {
+                                    (b.x - a.x) / 2
+                                };
+                            }
+                            if clicked {
+                                command = Some((Edit::Insert(fragment.clone()), *revision));
+                                *start = None;
+                            }
+                            preview = Some(fragment);
+                        }
+                    } else if clicked {
+                        *start = Some(at);
+                    }
+                }
+                finish = input.secondary_clicked;
+            }
             Tool::Place { turns, revision } => {
                 if let Some(at) = point {
-                    match edit::place(
-                        kind.unwrap(),
-                        at,
-                        *turns,
-                        &doc.sch_editor.designator,
-                        &doc.sch_editor.value,
-                        s.sheet.system_font,
-                    ) {
+                    let result = if kind == Some(Placement::HarnessEntry) {
+                        s.primitives
+                            .iter()
+                            .filter(|p| matches!(p.kind, K::HarnessConnector { .. }))
+                            .find_map(|p| {
+                                eda_core::schematic_harness::entry(
+                                    s,
+                                    p.id,
+                                    at,
+                                    &doc.sch_editor.value,
+                                )
+                                .ok()
+                            })
+                            .map(|p| Fragment {
+                                primitives: vec![p],
+                                ..Default::default()
+                            })
+                            .ok_or("Harness Entry must be placed inside a Harness Connector".into())
+                    } else if kind == Some(Placement::SheetEntry) {
+                        place_sheet_entry(s, at, &doc.sch_editor.value)
+                    } else {
+                        edit::place(
+                            kind.unwrap(),
+                            at,
+                            *turns,
+                            &doc.sch_editor.designator,
+                            &doc.sch_editor.value,
+                            s.sheet.system_font,
+                        )
+                    };
+                    match result {
                         Ok(fragment) => {
-                            if input.clicked {
+                            if input.clicked
+                                || ctx
+                                    .input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Enter))
+                            {
                                 command = Some((Edit::Insert(fragment.clone()), *revision));
                             }
                             preview = Some(fragment);
                         }
-                        Err(e) => error = Some(e),
+                        Err(e) => {
+                            if input.clicked {
+                                error = Some(e);
+                            }
+                        }
                     }
                 }
                 finish = input.secondary_clicked;
@@ -940,35 +1244,55 @@ impl PcbCraft {
             Tool::Path {
                 points,
                 vertical_first,
+                angle_mode,
                 revision,
             } => {
                 let mut path = points.clone();
+                let anchor = input.clicked
+                    || ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Enter));
                 if let Some(at) = point {
-                    extend_path(
+                    extend_harness_path(
                         &mut path,
                         at,
                         *vertical_first,
-                        kind == Some(Placement::Wire),
+                        if matches!(
+                            kind,
+                            Some(Placement::Wire | Placement::Bus | Placement::SignalHarness)
+                        ) {
+                            *angle_mode
+                        } else {
+                            2
+                        },
                     );
-                    if input.clicked {
+                    if anchor {
                         *points = path.clone();
                     }
                 }
-                repeat_path = kind == Some(Placement::Wire)
-                    && input.clicked
+                repeat_path = matches!(
+                    kind,
+                    Some(Placement::Wire | Placement::Bus | Placement::SignalHarness)
+                ) && anchor
                     && points.len() > 1
-                    && point.is_some_and(|at| edit::connection_at(s, at));
-                let end = repeat_path
-                    || input.secondary_clicked
-                    || ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Enter));
+                    && point.is_some_and(|at| {
+                        if kind == Some(Placement::SignalHarness) {
+                            eda_core::schematic_harness::connection_at(s, at)
+                        } else {
+                            edit::connection_at(s, at)
+                        }
+                    });
+                let end = repeat_path || input.secondary_clicked;
                 if end {
                     // Finish at the last confirmed vertex; moving the pointer is only preview.
                     if points.len() > 1 {
-                        let p = edit::primitive(
+                        let mut p = edit::primitive(
                             K::Polyline {
                                 points: points.clone(),
                                 closed: false,
-                                electrical: if kind == Some(Placement::Wire) {
+                                electrical: if kind == Some(Placement::Bus) {
+                                    "Bus"
+                                } else if kind == Some(Placement::SignalHarness) {
+                                    "Signal Harness"
+                                } else if kind == Some(Placement::Wire) {
                                     "Wire"
                                 } else {
                                     "Graphic"
@@ -977,6 +1301,15 @@ impl PcbCraft {
                             },
                             None,
                         );
+                        if kind == Some(Placement::Bus) {
+                            p.presentation.record_type = 26;
+                            p.width_nm = 508_000;
+                        }
+                        if kind == Some(Placement::SignalHarness) {
+                            p.presentation.record_type = 218;
+                            p.width_nm = doc.sch_editor.harness_width;
+                            p.color = doc.sch_editor.harness_color;
+                        }
                         command = Some((
                             Edit::Insert(Fragment {
                                 primitives: vec![p],
@@ -985,15 +1318,20 @@ impl PcbCraft {
                             *revision,
                         ));
                     }
+                    repeat_path |= points.len() > 1;
                     finish = !repeat_path;
                 }
                 if path.len() > 1 {
-                    let fragment = Fragment {
+                    let mut fragment = Fragment {
                         primitives: vec![edit::primitive(
                             K::Polyline {
                                 points: path,
                                 closed: false,
-                                electrical: if kind == Some(Placement::Wire) {
+                                electrical: if kind == Some(Placement::Bus) {
+                                    "Bus"
+                                } else if kind == Some(Placement::SignalHarness) {
+                                    "Signal Harness"
+                                } else if kind == Some(Placement::Wire) {
                                     "Wire"
                                 } else {
                                     "Graphic"
@@ -1004,6 +1342,15 @@ impl PcbCraft {
                         )],
                         ..Default::default()
                     };
+                    if kind == Some(Placement::Bus) {
+                        fragment.primitives[0].presentation.record_type = 26;
+                        fragment.primitives[0].width_nm = 508_000;
+                    }
+                    if kind == Some(Placement::SignalHarness) {
+                        fragment.primitives[0].presentation.record_type = 218;
+                        fragment.primitives[0].width_nm = doc.sch_editor.harness_width;
+                        fragment.primitives[0].color = doc.sch_editor.harness_color;
+                    }
                     match edit::preview_fragment(&doc.model, &Edit::Insert(fragment)) {
                         Ok(f) => preview = Some(f),
                         Err(e) => error = Some(e),
@@ -1070,7 +1417,7 @@ impl PcbCraft {
         if let Some((command, revision)) = command {
             let is_place = matches!(
                 doc.sch_editor.tool,
-                Tool::Place { .. } | Tool::Library { .. }
+                Tool::Place { .. } | Tool::Library { .. } | Tool::Connector { .. }
             );
             match doc.edit_schematic(command, revision) {
                 Ok(_) => {
@@ -1085,10 +1432,22 @@ impl PcbCraft {
                         preview = None;
                     }
                     if is_place {
-                        if let Tool::Place { revision, .. } | Tool::Library { revision, .. } =
-                            &mut doc.sch_editor.tool
+                        if let Tool::Place { revision, .. }
+                        | Tool::Connector { revision, .. }
+                        | Tool::Library { revision, .. } = &mut doc.sch_editor.tool
                         {
                             *revision = doc.history.revision;
+                        }
+                        if kind == Some(Placement::HarnessEntry) {
+                            let n = doc
+                                .sch_editor
+                                .value
+                                .parse::<u32>()
+                                .ok()
+                                .and_then(|n| n.checked_add(1));
+                            if let Some(n) = n {
+                                doc.sch_editor.value = n.to_string();
+                            }
                         }
                         if matches!(kind, Some(Placement::Resistor | Placement::Capacitor)) {
                             doc.sch_editor.designator = next_designator(
@@ -1121,7 +1480,7 @@ impl PcbCraft {
                 s.images = fragment.images;
                 s.primitives = fragment.primitives;
                 for p in &mut s.primitives {
-                    p.color = 0xc08000;
+                    if !matches!(p.kind,K::HarnessConnector{..}|K::HarnessEntry{..}) && p.presentation.record_type!=217 && !matches!(&p.kind,K::Polyline{electrical,..} if electrical=="Signal Harness") {p.color = 0xc08000;}
                 }
                 s
             });
@@ -1148,15 +1507,75 @@ fn view_selection(view: &View) -> Selection {
 }
 
 fn is_wire(s: &Schematic, id: Uuid) -> bool {
-    s.primitive(id).is_some_and(|p| p.component.is_none() && matches!(&p.kind, K::Polyline { electrical, closed: false, .. } if electrical == "Wire"))
+    s.primitive(id).is_some_and(|p| p.component.is_none() && matches!(&p.kind, K::Polyline { electrical, closed: false, .. } if matches!(electrical.as_str(),"Wire"|"Signal Harness"|"Bus")))
 }
 
-pub(super) fn extend_path(
-    points: &mut Vec<Point>,
-    at: Point,
-    vertical_first: bool,
-    orthogonal: bool,
-) {
+fn path_primitive(
+    kind: Option<Placement>,
+    points: Vec<Point>,
+    width: i64,
+    color: u32,
+) -> eda_core::schematic::SchPrimitive {
+    let mut p = edit::primitive(
+        K::Polyline {
+            points,
+            closed: false,
+            electrical: match kind {
+                Some(Placement::Wire) => "Wire",
+                Some(Placement::Bus) => "Bus",
+                Some(Placement::SignalHarness) => "Signal Harness",
+                _ => "Graphic",
+            }
+            .into(),
+        },
+        None,
+    );
+    match kind {
+        Some(Placement::Bus) => {
+            p.presentation.record_type = 26;
+            p.width_nm = 508_000;
+        }
+        Some(Placement::SignalHarness) => {
+            p.presentation.record_type = 218;
+            p.width_nm = width;
+            p.color = color;
+        }
+        _ => {}
+    }
+    p
+}
+
+fn extend_harness_path(points: &mut Vec<Point>, at: Point, vertical_first: bool, mode: u8) {
+    if mode == 1
+        && let Some(last) = points.last().copied()
+    {
+        let dx = at.x - last.x;
+        let dy = at.y - last.y;
+        let diagonal = dx.abs().min(dy.abs());
+        let corner = if vertical_first {
+            Point {
+                x: last.x + dx.signum() * diagonal,
+                y: last.y + dy.signum() * diagonal,
+            }
+        } else if dx.abs() > dy.abs() {
+            Point {
+                x: at.x - dx.signum() * diagonal,
+                y: last.y,
+            }
+        } else {
+            Point {
+                x: last.x,
+                y: at.y - dy.signum() * diagonal,
+            }
+        };
+        if corner != last && corner != at {
+            points.push(corner);
+        }
+    }
+    extend_path(points, at, vertical_first, mode == 0);
+}
+
+fn extend_path(points: &mut Vec<Point>, at: Point, vertical_first: bool, orthogonal: bool) {
     if let Some(last) = points.last().copied() {
         if last == at {
             return;

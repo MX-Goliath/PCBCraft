@@ -15,7 +15,13 @@ pub enum WireHandle {
 
 /// Resolve a handle using a document-space picking radius supplied by the view.
 pub fn wire_handle_at(s: &Schematic, id: Uuid, at: Point, radius: i64) -> Option<WireHandle> {
-    let path = wire(s.primitive(id)?)?;
+    let p = s.primitive(id)?;
+    let path = match &p.kind {
+        K::Polyline {
+            points, electrical, ..
+        } if matches!(electrical.as_str(), "Wire" | "Signal Harness" | "Bus") => points.as_slice(),
+        _ => return None,
+    };
     let distance = |p: Point| (p.x as f64 - at.x as f64).hypot(p.y as f64 - at.y as f64);
     if let Some((i, _)) = path
         .iter()
@@ -124,6 +130,21 @@ pub fn wire_drag(
     handle: WireHandle,
     delta: Point,
 ) -> Result<Fragment, String> {
+    if let Some(K::Polyline { electrical, .. }) = s.primitive(id).map(|p| &p.kind)
+        && matches!(electrical.as_str(), "Signal Harness" | "Bus")
+    {
+        let proxy = super::drag::carrier_proxy(s, electrical);
+        let mut patch = wire_drag(&proxy, id, handle, delta)?;
+        patch
+            .primitives
+            .retain(|p| matches!(p.kind, K::Polyline { .. }));
+        for p in &mut patch.primitives {
+            if let K::Polyline { electrical: e, .. } = &mut p.kind {
+                *e = electrical.clone();
+            }
+        }
+        return Ok(patch);
+    }
     if !delta.valid() {
         return Err("Invalid wire drag coordinates".into());
     }

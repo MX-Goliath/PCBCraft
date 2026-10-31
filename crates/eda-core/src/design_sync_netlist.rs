@@ -2,6 +2,8 @@
 use super::*;
 use rstar::{AABB, RTree, RTreeObject};
 use schematic::{SchPrimitive, SchPrimitiveKind as K, TextRole};
+#[path = "schematic_harness_compile.rs"]
+pub(crate) mod harness;
 
 struct NodeBounds {
     envelope: AABB<[i64; 2]>,
@@ -183,6 +185,7 @@ pub fn compile_project(sheets: &[&Document], options: &ProjectOptions) -> Result
     );
     let depths = graph.depths;
     let links = graph.links;
+    let harness = harness::expand(sheets, options, &links, hierarchical)?;
     let excluded: HashMap<_, _> = sheets
         .iter()
         .map(|d| {
@@ -229,17 +232,6 @@ pub fn compile_project(sheets: &[&Document], options: &ProjectOptions) -> Result
     let mut nodes = vec![];
     for doc in sheets {
         let s = doc.schematic.as_ref().ok_or("Not a schematic")?;
-        if s.primitives.iter().any(|p| {
-            !excluded[&doc.id].primitives.contains(&p.id)
-                && matches!(&p.kind,K::Polyline{electrical,..} if electrical=="Bus")
-        }) || s.records.iter().any(|r| {
-            !excluded[&doc.id].records.contains(&r.index)
-                && matches!(r.record_type, 26 | 37 | 215 | 216 | 217 | 218)
-        }) {
-            return Err(
-                "Bus or harness connectivity is not yet supported by the ECO compiler".into(),
-            );
-        }
         if s.records.iter().any(|r| {
             r.record_type == 2
                 && !excluded[&doc.id].records.contains(&r.index)
@@ -254,6 +246,9 @@ pub fn compile_project(sheets: &[&Document], options: &ProjectOptions) -> Result
             .chain(&s.parameter_objects)
             .filter(|p| electrical(p) && !excluded[&doc.id].primitives.contains(&p.id))
         {
+            if harness.bundles.contains(&(doc.id, p.id)) {
+                continue;
+            }
             if p.component.is_some_and(|id| {
                 s.components
                     .iter()
@@ -304,6 +299,16 @@ pub fn compile_project(sheets: &[&Document], options: &ProjectOptions) -> Result
             if b < a && touches(p, nodes[b].1, tolerance) {
                 join(&mut parents, a, b);
             }
+        }
+    }
+    let node_indices: HashMap<_, _> = nodes
+        .iter()
+        .enumerate()
+        .map(|(i, (d, p))| ((d.id, p.id), i))
+        .collect();
+    for (a, b) in &harness.joins {
+        if let (Some(&a), Some(&b)) = (node_indices.get(a), node_indices.get(b)) {
+            join(&mut parents, a, b);
         }
     }
     // Resolve sheet-local labels and ports first, so a wire separated into
@@ -447,6 +452,14 @@ pub fn compile_project(sheets: &[&Document], options: &ProjectOptions) -> Result
     for indices in islands.values() {
         let mut pins = vec![];
         let mut labels = vec![];
+        let harness_names: BTreeSet<_> = indices
+            .iter()
+            .filter_map(|n| harness.names.get(&(nodes[*n].0.id, nodes[*n].1.id)))
+            .cloned()
+            .collect();
+        if harness_names.len() > 1 {
+            return Err("Conflicting named harness channels on one net".into());
+        }
         for &n in indices {
             let (doc, p) = nodes[n];
             if let Some((priority, name)) = naming_label(p, options) {
@@ -507,6 +520,8 @@ pub fn compile_project(sheets: &[&Document], options: &ProjectOptions) -> Result
             out.omitted_single_pin_pins
                 .extend(pins.iter().map(|p| (p.2, p.3, p.1.to_uppercase())));
             None
+        } else if let Some(name) = harness_names.first() {
+            Some(name.clone())
         } else if let Some((priority, name, doc, ..)) = labels.first() {
             if options.append_sheet_number && sheet_local {
                 Some(format!(
@@ -582,7 +597,8 @@ pub fn compile_project(sheets: &[&Document], options: &ProjectOptions) -> Result
                 })
                 .map(|(_, s, _, _)| s.to_uppercase())
                 .collect();
-            if aliases.iter().any(|s| s != &name.to_uppercase())
+            if harness_names.is_empty()
+                && aliases.iter().any(|s| s != &name.to_uppercase())
                 && (!hierarchical || labels.first().is_some_and(|l| l.0 == 0))
             {
                 return Err(format!(

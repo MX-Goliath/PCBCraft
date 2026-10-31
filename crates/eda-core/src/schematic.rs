@@ -278,6 +278,20 @@ pub fn parameter_text(
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", deny_unknown_fields)]
 pub enum SchPrimitiveKind {
+    HarnessConnector {
+        a: Point,
+        b: Point,
+        side: u32,
+        primary_nm: i64,
+        bus_text_style: String,
+    },
+    HarnessEntry {
+        position: Point,
+        side: u32,
+        name: String,
+        font: usize,
+        text_color: u32,
+    },
     Polyline {
         points: Vec<Point>,
         closed: bool,
@@ -478,7 +492,8 @@ impl Schematic {
                 | SchPrimitiveKind::TextFrame { font, .. }
                 | SchPrimitiveKind::PowerPort { font, .. }
                 | SchPrimitiveKind::Port { font, .. } => *font < self.fonts.len(),
-                SchPrimitiveKind::SheetEntry { font, .. } => *font < self.fonts.len(),
+                SchPrimitiveKind::SheetEntry { font, .. }
+                | SchPrimitiveKind::HarnessEntry { font, .. } => *font < self.fonts.len(),
                 SchPrimitiveKind::Pin {
                     font, number_font, ..
                 } => *font < self.fonts.len() && number_font.is_none_or(|n| n < self.fonts.len()),
@@ -493,6 +508,26 @@ impl Schematic {
                 return Err("Invalid schematic primitive or owner".into());
             }
             let valid = match &p.kind {
+                SchPrimitiveKind::HarnessConnector {
+                    a,
+                    b,
+                    side,
+                    primary_nm,
+                    ..
+                } => {
+                    a.valid()
+                        && b.valid()
+                        && a.x < b.x
+                        && a.y > b.y
+                        && *side <= 3
+                        && (0..=if *side <= 1 { a.y - b.y } else { b.x - a.x }).contains(primary_nm)
+                }
+                SchPrimitiveKind::HarnessEntry {
+                    position,
+                    side,
+                    name,
+                    ..
+                } => position.valid() && *side <= 3 && !name.trim().is_empty(),
                 SchPrimitiveKind::Polyline { points, .. } => {
                     points.len() <= 100_000 && points.iter().all(|p| p.valid())
                 }
@@ -568,13 +603,39 @@ impl Schematic {
             if let Some(parent) = p.presentation.parent {
                 if p.component.is_some()
                     || !self.primitives.iter().any(|p| {
-                        p.id == parent && matches!(p.kind, SchPrimitiveKind::SheetSymbol { .. })
+                        p.id == parent
+                            && matches!(
+                                p.kind,
+                                SchPrimitiveKind::SheetSymbol { .. }
+                                    | SchPrimitiveKind::HarnessConnector { .. }
+                            )
                     })
                 {
                     return Err("Invalid Sheet Symbol owner".into());
                 }
-            } else if matches!(p.kind, SchPrimitiveKind::SheetEntry { .. }) {
+            } else if matches!(
+                p.kind,
+                SchPrimitiveKind::SheetEntry { .. } | SchPrimitiveKind::HarnessEntry { .. }
+            ) {
                 return Err("Sheet Entry requires a Sheet Symbol owner".into());
+            }
+            if let SchPrimitiveKind::HarnessEntry { position, side, .. } = p.kind {
+                let parent = self
+                    .primitive(p.presentation.parent.ok_or("Missing Harness Connector")?)
+                    .ok_or("Missing Harness Connector")?;
+                if let SchPrimitiveKind::HarnessConnector { a, b, .. } = parent.kind {
+                    let on_edge = match side {
+                        0 => position.x == a.x && (b.y..=a.y).contains(&position.y),
+                        1 => position.x == b.x && (b.y..=a.y).contains(&position.y),
+                        2 => position.y == a.y && (a.x..=b.x).contains(&position.x),
+                        _ => position.y == b.y && (a.x..=b.x).contains(&position.x),
+                    };
+                    if !on_edge {
+                        return Err("Harness Entry must be on its connector edge".into());
+                    }
+                } else {
+                    return Err("Harness Entry requires a Harness Connector owner".into());
+                }
             }
         }
         Ok(())

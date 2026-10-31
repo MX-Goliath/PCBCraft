@@ -5,8 +5,14 @@ use eda_core::schematic::SchPrimitiveKind as K;
 use std::io::Write;
 
 #[cfg(test)]
+#[path = "altium_sch_harness_tests.rs"]
+mod harness_tests;
+#[cfg(test)]
 #[path = "altium_sch_write_tests.rs"]
 mod tests;
+
+#[path = "altium_sch_harness_write.rs"]
+mod harness_write;
 
 struct Patch {
     records: Vec<Option<Fields>>,
@@ -124,16 +130,25 @@ fn hierarchy_changes(
     target: &Schematic,
 ) -> Result<(), String> {
     for old in &source.primitives {
-        if target.primitive(old.id).is_none()
+        if !harness_write::harness(old)
+            && target.primitive(old.id).is_none()
             && (matches!(
                 old.kind,
                 K::SheetSymbol { .. } | K::SheetEntry { .. } | K::Port { .. }
-            ) || old.presentation.parent.is_some())
+            ) || old.presentation.parent.is_some()
+                || old.component.is_none()
+                    && matches!(
+                        old.kind,
+                        K::Polyline { .. } | K::Text { .. } | K::PowerPort { .. }
+                    ))
         {
             patch.remove_tree(old.source_index as usize);
         }
     }
     for p in &target.primitives {
+        if harness_write::harness(p) {
+            continue;
+        }
         let old = source.primitive(p.id);
         if old == Some(p) {
             continue;
@@ -142,13 +157,22 @@ fn hierarchy_changes(
             p.kind,
             K::SheetSymbol { .. } | K::SheetEntry { .. } | K::Port { .. }
         ) || p.presentation.parent.is_some()
-            || matches!(&p.kind,K::Polyline{electrical,..} if electrical=="Wire");
+            || p.component.is_none()
+                && matches!(
+                    p.kind,
+                    K::Polyline { .. } | K::Text { .. } | K::PowerPort { .. }
+                );
         if !supported {
             continue;
         }
         let index = if old.is_some() {
             p.source_index
-        } else if matches!(p.kind, K::SheetEntry { .. } | K::Port { .. })
+        } else if (matches!(p.kind, K::SheetEntry { .. } | K::Port { .. })
+            || p.component.is_none()
+                && matches!(
+                    p.kind,
+                    K::Polyline { .. } | K::Text { .. } | K::PowerPort { .. }
+                ))
             && p.source_index == eda_core::schematic_edit::AUTHORED
         {
             let owner = if let Some(id) = p.presentation.parent {
@@ -160,10 +184,24 @@ fn hierarchy_changes(
             } else {
                 0
             };
-            let kind = if matches!(p.kind, K::SheetEntry { .. }) {
-                16
-            } else {
-                18
+            let kind = match &p.kind {
+                K::SheetEntry { .. } => 16,
+                K::Port { .. } => 18,
+                K::Text { .. } => {
+                    if p.text_role == Some(eda_core::schematic::TextRole::NetLabel) {
+                        25
+                    } else {
+                        4
+                    }
+                }
+                K::PowerPort { .. } => 17,
+                K::Polyline { electrical, .. } => match electrical.as_str() {
+                    "Wire" => 27,
+                    "Bus" => 26,
+                    "Bus Entry" => 37,
+                    _ => 6,
+                },
+                _ => return Err("Unsupported native authored primitive".into()),
             };
             let uid = patch.fresh_uid(owner, kind, &p.id.to_string())?;
             let index = patch.add(kind, owner);
@@ -269,15 +307,38 @@ fn hierarchy_changes(
             }
             K::Polyline {
                 points, electrical, ..
-            } if electrical == "Wire" => {
+            } if matches!(electrical.as_str(), "Wire" | "Bus" | "Graphic") => {
                 set(f, "LOCATIONCOUNT", points.len().to_string());
                 for (n, p) in points.iter().enumerate() {
                     coordinate_units(f, &format!("X{}", n + 1), native_units(p.x));
                     coordinate_units(f, &format!("Y{}", n + 1), native_units(p.y));
                 }
             }
+            K::Polyline {
+                points, electrical, ..
+            } if electrical == "Bus Entry" && points.len() == 2 => {
+                location(f, points[0]);
+                coordinate_units(f, "CORNER.X", native_units(points[1].x));
+                coordinate_units(f, "CORNER.Y", native_units(points[1].y));
+            }
+            K::PowerPort {
+                position,
+                orientation,
+                style,
+                text,
+                show_name,
+                font,
+            } => {
+                location(f, *position);
+                set(f, "ORIENTATION", orientation.to_string());
+                set(f, "STYLE", style.to_string());
+                set(f, "TEXT", text.clone());
+                set(f, "SHOWNETNAME", boolean(*show_name));
+                set(f, "FONTID", (font + 1).to_string());
+            }
             _ => continue,
         }
+        set(f, "DISABLESYNC", boolean(!p.presentation.allow_sync));
         set(f, "COLOR", p.color.to_string());
         set(f, "ISSOLID", boolean(p.fill.is_some()));
         if let Some(color) = p.fill {
@@ -523,6 +584,22 @@ fn changes(original: &Document, doc: &Document) -> Result<Patch, String> {
         )?;
         models(&mut patch, source, old, c)?;
     }
+    if target.fonts != source.fonts {
+        let f = patch.record(0)?;
+        set(f, "FONTIDCOUNT", target.fonts.len().to_string());
+        for (i, font) in target.fonts.iter().enumerate() {
+            let n = i + 1;
+            set(f, &format!("FONTNAME{n}"), font.name.clone());
+            set(
+                f,
+                &format!("SIZE{n}"),
+                (font.height_nm / 254_000).to_string(),
+            );
+            set(f, &format!("BOLD{n}"), boolean(font.bold));
+            set(f, &format!("ITALIC{n}"), boolean(font.italic));
+            set(f, &format!("UNDERLINE{n}"), boolean(font.underline));
+        }
+    }
     parameters(
         &mut patch,
         source,
@@ -544,6 +621,7 @@ fn changes(original: &Document, doc: &Document) -> Result<Patch, String> {
         };
         set(patch.record(p.source_index)?, "TEXT", text.clone());
     }
+    harness_write::changes(&mut patch, source, target)?;
     hierarchy_changes(&mut patch, source, target)?;
     Ok(patch)
 }
@@ -656,6 +734,9 @@ fn verify(
                     .and_then(|id| doc.schematic.as_ref()?.primitive(*id))
             }
             .ok_or("Unexpected serialized primitive")?;
+            if authored_indices.contains_key(&p.source_index) {
+                p.presentation.record_type = old.presentation.record_type;
+            }
             ids.insert(p.id, old.id);
             p.id = old.id;
             p.source_index = old.source_index;
@@ -678,19 +759,33 @@ fn verify(
         let Some(read) = scene.primitive(expected.id) else {
             continue;
         };
-        if matches!(expected.kind, K::SheetEntry { .. } | K::Port { .. })
-            || matches!(&expected.kind,K::Polyline{electrical,..} if electrical=="Wire")
+        if matches!(
+            expected.kind,
+            K::SheetEntry { .. }
+                | K::Port { .. }
+                | K::HarnessEntry { .. }
+                | K::HarnessConnector { .. }
+        ) || expected.text_role == Some(eda_core::schematic::TextRole::NetLabel)
+            || matches!(&expected.kind,K::Polyline{electrical,..} if matches!(electrical.as_str(),"Wire"|"Signal Harness"|"Bus"|"Bus Entry"))
         {
             let a: BTreeSet<_> = expected_scene
                 .primitives
                 .iter()
-                .filter(|p| p.id != expected.id && eda_core::cross_probe::touches(expected, p))
+                .filter(|p| {
+                    p.id != expected.id
+                        && (eda_core::cross_probe::touches(expected, p)
+                            || eda_core::schematic_harness::touches(expected, p))
+                })
                 .map(|p| p.id)
                 .collect();
             let b: BTreeSet<_> = scene
                 .primitives
                 .iter()
-                .filter(|p| p.id != read.id && eda_core::cross_probe::touches(read, p))
+                .filter(|p| {
+                    p.id != read.id
+                        && (eda_core::cross_probe::touches(read, p)
+                            || eda_core::schematic_harness::touches(read, p))
+                })
                 .map(|p| p.id)
                 .collect();
             if a != b {
@@ -704,6 +799,26 @@ fn verify(
             continue;
         };
         match (&mut read.kind, &expected.kind) {
+            (
+                K::HarnessConnector {
+                    a, b, primary_nm, ..
+                },
+                K::HarnessConnector {
+                    a: x,
+                    b: y,
+                    primary_nm: z,
+                    ..
+                },
+            ) if near(*a, *x) && near(*b, *y) && (*primary_nm - *z).abs() <= 2 => {
+                *a = *x;
+                *b = *y;
+                *primary_nm = *z;
+            }
+            (K::HarnessEntry { position, .. }, K::HarnessEntry { position: p, .. })
+                if near(*position, *p) =>
+            {
+                *position = *p;
+            }
             (K::SheetSymbol { a, b, .. }, K::SheetSymbol { a: x, b: y, .. })
                 if near(*a, *x) && near(*b, *y) =>
             {
@@ -737,7 +852,9 @@ fn verify(
                 *height_nm = *h;
             }
             (K::Text { position, .. }, K::Text { position: p, .. })
-                if read.presentation.parent.is_some() && near(*position, *p) =>
+                if (read.presentation.parent.is_some()
+                    || read.text_role == Some(eda_core::schematic::TextRole::NetLabel))
+                    && near(*position, *p) =>
             {
                 *position = *p
             }
@@ -746,8 +863,10 @@ fn verify(
                     points, electrical, ..
                 },
                 K::Polyline { points: p, .. },
-            ) if electrical == "Wire"
-                && points.len() == p.len()
+            ) if matches!(
+                electrical.as_str(),
+                "Wire" | "Bus" | "Signal Harness" | "Bus Entry"
+            ) && points.len() == p.len()
                 && points.iter().zip(p).all(|(a, b)| near(*a, *b)) =>
             {
                 *points = p.clone()
@@ -859,22 +978,27 @@ pub fn serialize(doc: &Document) -> Result<Vec<u8>, String> {
         };
         if before.contains_key("HEADER") {
             let mut after = before.clone();
-            if stream == "FileHeader" {
-                let retained = original
-                    .schematic
-                    .as_ref()
-                    .unwrap()
-                    .records
-                    .iter()
-                    .enumerate()
-                    .filter(|(i, r)| r.stream == "FileHeader" && patch.records[*i].is_some())
-                    .count();
-                set(
-                    &mut after,
-                    "WEIGHT",
-                    (retained + patch.added.len()).to_string(),
-                );
-            }
+            let retained = original
+                .schematic
+                .as_ref()
+                .unwrap()
+                .records
+                .iter()
+                .enumerate()
+                .filter(|(i, r)| r.stream == stream && patch.records[*i].is_some())
+                .count();
+            let added = patch
+                .added
+                .iter()
+                .filter(|f| {
+                    if (215..=218).contains(&(f.n("RECORD") as u32)) {
+                        stream == "Additional"
+                    } else {
+                        stream == "FileHeader"
+                    }
+                })
+                .count();
+            set(&mut after, "WEIGHT", (retained + added).to_string());
             output.entry(stream).or_default().push((
                 flag,
                 properties(&data, &before, &after, encoding)?,
@@ -893,11 +1017,35 @@ pub fn serialize(doc: &Document) -> Result<Vec<u8>, String> {
     }
     for (added, f) in patch.added.iter().enumerate() {
         let index = (record + added) as u32;
-        output.entry("FileHeader").or_default().push((
+        let stream = if (215..=218).contains(&(f.n("RECORD") as u32)) {
+            "Additional"
+        } else {
+            "FileHeader"
+        };
+        output.entry(stream).or_default().push((
             0,
             properties(&[], &Fields::new(), f, encoding)?,
             Some(index),
         ));
+    }
+    if !original
+        .schematic
+        .as_ref()
+        .unwrap()
+        .records
+        .iter()
+        .any(|r| r.stream == "Additional")
+        && let Some(additional) = output.get_mut("Additional")
+        && additional.first().is_some_and(|(_, _, i)| i.is_some())
+    {
+        let f = Fields::from([
+            (
+                "HEADER".into(),
+                "Protel for Windows - Schematic Capture Binary File Version 5.0".into(),
+            ),
+            ("WEIGHT".into(), additional.len().to_string()),
+        ]);
+        additional.insert(0, (0, properties(&[], &Fields::new(), &f, encoding)?, None));
     }
     // Altium consumes component/model children in their native tree order.
     // OWNERINDEX alone is insufficient when new records are appended globally.
@@ -937,7 +1085,7 @@ pub fn serialize(doc: &Document) -> Result<Vec<u8>, String> {
             .iter()
             .any(|r| {
                 !matches!(r.stream.as_str(), "FileHeader" | "Additional")
-                    || !matches!(r.record_type, 1..=18|22|25..=34|37|39|41|43..=48|209|225)
+                    || !matches!(r.record_type, 1..=18|22|25..=34|37|39|41|43..=48|209|215..=218|225)
             })
     {
         return Err(
@@ -945,6 +1093,12 @@ pub fn serialize(doc: &Document) -> Result<Vec<u8>, String> {
                 .into(),
         );
     }
+    let output_header_count = output
+        .get("FileHeader")
+        .into_iter()
+        .flatten()
+        .filter(|(_, _, i)| i.is_some())
+        .count() as u32;
     for stream in ["FileHeader", "Additional"] {
         for (flag, data, index) in output.get_mut(stream).into_iter().flatten() {
             if index.is_none() {
@@ -956,19 +1110,48 @@ pub fn serialize(doc: &Document) -> Result<Vec<u8>, String> {
             let before = decode_fields(data, encoding)?;
             let mut after = before.clone();
             if let Some(owner) = before.get("OWNERINDEX").and_then(|n| n.parse::<u32>().ok()) {
+                let original_index = index.unwrap();
+                let local = before.yes("OWNERINDEXADDITIONALLIST");
+                let old_base = original
+                    .schematic
+                    .as_ref()
+                    .unwrap()
+                    .records
+                    .iter()
+                    .position(|r| r.stream == "Additional")
+                    .unwrap_or(record) as u32;
+                let absolute = if local && original_index < record as u32 {
+                    old_base + owner
+                } else {
+                    owner
+                };
+                let new_base = output_header_count;
+                let mapped = *remap
+                    .get(&absolute)
+                    .ok_or("Native record references a removed owner")?;
                 set(
                     &mut after,
                     "OWNERINDEX",
-                    remap
-                        .get(&owner)
-                        .ok_or("Native record references a removed owner")?
-                        .to_string(),
+                    if local {
+                        mapped
+                            .checked_sub(new_base)
+                            .ok_or("Invalid Additional owner")?
+                    } else {
+                        mapped
+                    }
+                    .to_string(),
                 );
             }
             if shifted
                 && let Some(key) = after.keys().find(|k| {
                     k.contains("INDEX")
-                        && !matches!(k.as_str(), "OWNERINDEX" | "INDEXINSHEET" | "UNIONINDEX")
+                        && !matches!(
+                            k.as_str(),
+                            "OWNERINDEX"
+                                | "OWNERINDEXADDITIONALLIST"
+                                | "INDEXINSHEET"
+                                | "UNIONINDEX"
+                        )
                 })
             {
                 return Err(format!(
@@ -1016,6 +1199,40 @@ pub fn save(path: &Path, doc: &Document) -> Result<(), String> {
     let mut temp = tempfile::NamedTempFile::new_in(parent).map_err(|e| e.to_string())?;
     temp.write_all(&bytes).map_err(|e| e.to_string())?;
     temp.as_file().sync_all().map_err(|e| e.to_string())?;
+    let harness_path = path.with_extension("Harness");
+    let generated = eda_core::schematic_harness::definitions(
+        doc.schematic.as_ref().ok_or("Expected schematic")?,
+    )?;
+    let definition_temp = if !generated.is_empty() || harness_path.is_file() {
+        let mut definitions = if harness_path.is_file() {
+            let bytes = read_bounded(&harness_path)?;
+            let text = std::str::from_utf8(&bytes)
+                .map(std::borrow::Cow::Borrowed)
+                .unwrap_or_else(|_| WINDOWS_1251.decode(&bytes).0);
+            eda_core::schematic_harness::parse_definitions(&text)?
+        } else {
+            vec![]
+        };
+        definitions.retain(|d| d.locked);
+        for definition in generated {
+            if !definitions
+                .iter()
+                .any(|d| d.name.eq_ignore_ascii_case(&definition.name))
+            {
+                definitions.push(definition);
+            }
+        }
+        let mut file = tempfile::NamedTempFile::new_in(parent).map_err(|e| e.to_string())?;
+        file.write_all(eda_core::schematic_harness::format_definitions(&definitions).as_bytes())
+            .map_err(|e| e.to_string())?;
+        file.as_file().sync_all().map_err(|e| e.to_string())?;
+        Some(file)
+    } else {
+        None
+    };
     temp.persist(path).map_err(|e| e.to_string())?;
+    if let Some(file) = definition_temp {
+        file.persist(&harness_path).map_err(|e| e.to_string())?;
+    }
     Ok(())
 }

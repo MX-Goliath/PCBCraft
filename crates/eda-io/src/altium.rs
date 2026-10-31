@@ -18,6 +18,17 @@ pub mod library;
 #[path = "altium_sch_write.rs"]
 pub mod writer;
 
+/// Read the native textual harness definitions, including legacy Cyrillic files.
+pub fn load_harness_definitions(
+    path: &Path,
+) -> Result<Vec<eda_core::schematic_harness::Definition>, String> {
+    let bytes = read_bounded(path)?;
+    let text = std::str::from_utf8(&bytes)
+        .map(std::borrow::Cow::Borrowed)
+        .unwrap_or_else(|_| WINDOWS_1251.decode(&bytes).0);
+    eda_core::schematic_harness::parse_definitions(&text)
+}
+
 #[derive(Clone, Debug)]
 pub struct ProjectEntry {
     pub original_path: String,
@@ -47,6 +58,24 @@ impl Project {
     ) -> Result<eda_core::design_sync::ProjectOptions, String> {
         use eda_core::design_sync::SheetLink;
         let mut options = self.netlist_options.clone();
+        options.harness_definitions.clear();
+        let mut harness_files: BTreeSet<_> = self
+            .documents
+            .iter()
+            .filter(|e| e.kind.eq_ignore_ascii_case("harness"))
+            .map(|e| e.path.clone())
+            .collect();
+        for (path, _) in sheets {
+            let file = path.with_extension("Harness");
+            if file.is_file() {
+                harness_files.insert(file);
+            }
+        }
+        for file in harness_files {
+            options
+                .harness_definitions
+                .extend(load_harness_definitions(&file)?);
+        }
         let mut links = vec![];
         for (path, doc) in sheets {
             if let Some(entry) = self.documents.iter().find(|e| e.path == *path) {
@@ -801,7 +830,7 @@ pub fn import_schematic(bytes: &[u8], name: &str) -> Result<Document, String> {
         } else {
             u32::MAX
         };
-        if *stream == "Additional" {
+        if *stream == "Additional" && !matches!(record_type, 215..=218) {
             warnings.push(format!(
                 "Additional-stream record {record_type} retained; rendering is not implemented"
             ));
@@ -843,6 +872,17 @@ fn uuid(doc: Uuid, index: u32) -> Uuid {
 }
 fn owner(f: &Fields) -> usize {
     f.n("OWNERINDEX").max(0) as usize
+}
+fn harness_owner(records: &[SourceRecord], r: &SourceRecord) -> usize {
+    let base = if r.stream == "Additional" && r.fields.yes("OWNERINDEXADDITIONALLIST") {
+        records
+            .iter()
+            .position(|p| p.stream == "Additional")
+            .unwrap_or(0)
+    } else {
+        0
+    };
+    base + owner(&r.fields)
 }
 fn component_owner(records: &[SourceRecord], index: usize) -> Option<usize> {
     let mut i = index;
@@ -1086,14 +1126,20 @@ fn build_document(
     let show_template = f.yes("SHOWTEMPLATEGRAPHICS");
     let default_font = f.n("SYSTEMFONT").max(1) as usize - 1;
     for (index, r) in records.iter().enumerate() {
-        let visible = is_visible(&records, index, show_template);
+        let visible = if matches!(r.record_type, 215..=218) {
+            !r.fields.yes("ISHIDDEN")
+        } else {
+            is_visible(&records, index, show_template)
+        };
         let hidden_parameter = r.record_type == 41
             && r.fields.yes("ISHIDDEN")
             && (owner(&r.fields) == 0
                 || records
                     .get(owner(&r.fields))
                     .is_some_and(|p| p.record_type == 1));
-        if r.stream != "FileHeader" || (!visible && !hidden_parameter) {
+        if (r.stream != "FileHeader" && !matches!(r.record_type, 215..=218))
+            || (!visible && !hidden_parameter && r.record_type != 217)
+        {
             continue;
         }
         let f = &r.fields;
@@ -1119,23 +1165,25 @@ fn build_document(
             }
             let p = SchPrimitive {
                 presentation: eda_core::schematic::Presentation {
-                    parent: matches!(r.record_type, 16 | 32 | 33)
-                        .then(|| uuid(id, owner(f) as u32)),
+                    parent: matches!(r.record_type, 16 | 32 | 33 | 216 | 217)
+                        .then(|| uuid(id, harness_owner(&records, r) as u32)),
                     alignment: (r.record_type == 18).then(|| f.n("ALIGNMENT") as u32),
                     text_color: (r.record_type == 18).then(|| f.n("TEXTCOLOR") as u32),
-                    harness_type: if matches!(r.record_type, 16 | 18) {
+                    harness_type: if matches!(r.record_type, 16 | 18 | 216) {
                         f.text("HARNESSTYPE")
                     } else {
                         String::new()
                     },
                     record_type: r.record_type,
                     url: f.text("URL"),
-                    name: if r.record_type == 34 {
+                    name: if r.record_type == 216 {
+                        String::new()
+                    } else if r.record_type == 34 {
                         "Designator".into()
                     } else {
                         f.text("NAME")
                     },
-                    raw_text: matches!(r.record_type, 4 | 25 | 34 | 41)
+                    raw_text: matches!(r.record_type, 4 | 25 | 34 | 41 | 217)
                         .then(|| f.text("TEXT").replace("~1", "\n")),
                     hidden: !visible,
                     show_name: f.yes("SHOWNAME"),
@@ -1157,7 +1205,7 @@ fn build_document(
                 source_index: r.index,
                 component,
                 color,
-                fill: if (f.yes("ISSOLID") || matches!(r.record_type, 16 | 18))
+                fill: if (f.yes("ISSOLID") || matches!(r.record_type, 16 | 18 | 215 | 216))
                     && !f.yes("TRANSPARENT")
                 {
                     Some(f.n("AREACOLOR") as u32)
@@ -1181,12 +1229,39 @@ fn build_document(
                 line_shape_size: f.n("LINESHAPESIZE") as u32,
                 kind,
             };
-            if visible {
+            if visible || r.record_type == 217 {
                 primitives.push(p);
             } else {
                 parameter_objects.push(p);
             }
         }
+    }
+    for c in primitives
+        .clone()
+        .iter()
+        .filter(|p| matches!(p.kind, SchPrimitiveKind::HarnessConnector { .. }))
+    {
+        let name = primitives
+            .iter()
+            .chain(&parameter_objects)
+            .find_map(|p| {
+                if p.presentation.parent == Some(c.id) {
+                    if let SchPrimitiveKind::Text { text, .. } = &p.kind {
+                        Some(text.clone())
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_default();
+        primitives
+            .iter_mut()
+            .find(|p| p.id == c.id)
+            .unwrap()
+            .presentation
+            .harness_type = name;
     }
     for (kind, count) in unsupported {
         warnings.push(format!(
@@ -1223,6 +1298,9 @@ fn build_document(
         })),
         warnings,
     });
+    if let Some(s) = &mut doc.schematic {
+        eda_core::schematic_harness::infer_types(s);
+    }
     doc.validate()?;
     Ok(doc)
 }
@@ -1250,7 +1328,7 @@ fn primitive_kind(
         .map_or(default_font, |_| f.n("FONTID").max(1) as usize - 1);
     let kind = match r.record_type {
         1 | 31 | 39 | 44..=48 => return Ok(None),
-        5 | 6 | 7 | 26 | 27 => {
+        5 | 6 | 7 | 26 | 27 | 218 => {
             let count = f.n("LOCATIONCOUNT");
             let extra = f.n("EXTRALOCATIONCOUNT");
             if !(0..=100_000).contains(&count) || !(0..=100_000 - count).contains(&extra) {
@@ -1281,10 +1359,48 @@ fn primitive_kind(
                     electrical: match r.record_type {
                         26 => "Bus",
                         27 => "Wire",
+                        218 => "Signal Harness",
                         _ => "Graphic",
                     }
                     .into(),
                 }
+            }
+        }
+        215 => K::HarnessConnector {
+            a,
+            b: Point {
+                x: a.x + f.coord("XSIZE"),
+                y: a.y - f.coord("YSIZE"),
+            },
+            side: f.n("HARNESSCONNECTORSIDE") as u32,
+            primary_nm: f.coord("PRIMARYCONNECTIONPOSITION"),
+            bus_text_style: if f.text("BUSTEXTSTYLE").is_empty() {
+                "Full".into()
+            } else {
+                f.text("BUSTEXTSTYLE")
+            },
+        },
+        216 => {
+            let parent = records
+                .get(harness_owner(records, r))
+                .filter(|p| p.record_type == 215)
+                .ok_or("Harness Entry has no Harness Connector owner")?;
+            let a = parent.fields.point("LOCATION");
+            let b = Point {
+                x: a.x + parent.fields.coord("XSIZE"),
+                y: a.y - parent.fields.coord("YSIZE"),
+            };
+            let distance =
+                f.n("DISTANCEFROMTOP") as i128 * 1_000_000 + f.n("DISTANCEFROMTOP_FRAC1") as i128;
+            let distance = i64::try_from(distance * 2_540_000 / 1_000_000)
+                .map_err(|_| "Harness Entry distance overflow")?;
+            let side = f.n("SIDE") as u32;
+            K::HarnessEntry {
+                position: eda_core::schematic_harness::edge(a, b, side, distance),
+                side,
+                name: f.text("NAME"),
+                font: f.n("TEXTFONTID").max(1) as usize - 1,
+                text_color: f.n("TEXTCOLOR") as u32,
             }
         }
         10 | 14 => K::Rectangle {
@@ -1322,7 +1438,7 @@ fn primitive_kind(
                 f.real("ENDANGLE")
             },
         },
-        4 | 25 | 28 | 32 | 33 | 34 | 41 | 209 => {
+        4 | 25 | 28 | 32 | 33 | 34 | 41 | 209 | 217 => {
             let mut text = f.text("TEXT").replace("~1", "\n");
             if text.starts_with('=') {
                 let component = component_owner(records, r.index as usize)

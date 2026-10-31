@@ -168,6 +168,89 @@ fn focused_context() -> egui::Context {
     ctx
 }
 
+#[test]
+fn harness_connector_entry_path_placement_pause_cancel_and_undo() {
+    let mut app = app();
+    let ctx = focused_context();
+    app.documents[0]
+        .model
+        .schematic
+        .as_mut()
+        .unwrap()
+        .sheet
+        .options
+        .snap_enabled = false;
+    app.start_schematic_tool(Placement::HarnessConnector);
+    app.documents[0].sch_editor.value = "Serial".into();
+    app.schematic_input(0, pointer(Point::mm(20, 40), true), &ctx);
+    assert!(
+        app.documents[0]
+            .model
+            .schematic
+            .as_ref()
+            .unwrap()
+            .primitives
+            .is_empty()
+    );
+    app.schematic_input(0, pointer(Point::mm(40, 20), true), &ctx);
+    let s = app.documents[0].model.schematic.as_ref().unwrap();
+    assert_eq!(s.primitives.len(), 2);
+    let id = s.primitives[0].id;
+    app.start_schematic_tool(Placement::HarnessEntry);
+    let revision = app.documents[0].history.revision;
+    app.schematic_input(0, pointer(Point::mm(70, 70), true), &ctx);
+    assert_eq!(app.documents[0].history.revision, revision);
+    app.documents[0].sch_editor.paused = true;
+    app.schematic_input(0, pointer(Point::mm(22, 35), true), &ctx);
+    assert_eq!(app.documents[0].history.revision, revision);
+    app.documents[0].sch_editor.paused = false;
+    app.schematic_input(0, pointer(Point::mm(22, 35), true), &ctx);
+    let s = app.documents[0].model.schematic.as_ref().unwrap();
+    assert!(
+        s.primitives
+            .iter()
+            .any(|p| p.presentation.parent == Some(id) && matches!(p.kind, K::HarnessEntry { .. }))
+    );
+    app.start_schematic_tool(Placement::SignalHarness);
+    let tip = eda_core::schematic_harness::terminal(
+        app.documents[0]
+            .model
+            .schematic
+            .as_ref()
+            .unwrap()
+            .primitive(id)
+            .unwrap(),
+    )
+    .unwrap();
+    app.schematic_input(0, pointer(tip, true), &ctx);
+    app.schematic_input(0, pointer(Point::mm(60, 30), true), &ctx);
+    app.schematic_input(
+        0,
+        SchematicInput {
+            secondary_clicked: true,
+            ..Default::default()
+        },
+        &ctx,
+    );
+    let s = app.documents[0].model.schematic.as_ref().unwrap();
+    assert!(
+        s.primitives
+            .iter()
+            .any(|p| matches!(&p.kind,K::Polyline{electrical,..} if electrical=="Signal Harness"))
+    );
+    let doc = &mut app.documents[0];
+    doc.history.undo(&mut doc.model);
+    assert!(
+        !doc.model
+            .schematic
+            .as_ref()
+            .unwrap()
+            .primitives
+            .iter()
+            .any(|p| matches!(&p.kind,K::Polyline{electrical,..} if electrical=="Signal Harness"))
+    );
+}
+
 fn wire_app() -> (PcbCraft, Uuid) {
     let mut app = app();
     let s = app.documents[0].model.schematic.as_mut().unwrap();
@@ -183,6 +266,93 @@ fn wire_app() -> (PcbCraft, Uuid) {
     let id = p.id;
     s.primitives.push(p);
     (app, id)
+}
+
+#[test]
+fn harness_manual_modes_escape_finish_and_repeat_are_real_gestures() {
+    for mode in 0..3 {
+        for first in [false, true] {
+            let mut path = vec![Point::mm(0, 0)];
+            extend_harness_path(&mut path, Point::mm(30, 20), first, mode);
+            assert_eq!(path.last(), Some(&Point::mm(30, 20)));
+            for e in path.windows(2) {
+                let dx = (e[1].x - e[0].x).abs();
+                let dy = (e[1].y - e[0].y).abs();
+                assert!(mode == 2 || dx == 0 || dy == 0 || (mode == 1 && dx == dy));
+            }
+        }
+    }
+    let mut app = app();
+    let ctx = focused_context();
+    app.documents[0]
+        .model
+        .schematic
+        .as_mut()
+        .unwrap()
+        .sheet
+        .options
+        .snap_enabled = false;
+    app.start_schematic_tool(Placement::SignalHarness);
+    app.schematic_input(0, pointer(Point::mm(10, 20), true), &ctx);
+    app.schematic_input(0, pointer(Point::mm(30, 20), true), &ctx);
+    let _ = ctx.run(
+        egui::RawInput {
+            focused: true,
+            events: vec![egui::Event::Key {
+                key: Key::Escape,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+            ..Default::default()
+        },
+        |ctx| {
+            assert!(app.schematic_shortcuts(ctx));
+            app.schematic_input(0, pointer(Point::mm(40, 20), false), ctx);
+        },
+    );
+    assert_eq!(app.documents[0].history.revision, 1);
+    assert!(matches!(&app.documents[0].sch_editor.tool,Tool::Path{points,..} if points.is_empty()));
+    assert!(app.documents[0].model.schematic.as_ref().unwrap().primitives.iter().any(|p|matches!(&p.kind,K::Polyline{points,electrical,..} if electrical=="Signal Harness"&&points.last()==Some(&Point::mm(30,20)))));
+}
+
+#[test]
+fn predefined_harness_dialog_keeps_the_observed_two_column_size() {
+    let mut app = app();
+    app.documents[0]
+        .model
+        .schematic
+        .as_mut()
+        .unwrap()
+        .primitives
+        .extend(
+            eda_core::schematic_harness::connector(Point::mm(0, 20), Point::mm(10, 0), 0, "Serial")
+                .unwrap()
+                .primitives,
+        );
+    let editor = &mut app.documents[0].sch_editor;
+    editor.predefined = true;
+    editor.predefined_port = true;
+    editor.predefined_line = true;
+    editor.predefined_name = "HarnessPort".into();
+    editor.predefined_width = 12_700_000;
+    editor.predefined_length = 12_700_000;
+    let ctx = egui::Context::default();
+    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1707.0, 1026.0));
+    for _ in 0..3 {
+        let _ = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(screen),
+                ..Default::default()
+            },
+            |ctx| app.schematic_harness_overlay(ctx, screen, 0),
+        );
+    }
+    let rect = ctx
+        .memory(|m| m.area_rect(egui::Id::new("predefined_harness_dialog")))
+        .unwrap();
+    assert!(rect.width() <= 620.0 && rect.height() <= 400.0, "{rect:?}");
 }
 
 #[test]
@@ -1052,9 +1222,18 @@ fn cancelled_placement_and_wire_do_not_commit_and_finished_wire_is_one_transacti
         matches!(&s.primitives[0].kind, K::Polyline{points,electrical,..}
         if points.len()==3 && electrical=="Wire" && points.last().unwrap().x < 50_000_000)
     );
-    assert!(!doc.sch_editor.active());
+    assert!(matches!(&doc.sch_editor.tool,Tool::Path{points,..} if points.is_empty()));
     doc.history.undo(&mut doc.model);
     assert_eq!(doc.model, original);
+    app.schematic_input(
+        0,
+        SchematicInput {
+            secondary_clicked: true,
+            ..Default::default()
+        },
+        &ctx,
+    );
+    assert!(!app.documents[0].sch_editor.active());
 }
 
 #[test]

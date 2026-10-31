@@ -55,6 +55,7 @@ fn font_index(p: &SchPrimitive) -> Option<usize> {
         K::Text { font, .. }
         | K::TextFrame { font, .. }
         | K::Pin { font, .. }
+        | K::HarnessEntry { font, .. }
         | K::SheetEntry { font, .. }
         | K::Port { font, .. }
         | K::PowerPort { font, .. } => Some(font),
@@ -89,9 +90,10 @@ impl Draft {
                     .as_ref()
                     .is_some_and(|c| p.component == Some(c.id))
                     || primitive.as_ref().is_some_and(|owner| {
-                        matches!(owner.kind, K::SheetSymbol { .. })
-                            && p.presentation.parent == Some(owner.id)
-                            && matches!(p.kind, K::Text { .. })
+                        p.presentation.parent == Some(owner.id)
+                            && (matches!(owner.kind, K::HarnessConnector { .. })
+                                || matches!(owner.kind, K::SheetSymbol { .. })
+                                    && matches!(p.kind, K::Text { .. }))
                     })
             })
             .cloned()
@@ -145,11 +147,30 @@ impl Draft {
             // Presentation changes precede the transform so parameter geometry rotates as well.
         }
         for p in self.primitive.iter().chain(&self.related) {
-            if s.primitive(p.id) != Some(p) {
+            if s.primitive(p.id).is_none() {
+                edits.push(Edit::Insert(edit::Fragment {
+                    fonts: s.fonts.clone(),
+                    primitives: vec![p.clone()],
+                    ..Default::default()
+                }));
+            } else if s.primitive(p.id) != Some(p) {
                 edits.push(Edit::PrimitiveProperties {
                     id: p.id,
                     value: Box::new(p.clone()),
                 });
+            }
+        }
+        if let Some(p) = &self.primitive
+            && matches!(p.kind, K::HarnessConnector { .. })
+        {
+            for child in s
+                .primitives
+                .iter()
+                .filter(|c| c.presentation.parent == Some(p.id))
+            {
+                if !self.related.iter().any(|p| p.id == child.id) {
+                    edits.push(Edit::Delete(child.id));
+                }
             }
         }
         if let Some(c) = &self.component {
@@ -203,7 +224,10 @@ fn caption(p: &SchPrimitive) -> &'static str {
         K::Text { .. } if p.presentation.record_type == 41 || !p.presentation.name.is_empty() => {
             "Parameter"
         }
+        K::Text { .. } if p.presentation.record_type == 217 => "Harness Connector Type",
         K::Text { .. } => "Text",
+        K::HarnessConnector { .. } => "Harness Connector",
+        K::HarnessEntry { .. } => "Harness Entry",
         K::TextFrame { .. } => "Text Frame",
         K::Pin { .. } => "Pin",
         K::PowerPort { .. } => "Power Port",
@@ -215,6 +239,7 @@ fn caption(p: &SchPrimitive) -> &'static str {
         } => match electrical.as_str() {
             "Wire" => "Wire",
             "Bus" => "Bus",
+            "Signal Harness" => "Signal Harness",
             "BusEntry" => "Bus Entry",
             _ if *closed => "Polygon",
             _ => "Line",
@@ -259,7 +284,9 @@ impl PcbCraft {
             .len()
             .saturating_add(doc.view.sch_segments.len())
             .max(usize::from(doc.view.selected.is_some()));
-        let context = if count > 1 {
+        let context = if doc.sch_editor.active() && doc.sch_editor.kind.is_some() {
+            doc.sch_editor.kind.unwrap().label()
+        } else if count > 1 {
             "Objects"
         } else if draft.component.is_some() {
             "Component"
@@ -379,6 +406,18 @@ impl PcbCraft {
                         );
                     }
                 } else if let Some(p) = &mut draft.primitive {
+                    if matches!(p.kind, K::HarnessConnector { .. }) {
+                        commit |= harness_connector_properties(
+                            ui,
+                            p,
+                            &mut draft.related,
+                            doc.model.schematic.as_ref().unwrap(),
+                            self.settings.units,
+                            &query,
+                            &mut choose,
+                        );
+                        return;
+                    }
                     if matches!(p.kind, K::SheetSymbol { .. }) {
                         commit |= sheet_symbol_properties(
                             ui,
@@ -1746,6 +1785,257 @@ fn sheet_symbol_properties(
     changed
 }
 
+#[allow(clippy::too_many_arguments)]
+fn harness_connector_properties(
+    ui: &mut egui::Ui,
+    p: &mut SchPrimitive,
+    related: &mut Vec<SchPrimitive>,
+    s: &Schematic,
+    units: Units,
+    query: &str,
+    choose: &mut Option<Uuid>,
+) -> bool {
+    let K::HarnessConnector {
+        a,
+        b,
+        side,
+        primary_nm,
+        bus_text_style,
+    } = &mut p.kind
+    else {
+        return false;
+    };
+    let mut changed = false;
+    section(ui, "Location", query, |ui| {
+        let old = *a;
+        changed |= xy(ui, a, units);
+        b.x += a.x - old.x;
+        b.y += a.y - old.y;
+        row(ui, "Rotation", |ui| {
+            let old_side = *side;
+            changed |= combo(
+                ui,
+                "harness_rotation",
+                side,
+                &["180 Degrees", "0 Degrees", "90 Degrees", "270 Degrees"],
+            );
+            if old_side != *side {
+                let mut turns = 0;
+                let mut next = old_side;
+                while next != *side && turns < 4 {
+                    next = [3, 2, 0, 1][next as usize];
+                    turns += 1;
+                }
+                let pivot = *a;
+                let tip = eda_core::schematic_harness::edge(*a, *b, old_side, *primary_nm);
+                if let (Ok(x), Ok(y), Ok(tip)) = (
+                    edit::transform_point(*a, pivot, turns, Point::default()),
+                    edit::transform_point(*b, pivot, turns, Point::default()),
+                    edit::transform_point(tip, pivot, turns, Point::default()),
+                ) {
+                    *a = Point {
+                        x: x.x.min(y.x),
+                        y: x.y.max(y.y),
+                    };
+                    *b = Point {
+                        x: x.x.max(y.x),
+                        y: x.y.min(y.y),
+                    };
+                    *primary_nm = if *side <= 1 { a.y - tip.y } else { tip.x - a.x };
+                    for child in related.iter_mut() {
+                        let _ = edit::transform_primitive(child, pivot, turns, Point::default());
+                    }
+                }
+            }
+        });
+    });
+    section(ui, "Properties", query, |ui| {
+        row(ui, "Harness Type", |ui| {
+            ui.allocate_ui(egui::vec2(ui.available_width() - 26.0, 22.0), |ui| {
+                changed |= text(ui, &mut p.presentation.harness_type);
+            });
+            if let Some(label) = related
+                .iter_mut()
+                .find(|c| c.presentation.record_type == 217)
+            {
+                let mut visible = !label.presentation.hidden;
+                if small_icon(ui, "eye", &mut visible) {
+                    label.presentation.hidden = !visible;
+                    changed = true;
+                }
+            }
+        });
+        row(ui, "Bus Text Style", |ui| {
+            let mut v = u32::from(bus_text_style == "Prefix");
+            if combo(ui, "harness_bus_style", &mut v, &["Full", "Prefix"]) {
+                *bus_text_style = if v == 0 { "Full" } else { "Prefix" }.into();
+                changed = true;
+            }
+        });
+        harness_geometry_diagram(ui);
+        let mut w = b.x - a.x;
+        let mut h = a.y - b.y;
+        changed |= numeric_row(ui, "Width", &mut w, units);
+        changed |= numeric_row(ui, "Height", &mut h, units);
+        if w > 0 && h > 0 {
+            b.x = a.x + w;
+            b.y = a.y - h;
+        }
+        changed |= numeric_row(ui, "Primary Position", primary_nm, units);
+        *primary_nm = (*primary_nm).clamp(0, if *side <= 1 { h } else { w });
+        changed |= border_row(ui, &mut p.width_nm, &mut p.color);
+        row(ui, "Fill", |ui| {
+            let fill = p.fill.get_or_insert(eda_core::schematic_harness::FILL);
+            changed |= color(ui, fill);
+        });
+    });
+    section(ui, "Entries", query, |ui| {
+        let mut remove = None;
+        egui::Frame::NONE
+            .stroke(Stroke::new(1.0, theme::BORDER))
+            .show(ui, |ui| {
+                ui.set_min_height(138.0);
+                ui.label("Entry");
+                ui.separator();
+                for child in related.iter_mut() {
+                    if let K::HarnessEntry { name, .. } = &mut child.kind {
+                        ui.push_id(child.id, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.allocate_ui(
+                                    egui::vec2(ui.available_width() - 48.0, 22.0),
+                                    |ui| {
+                                        changed |= text(ui, name);
+                                    },
+                                );
+                                if ui.small_button("…").clicked() {
+                                    *choose = Some(child.id);
+                                }
+                                if ui.small_button("×").clicked() {
+                                    remove = Some(child.id);
+                                }
+                            });
+                        });
+                    }
+                }
+            });
+        if let Some(id) = remove {
+            related.retain(|p| p.id != id);
+            changed = true;
+        }
+        ui.allocate_ui_with_layout(
+            egui::vec2(ui.available_width(), 24.0),
+            egui::Layout::right_to_left(Align::Center),
+            |ui| {
+                if ui.button("Add").clicked() {
+                    let count = related
+                        .iter()
+                        .filter(|p| matches!(p.kind, K::HarnessEntry { .. }))
+                        .count();
+                    let name = (0..)
+                        .map(|n| n.to_string())
+                        .find(|n| {
+                            !related
+                                .iter()
+                                .any(|p| matches!(&p.kind,K::HarnessEntry{name,..} if name==n))
+                        })
+                        .unwrap();
+                    let entry_side = match *side {
+                        0 => 1,
+                        1 => 0,
+                        2 => 3,
+                        _ => 2,
+                    };
+                    let position = eda_core::schematic_harness::edge(
+                        *a,
+                        *b,
+                        entry_side,
+                        (count as i64 + 1) * 2_540_000,
+                    );
+                    let mut entry = edit::primitive(
+                        K::HarnessEntry {
+                            position,
+                            side: entry_side,
+                            name,
+                            font: s.sheet.system_font,
+                            text_color: eda_core::schematic_harness::ENTRY_COLOR,
+                        },
+                        None,
+                    );
+                    entry.presentation.record_type = 216;
+                    entry.presentation.parent = Some(p.id);
+                    entry.color = eda_core::schematic_harness::ENTRY_COLOR;
+                    entry.fill = Some(8_454_143);
+                    entry.width_nm = 101_600;
+                    related.push(entry);
+                    changed = true;
+                }
+            },
+        );
+    });
+    changed
+}
+
+fn harness_geometry_diagram(ui: &mut egui::Ui) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 182.0), Sense::hover());
+    let p = ui.painter();
+    let o = rect.center() + egui::vec2(-40.0, -48.0);
+    let ink = Color32::from_gray(180);
+    let pink = Color32::from_rgb(192, 123, 141);
+    let aqua = Color32::from_rgb(139, 187, 181);
+    let yellow = Color32::from_rgb(211, 193, 121);
+    let at = |x, y| o + egui::vec2(x, y);
+    let line = |a: (f32, f32), b: (f32, f32), c| {
+        p.line_segment([at(a.0, a.1), at(b.0, b.1)], Stroke::new(1.0, c));
+    };
+    for y in (0..80).step_by(8) {
+        line((0.0, y as f32), (0.0, y as f32 + 4.0), ink);
+    }
+    for x in (0..55).step_by(8) {
+        line((x as f32, 0.0), (x as f32 + 4.0, 0.0), ink);
+        line((x as f32, 80.0), (x as f32 + 4.0, 80.0), ink);
+    }
+    let path = vec![
+        at(45.0, 0.0),
+        at(55.0, 0.0),
+        at(62.0, 8.0),
+        at(62.0, 32.0),
+        at(70.0, 40.0),
+        at(62.0, 48.0),
+        at(62.0, 72.0),
+        at(55.0, 80.0),
+        at(45.0, 80.0),
+    ];
+    p.add(egui::Shape::line(path, Stroke::new(3.0, ink)));
+    line((-10.0, 0.0), (-10.0, 80.0), pink);
+    line((0.0, -9.0), (70.0, -9.0), pink);
+    line((80.0, 0.0), (80.0, 40.0), aqua);
+    line((60.0, 80.0), (100.0, 80.0), yellow);
+    for (x, y, rotation, c) in [
+        (-10.0, 0.0, 1.0, pink),
+        (-10.0, 80.0, -1.0, pink),
+        (80.0, 0.0, 1.0, aqua),
+        (80.0, 40.0, -1.0, aqua),
+    ] {
+        line((x - 3.0, y + rotation * 4.0), (x, y), c);
+        line((x + 3.0, y + rotation * 4.0), (x, y), c);
+    }
+    for (label, x, y) in [
+        ("Location", -48.0, 0.0),
+        ("Width", 31.0, -25.0),
+        ("Height", -45.0, 40.0),
+        ("Primary Position", 98.0, 22.0),
+        ("Border Width", 99.0, 79.0),
+    ] {
+        p.text(
+            at(x, y),
+            egui::Align2::CENTER_CENTER,
+            label,
+            egui::FontId::proportional(11.0),
+            ink,
+        );
+    }
+}
+
 fn sheet_entry_properties(
     ui: &mut egui::Ui,
     p: &mut SchPrimitive,
@@ -1824,6 +2114,22 @@ fn primitive_properties(
 ) -> bool {
     let mut changed = false;
     let title = caption(p);
+    if title == "Signal Harness" {
+        return vertices(ui, p, units, query);
+    }
+    if title == "Harness Entry" {
+        section(ui, "Properties", query, |ui| {
+            if let K::HarnessEntry {
+                name, text_color, ..
+            } = &mut p.kind
+            {
+                changed |= text_row(ui, "Harness Name", name);
+                changed |= text_row(ui, "Harness Type", &mut p.presentation.harness_type);
+                changed |= font_editor(ui, font, Some(text_color));
+            }
+        });
+        return changed;
+    }
     if title == "Wire" {
         net_sections(ui, query);
         changed |= vertices(ui, p, units, query);
@@ -1872,6 +2178,7 @@ fn primitive_properties(
         return changed;
     }
     section(ui, "Properties", query, |ui| match &mut p.kind {
+        K::HarnessConnector { .. } | K::HarnessEntry { .. } => {}
         K::Text {
             text: value,
             justification: just,
@@ -2221,12 +2528,14 @@ fn primitive_anchor(p: &SchPrimitive) -> Point {
         K::Polyline { points, .. } => points.first().copied().unwrap_or_default(),
         K::Bezier { points } => points[0],
         K::Rectangle { a, .. }
+        | K::HarnessConnector { a, .. }
         | K::SheetSymbol { a, .. }
         | K::TextFrame { a, .. }
         | K::Image { a, .. }
         | K::Unsupported { a, .. } => *a,
         K::Arc { centre, .. } => *centre,
         K::Text { position, .. }
+        | K::HarnessEntry { position, .. }
         | K::SheetEntry { position, .. }
         | K::Pin { position, .. }
         | K::PowerPort { position, .. }
@@ -2416,9 +2725,32 @@ fn placement_options(ui: &mut egui::Ui, doc: &mut OpenDocument) {
             text_row(ui, "Designator", &mut editor.designator);
             text_row(ui, "Comment", &mut editor.value);
         }
-        Some(Placement::Text | Placement::NetLabel | Placement::Ground) => {
-            text_row(ui, "Text", &mut editor.value);
+        Some(Placement::SignalHarness) => {
+            row(ui, "Width", |ui| {
+                width_combo(ui, &mut editor.harness_width);
+                color(ui, &mut editor.harness_color);
+            });
+        }
+        Some(
+            Placement::Text
+            | Placement::NetLabel
+            | Placement::Ground
+            | Placement::Port
+            | Placement::SheetEntry
+            | Placement::HarnessConnector
+            | Placement::HarnessEntry,
+        ) => {
+            let label = match editor.kind {
+                Some(Placement::HarnessConnector) => "Harness Type",
+                Some(Placement::HarnessEntry) => "Harness Name",
+                Some(Placement::Port | Placement::SheetEntry) => "Name",
+                _ => "Text",
+            };
+            text_row(ui, label, &mut editor.value);
         }
         _ => {}
     });
+    if editor.paused && ui.button("Resume placement").clicked() {
+        editor.paused = false;
+    }
 }

@@ -17,6 +17,7 @@ fn geometry(p: &SchPrimitive) -> Vec<Point> {
     match &p.kind {
         K::Polyline { points, .. } | K::Bezier { points } => points.clone(),
         K::Rectangle { a, b, .. }
+        | K::HarnessConnector { a, b, .. }
         | K::SheetSymbol { a, b, .. }
         | K::TextFrame { a, b, .. }
         | K::Image { a, b, .. }
@@ -67,6 +68,7 @@ fn geometry(p: &SchPrimitive) -> Vec<Point> {
         }
         K::Text { position, .. }
         | K::PowerPort { position, .. }
+        | K::HarnessEntry { position, .. }
         | K::SheetEntry { position, .. }
         | K::Junction { position, .. }
         | K::NoErc { position }

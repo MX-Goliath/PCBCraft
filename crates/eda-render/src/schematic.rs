@@ -366,11 +366,151 @@ impl Scene<'_> {
         bounds
     }
     fn primitive(&self, p: &SchPrimitive, pointer: Option<Pos2>) -> (Rect, bool) {
-        let c = color(p.color);
-        let fill = p.fill.map(color);
+        let bundle_terminal = !p.presentation.harness_type.is_empty()
+            && matches!(p.kind, K::Port { .. } | K::SheetEntry { .. });
+        let c = color(if bundle_terminal {
+            eda_core::schematic_harness::BORDER
+        } else {
+            p.color
+        });
+        let fill = if bundle_terminal {
+            Some(color(eda_core::schematic_harness::FILL))
+        } else {
+            p.fill.map(color)
+        };
         let stroke = Stroke::new(self.nm(p.width_nm).clamp(0.45, 100.0), c);
         let mut hit = false;
         let bounds = match &p.kind {
+            K::HarnessConnector {
+                a,
+                b,
+                side,
+                primary_nm,
+                ..
+            } => {
+                let rect = Rect::from_two_pos(self.screen(*a), self.screen(*b));
+                self.poly(
+                    vec![
+                        rect.left_top(),
+                        rect.right_top(),
+                        rect.right_bottom(),
+                        rect.left_bottom(),
+                    ],
+                    true,
+                    fill,
+                    Stroke::NONE,
+                );
+                let terminal = eda_core::schematic_harness::edge(*a, *b, *side, *primary_nm);
+                let inset = 2_540_000.min(if *side <= 1 {
+                    (b.x - a.x) / 3
+                } else {
+                    (a.y - b.y) / 3
+                });
+                let half = inset / 2;
+                let local = if *side <= 1 {
+                    let sign = if *side == 1 { -1 } else { 1 };
+                    vec![
+                        Point {
+                            x: terminal.x + sign * inset,
+                            y: a.y,
+                        },
+                        Point {
+                            x: terminal.x + sign * half,
+                            y: a.y - half,
+                        },
+                        Point {
+                            x: terminal.x + sign * half,
+                            y: terminal.y + half,
+                        },
+                        terminal,
+                        Point {
+                            x: terminal.x + sign * half,
+                            y: terminal.y - half,
+                        },
+                        Point {
+                            x: terminal.x + sign * half,
+                            y: b.y + half,
+                        },
+                        Point {
+                            x: terminal.x + sign * inset,
+                            y: b.y,
+                        },
+                    ]
+                } else {
+                    let sign = if *side == 2 { -1 } else { 1 };
+                    vec![
+                        Point {
+                            x: a.x,
+                            y: terminal.y + sign * inset,
+                        },
+                        Point {
+                            x: a.x + half,
+                            y: terminal.y + sign * half,
+                        },
+                        Point {
+                            x: terminal.x - half,
+                            y: terminal.y + sign * half,
+                        },
+                        terminal,
+                        Point {
+                            x: terminal.x + half,
+                            y: terminal.y + sign * half,
+                        },
+                        Point {
+                            x: b.x - half,
+                            y: terminal.y + sign * half,
+                        },
+                        Point {
+                            x: b.x,
+                            y: terminal.y + sign * inset,
+                        },
+                    ]
+                };
+                self.poly(
+                    local.into_iter().map(|p| self.screen(p)).collect(),
+                    false,
+                    None,
+                    stroke,
+                );
+                hit = pointer.is_some_and(|p| rect.expand(3.0).contains(p));
+                rect
+            }
+            K::HarnessEntry {
+                position,
+                side,
+                name,
+                font,
+                text_color,
+            } => {
+                let prefix = self.schematic.and_then(|s| p.presentation.parent.and_then(|id| s.primitive(id))).is_some_and(|parent| matches!(&parent.kind, K::HarnessConnector { bus_text_style, .. } if bus_text_style == "Prefix"));
+                let name = if prefix {
+                    name.split('[').next().unwrap_or(name)
+                } else {
+                    name
+                };
+                let at = self.screen(*position);
+                let inward = match side {
+                    0 => Vec2::RIGHT,
+                    1 => Vec2::LEFT,
+                    2 => Vec2::DOWN,
+                    _ => Vec2::UP,
+                };
+                self.painter.circle_filled(at, self.nm(127_000).max(0.8), c);
+                let bounds = self.label(
+                    at + inward * self.nm(508_000),
+                    name,
+                    *font,
+                    if *side >= 2 { 1 } else { 0 },
+                    if matches!(side, 1 | 2) { 5 } else { 3 },
+                    color(*text_color),
+                );
+                hit = pointer.is_some_and(|p| {
+                    bounds
+                        .union(Rect::from_center_size(at, Vec2::splat(6.0)))
+                        .contains(p)
+                });
+                bounds.union(Rect::from_center_size(at, Vec2::splat(3.0)))
+            }
             K::Polyline { points, closed, .. } => {
                 let points: Vec<_> = points.iter().map(|p| self.screen(*p)).collect();
                 if !closed && points.len() >= 2 {
@@ -575,6 +715,9 @@ impl Scene<'_> {
                 orientation,
                 justification,
             } => {
+                if p.presentation.record_type == 217 && text == "*" {
+                    return (Rect::NOTHING, false);
+                }
                 let displayed = if p.presentation.show_name && !p.presentation.name.is_empty() {
                     format!("{} = {text}", p.presentation.name)
                 } else {

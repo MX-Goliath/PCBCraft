@@ -32,8 +32,10 @@ pub(super) fn pin_end(p: &SchPrimitive) -> Option<Point> {
                 y: position.y.checked_add(y)?,
             })
         }
+        K::HarnessConnector { .. } => None,
         K::PowerPort { position, .. }
         | K::Port { position, .. }
+        | K::HarnessEntry { position, .. }
         | K::SheetEntry { position, .. }
         | K::Junction { position, .. } => Some(position),
         K::Text { position, .. } if p.text_role == Some(TextRole::NetLabel) => Some(position),
@@ -143,6 +145,96 @@ pub(super) fn reroute(
 /// Every wire is split at electrical attachments before a free bend is adjusted.
 /// Crossings of two wire interiors are not nodes unless a pin/junction is present.
 pub fn connected_transform(
+    s: &Schematic,
+    ids: &[Uuid],
+    pivot: Point,
+    turns: u32,
+    delta: Point,
+) -> Result<Fragment, String> {
+    let mut delta = delta;
+    if ids.len() == 1
+        && let Some(p) = s.primitive(ids[0])
+        && let K::HarnessEntry { side, .. } = p.kind
+    {
+        if side <= 1 {
+            delta.x = 0;
+        } else {
+            delta.y = 0;
+        }
+    }
+    let mut result = connected_transform_inner(s, ids, pivot, turns, delta)?;
+    for carrier in ["Signal Harness", "Bus"] {
+        if !s
+            .primitives
+            .iter()
+            .any(|p| matches!(&p.kind,K::Polyline{electrical,..} if electrical==carrier))
+        {
+            continue;
+        }
+        let proxy = carrier_proxy(s, carrier);
+        let selected: Vec<_> = ids
+            .iter()
+            .copied()
+            .filter(|id| proxy.primitive(*id).is_some())
+            .collect();
+        if selected.is_empty() {
+            continue;
+        }
+        let patch = connected_transform_inner(&proxy, &selected, pivot, turns, delta)?;
+        for mut p in patch.primitives {
+            if let K::Polyline { electrical, .. } = &mut p.kind {
+                *electrical = carrier.into();
+                if let Some(old) = result.primitives.iter_mut().find(|v| v.id == p.id) {
+                    *old = p;
+                } else {
+                    result.primitives.push(p);
+                }
+            }
+        }
+    }
+    Ok(result)
+}
+pub(super) fn carrier_proxy(s: &Schematic, carrier: &str) -> Schematic {
+    let mut proxy = Schematic::blank();
+    proxy.fonts = s.fonts.clone();
+    for p in &s.primitives {
+        let mut p = p.clone();
+        // Keep both native Port hotspots when stretching a bundle.
+        if matches!(p.kind, K::Port { .. }) {
+            proxy.primitives.push(p);
+            continue;
+        }
+        if let K::Polyline { electrical, .. } = &mut p.kind {
+            if electrical != carrier {
+                continue;
+            }
+            *electrical = "Wire".into();
+        } else {
+            let position = crate::schematic_harness::terminal(&p).or_else(|| match p.kind {
+                K::Port { position, .. } | K::SheetEntry { position, .. } => Some(position),
+                K::HarnessEntry { position, .. }
+                    if !p.presentation.harness_type.is_empty() || carrier == "Bus" =>
+                {
+                    Some(position)
+                }
+                _ => None,
+            });
+            let Some(position) = position else { continue };
+            p.kind = K::PowerPort {
+                position,
+                orientation: 0,
+                style: 0,
+                text: String::new(),
+                show_name: false,
+                font: 0,
+            };
+            p.presentation.parent = None;
+        }
+        proxy.primitives.push(p);
+    }
+    proxy
+}
+fn connected_transform_inner(
     s: &Schematic,
     ids: &[Uuid],
     pivot: Point,

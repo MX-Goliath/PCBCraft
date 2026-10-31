@@ -10,6 +10,13 @@ pub use netlist::{Netlist, Pin, compile, compile_project};
 #[path = "design_sync_project.rs"]
 mod project;
 pub use project::{NetScope, ProjectOptions, SheetLink};
+pub(crate) fn local_harness(
+    s: &schematic::Schematic,
+) -> Result<netlist::harness::Expansion, String> {
+    let mut doc = Document::new(crate::DocumentKind::Schematic, "Local harness");
+    doc.schematic = Some(s.clone());
+    netlist::harness::expand(&[&doc], &ProjectOptions::default(), &[], false)
+}
 #[cfg(test)]
 #[path = "design_sync_tests.rs"]
 mod tests;

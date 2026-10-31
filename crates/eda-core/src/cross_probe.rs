@@ -140,10 +140,16 @@ pub fn touches(a: &SchPrimitive, b: &SchPrimitive) -> bool {
 /// Local electrical topology: T junctions connect; bare interior crossings do not.
 /// Named labels/ports on the same sheet connect disconnected wire islands.
 fn connected(s: &Schematic, seeds: &[Uuid]) -> Vec<Uuid> {
+    let harness = crate::design_sync::local_harness(s).ok();
     let nodes: Vec<_> = s
         .primitives
         .iter()
-        .filter(|p| wire(p).is_some() || node(p).is_some())
+        .filter(|p| {
+            (wire(p).is_some() || node(p).is_some())
+                && harness
+                    .as_ref()
+                    .is_none_or(|h| !h.bundles.iter().any(|(_, id)| *id == p.id))
+        })
         .collect();
     let mut found = seeds.to_vec();
     let mut seen: std::collections::HashSet<_> = seeds.iter().copied().collect();
@@ -155,7 +161,11 @@ fn connected(s: &Schematic, seeds: &[Uuid]) -> Vec<Uuid> {
         };
         for b in &nodes {
             if !seen.contains(&b.id)
-                && (touches(a, b)
+                && (harness.as_ref().is_some_and(|h| {
+                    h.joins.iter().any(|((_, x), (_, y))| {
+                        (*x == a.id && *y == b.id) || (*y == a.id && *x == b.id)
+                    })
+                }) || touches(a, b)
                     || std::mem::discriminant(&a.kind) == std::mem::discriminant(&b.kind)
                         && name(a)
                             .zip(name(b))
