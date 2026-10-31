@@ -1722,3 +1722,89 @@ Cause, implementation and validation: docs/pcb-update/INTERACTIVE_ROUTING.md.
   cleanly and responds; exactly one live instance. Altium also shows the reverse
   comment on QA-d MCU/DD1. All 11 original SCH/PCB/PrjPcb SHA256 hashes remain
   unchanged after both native reopen checks. No commit or push performed.
+
+### 2026-10-31 — PCB routing startup and Altium controls
+
+- Inspected the running Altium Designer Enterprise 24.4.1 at 1707 px width:
+  Route menu, floating Active Bar, Interactive Routing Properties and Tab pause.
+  Used the existing research PCB copy; the user project was not edited/saved.
+  Full visual and solver parity is not accepted by this observation.
+- Fixed P,T interception by the Cross Probe prefix handler; full-dispatcher
+  tests cover P,T, Ctrl+W, T,C and explicit tool changes. Restored the floating
+  PCB Active Bar with working routing/placement commands and the observed menu
+  order. Unsupported engineering commands remain disabled.
+- No-net routing no longer obstructs itself at starting pads/tracks or at its
+  own copper after a layer change. Only contacted terminals/session additions
+  may merge; unrelated copper, drills and keepouts remain obstacles. Terminal
+  contacts roll back with checkpoints; existing plated pads can provide a layer
+  connection. Direct hits beat nearby pads; drill-only holes cannot be targets.
+- Added visible-layer startup and prevented previous-net inheritance on a new
+  free-space route. Reworked Net Information/via/conflict sections, Width focus,
+  pause overlay and one-Escape resume. A real-window layout failure was caught
+  and fixed; height/focus regressions protect these controls. Route status now
+  exposes a clearance blockage instead of an unexplained missing leg.
+- Windows GUI on the generated isolated fixture: two No Net pads connected via
+  an intermediate corner, automatic finish and clean Undo. That ASCII fixture
+  was not recognized by Altium and is not a native compatibility validation.
+- Final Windows GUI on target/routing-check/ReferenceBRouting.PcbDoc (15,513 items):
+  Ctrl+W, ExampleGround SMD start, approximately 0.996 mm placed copper, Tab/Width,
+  Escape resume/finish, Undo/Redo/Undo to a clean title. Source research copy and
+  GUI copy SHA256 both remain
+  redacted-source-sha256.
+  Altium returned to the original ReferenceB document; no PCB source was saved.
+- Required gates PASS: fmt --all -- --check; workspace/all-target Clippy with
+  -D warnings; all 563 workspace unit tests; Windows dev build. Test output:
+  target/routing-check/workspace-tests.txt. Updated docs/features.json and
+  docs/pcb-update/INTERACTIVE_ROUTING.md, keeping routing partial.
+- Remaining scope: native save of this route not newly verified; independent
+  bounded walkaround/stop and existing native I/O guards remain. Push/HugNPush,
+  arc corners, gloss, loop removal, auto-completion, favorites, exact icon/DPI
+  parity and a new Linux GUI comparison are unfinished. No commit/push.
+
+### 2026-10-31 — follow-up: track absent after terminal selection
+
+- User clarified that routing enters but no track appears after choosing a pad.
+  Rechecked the earlier ExampleGround via failure instead of treating its clearance
+  status as a valid constraint. Native AD24.4.1 research copy routes from the
+  corresponding terminal; the Rust probe initially produced zero segments in
+  all three sampled directions.
+- Located false blockers at Regions6/ShapeBasedRegions6 record 17: fragment NET
+  is absent, polygon index 1 supplies ExampleGround. Connectivity inherited that net,
+  but routing compared the raw empty fragment NET and blocked itself at startup.
+- Added shared Board::item_net, used by routing, clearance net scope,
+  InNet/InNetClass and connectivity. Explicit fragment nets retain priority;
+  native primitive data stays unchanged. Shelved pour fragments do not obstruct.
+  Three regressions cover own/foreign/shelved pours, explicit overrides,
+  keepouts, via/backtrack and net-scoped/class-scoped rule resolution.
+- Read-only pcb_route_profile now accepts --at X Y --blockers. At native via
+  (166.180275,199.690002) mm it changes from zero legs to reaching (+1,+1) and
+  (+3,0) mm, with preview/place/finish/Undo and no source write.
+- Final Windows GUI on ReferenceBRouting.PcbDoc: Ctrl+W, that same via, cursor movement
+  without a placement click produces a departing preview; click places and
+  completes the connection, Undo returns a clean title. Original research copy
+  and GUI copy still have the prior 7C337B5A...CB08B40F SHA256. Altium original
+  ReferenceB tab restored; research experiments were not saved.
+- fmt, strict workspace/all-target Clippy, all 566 workspace tests and Windows
+  dev build PASS. Registry/docs updated. Full routing parity/native route save
+  remains unverified as above; no commit/push.
+
+### 2026-10-31 — follow-up: route across polygon pours of other nets
+
+- Previous same-net inheritance fix was incomplete: foreign generated pour
+  copper still blocked routing. Managed region/fill/track/arc fragments now
+  allow routing, while free copper, orphaned references, keepouts and board
+  cutouts retain obstacle handling. Committed routing invalidates derived
+  copper and the existing background worker repours around the new geometry.
+- Regression verifies Stop/Walkaround, preview/place/via/backtrack, actual
+  0.6mm scoped polygon clearance after repour and atomic Undo/Redo. All 567
+  workspace tests, fmt check and strict workspace/all-target Clippy pass.
+- AD24.4.1 research-copy observation: HugNPush permits a free-space preview
+  across the filled area, cancelled without saving. This was N/A net, not a
+  pad-start comparison. No original Altium project edit/save.
+- New Windows binary linked successfully under target/debug/deps; Cargo's
+  final root copy failed because the old executable is running. Copied the
+  newly linked artifact to target/routing-check/pcbcraft-polygons.exe and
+  launched separately, preserving PID26472 with unsaved user edits.
+- Actual new-build ReferenceBRouting GUI: ECALL_SW via -> foreground polygon area,
+  preview visible, placement succeeds, Escape triggers automatic clearance
+  repour; Undo restores clean title. Full parity/native save remain unverified.

@@ -375,6 +375,103 @@ fn every_properties_context_stays_within_native_dock_width() {
 }
 
 #[test]
+fn routing_properties_keep_dimensions_and_conflict_controls_visible_in_the_native_dock() {
+    let mut app = app();
+    app.pcb_action(Action::Tool(Tool::Route));
+    let ctx = egui::Context::default();
+    theme::apply(&ctx);
+    let mut output = None;
+    for _ in 0..3 {
+        output = Some(ctx.run(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1707.0, 1027.0),
+                )),
+                ..Default::default()
+            },
+            |ctx| {
+                egui::SidePanel::right("routing_properties_height")
+                    .exact_width(316.0)
+                    .show(ctx, |ui| {
+                        show(&mut app, ui);
+                    });
+            },
+        ));
+    }
+    let output = output.unwrap();
+    for label in [
+        "Via Diameter",
+        "Via Hole Size",
+        "Width",
+        "Interactive Routing Options",
+        "Conflict Resolution",
+        "Corner Style",
+    ] {
+        let text = output
+            .shapes
+            .iter()
+            .find_map(|s| match &s.shape {
+                egui::Shape::Text(text) if text.galley.job.text == label => Some(text),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("Missing routing control: {label}"));
+        assert!(
+            text.pos.y < 760.0,
+            "{label} placed below the usable routing panel: {}",
+            text.pos.y
+        );
+    }
+}
+
+#[test]
+fn escape_resumes_paused_routing_while_its_width_field_has_keyboard_focus() {
+    let mut app = app();
+    app.pcb_action(Action::Tool(Tool::Route));
+    app.documents[0].pcb_editor.paused = true;
+    app.documents[0]
+        .pcb_editor
+        .properties_panel
+        .focus_route_width = true;
+    let ctx = egui::Context::default();
+    theme::apply(&ctx);
+    let mut frame = |events| {
+        let _ = ctx.run(
+            egui::RawInput {
+                focused: true,
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1707.0, 1027.0),
+                )),
+                events,
+                ..Default::default()
+            },
+            |ctx| {
+                app.shortcuts(ctx);
+                egui::SidePanel::right("routing_escape_focus")
+                    .exact_width(316.0)
+                    .show(ctx, |ui| {
+                        show(&mut app, ui);
+                    });
+            },
+        );
+    };
+    frame(vec![]);
+    frame(vec![]);
+    assert!(ctx.wants_keyboard_input());
+    frame(vec![egui::Event::Key {
+        key: Key::Escape,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: egui::Modifiers::NONE,
+    }]);
+    assert!(!app.documents[0].pcb_editor.routing_paused());
+    assert_eq!(app.documents[0].pcb_editor.tool, Tool::Route);
+    assert_eq!(app.documents[0].history.revision, 0);
+}
+
+#[test]
 fn numeric_fields_commit_on_enter_and_escape_reverts_in_mm_and_mils() {
     for (units, typed, expected) in [
         (Units::Millimetres, "0.8", 800_000),
@@ -479,6 +576,20 @@ fn pcb_shortcut_sequences_and_inactive_drag_cleanup_are_routed_to_active_documen
         press(&mut app, &ctx, Key::Escape, egui::Modifiers::NONE);
         assert_eq!(app.documents[0].pcb_editor.tool, Tool::Select);
     }
+    press(&mut app, &ctx, Key::P, egui::Modifiers::NONE);
+    press(&mut app, &ctx, Key::T, egui::Modifiers::NONE);
+    assert_eq!(app.documents[0].pcb_editor.tool, Tool::Route);
+    assert!(!app.cross_probe.enabled);
+    press(&mut app, &ctx, Key::Escape, egui::Modifiers::NONE);
+    press(&mut app, &ctx, Key::W, egui::Modifiers::CTRL);
+    assert_eq!(app.documents[0].pcb_editor.tool, Tool::Route);
+    press(&mut app, &ctx, Key::Escape, egui::Modifiers::NONE);
+    press(&mut app, &ctx, Key::T, egui::Modifiers::NONE);
+    press(&mut app, &ctx, Key::C, egui::Modifiers::NONE);
+    assert!(app.cross_probe.enabled);
+    app.pcb_action(Action::Tool(Tool::Route));
+    assert!(!app.cross_probe.enabled);
+    press(&mut app, &ctx, Key::Escape, egui::Modifiers::NONE);
     press(&mut app, &ctx, Key::V, egui::Modifiers::NONE);
     press(&mut app, &ctx, Key::F, egui::Modifiers::NONE);
     assert!(matches!(

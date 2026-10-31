@@ -110,6 +110,7 @@ impl Obstacles {
             first_error,
         }
     }
+    #[cfg(test)]
     pub fn new(board: &Board, layer: u16, net: Option<u32>) -> Self {
         let probe = crate::pcb_rules::probe(layer, net, Point::default(), 1);
         Self::for_item(board, layer, &probe)
@@ -123,7 +124,16 @@ impl Obstacles {
         Ok(())
     }
     pub fn for_item(board: &Board, layer: u16, probe: &Item) -> Self {
-        let net = probe.net;
+        Self::for_contacts(board, layer, probe, &BTreeSet::new(), usize::MAX)
+    }
+    pub(super) fn for_contacts(
+        board: &Board,
+        layer: u16,
+        probe: &Item,
+        contacts: &BTreeSet<Uuid>,
+        source_len: usize,
+    ) -> Self {
+        let net = board.item_net(probe);
         // Room membership changes as the route moves. Cache the geometry, but
         // resolve these pair clearances against each proposed segment.
         let spatial = matches!(probe.shape, Shape::Track { .. })
@@ -143,11 +153,39 @@ impl Obstacles {
             .items
             .iter()
             .enumerate()
-            .filter(|(_, i)| {
+            .filter(|(index, i)| {
+                let item_net = board.item_net(i);
+                if net.is_none()
+                    && item_net.is_none()
+                    && !i.keepout
+                    && !i.is_drill_only()
+                    && (contacts.contains(&i.id) || *index >= source_len)
+                {
+                    return false;
+                }
                 let board_cutout = i
                     .properties
                     .get("ISBOARDCUTOUT")
                     .is_some_and(|v| v.eq_ignore_ascii_case("TRUE"));
+                // Managed pour copper is derived geometry. Routing across it
+                // invalidates the pour; repour then clears the new track/via
+                // using polygon clearance rules. Free copper and safety
+                // boundaries remain obstacles, including orphaned fragments.
+                if !i.keepout
+                    && !board_cutout
+                    && i.layer != KEEP_OUT
+                    && matches!(
+                        i.shape,
+                        Shape::Track { .. }
+                            | Shape::Arc { .. }
+                            | Shape::Fill { .. }
+                            | Shape::Region { .. }
+                    )
+                    && i.polygon
+                        .is_some_and(|index| board.polygon_pours.iter().any(|p| p.index == index))
+                {
+                    return false;
+                }
                 if matches!(i.shape, Shape::Region { cutout: true, .. })
                     && !board_cutout
                     && !i.keepout
@@ -160,7 +198,7 @@ impl Obstacles {
                     || board_cutout
                     || i.layer == KEEP_OUT
                     || net.is_none()
-                    || i.net != net
+                    || item_net != net
                     || i.is_drill_only())
                     && (board_cutout
                         || on_layer(board, i, layer)
@@ -286,6 +324,7 @@ impl Obstacles {
         radius: i64,
         clearance: i64,
         route: Option<&RouteSession>,
+        contact: Option<Uuid>,
     ) -> Option<usize> {
         // Clearance may change during a session, and room/matrix rules can
         // enlarge it away from the initial probe. Query with a conservative
@@ -303,17 +342,18 @@ impl Obstacles {
         candidates.extend(self.first_error);
         candidates.sort_unstable();
         candidates.dedup();
-        self.blocker_among(a, b, radius, clearance, route, candidates)
+        self.blocker_among([a, b], radius, clearance, route, contact, candidates)
     }
     fn blocker_among(
         &self,
-        a: Point,
-        b: Point,
+        ends: [Point; 2],
         radius: i64,
         clearance: i64,
         route: Option<&RouteSession>,
+        contact: Option<Uuid>,
         candidates: impl IntoIterator<Item = usize>,
     ) -> Option<usize> {
+        let [a, b] = ends;
         let bounds = Bounds::points(&[a, b]);
         let line = Line::new(
             (a.x as f64 / 1e6, a.y as f64 / 1e6),
@@ -334,6 +374,12 @@ impl Obstacles {
         // changes walkaround posture and the result of the bounded search.
         candidates.into_iter().find(|&index| {
             let o = &self.objects[index];
+            if contact.is_some_and(|id| {
+                o.item
+                    .is_some_and(|index| route.is_some_and(|r| r.draft.items[index].id == id))
+            }) {
+                return false;
+            }
             let Ok(gap) = o.gap else {
                 return true;
             };
@@ -383,13 +429,13 @@ impl Obstacles {
         })
     }
     pub fn clear(&self, a: Point, b: Point, radius: i64, clearance: i64) -> bool {
-        self.blocker(a, b, radius, clearance, None).is_none()
+        self.blocker(a, b, radius, clearance, None, None).is_none()
     }
     pub(super) fn clear_for_route(&self, route: &RouteSession, a: Point, b: Point) -> bool {
-        self.blocker(a, b, route.width / 2, route.clearance, Some(route))
+        self.blocker(a, b, route.width / 2, route.clearance, Some(route), None)
             .is_none()
     }
-    fn stop(&self, points: &[Point], route: &RouteSession) -> Vec<Point> {
+    fn stop(&self, points: &[Point], route: &RouteSession, contact: Option<Uuid>) -> Vec<Point> {
         let clear = |a, b| {
             self.blocker(
                 a,
@@ -397,6 +443,7 @@ impl Obstacles {
                 route.width.max(1) / 2,
                 route.clearance.max(0),
                 Some(route),
+                contact,
             )
             .is_none()
         };
@@ -435,12 +482,16 @@ impl Obstacles {
         let direct = route.free_points(route.anchor, end);
         let radius = route.width.max(1) / 2;
         let clearance = route.clearance.max(0);
-        let clear = |a, b| self.blocker(a, b, radius, clearance, Some(route)).is_none();
+        let contact = route.endpoint_contact(end);
+        let clear = |a, b| {
+            self.blocker(a, b, radius, clearance, Some(route), contact)
+                .is_none()
+        };
         if route.conflict == Conflict::Ignore || direct.windows(2).all(|e| clear(e[0], e[1])) {
             return direct;
         }
         if route.conflict == Conflict::Stop || !clear(route.anchor, route.anchor) {
-            return self.stop(&direct, route);
+            return self.stop(&direct, route, contact);
         }
         // Best-first detours around the first obstruction. Explicit budgets keep
         // mouse interaction bounded; on exhaustion retain the valid prefix.
@@ -462,7 +513,7 @@ impl Obstacles {
             let leg = route.free_points(start, end);
             let obstruction = leg
                 .windows(2)
-                .find_map(|e| self.blocker(e[0], e[1], radius, clearance, Some(route)));
+                .find_map(|e| self.blocker(e[0], e[1], radius, clearance, Some(route), contact));
             let Some(index) = obstruction else {
                 let mut result = path;
                 result.extend_from_slice(&leg[1..]);
@@ -510,7 +561,7 @@ impl Obstacles {
                 }
             }
         }
-        self.stop(&direct, route)
+        self.stop(&direct, route, contact)
     }
 }
 fn envelope(bounds: Bounds) -> AABB<[f64; 2]> {

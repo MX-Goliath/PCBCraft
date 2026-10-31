@@ -671,6 +671,18 @@ impl Board {
         net.and_then(|id| self.nets.iter().find(|n| n.index == id))
             .map_or("No Net", |n| n.name.as_str())
     }
+    /// Native pour fragments can omit NET and inherit it from their polygon.
+    /// Keep the archived primitive unchanged; explicit primitive nets take priority.
+    pub fn item_net(&self, item: &Item) -> Option<u32> {
+        item.net.or_else(|| {
+            item.polygon.and_then(|index| {
+                self.polygon_pours
+                    .iter()
+                    .find(|p| p.index == index)
+                    .and_then(|p| p.net)
+            })
+        })
+    }
     /// Native component strings can exist in Texts6 while their display is disabled.
     pub fn text_visible(&self, item: &Item) -> bool {
         if !matches!(item.shape, Shape::Text { .. }) {

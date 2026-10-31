@@ -1312,6 +1312,14 @@ impl PcbCraft {
                         ui.label(RichText::new("Cross Probe · Esc exits").strong())
                             .on_hover_text(&self.cross_probe.status);
                     }
+                    if let Some(status) = self.active.and_then(|i| {
+                        self.documents[i]
+                            .pcb_editor
+                            .routing_status(&self.documents[i].view.pcb)
+                    }) {
+                        ui.separator();
+                        ui.label(RichText::new(status).size(11.0));
+                    }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.menu_button("Panels", |ui| {
                             if self
@@ -1668,7 +1676,7 @@ impl PcbCraft {
                     {
                         self.pcb_input(index, input, ctx);
                     }
-                    if self.documents[index].model.kind == DocumentKind::Schematic {
+                    if !self.documents[index].view.pcb.three_d.enabled {
                         self.active_bar(ctx, canvas);
                     }
                 } else {
@@ -1881,20 +1889,31 @@ impl PcbCraft {
             || self
                 .active
                 .is_some_and(|i| self.documents[i].view.pcb.configuration_modal_open())
-            || ctx.wants_keyboard_input()
         {
+            return;
+        }
+        if ctx.wants_keyboard_input() {
+            if let Some(index) = self.active
+                && self.documents[index].pcb_editor.routing_paused()
+                && ctx.input(|i| i.key_pressed(Key::Escape))
+            {
+                // Leave Escape available to the focused property field so it
+                // can restore its original value while routing resumes.
+                self.documents[index].pcb_editor.resume_routing(ctx);
+            }
             return;
         }
         if self.pcb_view_shortcuts(ctx) {
             return;
         }
-        if self.cross_probe_shortcuts(ctx) {
-            return;
-        }
         if self.cross_probe.enabled {
+            self.cross_probe_shortcuts(ctx);
             return;
         }
         if self.pcb_shortcuts(ctx) {
+            return;
+        }
+        if self.cross_probe_shortcuts(ctx) {
             return;
         }
         if self.schematic_shortcuts(ctx) {

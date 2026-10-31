@@ -95,6 +95,36 @@ impl PcbCraft {
                 });
             });
     }
+    fn routing_pause(&mut self, ctx: &egui::Context, canvas: egui::Rect) {
+        if self
+            .active
+            .is_some_and(|i| self.documents[i].pcb_editor.routing_paused())
+        {
+            egui::Area::new(egui::Id::new("routing_pause"))
+                .fixed_pos(canvas.center() - egui::vec2(50.0, 50.0))
+                .order(egui::Order::Foreground)
+                .show(ctx, |ui| {
+                    let (rect, response) =
+                        ui.allocate_exact_size(egui::vec2(100.0, 100.0), egui::Sense::click());
+                    ui.painter()
+                        .circle_filled(rect.center(), 50.0, Color32::from_white_alpha(55));
+                    for x in [-11.0, 6.0] {
+                        ui.painter().rect_filled(
+                            egui::Rect::from_min_size(
+                                rect.center() + egui::vec2(x, -19.0),
+                                egui::vec2(7.0, 38.0),
+                            ),
+                            0.0,
+                            Color32::WHITE,
+                        );
+                    }
+                    if response.clicked() {
+                        let editor = &mut self.documents[self.active.unwrap()].pcb_editor;
+                        editor.resume_routing(ctx);
+                    }
+                });
+        }
+    }
 
     pub(super) fn active_bar(&mut self, ctx: &egui::Context, canvas: egui::Rect) {
         let schematic = self
@@ -108,10 +138,10 @@ impl PcbCraft {
                     .inner_margin(4)
                     .corner_radius(2)
                     .show(ui, |ui| {
-                        ui.spacing_mut().item_spacing.x = 11.5;
+                        ui.spacing_mut().item_spacing.x = if schematic { 11.5 } else { 9.0 };
                         ui.horizontal(|ui| {
-                            let tools = if schematic {
-                                [
+                            let tools: &[(Icon, &str, Option<Command>)] = if schematic {
+                                &[
                                     (
                                         Icon::Select,
                                         "Select / Cancel",
@@ -171,40 +201,81 @@ impl PcbCraft {
                                     ),
                                 ]
                             } else {
-                                [
-                                    (Icon::Component, "Place Component", None),
-                                    (Icon::Grid, "Grids", Some(Command::ToggleGrid)),
-                                    (Icon::Fit, "Fit Document", Some(Command::Fit)),
-                                    (Icon::Select, "Select", None),
+                                &[
+                                    (Icon::Filter, "Selection Filter", None),
+                                    (Icon::Magnet, "Object Snap", None),
+                                    (Icon::Crosshair, "Set Origin", None),
+                                    (
+                                        Icon::Select,
+                                        "Select / Cancel",
+                                        Some(Command::Pcb(pcb_editor::Action::Tool(
+                                            pcb_editor::Tool::Select,
+                                        ))),
+                                    ),
                                     (Icon::Chart, "Measure", None),
                                     (Icon::Chip, "Component", None),
-                                    (Icon::Track, "Interactive Routing", None),
-                                    (Icon::Polygon, "Polygon Pour", None),
-                                    (Icon::Pad, "Place Pad", None),
-                                    (Icon::Via, "Place Via", None),
+                                    (
+                                        Icon::Track,
+                                        "Interactive Routing (Ctrl+W)",
+                                        Some(Command::Pcb(pcb_editor::Action::Tool(
+                                            pcb_editor::Tool::Route,
+                                        ))),
+                                    ),
+                                    (Icon::MultiRoute, "Interactive Multi-Routing", None),
+                                    (
+                                        Icon::Via,
+                                        "Place Via (P, V)",
+                                        Some(Command::Pcb(pcb_editor::Action::Tool(
+                                            pcb_editor::Tool::Via,
+                                        ))),
+                                    ),
+                                    (
+                                        Icon::Fill,
+                                        "Place Fill (P, F)",
+                                        Some(Command::Pcb(pcb_editor::Action::Tool(
+                                            pcb_editor::Tool::Fill,
+                                        ))),
+                                    ),
+                                    (
+                                        Icon::Polygon,
+                                        "Polygon Pour (P, G)",
+                                        Some(Command::Pcb(pcb_editor::Action::Tool(
+                                            pcb_editor::Tool::Polygon,
+                                        ))),
+                                    ),
                                     (Icon::Dimension, "Dimension", None),
-                                    (Icon::Text, "Place Text", None),
+                                    (
+                                        Icon::Text,
+                                        "Place String (P, S)",
+                                        Some(Command::Pcb(pcb_editor::Action::Tool(
+                                            pcb_editor::Tool::Text,
+                                        ))),
+                                    ),
                                     (Icon::Line, "Place Line", None),
                                 ]
                             };
-                            for (icon, tip, command) in tools {
+                            for &(icon, tip, command) in tools {
                                 let needs_selection = matches!(
                                     command,
                                     Some(Command::SchEdit(SchAction::Move | SchAction::Rotate))
                                 );
-                                let enabled = (command.is_some() || matches!(icon, Icon::Select))
+                                let enabled = command.is_some()
                                     && (!needs_selection
                                         || self.active.is_some_and(|i| {
                                             self.documents[i].view.selected.is_some()
                                         }));
-                                if icon_button(
-                                    ui,
-                                    icon,
-                                    matches!(icon, Icon::Grid) && self.settings.show_grid,
-                                    enabled,
-                                )
-                                .on_hover_text(tip)
-                                .clicked()
+                                let selected = match command {
+                                    Some(Command::Pcb(pcb_editor::Action::Tool(tool))) => {
+                                        self.active.is_some_and(|i| {
+                                            self.documents[i].pcb_editor.tool == tool
+                                                && tool != pcb_editor::Tool::Select
+                                        })
+                                    }
+                                    _ => matches!(icon, Icon::Grid) && self.settings.show_grid,
+                                };
+                                if icon_button(ui, icon, selected, enabled)
+                                    .on_hover_text(tip)
+                                    .clicked()
                                     && let Some(command) = command
                                 {
                                     self.command = Some(command);
@@ -213,6 +284,7 @@ impl PcbCraft {
                         });
                     });
             });
+        self.routing_pause(ctx, canvas);
     }
 
     pub(super) fn resize_edges(&self, ctx: &egui::Context) {

@@ -61,6 +61,10 @@ pub enum Icon {
     Grid,
     Fit,
     Track,
+    MultiRoute,
+    Magnet,
+    Crosshair,
+    Fill,
     Pad,
     Via,
     Component,
@@ -285,6 +289,39 @@ pub fn draw_icon(p: &egui::Painter, rect: egui::Rect, icon: Icon, enabled: bool)
                     point(15.0, 3.0),
                 ],
                 Stroke::new(2.0, blue),
+            );
+        }
+        Icon::Magnet => {
+            p.line(
+                vec![
+                    point(3.0, 2.0),
+                    point(3.0, 10.0),
+                    point(6.0, 13.0),
+                    point(10.0, 13.0),
+                    point(13.0, 10.0),
+                    point(13.0, 2.0),
+                ],
+                Stroke::new(3.0, Color32::from_rgb(203, 103, 113)),
+            );
+            line((3.0, 1.0), (3.0, 5.0), blue);
+            line((13.0, 1.0), (13.0, 5.0), blue);
+        }
+        Icon::Crosshair => {
+            line((8.0, 0.0), (8.0, 16.0), blue);
+            line((0.0, 8.0), (16.0, 8.0), blue);
+            p.circle_stroke(rect.center(), 3.0, Stroke::new(1.0, yellow));
+        }
+        Icon::MultiRoute => {
+            for offset in [0.0, 5.0, 10.0] {
+                p.circle_stroke(point(offset + 2.0, 12.0), 1.5, Stroke::new(1.2, yellow));
+                line((offset + 2.0, 10.0), (offset + 5.0, 3.0), yellow);
+            }
+        }
+        Icon::Fill => {
+            p.rect_filled(
+                egui::Rect::from_min_max(point(1.0, 4.0), point(15.0, 13.0)),
+                0.0,
+                blue,
             );
         }
         Icon::Pad | Icon::Via => {

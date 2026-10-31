@@ -70,8 +70,8 @@ auto-complete, width/via favorites and full preference/shortcut parity remain
 open. Supported scoped/matrix clearance and board-edge rules are evaluated;
 general query compilation, neck-down and impedance rules remain incomplete.
 The solver is not a full DRC engine. Native
-text/custom shapes retain existing geometry approximations. No-net starts on
-existing no-net copper can be blocked by that copper. Obstacle geometry is cached
+text/custom shapes retain existing geometry approximations. No-net routes merge
+with their contacted terminals and their own copper. Obstacle geometry is cached
 per route/layer; already-existing illegal starting clearances stop the route.
 Net class/delay are N/A; length is a geometric sum, not an electrical topology
 measurement. Exact glyph/raster/DPI and Linux runtime parity remain unverified.
@@ -273,3 +273,139 @@ SHA256 unchanged. Final headless first CPU samples were still 33–37 ms; native
 Finish/repour/Undo still rebuilt all groups and had artwork costs up to 67.69 ms.
 This is a bounded rendering optimization, with full routing/Altium parity still
 open. See `artwork-groups-performance-2026-10-25.json` and PERFORMANCE.md.
+
+## Routing startup and controls, 2026-10-31
+
+### Observed
+
+Altium Designer Enterprise 24.4.1 was inspected at 1707 px width, with the
+330 px View Configuration dock and 316 px Properties dock. Route menu order,
+Interactive Routing/Ctrl+W, floating Active Bar, Net Information columns,
+layer/via/dimension controls, conflict/corner controls and the Tab pause overlay
+were observed directly on the existing research PCB copy. The user project was
+not saved or edited for these observations.
+
+PCBCraft had a different fixed text toolbar. Its floating PCB Active Bar was
+unreachable and its routing button had no command. P,T was intercepted by the
+global Cross Probe T prefix. In addition, a no-net routing session treated its
+starting pad/track and its own tracks/vias after a layer change as obstacles.
+The existing native research copy reproduced a session without a departing leg;
+isolated geometry regressions establish the self-obstruction independently of
+that board's other constraints.
+
+### Implemented
+
+- PCB Active Bar is displayed over the canvas in the observed order, with a
+  working Interactive Routing command and selected state. Route menu entries
+  follow the observed order; unavailable engineering commands stay disabled.
+- PCB command sequences run before the inactive Cross Probe prefix handler.
+  Explicit placement commands leave Cross Probe. Routing opens Properties.
+- Starting on a visible copper object switches to its layer. Direct copper hits
+  take priority over nearby pads. Drill-only holes cannot become routing targets.
+  A new free-space route does not inherit the previous route's net.
+- No-net sessions exempt only contacted terminals and their own added copper.
+  Explicit endpoint contacts can connect, while unrelated no-net copper,
+  keepouts and drills still obstruct the route. Contacts restore on Backspace,
+  and layer changes reuse existing plated-through pad connections.
+- Net Information uses Name/Class columns. Layer/via dimensions, preview,
+  conflict controls and disabled advanced options follow the observed section
+  order. Tab pauses, focuses Width and displays a clickable pause overlay.
+  The status bar reports starting/next location or a clearance blockage.
+
+### Verification and limits
+
+Regression coverage includes P,T through the full shortcut dispatcher, Ctrl+W,
+Cross Probe coexistence, visible/hidden layer starts, fresh no-net starts,
+terminal versus unrelated copper, track splits, via/backtrack and History Undo.
+A panel-height regression protects the visible dimension/conflict controls.
+Windows GUI on `target/routing-check/RoutingReference.PcbDoc` verified the Active
+Bar, a two-pad No Net route with an intermediate corner, automatic termination
+and Undo to the clean board. This generated ASCII fixture was rejected by Altium
+and is not evidence of native interoperability or equal solver behavior.
+
+The final Windows build also exercised the native 15,513-item ReferenceB copy at
+`target/routing-check/ReferenceBRouting.PcbDoc`: Ctrl+W, ExampleGround startup at
+(192.273037, 190.895608) mm, approximately 0.996 mm placed copper, Tab/Width,
+single Escape to resume, Escape to finish, Undo/Redo/Undo. The final title was
+clean. Both this copy and `.tools/pcb-padstack-reference.PcbDoc` retained SHA256
+`redacted-source-sha256`.
+An obstructed start elsewhere on ExampleGround displayed the clearance-blocked status;
+the follow-up below identified and corrected that inherited-pour error.
+
+Final checks: formatting, strict workspace/all-target Clippy, all 563 workspace
+unit tests and the Windows dev build passed. The test log is
+`target/routing-check/workspace-tests.txt`. Native saving/reopening of the new
+route and a new Linux GUI comparison were not performed in this iteration.
+
+Exact pixel/DPI and solver parity remain open. Push/HugNPush, arc corners,
+gloss, loop removal, route auto-completion, width/via favorites and full
+preferences are not implemented. Net class/delay and electrical length remain
+limited as above. No new Linux runtime comparison was performed. Observed UI
+states and implemented behavior must not be interpreted as acceptance of these
+remaining features. The existing research PCB source was not saved.
+
+## Follow-up: no track after selecting a terminal, 2026-10-31
+
+The user's clarification prompted a comparison at the previously blocked
+ExampleGround via (166.180275, 199.690002) mm, native Vias6 record 141. Altium 24.4.1
+starts and places routing from that terminal. PCBCraft's read-only probe
+originally returned zero segments in all three sampled directions.
+
+The blocker was imported pour copper: Regions6 and ShapeBasedRegions6 record
+17 have no explicit NET and refer to polygon 1. Connectivity already inherited
+the polygon's ExampleGround net, while routing treated these fragments as foreign
+No Net copper overlapping the starting via. This was an incorrect obstruction,
+not an actual clearance violation at the starting location.
+
+`Board::item_net` now provides the shared explicit-net/parent-polygon resolution.
+Routing obstacles, rule net scopes, InNet/InNetClass and connectivity use that
+identity without rewriting the imported fragments. Shelved pour fragments are
+excluded from routing obstacles. Explicit foreign fragment nets, unrelated
+foreign pours and keepouts still blocked in that iteration; the foreign-pour
+restriction is corrected by the following follow-up.
+
+New regressions cover starting inside one's own inherited pour, layer-change
+vias/backtracking, foreign versus shelved pours, explicit fragment overrides,
+keepouts and scoped clearance membership. The native probe now reaches the
+(+1,+1) mm and (+3,0) mm sample endpoints and completes preview/place/finish/Undo
+without writing its source. It supports `--at X Y --blockers` for read-only
+startup diagnosis. Fmt, strict all-target Clippy, 566 workspace tests and the
+Windows dev build pass. Native saving and full solver parity remain unverified.
+
+Final Windows GUI repeated that exact terminal: Ctrl+W, click at the ExampleGround
+via, move the cursor without a placement click, then place the preview. The
+previously absent departure now appeared and the connection completed; Undo
+returned the copy to a clean title. Both PCB file hashes above remain unchanged.
+
+## Follow-up: routing across foreign polygon copper, 2026-10-31
+
+The preceding fix only removed same-net false blockers. User feedback exposed
+the remaining error: generated copper from another net's polygon was treated
+as an immutable solid obstacle. Managed pour fragments (regions, fills, tracks
+and arcs with a known polygon owner) are now omitted from routing obstacles.
+Placement invalidates the pour; the existing background repour cuts clearance
+around the committed tracks and vias. Free copper, orphaned polygon references,
+keepouts and board cutouts still obstruct. This is not Ignore Obstacles mode.
+
+A regression routes from a SIGNAL pad inside GND pour in Stop and Walkaround,
+previews/places a leg, changes layer through a via, backtracks and finishes.
+After repour it checks actual polygon intersection against a 0.6mm scoped
+clearance envelope, plus single-step Undo and Redo of the route and derived
+copper. The source board remains unchanged during the draft. Boundary tests
+cover managed foreign fragments versus free copper, unknown owners, keepouts
+and board cutouts. All 567 workspace tests, fmt check and strict all-target
+Clippy pass on Windows.
+
+Observed in AD24.4.1 on the research copy: HugNPush permits a 2.87mm preview
+across the filled area; it was cancelled without saving. This particular
+observation started in free space (N/A net), so it does not establish exact
+pad-start parity. Official polygon documentation describes repouring after
+layout changes: https://www.altium.com/documentation/altium-designer/pcb/signal-layer-polygons
+
+Windows GUI on ReferenceBRouting: start at ECALL_SW via (screen 710,683 at Fit Board),
+move to (760,640), place, Escape. Preview and placed track cross the pour;
+automatic repour creates the clearance channel. Undo restores a clean title.
+The updated executable is target/routing-check/pcbcraft-polygons.exe, launched
+separately because the previous running build has unsaved user edits. The old
+window remains untouched. Full solver/visual parity and native saving of this
+route remain unverified.

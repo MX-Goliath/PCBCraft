@@ -14,6 +14,7 @@ pub(super) struct Panel {
     parameter_group: usize,
     context: Option<Uuid>,
     hide_preview: bool,
+    pub(super) focus_route_width: bool,
     preview: eda_render::pcb_stack::PreviewState,
     rule_editor: Option<stacks::RuleEditor>,
 }
@@ -1357,19 +1358,32 @@ fn routing(
         let name = ed
             .route_session
             .as_ref()
-            .and_then(|r| r.net)
-            .and_then(|n| board.nets.iter().find(|x| x.index == n))
-            .map(|n| n.name.as_str())
+            .map(|r| board.net_name(r.net))
             .unwrap_or("N/A");
-        read_row(ui, "Net", name);
-        read_row(ui, "Class", "N/A");
+        egui::Grid::new("route_net_information")
+            .min_col_width(70.0)
+            .spacing(egui::vec2(8.0, 8.0))
+            .show(ui, |ui| {
+                ui.label("");
+                ui.weak("Name");
+                ui.weak("Class");
+                ui.end_row();
+                ui.label("Net");
+                ui.label(name);
+                ui.label("N/A");
+                ui.end_row();
+            });
         ui.separator();
         let length = ed.route_session.as_ref().map(|r| {
             r.draft()
                 .items
                 .iter()
-                .filter(|i| r.net.is_some() && i.net == r.net)
-                .map(|i| match i.shape {
+                .enumerate()
+                .filter(|(n, i)| {
+                    r.net
+                        .map_or(*n >= board.items.len(), |net| i.net == Some(net))
+                })
+                .map(|(_, i)| match i.shape {
                     Shape::Track { start, end, .. } => pcb::distance_sq(start, end).sqrt(),
                     Shape::Arc {
                         radius,
@@ -1380,19 +1394,30 @@ fn routing(
                     _ => 0.0,
                 })
                 .sum::<f64>()
+                .max(0.0)
         });
-        read_row(
-            ui,
-            "Length",
-            &length
-                .map(|n| format!("{:.3}{}", units.from_nm(n), units.label()))
-                .unwrap_or("N/A".into()),
-        );
-        read_row(ui, "Delay", "N/A");
+        row(ui, "Length", |ui| {
+            ui.label(
+                length
+                    .map(|n| format!("{:.3}{}", units.from_nm(n), units.label()))
+                    .unwrap_or("N/A".into()),
+            );
+        });
+        row(ui, "Delay", |ui| {
+            ui.label("N/A");
+        });
     });
     section(ui, "Properties", "", |ui| {
+        ui.allocate_ui_with_layout(
+            egui::vec2(ui.available_width(), 16.0),
+            egui::Layout::right_to_left(egui::Align::Center),
+            |ui| {
+                ui.small("Num − / Num +");
+            },
+        );
         row(ui, "Layer", |ui| {
             egui::ComboBox::from_id_salt("route_layer")
+                .width(ui.available_width())
                 .selected_text(
                     board
                         .layers
@@ -1411,7 +1436,7 @@ fn routing(
                     }
                 });
         });
-        ui.small("Num − / Num +");
+        ui.add_space(5.0);
         if ui
             .link(if ed.properties_panel.hide_preview {
                 "Show preview"
@@ -1422,37 +1447,82 @@ fn routing(
         {
             ed.properties_panel.hide_preview = !ed.properties_panel.hide_preview;
         }
+        row(ui, "Via", |ui| {
+            ui.add_enabled_ui(false, |ui| {
+                egui::ComboBox::from_id_salt("route_via_preset")
+                    .width(ui.available_width())
+                    .selected_text("")
+                    .show_ui(ui, |_| {});
+            });
+        });
+        ui.separator();
         ui.horizontal(|ui| {
             if !ed.properties_panel.hide_preview {
-                let (rect, _) = ui.allocate_exact_size(egui::vec2(105.0, 174.0), Sense::hover());
-                let c = rect.min + egui::vec2(48.0, 60.0);
+                let (rect, _) = ui.allocate_exact_size(
+                    egui::vec2(ui.available_width() * 0.51, 174.0),
+                    Sense::hover(),
+                );
+                let c = rect.min + egui::vec2(rect.width() * 0.56, 53.0);
                 let gold = Color32::from_rgb(212, 184, 73);
                 ui.painter()
-                    .line_segment([c, c + egui::vec2(0.0, 95.0)], Stroke::new(20.0, gold));
-                ui.painter().circle_filled(c, 39.0, gold);
-                ui.painter().circle_filled(c, 19.0, Color32::from_gray(56));
+                    .line_segment([c, c + egui::vec2(0.0, 108.0)], Stroke::new(20.0, gold));
+                ui.painter().circle_filled(c, 42.0, gold);
+                ui.painter().circle_filled(c, 20.0, theme::GROUP);
                 ui.painter().line_segment(
                     [c - egui::vec2(30.0, 18.0), c + egui::vec2(50.0, 28.0)],
                     Stroke::new(1.0, Color32::WHITE),
                 );
+                for (a, b) in [
+                    (egui::vec2(-51.0, 6.0), egui::vec2(67.0, -12.0)),
+                    (egui::vec2(-22.0, 91.0), egui::vec2(51.0, 91.0)),
+                ] {
+                    ui.painter()
+                        .line_segment([c + a, c + b], Stroke::new(1.0, Color32::LIGHT_GRAY));
+                }
             }
             ui.vertical(|ui| {
                 ui.set_width(ui.available_width());
+                ui.add_space(8.0);
                 ui.label("Via Diameter");
                 numeric(ui, &mut ed.diameter, units);
-                ui.add_space(8.0);
+                ui.add_space(10.0);
                 ui.label("Via Hole Size");
                 numeric(ui, &mut ed.drill, units);
-                ui.add_space(8.0);
+                ui.add_space(15.0);
                 ui.label("Width");
-                numeric(ui, &mut ed.width, units);
+                let before = ed.width;
+                let scale = if units == Units::Mils { 25_400.0 } else { 1e6 };
+                let mut value = ed.width as f64 / scale;
+                let response = ui.add_sized(
+                    [ui.available_width(), 22.0],
+                    egui::DragValue::new(&mut value)
+                        .range(1.0 / scale..=100_000_000_000.0 / scale)
+                        .speed(0.01)
+                        .max_decimals(3)
+                        .suffix(units.label()),
+                );
+                if ed.properties_panel.focus_route_width {
+                    response.request_focus();
+                    ed.properties_panel.focus_route_width = false;
+                }
+                if response.changed() && value.is_finite() {
+                    ed.width = (value * scale).round() as i64;
+                }
+                completed(ui, &response, &mut ed.width, before);
             });
         });
     });
     section(ui, "Interactive Routing Options", "", |ui| {
-        ui.small("Shift + R");
+        ui.allocate_ui_with_layout(
+            egui::vec2(ui.available_width(), 16.0),
+            egui::Layout::right_to_left(egui::Align::Center),
+            |ui| {
+                ui.small("Shift + R");
+            },
+        );
         row(ui, "Conflict Resolution", |ui| {
             egui::ComboBox::from_id_salt("route_conflict")
+                .width(ui.available_width())
                 .selected_text(ed.conflict.label())
                 .show_ui(ui, |ui| {
                     for mode in [Conflict::Ignore, Conflict::Walkaround] {
@@ -1468,9 +1538,12 @@ fn routing(
                     }
                 });
         });
+        ui.separator();
         ui.horizontal(|ui| {
             ui.label("Corner Style");
-            ui.small("Shift + Space");
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.small("Shift + Space");
+            });
         });
         ui.horizontal(|ui| {
             for (index, mode) in [Some(1), None, Some(2), Some(0), None]
@@ -1534,7 +1607,20 @@ fn routing(
             ui.add_enabled_ui(false, |ui| {
                 ui.horizontal(|ui| {
                     for text in ["Off", "Weak", "Strong"] {
-                        let _ = ui.selectable_label(text == "Off", text);
+                        ui.add_sized(
+                            [
+                                ui.available_width()
+                                    / if text == "Off" {
+                                        3.0
+                                    } else if text == "Weak" {
+                                        2.0
+                                    } else {
+                                        1.0
+                                    },
+                                22.0,
+                            ],
+                            egui::Button::new(text).selected(text == "Off"),
+                        );
                     }
                 });
             });

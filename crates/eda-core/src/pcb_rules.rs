@@ -131,9 +131,10 @@ pub fn resolve<'a>(
             text(r, "SCOPE2EXPRESSION")
         };
         let matches = if let Some(b) = b {
+            let (a_net, b_net) = (board.item_net(a), board.item_net(b));
             match text(r, "NETSCOPE") {
-                "DifferentNets" if a.net.is_some() && a.net == b.net => continue,
-                "SameNet" if a.net.is_none() || a.net != b.net => continue,
+                "DifferentNets" if a_net.is_some() && a_net == b_net => continue,
+                "SameNet" if a_net.is_none() || a_net != b_net => continue,
                 _ => {}
             }
             (query(board, a, first)? && query(board, b, second)?)
@@ -694,7 +695,9 @@ pub(crate) fn scope(board: &Board, item: &Item, s: &str, depth: usize) -> Option
                 .and_then(|n| board.components.iter().find(|c| c.index == n));
             return Some(values.iter().any(|value| {
                 match name {
-                    "INNET" => board.net_name(item.net).eq_ignore_ascii_case(value),
+                    "INNET" => board
+                        .net_name(board.item_net(item))
+                        .eq_ignore_ascii_case(value),
                     "INCOMPONENT" => {
                         component.is_some_and(|c| c.designator.eq_ignore_ascii_case(value))
                     }
@@ -731,7 +734,7 @@ pub(crate) fn scope(board: &Board, item: &Item, s: &str, depth: usize) -> Option
                         .any(|class| {
                             if text(class, "SUPERCLASS") == "TRUE" {
                                 return match name {
-                                    "INNETCLASS" => item.net.is_some(),
+                                    "INNETCLASS" => board.item_net(item).is_some(),
                                     "INCOMPONENTCLASS" => component.is_some(),
                                     _ => matches!(item.shape, Shape::Pad { .. }),
                                 };
@@ -747,9 +750,9 @@ pub(crate) fn scope(board: &Board, item: &Item, s: &str, depth: usize) -> Option
                                         })
                                 })
                                 .any(|(_, member)| match name {
-                                    "INNETCLASS" => {
-                                        board.net_name(item.net).eq_ignore_ascii_case(member)
-                                    }
+                                    "INNETCLASS" => board
+                                        .net_name(board.item_net(item))
+                                        .eq_ignore_ascii_case(member),
                                     "INCOMPONENTCLASS" => component
                                         .is_some_and(|c| c.designator.eq_ignore_ascii_case(member)),
                                     _ => {

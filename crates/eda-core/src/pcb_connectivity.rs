@@ -64,15 +64,7 @@ impl Snapshot {
     }
 }
 fn connection_net(board: &Board, item: &Item) -> Option<u32> {
-    let net = item.net.or_else(|| {
-        item.polygon.and_then(|index| {
-            board
-                .polygon_pours
-                .iter()
-                .find(|p| p.index == index)
-                .and_then(|p| p.net)
-        })
-    })?;
+    let net = board.item_net(item)?;
     if item.keepout
         || item.is_empty_region()
         || matches!(item.shape, Shape::Arc { width: 0, .. })

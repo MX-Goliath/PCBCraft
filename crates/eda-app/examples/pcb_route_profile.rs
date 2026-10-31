@@ -4,6 +4,7 @@ use eda_core::pcb_route::RouteSession;
 use eda_geom::Point;
 use std::{path::PathBuf, time::Instant};
 fn main() -> Result<(), String> {
+    let args: Vec<_> = std::env::args().collect();
     let path = PathBuf::from(
         std::env::args_os()
             .nth(1)
@@ -20,11 +21,37 @@ fn main() -> Result<(), String> {
             println!("rule={rule:?}");
         }
     }
-    let pad = board
-        .items
+    let at = args
         .iter()
-        .find(|i| i.net.is_some() && i.layer == TOP && matches!(i.shape, Shape::Pad { .. }))
-        .ok_or("No pad")?;
+        .position(|a| a == "--at")
+        .map(|n| -> Result<Point, String> {
+            let coordinate = |offset: usize| -> Result<f64, String> {
+                args.get(n + offset)
+                    .ok_or("--at requires X Y in mm".to_owned())?
+                    .parse::<f64>()
+                    .map_err(|e| e.to_string())
+            };
+            let (x, y) = (coordinate(1)?, coordinate(2)?);
+            if !x.is_finite() || !y.is_finite() || x.abs() > 100_000.0 || y.abs() > 100_000.0 {
+                return Err("Invalid --at coordinates".into());
+            }
+            Ok(Point {
+                x: (x * 1e6).round() as i64,
+                y: (y * 1e6).round() as i64,
+            })
+        })
+        .transpose()?;
+    let pad = if let Some(at) = at {
+        let hit = eda_core::pcb_route::target(board, at, TOP, 2_000)
+            .ok_or("No routing target at --at")?;
+        board.item(hit.item).unwrap()
+    } else {
+        board
+            .items
+            .iter()
+            .find(|i| i.net.is_some() && i.layer == TOP && matches!(i.shape, Shape::Pad { .. }))
+            .ok_or("No pad")?
+    };
     let start = Instant::now();
     let mut route = RouteSession::begin(board, 0, pad.anchor(), TOP, pad.net, 254_000, 0)?;
     println!(
@@ -35,6 +62,35 @@ fn main() -> Result<(), String> {
         route.width,
         start.elapsed().as_secs_f64() * 1000.
     );
+    if args.iter().any(|a| a == "--blockers") {
+        let probe = eda_core::pcb_rules::probe(TOP, route.net, route.anchor, route.width);
+        let mut nearby: Vec<_> = board
+            .items
+            .iter()
+            .enumerate()
+            .filter(|(_, item)| {
+                (item.keepout
+                    || board.item_net(item) != route.net
+                    || route.net.is_none()
+                    || item.is_drill_only())
+                    && eda_core::pcb_polygon::on_layer(board, item, TOP)
+            })
+            .map(|(index, item)| (item.hit_distance_on_layer(route.anchor, TOP), index, item))
+            .collect();
+        nearby.sort_by(|a, b| a.0.total_cmp(&b.0));
+        println!("start_item={:?} source={:?}", pad.shape, pad.source);
+        for (distance, index, item) in nearby.into_iter().take(12) {
+            println!(
+                "nearby index={index} kind={} net={} polygon={:?} keepout={} distance_nm={distance:.0} clearance={:?} source={:?}",
+                item.kind(),
+                board.net_name(item.net),
+                item.polygon,
+                item.keepout,
+                eda_core::pcb_rules::clearance(board, &probe, item),
+                item.source
+            );
+        }
+    }
     let mut best = route.anchor;
     for (x, y) in [(1, 1), (3, 0), (-2, 3)] {
         let end = Point {

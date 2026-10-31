@@ -24,13 +24,13 @@ fn compare(route: &RouteSession) {
             y: a.y + (n * 1871 % 19) * 100_000,
         };
         assert_eq!(
-            obstacles.blocker(a, b, route.width / 2, route.clearance, Some(route)),
+            obstacles.blocker(a, b, route.width / 2, route.clearance, Some(route), None),
             obstacles.blocker_among(
-                a,
-                b,
+                [a, b],
                 route.width / 2,
                 route.clearance,
                 Some(route),
+                None,
                 0..obstacles.objects.len()
             ),
             "segment {n}: {a:?} -> {b:?}",
@@ -135,11 +135,11 @@ fn first_blocker_retains_board_order_and_errors_block_outside_query() {
     let obstacles = Obstacles::indexed(objects, false);
     assert_eq!(obstacles.error(), Err("Unsupported rule".into()));
     assert_eq!(
-        obstacles.blocker(Point::mm(0, 0), Point::mm(10, 0), 100_000, 0, None),
+        obstacles.blocker(Point::mm(0, 0), Point::mm(10, 0), 100_000, 0, None, None),
         Some(0)
     );
     assert_eq!(
-        obstacles.blocker(Point::mm(0, 0), Point::mm(2, 0), 100_000, 0, None),
+        obstacles.blocker(Point::mm(0, 0), Point::mm(2, 0), 100_000, 0, None, None),
         Some(1)
     );
 }
