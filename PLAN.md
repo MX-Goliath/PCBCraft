@@ -1986,3 +1986,41 @@ Cause, implementation and validation: docs/pcb-update/INTERACTIVE_ROUTING.md.
   no project/source/research files were removed. Remaining limitations are in
   docs/interface/schematic-active-bar.md and schematic.active_bar in features.json.
   No commit or push during this continuation.
+
+### 2026-11-01 — schematic cursor contrast and sheet dimensions
+
+- User report: a white cursor disappeared over the schematic sheet, and sheet
+  sizes were inconsistent. The schematic requested the themed Windows Crosshair
+  cursor; it now paints a 14 logical px black cross with a white halo in
+  eda-render. It follows the actual pointer independently of placement snapping,
+  stays clipped to the active canvas, and leaves normal cursors to panels,
+  modals and unfocused windows.
+- New documents previously combined an A4 label with physical ISO paper size
+  297x210 mm, while import and Properties used the observed Altium drawing area
+  292.1x193.04 mm. New documents, import and format selection now share native
+  drawing dimensions. Standard selection preserves portrait/landscape and marks
+  the current format. Existing saved dimensions are preserved until the user
+  explicitly selects a standard format; custom sizes are not normalized.
+- Regressions cover all 18 formats in both orientations, validated history and
+  Undo/Redo, unchanged native bytes and custom sheet dimensions. Render events
+  cover light/dark backgrounds, 100/150/200 percent DPI, active placement, panel
+  hover, inactive windows and modal dialogs. Initial new-test failures were
+  corrected: custom fixture coordinates use 10 mil units; the panel separator
+  must not be counted as a cursor stroke. Final 607 workspace unit tests PASS
+  (app 127, core 251, geom 1, IO 123, render 105).
+- Real Windows QA on the final build: new A4 shows 292.1x193.04 mm; Portrait
+  shows 193.04x292.1 mm; choosing A3 retains Portrait and shows 281.94x393.7 mm.
+  Undo restores A4 Portrait, Redo restores A3 Portrait. Home fits the tall sheet
+  with the expected aspect ratio; black crosshair is clearly visible on the
+  light canvas and keeps its size across zoom. Separate portable QA executable:
+  target/routing-check/sheet-cursor-qa/pcbcraft.exe. Other open documents were
+  not modified during this QA.
+- Fresh Altium visual comparison remains unavailable: inventory had no AD
+  window and the supported launch reported 'launched app did not expose a
+  targetable window'. Native dimensions are grounded in prior AD24.4.1
+  observations and SchDoc import checks. Native sheet-property export and
+  Linux runtime/DPI visual parity remain outside this fix.
+- Required fmt check, strict all-target workspace Clippy, full workspace tests,
+  Windows dev build and Linux GNU all-target check PASS. Logs:
+  target/routing-check/sheet-cursor-{fmt,clippy,tests,build,linux}.txt.
+  No commit or push requested for this fix.

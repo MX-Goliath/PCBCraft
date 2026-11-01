@@ -1220,18 +1220,11 @@ fn document_options(
                     .clicked()
                     && (label == "Custom") != s.style.starts_with("Custom")
                 {
-                    s.style = if label == "Standard" {
-                        let portrait = d.size.y > d.size.x;
-                        let (_, w, h) = eda_core::schematic::STANDARD_SHEETS[0];
-                        d.size = if portrait {
-                            Point { x: h, y: w }
-                        } else {
-                            Point { x: w, y: h }
-                        };
-                        "Standard 0".into()
+                    if label == "Standard" {
+                        s.set_standard_format(&mut d.size, 0);
                     } else {
-                        label.into()
-                    };
+                        s.style = label.into();
+                    }
                     changed = true;
                 }
             }
@@ -1242,13 +1235,11 @@ fn document_options(
                 .width(24.0)
                 .selected_text("")
                 .show_ui(ui, |ui| {
-                    for (n, (name, w, h)) in
+                    for (n, (name, _, _)) in
                         eda_core::schematic::STANDARD_SHEETS.into_iter().enumerate()
                     {
-                        if ui.selectable_label(false, name).clicked() {
-                            d.size = Point { x: w, y: h };
-                            s.style = format!("Standard {n}");
-                            changed = true;
+                        if ui.selectable_label(s.format_name() == name, name).clicked() {
+                            changed |= s.set_standard_format(&mut d.size, n);
                         }
                     }
                 });

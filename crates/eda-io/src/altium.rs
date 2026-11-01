@@ -942,21 +942,19 @@ fn build_document(
 ) -> Result<Document, String> {
     let f = &records[0].fields;
     let custom = f.yes("USECUSTOMSHEET");
-    let (_, w, h) = eda_core::schematic::STANDARD_SHEETS
-        .get(f.n("SHEETSTYLE") as usize)
-        .copied()
-        .ok_or("Unsupported sheet size enumeration")?;
-    let mut size = if custom {
+    let standard_size = eda_core::schematic::standard_sheet_size(
+        f.n("SHEETSTYLE") as usize,
+        f.n("WORKSPACEORIENTATION") == 1,
+    )
+    .ok_or("Unsupported sheet size enumeration")?;
+    let size = if custom {
         Point {
             x: f.coord("CUSTOMX"),
             y: f.coord("CUSTOMY"),
         }
     } else {
-        Point { x: w, y: h }
+        standard_size
     };
-    if !custom && f.n("WORKSPACEORIENTATION") == 1 {
-        std::mem::swap(&mut size.x, &mut size.y);
-    }
     let mut fonts = vec![];
     for n in 1..=f.n("FONTIDCOUNT").clamp(0, 128) {
         fonts.push(SchFont {

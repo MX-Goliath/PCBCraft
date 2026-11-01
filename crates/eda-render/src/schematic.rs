@@ -1940,8 +1940,24 @@ pub(super) fn paint(
         });
         select_hit(view, hit, span, ui.input(|i| i.modifiers.shift));
     }
-    if response.hovered() {
-        ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
+    if (response.hovered() || response.dragged())
+        && ui.input(|i| i.focused)
+        && ui.rect_contains_pointer(rect)
+        && let Some(at) = ui.ctx().pointer_latest_pos()
+    {
+        // Windows crosshair cursors can be white on a white sheet. Draw a
+        // constant-size black cross with a white halo, also visible on dark ink.
+        // Follow the actual pointer; placement coordinates snap independently.
+        let lines = [
+            [at - Vec2::new(7.0, 0.0), at + Vec2::new(7.0, 0.0)],
+            [at - Vec2::new(0.0, 7.0), at + Vec2::new(0.0, 7.0)],
+        ];
+        for (width, ink) in [(3.0, Color32::WHITE), (1.0, Color32::BLACK)] {
+            for line in lines {
+                painter.line_segment(line, Stroke::new(width, ink));
+            }
+        }
+        ui.ctx().set_cursor_icon(egui::CursorIcon::None);
     }
     CanvasOutput {
         cursor_mm: response.hover_pos().map(|p| view.camera.world_mm(p, rect)),
@@ -2010,6 +2026,102 @@ pub(super) fn paint(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn schematic_cursor_has_contrast_on_light_and_dark_sheets_and_stays_in_canvas() {
+        for dpi in [1.0, 1.5, 2.0] {
+            for background in [0xffffff, 0] {
+                let ctx = egui::Context::default();
+                ctx.set_pixels_per_point(dpi);
+                let mut doc = Document::new(eda_core::DocumentKind::Schematic, "Cursor");
+                let sheet = &mut doc.schematic.as_mut().unwrap().sheet;
+                sheet.background = background;
+                sheet.border = false;
+                sheet.grid_visible = false;
+                let mut view = View::default();
+                let mut frame = |pointer: Pos2, focused, modal, tool_active| {
+                    view.sch_tool_active = tool_active;
+                    ctx.run(
+                        egui::RawInput {
+                            screen_rect: Some(Rect::from_min_size(
+                                Pos2::ZERO,
+                                Vec2::new(600.0, 400.0),
+                            )),
+                            focused,
+                            events: vec![egui::Event::PointerMoved(pointer)],
+                            ..Default::default()
+                        },
+                        |ctx| {
+                            egui::SidePanel::left("cursor_properties")
+                                .exact_width(100.0)
+                                .show(ctx, |ui| {
+                                    ui.label("Properties");
+                                });
+                            egui::CentralPanel::default().frame(egui::Frame::NONE).show(
+                                ctx,
+                                |ui| {
+                                    crate::canvas(ui, &doc, &mut view);
+                                },
+                            );
+                            if modal {
+                                egui::Modal::new(egui::Id::new("cursor_modal")).show(ctx, |ui| {
+                                    ui.label("Dialog");
+                                });
+                            }
+                        },
+                    )
+                };
+                let pointer = Pos2::new(237.25, 149.75);
+                for tool_active in [false, true] {
+                    frame(pointer, true, false, tool_active);
+                    let output = frame(pointer, true, false, tool_active);
+                    assert_eq!(output.platform_output.cursor_icon, egui::CursorIcon::None);
+                    let strokes: Vec<_> = output
+                        .shapes
+                        .iter()
+                        .filter_map(|s| {
+                            if let egui::Shape::LineSegment { points, stroke } = &s.shape {
+                                (points[0].lerp(points[1], 0.5) == pointer)
+                                    .then_some((*points, *stroke))
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
+                    assert_eq!(strokes.len(), 4);
+                    for expected in [
+                        Stroke::new(1.0, Color32::BLACK),
+                        Stroke::new(3.0, Color32::WHITE),
+                    ] {
+                        assert_eq!(
+                            strokes
+                                .iter()
+                                .filter(|(_, stroke)| *stroke == expected)
+                                .count(),
+                            2
+                        );
+                    }
+                    for (points, stroke) in strokes {
+                        assert_eq!(points[0].lerp(points[1], 0.5), pointer);
+                        assert_eq!(points[0].distance(points[1]), 14.0);
+                        assert!(
+                            stroke == Stroke::new(1.0, Color32::BLACK)
+                                || stroke == Stroke::new(3.0, Color32::WHITE)
+                        );
+                    }
+                }
+                for (at, focused, modal) in [
+                    (pointer, false, false),
+                    (Pos2::new(40.0, 120.0), true, false),
+                    (pointer, true, true),
+                ] {
+                    frame(at, focused, modal, false);
+                    let output = frame(at, focused, modal, false);
+                    assert_ne!(output.platform_output.cursor_icon, egui::CursorIcon::None);
+                }
+            }
+        }
+    }
 
     #[test]
     fn auto_junction_cache_replaces_geometry_and_expires_with_view() {

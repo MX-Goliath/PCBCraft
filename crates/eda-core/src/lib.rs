@@ -114,7 +114,7 @@ impl Document {
             kind,
             size: match kind {
                 DocumentKind::Board => Point::mm(80, 50),
-                DocumentKind::Schematic => Point::mm(297, 210),
+                DocumentKind::Schematic => schematic::standard_sheet_size(0, false).unwrap(),
             },
             pads: vec![],
             tracks: vec![],
@@ -217,6 +217,77 @@ pub use history::History;
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn schematic_standard_formats_keep_native_dimensions_orientation_and_history() {
+        use schematic_edit::{Edit, Request};
+        let mut doc = Document::new(DocumentKind::Schematic, "Sheet");
+        assert_eq!(
+            doc.size,
+            Point {
+                x: 292_100_000,
+                y: 193_040_000
+            }
+        );
+        assert_eq!(doc.schematic.as_ref().unwrap().sheet.format_name(), "A4");
+        let original = doc.clone();
+        let mut history = History::default();
+        for portrait in [false, true] {
+            for (index, (name, width, height)) in schematic::STANDARD_SHEETS.into_iter().enumerate()
+            {
+                let mut sheet = doc.schematic.as_ref().unwrap().sheet.clone();
+                let mut size = if portrait {
+                    Point::mm(100, 200)
+                } else {
+                    Point::mm(200, 100)
+                };
+                assert!(sheet.set_standard_format(&mut size, index));
+                assert_eq!(sheet.format_name(), name);
+                assert_eq!(
+                    size,
+                    if portrait {
+                        Point {
+                            x: height,
+                            y: width,
+                        }
+                    } else {
+                        Point {
+                            x: width,
+                            y: height,
+                        }
+                    }
+                );
+                let before = doc.clone();
+                let changed = history
+                    .schematic_edit(
+                        &mut doc,
+                        Request {
+                            document: original.id,
+                            expected_revision: history.revision,
+                            edit: Edit::SheetProperties {
+                                sheet: Box::new(sheet),
+                                size,
+                            },
+                        },
+                    )
+                    .unwrap();
+                assert_eq!(doc.size, size);
+                if changed {
+                    let after = doc.clone();
+                    history.undo(&mut doc);
+                    assert_eq!(doc, before);
+                    history.redo(&mut doc);
+                    assert_eq!(doc, after);
+                }
+            }
+        }
+        let mut sheet = doc.schematic.as_ref().unwrap().sheet.clone();
+        let before = sheet.clone();
+        let mut size = doc.size;
+        assert!(!sheet.set_standard_format(&mut size, usize::MAX));
+        assert_eq!(sheet, before);
+        assert_eq!(size, doc.size);
+    }
+
     #[test]
     fn rejected_edit_is_atomic_and_undo_keeps_monotonic_revision() {
         let mut doc = Document::example();

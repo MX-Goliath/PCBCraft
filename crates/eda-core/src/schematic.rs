@@ -27,6 +27,21 @@ pub const STANDARD_SHEETS: [(&str, i64, i64); 18] = [
     ("OrCAD E", 4280 * 254_000, 3280 * 254_000),
 ];
 
+pub fn standard_sheet_size(index: usize, portrait: bool) -> Option<Point> {
+    let &(_, width, height) = STANDARD_SHEETS.get(index)?;
+    Some(if portrait {
+        Point {
+            x: height,
+            y: width,
+        }
+    } else {
+        Point {
+            x: width,
+            y: height,
+        }
+    })
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Schematic {
@@ -98,6 +113,17 @@ pub struct Sheet {
 }
 
 impl Sheet {
+    /// Select a native drawing format without changing the current orientation.
+    /// Callers edit a draft and commit it through document history.
+    pub fn set_standard_format(&mut self, size: &mut Point, index: usize) -> bool {
+        let Some(next) = standard_sheet_size(index, size.y > size.x) else {
+            return false;
+        };
+        self.style = format!("Standard {index}");
+        *size = next;
+        true
+    }
+
     pub fn format_name(&self) -> &str {
         if let Some(value) = self.style.strip_prefix("Standard ") {
             if let Ok(n) = value.parse::<usize>()

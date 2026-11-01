@@ -9,6 +9,51 @@ use std::io::{Cursor, Write};
 const ASCII: &[u8] = include_bytes!("../../../fixtures/schematic/minimal.SchDoc");
 
 #[test]
+fn native_sheet_formats_match_editor_sizes_and_preserve_custom_dimensions() {
+    for portrait in [false, true] {
+        for index in 0..eda_core::schematic::STANDARD_SHEETS.len() {
+            let text = String::from_utf8(ASCII.to_vec()).unwrap().replace(
+                "|RECORD=31|",
+                &format!(
+                    "|RECORD=31|SHEETSTYLE={index}|WORKSPACEORIENTATION={}|",
+                    u8::from(portrait)
+                ),
+            );
+            let doc = import_schematic(text.as_bytes(), "Sheet.SchDoc").unwrap();
+            let mut editor_sheet = eda_core::schematic::Schematic::blank().sheet;
+            let mut editor_size = if portrait {
+                Point::mm(100, 200)
+            } else {
+                Point::mm(200, 100)
+            };
+            assert!(editor_sheet.set_standard_format(&mut editor_size, index));
+            assert_eq!(doc.size, editor_size);
+            assert_eq!(
+                doc.schematic.as_ref().unwrap().sheet.format_name(),
+                editor_sheet.format_name()
+            );
+            assert_eq!(writer::serialize(&doc).unwrap(), text.as_bytes());
+        }
+        let text = String::from_utf8(ASCII.to_vec()).unwrap().replace(
+            "|RECORD=31|",
+            &format!(
+                "|RECORD=31|USECUSTOMSHEET=T|CUSTOMX=800|CUSTOMY=500|WORKSPACEORIENTATION={}|",
+                u8::from(portrait)
+            ),
+        );
+        let doc = import_schematic(text.as_bytes(), "Custom.SchDoc").unwrap();
+        assert_eq!(
+            doc.size,
+            Point {
+                x: 203_200_000,
+                y: 127_000_000
+            }
+        );
+        assert_eq!(writer::serialize(&doc).unwrap(), text.as_bytes());
+    }
+}
+
+#[test]
 fn native_compile_masks_preserve_expanded_and_collapsed_state_and_archive_bytes() {
     let bytes=[ASCII,b"\n|RECORD=211|LOCATION.X=0|LOCATION.Y=0|CORNER.X=100|CORNER.Y=100\n|RECORD=211|LOCATION.X=200|LOCATION.Y=0|CORNER.X=300|CORNER.Y=100|COLLAPSED=T\n"].concat();
     let doc = import_schematic(&bytes, "Masks.SchDoc").unwrap();
