@@ -47,6 +47,8 @@ mod schematic_netlist;
 mod schematic_output;
 #[path = "schematic_properties.rs"]
 mod schematic_properties;
+#[path = "schematic_validation.rs"]
+mod schematic_validation;
 use eda_core::schematic_edit::Placement;
 
 #[derive(Clone, Copy)]
@@ -178,6 +180,8 @@ fn default_altium_folder(relative: &str) -> Option<PathBuf> {
 
 #[derive(Clone, Copy)]
 enum Command {
+    ValidateProject,
+    ValidationMessage(bool),
     File(file_menu::Action),
     SynchronizeEntries(bool),
     NavigateHierarchy,
@@ -343,6 +347,7 @@ impl PcbCraft {
 
     fn message(&mut self, error: bool, text: impl Into<String>) {
         let text = text.into();
+        self.file_state.validation.application_message(error, &text);
         if error {
             tracing::error!("{text}");
             self.settings.messages = true;
@@ -636,6 +641,8 @@ impl PcbCraft {
             Command::Synchronize(direction, differences) => {
                 self.open_design_sync(direction, differences)
             }
+            Command::ValidateProject => self.validate_schematic_project(),
+            Command::ValidationMessage(next) => self.next_validation_message(next),
             Command::LayerStack => self.open_layer_stack(),
             Command::Pcb3d(enabled) => {
                 self.set_pcb_3d(enabled);
@@ -1054,15 +1061,7 @@ impl PcbCraft {
                         }
                     });
                     ui.menu_button("Project", |ui| {
-                        self.action(
-                            ui,
-                            "Show Differences…",
-                            "",
-                            Command::Synchronize(eda_core::design_sync::Direction::ToPcb, true),
-                            self.sync_project_name().is_some(),
-                        );
-                        ui.separator();
-                        ui.add_enabled(false, egui::Button::new("Project Options…"));
+                        self.project_menu(ui);
                     });
                     // The names mirror the observed editor. Unsupported tools are visibly disabled.
                     if has_doc {
@@ -1551,26 +1550,7 @@ impl PcbCraft {
             if components {
                 self.components_panel(ui);
             } else if messages {
-                ui.horizontal(|ui| {
-                    ui.label("Class");
-                    ui.separator();
-                    ui.label("Document");
-                    ui.separator();
-                    ui.label("Message");
-                });
-                ui.separator();
-                egui::ScrollArea::both().show(ui, |ui| {
-                    for (error, text) in &self.log {
-                        ui.horizontal(|ui| {
-                            ui.label(
-                                RichText::new(if *error { "Error" } else { "Info" })
-                                    .color(if *error { Color32::LIGHT_RED } else { ACCENT }),
-                            );
-                            ui.separator();
-                            ui.label(text);
-                        });
-                    }
-                });
+                self.messages_panel(ui);
             } else {
                 self.properties(ui);
             }
@@ -1914,6 +1894,8 @@ impl PcbCraft {
             let ctrl = egui::Modifiers::CTRL;
             let shift = egui::Modifiers::CTRL | egui::Modifiers::SHIFT;
             for (modifiers, key, command) in [
+                (shift, Key::F3, Command::ValidationMessage(true)),
+                (shift, Key::F4, Command::ValidationMessage(false)),
                 (shift, Key::N, Command::NewSchematic),
                 (shift, Key::S, Command::SaveAs),
                 (ctrl, Key::N, Command::NewBoard),

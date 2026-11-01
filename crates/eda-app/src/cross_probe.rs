@@ -412,6 +412,7 @@ mod tests {
                 sheet_children: Default::default(),
                 sheet_numbers: Default::default(),
                 netlist_options: Default::default(),
+                validation_options: Default::default(),
                 documents: vec![eda_io::altium::ProjectEntry {
                     path: app.documents[i].path.clone().unwrap(),
                     original_path: "design".into(),

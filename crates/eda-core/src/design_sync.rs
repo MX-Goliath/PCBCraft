@@ -6,9 +6,10 @@ use uuid::Uuid;
 
 #[path = "design_sync_netlist.rs"]
 mod netlist;
-pub use netlist::{Netlist, Pin, compile, compile_project};
+pub use netlist::{LabelConflict, Netlist, Pin, compile, compile_project};
 #[path = "design_sync_project.rs"]
 mod project;
+pub(crate) use project::natural_order;
 pub use project::{NetScope, ProjectOptions, SheetLink};
 
 /// Validated physical components and connectivity for interchange writers.

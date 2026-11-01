@@ -112,6 +112,7 @@ fn hierarchy_navigation_is_project_scoped_and_does_not_open_unrelated_sheets() {
         sheet_children: Default::default(),
         sheet_numbers: Default::default(),
         netlist_options: Default::default(),
+        validation_options: Default::default(),
         warnings: vec![],
     });
     let before: Vec<_> = app.documents.iter().map(|d| d.model.clone()).collect();

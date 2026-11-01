@@ -18,6 +18,7 @@ pub mod schematic_harness;
 pub mod schematic_script;
 pub mod schematic_simulation;
 pub mod schematic_sync;
+pub mod schematic_validation;
 use eda_geom::Point;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;

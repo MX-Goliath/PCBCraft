@@ -22,6 +22,7 @@ pub(super) enum Action {
 
 #[derive(Default)]
 pub(super) struct State {
+    pub validation: super::schematic_validation::State,
     pub group: Option<PathBuf>,
     pub selected_project: Option<PathBuf>,
     pub project_for_new: Option<PathBuf>,
@@ -59,13 +60,24 @@ impl State {
     }
 }
 
-fn row(
+pub(super) fn row(
     ui: &mut egui::Ui,
     label: &str,
     shortcut: &str,
     icon: Option<Icon>,
     enabled: bool,
     arrow: bool,
+) -> egui::Response {
+    row_with_width(ui, label, shortcut, icon, enabled, arrow, 174.)
+}
+pub(super) fn row_with_width(
+    ui: &mut egui::Ui,
+    label: &str,
+    shortcut: &str,
+    icon: Option<Icon>,
+    enabled: bool,
+    arrow: bool,
+    minimum_width: f32,
 ) -> egui::Response {
     let font = egui::FontId::proportional(12.);
     let label_width = ui
@@ -80,7 +92,7 @@ fn row(
         .x;
     let width =
         (27. + label_width + 14. + shortcut_width + if shortcut.is_empty() { 0. } else { 20. })
-            .max(174.);
+            .max(minimum_width);
     let (rect, response) = ui.allocate_exact_size(
         egui::vec2(width, 22.),
         if enabled {
@@ -151,7 +163,7 @@ fn submenu<R>(
         });
     }
 }
-fn separator(ui: &mut egui::Ui) {
+pub(super) fn separator(ui: &mut egui::Ui) {
     let (r, _) = ui.allocate_exact_size(
         egui::vec2(ui.min_rect().width().max(174.), 5.),
         egui::Sense::hover(),

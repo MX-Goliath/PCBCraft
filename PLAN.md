@@ -2127,3 +2127,105 @@ Cause, implementation and validation: docs/pcb-update/INTERACTIVE_ROUTING.md.
   DWG and other CAD converters, separate authoring systems, Delphi API, BOM
   templates/variants and full dialog/icon/typeface parity remain incomplete.
   PDF drawing text remains rasterized. No claim of full File parity is made.
+
+### 2026-11-01 — SCH Project / Validate
+
+- Observed Project / Validate in Altium Designer Enterprise 24.4.1 through
+  Windows Computer Use: project/free-document labels, ordered Project menu,
+  Shift+Ctrl+F3/F4, warning-only compile preserving Properties, Messages columns,
+  severity squares and bottom Details. ReferenceB produced two missing-driver
+  warnings (NetC6_1, NetC13_2), one net-alias warning and Compile successful.
+  A later Altium capture failed with `window crop is outside captured monitor`;
+  reselecting its returned window did not recover capture. Observation limits
+  and assumptions are explicit in docs/interface/schematic-project-validate.md.
+- Added read-only eda-core project validation over shared compiled electrical
+  islands. Checks annotation/duplicate designators, multipart physical pins,
+  unconnected/single-pin nets, missing input drivers, pin electrical conflicts
+  and net aliases; honors compile masks and generic No ERC. Native PrjPcb first
+  eight ERC matrix rows/columns supply pin-to-pin severity. Validation reports
+  aliases and continues; ordinary ECO/netlist compilation still refuses them.
+- Current unsaved/new project sheets override disk, closed sheets are read
+  without opening tabs, broken/unsupported compilation produces fatal messages.
+  Messages has compiler columns, resizable columns/Details, tooltips/Copy and
+  object navigation by double-click and wrapping Next/Previous shortcuts.
+  Each run replaces its report and explicitly warns about incomplete coverage.
+- Live Windows QA used maximized windows at the reference desktop DPI. Fixed
+  submenu arrow positions and full-row hit areas, and disabled ScrollArea
+  shrinking/minimum-content expansion in Details. Verified Validate, rerun,
+  diagnostic double-click, Ctrl+Shift+F3 and warning-only Properties retention.
+  On ReferenceB the GUI and read-only schematic_validate harness find the same three
+  electrical problems observed in Altium, with natural-order driver pin lists.
+  Reference PrjPcb and SchDoc SHA-256 hashes remain unchanged. Existing user
+  PCBCraft/Altium windows were preserved; QA used its own portable executable.
+- Required final gates PASS: cargo fmt --all -- --check; strict workspace /
+  all-target Clippy; cargo test --workspace, 637 tests (app 138, core 260,
+  geom 1, IO 131, render 107). Windows dev build and Linux GNU all-target check
+  PASS. Artifacts/logs: target/validate-qa/{final-gates.log,ReferenceB-diagnostics.txt,
+  reference-hashes-before.json}. Final executable: target/debug/pcbcraft.exe;
+  a byte-identical target/validate-qa/pcbcraft.exe is used for the live review.
+- Full Altium parity is NOT achieved. Native TypeN reporting levels, extended
+  matrix categories, the remaining ERC rules, rule-specific No ERC, hidden-pin /
+  repeated-channel compiler semantics, variants, live markers, full Messages
+  context menus/filter/sort/export, asynchronous/cancellable compilation and
+  exact messages/icons/fonts/pixels remain incomplete. Linux runtime/DPI was
+  not visually verified. docs/features.json marks schematic.project_validate
+  partial. No commit, push or publication was requested or performed.
+
+### 2026-11-01 — SCH Validate continuation
+
+- Continued native Windows Computer Use observation on a separate project copy.
+  Confirmed Compiler source, exact success text, full alias object descriptions
+  and repeated power-object counts, short Details pin names, Messages context
+  menu order, Error Reporting groups and all 17 Connection Matrix categories.
+- Extended core and PrjPcb matrix import to 17x17 (pins, ports, sheet entries,
+  Unconnected); passive unconnected pins honor No Report. Added port conflict /
+  No ERC / unconnected tests. ReferenceB's three electrical diagnostic strings now
+  match the observed native strings, including Power Object GND (23).
+- Messages supports multiple selection, column sorting, grouping, Copy,
+  Save/Save Selection TSV and Clear All/Selected/Class. Unsupported specific
+  No ERC, Export To Report and Print are disabled. Later application messages
+  append with independent timestamps/source and preserve the compiler report.
+  Details uses short natural-order pin names and the observed red error icon.
+  Native grouping/export format and full object-tree parity remain unverified.
+- Native TypeN mapping probes were inconclusive: Altium raised an index error
+  loading controlled copies, then runtime error 216 and process exit. Original
+  PrjPcb/SchDoc SHA-256 hashes were checked unchanged. User unsaved native
+  session recovery was not verified. Computer Use restart left X2 running
+  without a targetable window; capture recovery also reported monitor-crop and
+  foreground-process-id errors. No per-rule TypeN mapping is claimed.
+- Final required gates PASS: fmt check, strict all-target workspace Clippy,
+  workspace tests (639: app 139, core 261, geom 1, IO 131, render 107), Windows
+  dev build and Linux GNU all-target check. Test output is in
+  target/validate-qa/continuation-tests.log. The QA executable matches the
+  target/debug executable SHA-256. Native complete parity remains unfinished;
+  docs/features.json keeps partial status and lists outstanding behavior.
+- Live continuation QA verified Validate, short Details pin labels and red
+  summary icon, ordered context menu, ascending/descending No. sorting and
+  Save producing target/validate-qa/Messages-continuation.txt with five rows
+  (three native-matching diagnostics, explicit coverage warning, success).
+  Corrected Save to reuse the parented application FileDialog. Error summaries
+  never claim no errors. Final gate log: continuation-final-gates.log.
+
+### 2026-11-01 — Validate reporting levels; user stop checkpoint
+
+- User restarted Altium and authorized continuation. Corrected the ignored QA
+  generator to modify only Electrical Rules Check; earlier copies also changed
+  Modification/Difference TypeN values. Corrected copies load and validate.
+- Four native bit-coded probes and two independent inverse checks confirm
+  Type10=no driving source and Type14=multiple names, with 0/1/2/3 mapping to
+  No Report/Warning/Error/Fatal Error. Native Error/Fatal runs omit a summary.
+  Observations: target/validate-qa/native-rule-observations.json.
+- Implemented scoped TypeN import, unknown-level retention, invalid-level
+  rejection, and the two confirmed rule mappings. Added section isolation and
+  severity/suppression regression checks. Updated Error color and omitted
+  synthetic error summaries. These newest UI changes have not had another live
+  PCBCraft review; previous Windows GUI checks remain documented above.
+- User explicitly requested stopping and committing all work. Native UI input
+  and further feature work stopped; specific No ERC investigation remains
+  unfinished. Full Altium parity remains partial. Commit preparation runs the
+  required fmt/Clippy/workspace tests, plus native build/Linux check, recorded in
+  target/validate-qa/stop-commit-gates.log.
+- Commit checkpoint completed 2026-11-02: fmt check, strict workspace/all-target
+  Clippy, all 640 tests (139 app, 261 core, 1 geom, 132 IO, 107 render), Windows
+  build and Linux GNU all-target check PASS. Original user PrjPcb/SchDoc hashes
+  checked unchanged. Full feature parity remains explicitly unfinished.

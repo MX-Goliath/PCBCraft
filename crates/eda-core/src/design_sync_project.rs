@@ -20,6 +20,8 @@ pub struct SheetLink {
 
 #[derive(Clone, Debug)]
 pub struct ProjectOptions {
+    /// ERC reports net aliases and continues; ECO retains its conservative refusal.
+    pub report_label_conflicts: bool,
     pub harness_definitions: Vec<crate::schematic_harness::Definition>,
     /// None is the legacy standalone API; project callers resolve relative paths.
     pub links: Option<Vec<SheetLink>>,
@@ -44,6 +46,7 @@ pub struct ProjectOptions {
 impl Default for ProjectOptions {
     fn default() -> Self {
         Self {
+            report_label_conflicts: false,
             harness_definitions: vec![],
             links: None,
             scope: NetScope::Automatic,
@@ -215,7 +218,7 @@ pub(super) fn logical_designator(c: &schematic::Component) -> &str {
     }
 }
 
-pub(super) fn natural_order(a: &str, b: &str) -> std::cmp::Ordering {
+pub(crate) fn natural_order(a: &str, b: &str) -> std::cmp::Ordering {
     let (a, b) = (a.as_bytes(), b.as_bytes());
     let (mut i, mut j) = (0, 0);
     while i < a.len() && j < b.len() {

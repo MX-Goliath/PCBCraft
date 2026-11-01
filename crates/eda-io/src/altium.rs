@@ -57,6 +57,7 @@ pub struct Project {
     pub sheet_children: BTreeMap<PathBuf, Vec<PathBuf>>,
     pub sheet_numbers: BTreeMap<PathBuf, usize>,
     pub netlist_options: eda_core::design_sync::ProjectOptions,
+    pub validation_options: eda_core::schematic_validation::Options,
     pub warnings: Vec<String>,
 }
 
@@ -330,11 +331,38 @@ pub fn load_project(path: &Path) -> Result<Project, String> {
         ..Default::default()
     };
     let mut section = String::new();
+    let mut erc_matrix = BTreeMap::<usize, String>::new();
+    let mut erc_levels = BTreeMap::<u16, u8>::new();
     let mut virtual_bom = false;
     for line in text.lines().map(str::trim) {
         if line.starts_with('[') && line.ends_with(']') {
             section = line[1..line.len() - 1].to_ascii_lowercase();
         } else if let Some((key, value)) = line.split_once('=') {
+            if section == "electrical rules check"
+                && let Some(index) = key.trim().to_ascii_lowercase().strip_prefix("type")
+            {
+                let rule = index
+                    .parse::<u16>()
+                    .map_err(|_| "Invalid ERC rule number")?;
+                let level = value
+                    .trim()
+                    .parse::<u8>()
+                    .map_err(|_| "Invalid ERC reporting level")?;
+                if level > 3 {
+                    return Err(format!(
+                        "Invalid ERC reporting level {level} for Type{rule}"
+                    ));
+                }
+                erc_levels.insert(rule, level);
+            }
+            if section == "erc connection matrix"
+                && let Some(index) = key
+                    .trim()
+                    .strip_prefix('L')
+                    .and_then(|n| n.parse::<usize>().ok())
+            {
+                erc_matrix.insert(index, value.trim().to_owned());
+            }
             if section == "design" {
                 let flag = value.trim() == "1";
                 match key.trim().to_ascii_lowercase().as_str() {
@@ -460,6 +488,25 @@ pub fn load_project(path: &Path) -> Result<Project, String> {
         sheet_children,
         sheet_numbers,
         netlist_options,
+        validation_options: {
+            let mut options = if erc_matrix.is_empty() {
+                Default::default()
+            } else {
+                let size = if erc_matrix.keys().any(|n| *n > 8) {
+                    17
+                } else {
+                    8
+                };
+                let rows: Vec<_> = (1..=size)
+                    .map(|n| erc_matrix.get(&n).map_or("", String::as_str))
+                    .collect();
+                eda_core::schematic_validation::Options::from_native_matrix(&rows)?
+            };
+            for (rule, level) in erc_levels {
+                options.set_native_level(rule, level)?;
+            }
+            options
+        },
         warnings,
     })
 }

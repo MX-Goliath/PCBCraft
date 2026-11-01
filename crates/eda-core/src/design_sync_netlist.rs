@@ -44,6 +44,9 @@ pub struct Pin {
 }
 #[derive(Clone, Debug, Default)]
 pub struct Netlist {
+    pub label_conflicts: Vec<LabelConflict>,
+    /// Electrical islands, including those without component pins, for ERC.
+    pub electrical_islands: Vec<Vec<(Uuid, Uuid)>>,
     pub names: Vec<String>,
     pub pins: Vec<Pin>,
     pub issues: Vec<String>,
@@ -53,6 +56,12 @@ pub struct Netlist {
     /// does not establish that native ECO should disconnect an existing PCB net.
     pub omitted_single_pin_pins: BTreeSet<(Uuid, Uuid, String)>,
     pub(super) labels: BTreeMap<String, Vec<(Uuid, Uuid)>>,
+}
+#[derive(Clone, Debug)]
+pub struct LabelConflict {
+    pub net: String,
+    pub labels: Vec<String>,
+    pub objects: Vec<(Uuid, Uuid)>,
 }
 fn label(p: &SchPrimitive) -> Option<(u8, &str)> {
     match &p.kind {
@@ -450,6 +459,12 @@ pub fn compile_project(sheets: &[&Document], options: &ProjectOptions) -> Result
     let mut assigned: HashMap<(Uuid, Uuid, String), Option<String>> = HashMap::new();
     let mut unique_names = HashSet::new();
     for indices in islands.values() {
+        out.electrical_islands.push(
+            indices
+                .iter()
+                .map(|n| (nodes[*n].0.id, nodes[*n].1.id))
+                .collect(),
+        );
         let mut pins = vec![];
         let mut labels = vec![];
         let harness_names: BTreeSet<_> = indices
@@ -601,10 +616,21 @@ pub fn compile_project(sheets: &[&Document], options: &ProjectOptions) -> Result
                 && aliases.iter().any(|s| s != &name.to_uppercase())
                 && (!hierarchical || labels.first().is_some_and(|l| l.0 == 0))
             {
-                return Err(format!(
-                    "Conflicting labels on net {name}: {:?}; resolve before synchronization",
-                    aliases.iter().take(12).collect::<Vec<_>>()
-                ));
+                if options.report_label_conflicts {
+                    out.label_conflicts.push(LabelConflict {
+                        net: name.clone(),
+                        labels: aliases.clone(),
+                        objects: indices
+                            .iter()
+                            .map(|n| (nodes[*n].0.id, nodes[*n].1.id))
+                            .collect(),
+                    });
+                } else {
+                    return Err(format!(
+                        "Conflicting labels on net {name}: {:?}; resolve before synchronization",
+                        aliases.iter().take(12).collect::<Vec<_>>()
+                    ));
+                }
             }
             out.names.push(name.clone());
             out.labels

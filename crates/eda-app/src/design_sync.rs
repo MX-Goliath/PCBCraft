@@ -566,6 +566,7 @@ mod tests {
             sheet_children: std::collections::BTreeMap::from([(main_path, vec![child_path])]),
             sheet_numbers: Default::default(),
             netlist_options: Default::default(),
+            validation_options: Default::default(),
             warnings: vec![],
         }];
         let source = app.documents[0].model.clone();

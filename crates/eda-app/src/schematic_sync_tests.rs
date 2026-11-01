@@ -88,6 +88,7 @@ fn fixture() -> (PcbCraft, Uuid, Uuid) {
         sheet_children: Default::default(),
         sheet_numbers: Default::default(),
         netlist_options: Default::default(),
+        validation_options: Default::default(),
         warnings: vec![],
     });
     app.prepare_sheet_sync(false).unwrap();

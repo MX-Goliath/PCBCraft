@@ -9,6 +9,55 @@ use std::io::{Cursor, Write};
 const ASCII: &[u8] = include_bytes!("../../../fixtures/schematic/minimal.SchDoc");
 
 #[test]
+fn erc_reporting_levels_are_scoped_to_the_native_erc_section() {
+    use eda_core::schematic_validation::Severity;
+    let dir = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("Reporting.PrjPcb");
+    std::fs::write(&path,"[Design]\n[Modification Levels]\nType10=3\n[Electrical Rules Check]\nType10=0\nType14=3\nType153=1\n[Difference Levels]\nType14=2\n").unwrap();
+    let p = load_project(&path).unwrap();
+    assert_eq!(p.validation_options.reporting_levels[&10], None);
+    assert_eq!(
+        p.validation_options.reporting_levels[&14],
+        Some(Severity::Fatal)
+    );
+    assert_eq!(
+        p.validation_options.reporting_levels[&153],
+        Some(Severity::Warning)
+    );
+    std::fs::write(&path, "[Design]\n[Electrical Rules Check]\nType10=4\n").unwrap();
+    assert!(
+        load_project(&path)
+            .unwrap_err()
+            .contains("Invalid ERC reporting level")
+    );
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn native_erc_pin_matrix_is_loaded_independently_of_output_settings() {
+    use eda_core::schematic_validation::Severity;
+    let dir = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("ERC.PrjPcb");
+    std::fs::write(&path,"[Design]\nNetlistSinglePinNets=0\n[ERC Connection Matrix]\nL1=NNNNNNNNNNNWNNNWW\nL2=NNWNNNNWWWNWNWNWN\nL3=NNWNNNNNNNNNNNNNN\nL4=NNENNNWEENNWNENWN\nL5=NNNNNNNNNNNNNNNNN\nL6=NNENNNNEENNWNENWN\nL7=NNEWNNWEENNWNENWN\nL8=NWEENEENEEENNEENN\n").unwrap();
+    let p = load_project(&path).unwrap();
+    assert!(!p.netlist_options.single_pin_nets);
+    assert_eq!(
+        p.validation_options.connection_matrix[2][2],
+        Some(Severity::Warning)
+    );
+    assert_eq!(p.validation_options.connection_matrix[4][4], None);
+    std::fs::write(&path, "[Design]\n[ERC Connection Matrix]\nL1=N\n").unwrap();
+    assert!(
+        load_project(&path)
+            .unwrap_err()
+            .contains("Incomplete ERC connection matrix row")
+    );
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn native_sheet_formats_match_editor_sizes_and_preserve_custom_dimensions() {
     for portrait in [false, true] {
         for index in 0..eda_core::schematic::STANDARD_SHEETS.len() {

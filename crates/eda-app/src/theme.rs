@@ -42,6 +42,7 @@ pub fn search_field_height(
 
 #[derive(Clone, Copy)]
 pub enum Icon {
+    Validate,
     Print,
     Pdf,
     New,
@@ -180,6 +181,41 @@ pub fn draw_icon(p: &egui::Painter, rect: egui::Rect, icon: Icon, enabled: bool)
                 Stroke::new(1.0, c),
                 egui::StrokeKind::Inside,
             );
+        }
+        Icon::Validate => {
+            p.add(egui::Shape::convex_polygon(
+                vec![
+                    point(0., 6.),
+                    point(5., 6.),
+                    point(7., 8.),
+                    point(15., 8.),
+                    point(13., 15.),
+                    point(0., 15.),
+                ],
+                yellow,
+                Stroke::new(0.7, c),
+            ));
+            p.rect_filled(
+                egui::Rect::from_min_max(point(2., 0.), point(10., 10.)),
+                0.,
+                Color32::from_gray(235),
+            );
+            for y in [2., 4., 6.] {
+                line((3., y), (9., y), Color32::from_rgb(110, 150, 178));
+            }
+            p.add(egui::Shape::convex_polygon(
+                vec![
+                    point(8., 3.),
+                    point(12., 3.),
+                    point(12., 0.),
+                    point(17., 5.),
+                    point(12., 10.),
+                    point(12., 7.),
+                    point(8., 7.),
+                ],
+                blue,
+                Stroke::NONE,
+            ));
         }
         Icon::Open | Icon::Folder => {
             p.add(egui::Shape::convex_polygon(
