@@ -224,11 +224,14 @@ pub struct ComponentModel {
     pub name: String,
     pub kind: String,
     pub current: bool,
+    #[serde(default)]
+    pub parameters: BTreeMap<String, String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Presentation {
+    pub symbol_type: String,
     /// Sheet Symbol ownership for entries and its designator/filename texts.
     pub parent: Option<Uuid>,
     pub alignment: Option<u32>,
@@ -278,6 +281,21 @@ pub fn parameter_text(
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", deny_unknown_fields)]
 pub enum SchPrimitiveKind {
+    ParameterSet {
+        position: Point,
+        orientation: u32,
+        label: String,
+        style: u32,
+    },
+    Blanket {
+        points: Vec<Point>,
+        collapsed: bool,
+    },
+    CompileMask {
+        a: Point,
+        b: Point,
+        collapsed: bool,
+    },
     HarnessConnector {
         a: Point,
         b: Point,
@@ -347,6 +365,8 @@ pub enum SchPrimitiveKind {
         b: Point,
         filename: String,
         keep_aspect: bool,
+        #[serde(default)]
+        embedded: bool,
     },
     Pin {
         position: Point,
@@ -364,6 +384,8 @@ pub enum SchPrimitiveKind {
         inner_symbol: u32,
     },
     PowerPort {
+        #[serde(default)]
+        cross_sheet: bool,
         position: Point,
         orientation: u32,
         style: u32,
@@ -508,6 +530,16 @@ impl Schematic {
                 return Err("Invalid schematic primitive or owner".into());
             }
             let valid = match &p.kind {
+                SchPrimitiveKind::ParameterSet {
+                    position,
+                    orientation,
+                    style,
+                    ..
+                } => position.valid() && *orientation < 4 && *style <= 1,
+                SchPrimitiveKind::Blanket { points, .. } => {
+                    (3..=100_000).contains(&points.len()) && points.iter().all(|p| p.valid())
+                }
+                SchPrimitiveKind::CompileMask { a, b, .. } => a.valid() && b.valid() && a != b,
                 SchPrimitiveKind::HarnessConnector {
                     a,
                     b,
@@ -607,6 +639,7 @@ impl Schematic {
                             && matches!(
                                 p.kind,
                                 SchPrimitiveKind::SheetSymbol { .. }
+                                    | SchPrimitiveKind::ParameterSet { .. }
                                     | SchPrimitiveKind::HarnessConnector { .. }
                             )
                     })

@@ -12,7 +12,7 @@ mod pours;
 #[path = "pcb_properties_v2.rs"]
 mod properties_v2;
 #[path = "pcb_rules_ui.rs"]
-mod rules_ui;
+pub(super) mod rules_ui;
 use eda_render::pcb::Input;
 pub(super) use rules_ui::CheckSettings;
 use std::collections::{BTreeMap, BTreeSet};

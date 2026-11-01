@@ -6,6 +6,12 @@ use eda_core::schematic::{
 use eda_core::schematic_edit::{self as edit, Edit};
 use eda_geom::Point;
 use egui::{Align, Sense, Stroke};
+#[path = "schematic_directive_properties.rs"]
+mod directive_ui;
+use directive_ui::{
+    directive_parameters, directive_rule_dialog, is_pair, simulation_probe_properties,
+    simulation_source_properties,
+};
 
 #[derive(Default)]
 pub(super) struct Panel {
@@ -17,6 +23,12 @@ pub(super) struct Panel {
     draft: Option<Draft>,
     parameter: Option<ParameterDialog>,
     font_dialog: bool,
+    rule: Option<DirectiveRuleDialog>,
+}
+struct DirectiveRuleDialog {
+    child: Option<Uuid>,
+    selected: String,
+    fields: Option<eda_core::pcb::Fields>,
 }
 struct ParameterDialog {
     owner: Option<Uuid>,
@@ -47,6 +59,7 @@ impl Panel {
             self.parameter = None;
             self.selected_parameter = None;
             self.font_dialog = false;
+            self.rule = None;
         }
     }
 }
@@ -91,9 +104,11 @@ impl Draft {
                     .is_some_and(|c| p.component == Some(c.id))
                     || primitive.as_ref().is_some_and(|owner| {
                         p.presentation.parent == Some(owner.id)
-                            && (matches!(owner.kind, K::HarnessConnector { .. })
-                                || matches!(owner.kind, K::SheetSymbol { .. })
-                                    && matches!(p.kind, K::Text { .. }))
+                            && (matches!(
+                                owner.kind,
+                                K::HarnessConnector { .. } | K::ParameterSet { .. }
+                            ) || matches!(owner.kind, K::SheetSymbol { .. })
+                                && matches!(p.kind, K::Text { .. }))
                     })
             })
             .cloned()
@@ -135,6 +150,16 @@ impl Draft {
         }
         if let Some(c) = &self.component {
             let old = s.components.iter().find(|v| v.id == c.id).unwrap();
+            for (name, value) in &c.parameters {
+                if old.parameters.get(name) != Some(value) && !name.eq_ignore_ascii_case("Comment")
+                {
+                    edits.push(Edit::ParameterValue {
+                        component: Some(c.id),
+                        name: name.clone(),
+                        value: Some(value.clone()),
+                    });
+                }
+            }
             let mut settings = c.settings.clone();
             settings.rotation = old.settings.rotation;
             if settings != old.settings || c.description != old.description {
@@ -161,7 +186,7 @@ impl Draft {
             }
         }
         if let Some(p) = &self.primitive
-            && matches!(p.kind, K::HarnessConnector { .. })
+            && matches!(p.kind, K::HarnessConnector { .. } | K::ParameterSet { .. })
         {
             for child in s
                 .primitives
@@ -221,6 +246,11 @@ fn caption(p: &SchPrimitive) -> &'static str {
         _ => {}
     }
     match &p.kind {
+        K::ParameterSet { .. } if p.presentation.record_type == 210 => "Probe",
+        K::ParameterSet { .. } => "Parameter Set",
+        K::Blanket { .. } => "Blanket",
+        K::CompileMask { .. } => "Compile Mask",
+
         K::Text { .. } if p.presentation.record_type == 41 || !p.presentation.name.is_empty() => {
             "Parameter"
         }
@@ -230,6 +260,9 @@ fn caption(p: &SchPrimitive) -> &'static str {
         K::HarnessEntry { .. } => "Harness Entry",
         K::TextFrame { .. } => "Text Frame",
         K::Pin { .. } => "Pin",
+        K::PowerPort {
+            cross_sheet: true, ..
+        } => "Off Sheet Connector",
         K::PowerPort { .. } => "Power Port",
         K::SheetSymbol { .. } => "Sheet Symbol",
         K::SheetEntry { .. } => "Sheet Entry",
@@ -288,10 +321,19 @@ impl PcbCraft {
             doc.sch_editor.kind.unwrap().label()
         } else if count > 1 {
             "Objects"
-        } else if draft.component.is_some() {
-            "Component"
+        } else if let Some(c) = &draft.component {
+            match c.library_reference.as_str() {
+                "VSRC" => "Voltage",
+                "ISRC" => "Current",
+                ".IC" => "Simulation Generic Component",
+                _ => "Component",
+            }
         } else if let Some(p) = &draft.primitive {
-            caption(p)
+            if is_pair(p, &draft.related) {
+                "Differential Pair"
+            } else {
+                caption(p)
+            }
         } else {
             "Document Options"
         };
@@ -376,6 +418,10 @@ impl PcbCraft {
                         );
                     }
                 } else if let Some(c) = &mut draft.component {
+                    if matches!(c.library_reference.as_str(), "VSRC" | "ISRC") {
+                        commit |= simulation_source_properties(ui, c, &mut draft.related, &query);
+                        return;
+                    }
                     if panel.component_pins {
                         pins(
                             ui,
@@ -406,6 +452,16 @@ impl PcbCraft {
                         );
                     }
                 } else if let Some(p) = &mut draft.primitive {
+                    if p.presentation.record_type == 210 {
+                        commit |= simulation_probe_properties(
+                            ui,
+                            p,
+                            &mut draft.related,
+                            self.settings.units,
+                            &query,
+                        );
+                        return;
+                    }
                     if matches!(p.kind, K::HarnessConnector { .. }) {
                         commit |= harness_connector_properties(
                             ui,
@@ -427,9 +483,11 @@ impl PcbCraft {
                             self.settings.units,
                             &query,
                             &mut choose,
+                            &self.settings.device_sheet_folders,
                         );
                         return;
                     }
+                    let old_directive = p.clone();
                     commit |= primitive_properties(
                         ui,
                         p,
@@ -440,8 +498,86 @@ impl PcbCraft {
                         parameters,
                         &mut choose,
                     );
+                    if let (
+                        K::ParameterSet {
+                            position: old_at,
+                            orientation: old_turns,
+                            ..
+                        },
+                        K::ParameterSet {
+                            position,
+                            orientation,
+                            ..
+                        },
+                    ) = (&old_directive.kind, &p.kind)
+                    {
+                        for child in &mut draft.related {
+                            let _ = edit::transform_primitive(
+                                child,
+                                *old_at,
+                                (*orientation + 4 - *old_turns) % 4,
+                                Point {
+                                    x: position.x - old_at.x,
+                                    y: position.y - old_at.y,
+                                },
+                            );
+                        }
+                        commit |= directive_parameters(
+                            ui,
+                            p,
+                            &mut draft.related,
+                            doc.model.schematic.as_ref().unwrap(),
+                            &query,
+                            (
+                                &mut panel.filter,
+                                &mut panel.selected_parameter,
+                                &mut panel.rule,
+                            ),
+                        );
+                    }
                 }
             });
+        if let Some(rule) = &mut panel.rule {
+            let (accept, close) = directive_rule_dialog(ui.ctx(), rule);
+            if accept
+                && let Some(fields) = &rule.fields
+                && let Some(parent) = &draft.primitive
+            {
+                let value = fields
+                    .iter()
+                    .map(|(k, v)| format!("{k}={v}"))
+                    .collect::<Vec<_>>()
+                    .join("\u{a6}");
+                if let Some(child) = rule
+                    .child
+                    .and_then(|id| draft.related.iter_mut().find(|p| p.id == id))
+                {
+                    if let K::Text { text, .. } = &mut child.kind {
+                        *text = value.clone();
+                        child.presentation.raw_text = Some(value);
+                    }
+                } else {
+                    let at = primitive_anchor(parent);
+                    draft
+                        .related
+                        .push(eda_core::schematic_simulation::parameter(
+                            parent.id,
+                            "Rule",
+                            &value,
+                            Point {
+                                x: at.x,
+                                y: at.y - 4_064_000,
+                            },
+                            doc.model.schematic.as_ref().unwrap().sheet.system_font,
+                            true,
+                        ));
+                }
+                commit = true;
+            }
+            if accept || close {
+                panel.rule = None;
+            }
+        }
         if panel.font_dialog {
             let mut open = true;
             egui::Window::new("Font")
@@ -1627,6 +1763,7 @@ fn sheet_symbol_properties(
     units: Units,
     query: &str,
     choose: &mut Option<Uuid>,
+    folders: &[(PathBuf, bool)],
 ) -> bool {
     let K::SheetSymbol {
         a,
@@ -1695,14 +1832,32 @@ fn sheet_symbol_properties(
     section(ui, "Source", query, |ui| {
         ui.horizontal(|ui| {
             let width = (ui.available_width() - 8.0) / 3.0;
-            ui.add_sized([width, 22.0], egui::Button::new("Local").selected(true));
-            for name in ["Device", "Managed"] {
-                ui.add_enabled_ui(false, |ui| {
-                    ui.add_sized([width, 22.0], egui::Button::new(name));
-                });
+            for (name, value) in [("Local", ""), ("Device", "Device Sheet")] {
+                if ui
+                    .add_sized(
+                        [width, 22.],
+                        egui::Button::new(name).selected(p.presentation.symbol_type == value),
+                    )
+                    .clicked()
+                {
+                    p.presentation.symbol_type = value.into();
+                    changed = true;
+                }
             }
+            ui.add_enabled_ui(false, |ui| {
+                ui.add_sized([width, 22.0], egui::Button::new("Managed"));
+            });
         });
         row(ui, "File Name", |ui| readonly(ui, filename));
+        if p.presentation.symbol_type == "Device Sheet" {
+            let path = super::schematic_active_bar::resolve_device(folders, filename);
+            row(ui, "Full Path", |ui| {
+                readonly(
+                    ui,
+                    &path.map_or_else(String::new, |p| p.display().to_string()),
+                )
+            });
+        }
     });
     section(ui, "Sheet Entries", query, |ui| {
         let table_width = (ui.available_width() - 4.0).max(100.0);
@@ -2113,7 +2268,11 @@ fn primitive_properties(
     choose: &mut Option<Uuid>,
 ) -> bool {
     let mut changed = false;
-    let title = caption(p);
+    let title = if is_pair(p, &s.primitives) {
+        "Differential Pair"
+    } else {
+        caption(p)
+    };
     if title == "Signal Harness" {
         return vertices(ui, p, units, query);
     }
@@ -2141,17 +2300,20 @@ fn primitive_properties(
     let mut pos = primitive_anchor(p);
     let mut turns = match &p.kind {
         K::Text { orientation, .. }
+        | K::ParameterSet { orientation, .. }
         | K::PowerPort { orientation, .. }
         | K::Pin { orientation, .. }
         | K::Ieee { orientation, .. } => Some(*orientation),
         _ => None,
     };
-    section(ui, "Location", query, |ui| {
-        changed |= xy(ui, &mut pos, units);
-        if let Some(v) = &mut turns {
-            changed |= rotation(ui, v);
-        }
-    });
+    if !matches!(p.kind, K::Blanket { .. }) {
+        section(ui, "Location", query, |ui| {
+            changed |= xy(ui, &mut pos, units);
+            if let Some(v) = &mut turns {
+                changed |= rotation(ui, v);
+            }
+        });
+    }
     let old = primitive_anchor(p);
     if pos != old {
         let _ = edit::transform_primitive(
@@ -2167,6 +2329,7 @@ fn primitive_properties(
     if let Some(turns) = turns {
         match &mut p.kind {
             K::Text { orientation, .. }
+            | K::ParameterSet { orientation, .. }
             | K::PowerPort { orientation, .. }
             | K::Pin { orientation, .. }
             | K::Ieee { orientation, .. } => *orientation = turns,
@@ -2178,6 +2341,35 @@ fn primitive_properties(
         return changed;
     }
     section(ui, "Properties", query, |ui| match &mut p.kind {
+        K::ParameterSet { label, style, .. } => {
+            changed |= text_row(ui, "Label", label);
+            row(ui, "Style", |ui| {
+                if title != "Differential Pair" {
+                    changed |= combo(ui, "directive_style", style, &["Large", "Small"]);
+                }
+                changed |= color(ui, &mut p.color);
+            });
+        }
+        K::CompileMask { a, b, collapsed } => {
+            changed |= dimensions(ui, a, b, units);
+            changed |= border_row(ui, &mut p.width_nm, &mut p.color);
+            changed |= fill_row(ui, &mut p.fill);
+            row(ui, "", |ui| {
+                changed |= ui.checkbox(collapsed, "Collapsed and Disabled").changed();
+            });
+        }
+        K::Blanket { collapsed, .. } => {
+            changed |= width_combo(ui, &mut p.width_nm);
+            changed |= line_style(ui, &mut p.line_style);
+            row(ui, "Border Color", |ui| {
+                changed |= color(ui, &mut p.color);
+            });
+            changed |= fill_row(ui, &mut p.fill);
+            row(ui, "", |ui| {
+                changed |= ui.checkbox(collapsed, "Collapsed and Disabled").changed();
+            });
+        }
+
         K::HarnessConnector { .. } | K::HarnessEntry { .. } => {}
         K::Text {
             text: value,
@@ -2248,37 +2440,44 @@ fn primitive_properties(
             changed |= justification(ui, just);
         }
         K::PowerPort {
+            cross_sheet,
             text: value,
             style,
             show_name,
             ..
         } => {
-            row(ui, "Name", |ui| {
+            row(ui, if *cross_sheet { "Net Name" } else { "Name" }, |ui| {
                 ui.allocate_ui(egui::vec2(ui.available_width() - 26.0, 22.0), |ui| {
                     changed |= text(ui, value)
                 });
-                changed |= small_icon(ui, "eye", show_name);
+                if !*cross_sheet {
+                    changed |= small_icon(ui, "eye", show_name);
+                }
             });
             ui.add_space(10.0);
             row(ui, "Style", |ui| {
                 ui.allocate_ui(egui::vec2(ui.available_width() - 26.0, 22.0), |ui| {
-                    changed |= combo(
-                        ui,
-                        "power_style",
-                        style,
-                        &[
-                            "Circle",
-                            "Arrow",
-                            "Bar",
-                            "Wave",
-                            "Power Ground",
-                            "Signal Ground",
-                            "Earth",
-                            "GOST Arrow",
-                            "GOST Power Ground",
-                            "GOST Earth",
-                        ],
-                    )
+                    changed |= if *cross_sheet {
+                        combo(ui, "off_sheet_style", style, &["Left", "Right"])
+                    } else {
+                        combo(
+                            ui,
+                            "power_style",
+                            style,
+                            &[
+                                "Circle",
+                                "Arrow",
+                                "Bar",
+                                "Wave",
+                                "Power Ground",
+                                "Signal Ground",
+                                "Earth",
+                                "GOST Arrow",
+                                "GOST Power Ground",
+                                "GOST Earth",
+                            ],
+                        )
+                    }
                 });
                 changed |= color(ui, &mut p.color);
             });
@@ -2480,11 +2679,13 @@ fn primitive_properties(
             b,
             filename,
             keep_aspect,
+            embedded,
         } => {
             changed |= dimensions(ui, a, b, units);
             row(ui, "File Name", |ui| readonly(ui, filename));
             row(ui, "", |ui| {
-                changed |= ui.checkbox(keep_aspect, "Keep Aspect Ratio").changed()
+                changed |= ui.checkbox(keep_aspect, "Keep Aspect Ratio").changed();
+                changed |= ui.checkbox(embedded, "Embedded").changed()
             });
         }
         K::NoErc { .. } => {
@@ -2525,6 +2726,10 @@ fn primitive_properties(
 }
 fn primitive_anchor(p: &SchPrimitive) -> Point {
     match &p.kind {
+        K::ParameterSet { position, .. } => *position,
+        K::Blanket { points, .. } => points.first().copied().unwrap_or_default(),
+        K::CompileMask { a, .. } => *a,
+
         K::Polyline { points, .. } => points.first().copied().unwrap_or_default(),
         K::Bezier { points } => points[0],
         K::Rectangle { a, .. }
@@ -2725,6 +2930,12 @@ fn placement_options(ui: &mut egui::Ui, doc: &mut OpenDocument) {
             text_row(ui, "Designator", &mut editor.designator);
             text_row(ui, "Comment", &mut editor.value);
         }
+        Some(Placement::VoltageSource | Placement::CurrentSource | Placement::InitialCondition) => {
+            text_row(ui, "Designator", &mut editor.designator);
+            if editor.kind != Some(Placement::InitialCondition) {
+                text_row(ui, "DC Magnitude", &mut editor.value);
+            }
+        }
         Some(Placement::SignalHarness) => {
             row(ui, "Width", |ui| {
                 width_combo(ui, &mut editor.harness_width);
@@ -2735,15 +2946,22 @@ fn placement_options(ui: &mut egui::Ui, doc: &mut OpenDocument) {
             Placement::Text
             | Placement::NetLabel
             | Placement::Ground
+            | Placement::OffSheetConnector
+            | Placement::ParameterSet
+            | Placement::DifferentialPair
             | Placement::Port
             | Placement::SheetEntry
             | Placement::HarnessConnector
-            | Placement::HarnessEntry,
+            | Placement::HarnessEntry
+            | Placement::TextFrame
+            | Placement::Note
+            | Placement::SheetSymbol,
         ) => {
             let label = match editor.kind {
                 Some(Placement::HarnessConnector) => "Harness Type",
                 Some(Placement::HarnessEntry) => "Harness Name",
                 Some(Placement::Port | Placement::SheetEntry) => "Name",
+                Some(Placement::ParameterSet | Placement::DifferentialPair) => "Label",
                 _ => "Text",
             };
             text_row(ui, label, &mut editor.value);

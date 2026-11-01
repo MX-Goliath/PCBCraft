@@ -1444,6 +1444,7 @@ fn apply(
                         m.current = true;
                     } else {
                         settings.models.push(schematic::ComponentModel {
+                            parameters: Default::default(),
                             name: v.clone(),
                             kind: "PCBLIB".into(),
                             current: true,

@@ -66,6 +66,7 @@ fn power_wired_to_a_port_is_localized_before_global_power_union() {
             .retain(|p| p.text_role != Some(schematic::TextRole::NetLabel));
         s.primitives.push(edit::primitive(
             K::PowerPort {
+                cross_sheet: false,
                 position: at,
                 orientation: 0,
                 style: 0,

@@ -379,8 +379,175 @@ impl Scene<'_> {
             p.fill.map(color)
         };
         let stroke = Stroke::new(self.nm(p.width_nm).clamp(0.45, 100.0), c);
+        if p.presentation.record_type == 210
+            && let K::ParameterSet {
+                position,
+                orientation,
+                ..
+            } = p.kind
+        {
+            let point = |x, y| {
+                self.screen(
+                    eda_core::schematic_edit::transform_point(
+                        Point { x, y },
+                        Point::default(),
+                        orientation,
+                        position,
+                    )
+                    .unwrap_or(position),
+                )
+            };
+            let a = point(0, 0);
+            let b = point(2_540_000, 2_540_000);
+            self.line(a, b, stroke);
+            self.poly(
+                vec![
+                    point(635_000, 635_000),
+                    point(1_905_000, 2_540_000),
+                    point(2_540_000, 1_905_000),
+                ],
+                true,
+                Some(c),
+                stroke,
+            );
+            let bounds = Rect::from_two_pos(a, b).expand(3.);
+            return (bounds, pointer.is_some_and(|at| bounds.contains(at)));
+        }
         let mut hit = false;
         let bounds = match &p.kind {
+            K::ParameterSet {
+                position,
+                orientation,
+                label,
+                style,
+            } => {
+                let a = self.screen(*position);
+                let d = direction(*orientation);
+                let across = Vec2::new(-d.y, d.x);
+                let size = self.nm(2_540_000);
+                let b = a + d * size;
+                let pair=self.schematic.is_some_and(|s|s.primitives.iter().chain(&s.parameter_objects).any(|child|child.presentation.parent==Some(p.id)&&child.presentation.name.eq_ignore_ascii_case("DifferentialPair")&&matches!(&child.kind,K::Text{text,..} if text.eq_ignore_ascii_case("True"))));
+                self.line(a, b - d * size * 0.5, stroke);
+                if pair {
+                    self.poly(
+                        vec![
+                            b - d * size * 0.5,
+                            b - d * size * 0.2 + across * size * 0.35,
+                            b + d * size * 0.4 + across * size * 0.35,
+                            b + d * size * 0.7,
+                            b + d * size * 0.4 - across * size * 0.35,
+                            b - d * size * 0.2 - across * size * 0.35,
+                        ],
+                        true,
+                        None,
+                        stroke,
+                    );
+                } else {
+                    self.painter.circle_stroke(
+                        b,
+                        size * if *style == 0 { 0.5 } else { 0.25 },
+                        stroke,
+                    );
+                    if *style == 0 {
+                        self.line(b - across * size * 0.15, b + across * size * 0.15, stroke);
+                        self.painter
+                            .circle_filled(b - across * size * 0.3, stroke.width, c);
+                    }
+                }
+                let mut bounds =
+                    Rect::from_two_pos(a - across * size * 0.5, b + d * size + across * size * 0.5);
+                if !label.is_empty() && !pair {
+                    bounds = bounds.union(self.label(
+                        b + d * size * 0.75,
+                        label,
+                        self.schematic.map_or(0, |s| s.sheet.system_font),
+                        orientation % 2,
+                        3,
+                        c,
+                    ));
+                }
+                hit = pointer.is_some_and(|at| bounds.expand(3.0).contains(at));
+                bounds
+            }
+            K::Blanket { points, collapsed } => {
+                let mut path: Vec<_> = points.iter().map(|p| self.screen(*p)).collect();
+                let mut bounds = Rect::NOTHING;
+                for at in &path {
+                    bounds.extend_with(*at);
+                }
+                if let Some(first) = path.first().copied() {
+                    path.push(first);
+                }
+                if *collapsed {
+                    bounds = Rect::from_min_size(bounds.min, Vec2::splat(self.nm(2_540_000)));
+                    self.painter
+                        .rect_stroke(bounds, 0., stroke, egui::StrokeKind::Inside);
+                } else {
+                    for edge in path.windows(2) {
+                        let vector = edge[1] - edge[0];
+                        let length = vector.length();
+                        let count = ((length / 4.).ceil() as usize).min(16_384);
+                        let step = length / count.max(1) as f32;
+                        for n in 0..count {
+                            let start = (n as f32 * step).min(length);
+                            let end = (start + step * 0.5).min(length);
+                            if length > 0. {
+                                self.line(
+                                    edge[0] + vector * (start / length),
+                                    edge[0] + vector * (end / length),
+                                    stroke,
+                                );
+                            }
+                        }
+                    }
+                }
+                let marker = bounds.left_top();
+                self.poly(
+                    vec![
+                        marker,
+                        marker + egui::vec2(6., 6.),
+                        marker + egui::vec2(0., 6.),
+                    ],
+                    true,
+                    None,
+                    stroke,
+                );
+                hit = pointer.is_some_and(|at| {
+                    bounds.expand(4.).contains(at)
+                        && (!bounds.shrink(4.).contains(at) || *collapsed)
+                });
+                bounds
+            }
+            K::CompileMask { a, b, collapsed } => {
+                let mut bounds = Rect::from_two_pos(self.screen(*a), self.screen(*b));
+                if *collapsed {
+                    bounds =
+                        Rect::from_min_size(bounds.left_top(), Vec2::splat(self.nm(2_540_000)));
+                }
+                self.painter.rect(
+                    bounds,
+                    0.,
+                    fill.unwrap_or(Color32::WHITE).gamma_multiply(0.08),
+                    stroke,
+                    egui::StrokeKind::Inside,
+                );
+                let marker = bounds.left_top();
+                self.poly(
+                    vec![
+                        marker,
+                        marker + egui::vec2(6., 6.),
+                        marker + egui::vec2(0., 6.),
+                    ],
+                    true,
+                    None,
+                    stroke,
+                );
+                hit = pointer.is_some_and(|at| {
+                    bounds.expand(4.).contains(at)
+                        && (!bounds.shrink(4.).contains(at) || *collapsed)
+                });
+                bounds
+            }
             K::HarnessConnector {
                 a,
                 b,
@@ -573,6 +740,36 @@ impl Scene<'_> {
                     fill,
                     stroke,
                 );
+                if p.presentation.symbol_type == "Device Sheet" {
+                    let centre = rect.center();
+                    let size = (rect.height() * 0.34).min(rect.width() * 0.2);
+                    for n in 0..3 {
+                        let angle = n as f32 * std::f32::consts::TAU / 3.;
+                        let rotate = |x: f32, y: f32| {
+                            centre
+                                + Vec2::new(
+                                    x * angle.cos() - y * angle.sin(),
+                                    x * angle.sin() + y * angle.cos(),
+                                ) * size
+                        };
+                        self.poly(
+                            vec![
+                                rotate(-0.9, -0.35),
+                                rotate(-0.3, -0.95),
+                                rotate(0.3, -0.95),
+                                rotate(0.15, -1.2),
+                                rotate(0.95, -0.8),
+                                rotate(0.45, -0.05),
+                                rotate(0.35, -0.35),
+                                rotate(-0.1, -0.35),
+                                rotate(-0.5, 0.1),
+                            ],
+                            true,
+                            Some(Color32::from_rgb(126, 179, 113)),
+                            Stroke::NONE,
+                        );
+                    }
+                }
                 hit = pointer.is_some_and(|p| rect.expand(3.0).contains(p));
                 rect
             }
@@ -813,6 +1010,7 @@ impl Scene<'_> {
                 b,
                 filename,
                 keep_aspect,
+                ..
             } => {
                 let mut rect = Rect::from_two_pos(self.screen(*a), self.screen(*b));
                 let normalized = filename.replace('\\', "/").to_lowercase();
@@ -939,6 +1137,7 @@ impl Scene<'_> {
                 bounds
             }
             K::PowerPort {
+                cross_sheet,
                 position,
                 orientation,
                 style,
@@ -951,62 +1150,146 @@ impl Scene<'_> {
                 let across = Vec2::new(-d.y, d.x);
                 let length = self.nm(2_540_000);
                 let b = a + d * length;
-                let stem_end = if *style == 1 { b - d * length * 0.5 } else { b };
-                self.line(a, stem_end, stroke);
-                match style {
-                    4..=6 => {
-                        for (n, scale) in [1.0, 0.65, 0.25].into_iter().enumerate() {
-                            let c = b + d * (length * n as f32 * 0.2);
-                            self.painter.line_segment(
-                                [
-                                    c - across * length * 0.5 * scale,
-                                    c + across * length * 0.5 * scale,
-                                ],
-                                stroke,
-                            );
-                        }
-                    }
-                    1 | 7 => {
+                if *cross_sheet {
+                    for n in 0..2 {
+                        let x = n as f32 * length * 0.4;
+                        let (tip, back) = if *style == 0 {
+                            (x, x + length * 0.35)
+                        } else {
+                            (x + length * 0.35, x)
+                        };
                         self.poly(
                             vec![
-                                b - d * length * 0.5 + across * length * 0.4,
-                                b,
-                                b - d * length * 0.5 - across * length * 0.4,
+                                a + d * back - across * length * 0.4,
+                                a + d * tip,
+                                a + d * back + across * length * 0.4,
                             ],
-                            *style == 1,
+                            false,
                             None,
                             stroke,
                         );
                     }
-                    _ => {
-                        self.painter.line_segment(
-                            [b - across * length * 0.5, b + across * length * 0.5],
-                            stroke,
-                        );
+                    let mut bounds = Rect::from_two_pos(
+                        a - across * length * 0.4,
+                        a + d * length + across * length * 0.4,
+                    );
+                    if *show_name {
+                        bounds = bounds.union(self.label(
+                            a + d * length,
+                            text,
+                            *font,
+                            orientation % 2,
+                            match orientation % 4 {
+                                0 => 3,
+                                1 => 1,
+                                2 => 5,
+                                _ => 7,
+                            },
+                            c,
+                        ));
                     }
+                    hit = pointer.is_some_and(|p| bounds.expand(3.0).contains(p));
+                    bounds
+                } else {
+                    let stem_end = if *style == 1 {
+                        b - d * length * 0.5
+                    } else if *style == 0 {
+                        b - d * length * 0.25
+                    } else {
+                        b
+                    };
+                    self.line(a, stem_end, stroke);
+                    match style {
+                        0 => {
+                            self.painter.circle_stroke(b, length * 0.25, stroke);
+                        }
+                        3 => {
+                            let points = (0..=24)
+                                .map(|n| {
+                                    let t = n as f32 / 24.;
+                                    b + across * ((t - 0.5) * length)
+                                        + d * ((t * std::f32::consts::TAU).sin() * length * 0.16)
+                                })
+                                .collect();
+                            self.poly(points, false, None, stroke);
+                        }
+                        5 => {
+                            self.poly(
+                                vec![
+                                    b - across * length * 0.5,
+                                    b + across * length * 0.5,
+                                    b + d * length * 0.7,
+                                ],
+                                true,
+                                None,
+                                stroke,
+                            );
+                        }
+                        6 => {
+                            self.line(b - across * length * 0.5, b + across * length * 0.5, stroke);
+                            for n in [-1., 0., 1.] {
+                                let base = b + across * length * n * 0.35;
+                                self.line(
+                                    base,
+                                    base + d * length * 0.35 - across * length * 0.25,
+                                    stroke,
+                                );
+                            }
+                        }
+                        4 | 8 | 9 => {
+                            for (n, scale) in [1.0, 0.65, 0.25].into_iter().enumerate() {
+                                let c = b + d * (length * n as f32 * 0.2);
+                                self.painter.line_segment(
+                                    [
+                                        c - across * length * 0.5 * scale,
+                                        c + across * length * 0.5 * scale,
+                                    ],
+                                    stroke,
+                                );
+                            }
+                        }
+                        1 | 7 => {
+                            self.poly(
+                                vec![
+                                    b - d * length * 0.5 + across * length * 0.4,
+                                    b,
+                                    b - d * length * 0.5 - across * length * 0.4,
+                                ],
+                                *style == 1,
+                                None,
+                                stroke,
+                            );
+                        }
+                        _ => {
+                            self.painter.line_segment(
+                                [b - across * length * 0.5, b + across * length * 0.5],
+                                stroke,
+                            );
+                        }
+                    }
+                    let mut bounds = Rect::from_two_pos(a, b).expand(length * 0.5);
+                    if *show_name {
+                        bounds = bounds.union(self.label(
+                            b + d * if orientation % 2 == 0 {
+                                length * 0.5
+                            } else {
+                                0.0
+                            },
+                            text,
+                            *font,
+                            0,
+                            match orientation % 4 {
+                                0 => 3,
+                                1 => 1,
+                                2 => 5,
+                                _ => 7,
+                            },
+                            c,
+                        ));
+                    }
+                    hit = pointer.is_some_and(|p| bounds.contains(p));
+                    bounds
                 }
-                let mut bounds = Rect::from_two_pos(a, b).expand(length * 0.5);
-                if *show_name {
-                    bounds = bounds.union(self.label(
-                        b + d * if orientation % 2 == 0 {
-                            length * 0.5
-                        } else {
-                            0.0
-                        },
-                        text,
-                        *font,
-                        0,
-                        match orientation % 4 {
-                            0 => 3,
-                            1 => 1,
-                            2 => 5,
-                            _ => 7,
-                        },
-                        c,
-                    ));
-                }
-                hit = pointer.is_some_and(|p| bounds.contains(p));
-                bounds
             }
             K::Port {
                 position,

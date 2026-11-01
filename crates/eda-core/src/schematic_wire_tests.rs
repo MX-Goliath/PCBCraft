@@ -129,6 +129,7 @@ fn vertex_drag_preserves_other_vertices_and_fixed_component_hotspot() {
     let id = add(s, &[(0, 0), (10, 0), (10, 10), (20, 10)]);
     let pin = primitive(
         K::PowerPort {
+            cross_sheet: false,
             position: Point::mm(10, 0),
             style: 2,
             text: "GND".into(),

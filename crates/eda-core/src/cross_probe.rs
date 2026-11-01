@@ -179,6 +179,17 @@ fn connected(s: &Schematic, seeds: &[Uuid]) -> Vec<Uuid> {
     }
     found
 }
+/// Select a local scalar connection, including the owning symbols of its pins.
+pub fn connected_objects(s: &Schematic, seeds: &[Uuid]) -> Vec<Uuid> {
+    let mut out = vec![];
+    for id in connected(s, seeds) {
+        let owner = s.primitive(id).and_then(|p| p.component).unwrap_or(id);
+        if !out.contains(&owner) {
+            out.push(owner);
+        }
+    }
+    out
+}
 pub fn source(doc: &Document, id: Uuid) -> Result<Probe, String> {
     if let Some(b) = &doc.pcb {
         if let Some(c) = b.components.iter().find(|c| c.id == id) {

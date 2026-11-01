@@ -1,6 +1,106 @@
 use super::*;
 
 #[test]
+fn differential_probe_copy_preserves_pairing_without_linking_the_original_pair() {
+    let mut f = place(
+        Placement::VoltageDiffProbe,
+        Point::mm(10, 10),
+        0,
+        "PAIR0001",
+        "VD+",
+        0,
+    )
+    .unwrap();
+    let minus = place(
+        Placement::VoltageDiffProbe,
+        Point::mm(20, 10),
+        0,
+        "PAIR0001",
+        "VD-",
+        0,
+    )
+    .unwrap();
+    f.primitives.extend(minus.primitives);
+    let copied = f.fresh_copy();
+    let links: Vec<_> = copied
+        .primitives
+        .iter()
+        .filter(|p| p.presentation.name == "VD_ID")
+        .map(|p| {
+            if let K::Text { text, .. } = &p.kind {
+                text.as_str()
+            } else {
+                unreachable!()
+            }
+        })
+        .collect();
+    assert_eq!(links.len(), 2);
+    assert_eq!(links[0], links[1]);
+    assert_ne!(links[0], "PAIR0001");
+    let mut doc = Document::new(DocumentKind::Schematic, "Probes");
+    let mut history = History::default();
+    commit(&mut history, &mut doc, Edit::Insert(copied)).unwrap();
+    let after = doc.clone();
+    history.undo(&mut doc);
+    assert!(doc.schematic.as_ref().unwrap().primitives.is_empty());
+    history.redo(&mut doc);
+    assert_eq!(doc, after);
+}
+
+#[test]
+fn compile_mask_excludes_owned_directive_parameters_and_collapsing_restores_them() {
+    let mut doc = Document::new(DocumentKind::Schematic, "Mask");
+    let directive = place(Placement::DifferentialPair, Point::mm(10, 10), 0, "", "", 0).unwrap();
+    let parent = directive.primitives[0].id;
+    let child = directive.primitives[1].id;
+    doc = preview(&doc, &Edit::Insert(directive)).unwrap();
+    let mask = crate::schematic_arrange::shape(
+        doc.schematic.as_ref().unwrap(),
+        Placement::CompileMask,
+        &[Point::mm(5, 15), Point::mm(15, 5)],
+        "",
+    )
+    .unwrap();
+    let mask_id = mask.primitives[0].id;
+    let mut history = History::default();
+    commit(&mut history, &mut doc, Edit::Insert(mask)).unwrap();
+    let excluded = crate::schematic_compile::exclusions(doc.schematic.as_ref().unwrap());
+    assert!(excluded.primitives.contains(&parent));
+    assert!(excluded.primitives.contains(&child));
+    assert!(!excluded.records.contains(&AUTHORED));
+    let mut mask = doc
+        .schematic
+        .as_ref()
+        .unwrap()
+        .primitive(mask_id)
+        .unwrap()
+        .clone();
+    if let K::CompileMask { collapsed, .. } = &mut mask.kind {
+        *collapsed = true;
+    }
+    commit(
+        &mut history,
+        &mut doc,
+        Edit::PrimitiveProperties {
+            id: mask_id,
+            value: Box::new(mask),
+        },
+    )
+    .unwrap();
+    assert!(
+        crate::schematic_compile::exclusions(doc.schematic.as_ref().unwrap())
+            .primitives
+            .is_empty()
+    );
+    history.undo(&mut doc);
+    assert!(
+        crate::schematic_compile::exclusions(doc.schematic.as_ref().unwrap())
+            .primitives
+            .contains(&child)
+    );
+}
+
+#[test]
 fn repeated_font_edits_reuse_unused_slots_without_changing_other_text_or_pin_fonts() {
     let mut doc = Document::new(DocumentKind::Schematic, "Fonts");
     let s = doc.schematic.as_mut().unwrap();
@@ -89,6 +189,7 @@ fn clipboard_keeps_only_referenced_images_and_delete_releases_unused_resources()
     s.primitives.push(label);
     let image = primitive(
         K::Image {
+            embedded: true,
             a: Point::mm(1, 1),
             b: Point::mm(2, 2),
             filename: "USED.PNG".into(),

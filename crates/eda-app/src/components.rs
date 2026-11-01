@@ -22,6 +22,87 @@ pub(super) struct Panel {
 }
 
 impl PcbCraft {
+    pub(super) fn show_simulation_components(&mut self) {
+        let configured = self
+            .settings
+            .libraries
+            .iter()
+            .find(|p| {
+                p.file_name()
+                    .is_some_and(|n| n.eq_ignore_ascii_case("Simulation Generic Components.IntLib"))
+            })
+            .cloned();
+        let installed = std::env::var_os("ProgramData")
+            .and_then(|dir| std::fs::read_dir(PathBuf::from(dir).join("Altium")).ok())
+            .and_then(|entries| {
+                entries
+                    .filter_map(Result::ok)
+                    .map(|e| {
+                        e.path()
+                            .join("Extensions")
+                            .join("Mixed Simulation")
+                            .join("Library")
+                            .join("Simulation Generic Components.IntLib")
+                    })
+                    .find(|p| p.is_file())
+            });
+        if let Some(path) = configured.or(installed) {
+            self.import_library(path, true);
+            return;
+        }
+        let path = PathBuf::from("PCBCraft Simulation Sources");
+        let panel = &mut self.components_ui;
+        let index = panel
+            .libraries
+            .iter()
+            .position(|(p, _)| *p == path)
+            .unwrap_or_else(|| {
+                let symbols = [
+                    Placement::VoltageSource,
+                    Placement::CurrentSource,
+                    Placement::InitialCondition,
+                ]
+                .into_iter()
+                .filter_map(|kind| {
+                    let designator = match kind {
+                        Placement::VoltageSource => "V?",
+                        Placement::CurrentSource => "I?",
+                        _ => "IC?",
+                    };
+                    let fragment =
+                        eda_core::schematic_simulation::place(kind, designator, "", 0).ok()?;
+                    Some(eda_core::library::Symbol {
+                        name: fragment.components[0].library_reference.clone(),
+                        description: kind.label().into(),
+                        parts: 1,
+                        display_modes: 1,
+                        variants: vec![eda_core::library::SymbolVariant {
+                            part: 1,
+                            display_mode: 0,
+                            fragment,
+                        }],
+                    })
+                })
+                .collect();
+                panel.libraries.push((
+                    path,
+                    Library {
+                        name: "Simulation Sources".into(),
+                        embedded_footprints: None,
+                        symbols,
+                        warnings: vec![],
+                    },
+                ));
+                panel.libraries.len() - 1
+            });
+        panel.library = index;
+        panel.selected = 0;
+        panel.part = 1;
+        panel.mode = 0;
+        panel.query.clear();
+        self.settings.components = true;
+        self.settings.right_components = true;
+    }
     pub(super) fn import_library(&mut self, path: PathBuf, activate: bool) {
         let path = path.canonicalize().unwrap_or(path);
         if path

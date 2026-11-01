@@ -15,6 +15,9 @@ pub struct Exclusions {
 }
 fn geometry(p: &SchPrimitive) -> Vec<Point> {
     match &p.kind {
+        K::Blanket { points, .. } => points.clone(),
+        K::CompileMask { a, b, .. } => vec![*a, *b],
+        K::ParameterSet { position, .. } => vec![*position],
         K::Polyline { points, .. } | K::Bezier { points } => points.clone(),
         K::Rectangle { a, b, .. }
         | K::HarnessConnector { a, b, .. }
@@ -77,7 +80,15 @@ fn geometry(p: &SchPrimitive) -> Vec<Point> {
 }
 pub fn exclusions(s: &Schematic) -> Exclusions {
     let mut out = Exclusions::default();
-    if s.compile_masks.iter().all(|m| m.collapsed) {
+    let mut masks = s.compile_masks.clone();
+    masks.extend(s.primitives.iter().filter_map(|p| {
+        if let K::CompileMask { a, b, collapsed } = p.kind {
+            Some(crate::schematic::CompileMask { a, b, collapsed })
+        } else {
+            None
+        }
+    }));
+    if masks.iter().all(|m| m.collapsed) {
         return out;
     }
     let mut component_points: HashMap<_, Vec<_>> = s
@@ -97,7 +108,7 @@ pub fn exclusions(s: &Schematic) -> Exclusions {
             free_points.push((p, geometry(p)));
         }
     }
-    for mask in s.compile_masks.iter().filter(|m| !m.collapsed) {
+    for mask in masks.iter().filter(|m| !m.collapsed) {
         let contains = |p: &Point| {
             p.x > mask.a.x.min(mask.b.x)
                 && p.x < mask.a.x.max(mask.b.x)
@@ -107,20 +118,36 @@ pub fn exclusions(s: &Schematic) -> Exclusions {
         for c in &s.components {
             if component_points[&c.id].iter().all(contains) {
                 out.components.insert(c.id);
-                out.records.insert(c.source_index);
+                if c.source_index != schematic_edit::AUTHORED {
+                    out.records.insert(c.source_index);
+                }
             }
         }
         for (p, points) in &free_points {
             if !points.is_empty() && points.iter().all(contains) {
                 out.primitives.insert(p.id);
-                out.records.insert(p.source_index);
+                if p.source_index != schematic_edit::AUTHORED {
+                    out.records.insert(p.source_index);
+                }
             }
         }
     }
-    for p in s.primitives.iter().chain(&s.parameter_objects) {
-        if p.component.is_some_and(|c| out.components.contains(&c)) {
-            out.primitives.insert(p.id);
-            out.records.insert(p.source_index);
+    for _ in 0..128 {
+        let mut changed = false;
+        for p in s.primitives.iter().chain(&s.parameter_objects) {
+            if p.component.is_some_and(|c| out.components.contains(&c))
+                || p.presentation
+                    .parent
+                    .is_some_and(|id| out.primitives.contains(&id))
+            {
+                changed |= out.primitives.insert(p.id);
+                if p.source_index != schematic_edit::AUTHORED {
+                    out.records.insert(p.source_index);
+                }
+            }
+        }
+        if !changed {
+            break;
         }
     }
     // Hidden pins and future record-only objects still inherit masked ownership.

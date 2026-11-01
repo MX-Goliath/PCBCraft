@@ -729,13 +729,15 @@ fn framed<'a>(
 
 pub fn load_schematic(path: &Path) -> Result<Document, String> {
     let bytes = read_bounded(path)?;
-    import_schematic(
+    let mut doc = import_schematic(
         &bytes,
         path.file_name()
             .unwrap_or_default()
             .to_string_lossy()
             .as_ref(),
-    )
+    )?;
+    crate::schematic_graphic::cache_external(&mut doc, path);
+    Ok(doc)
 }
 
 pub fn import_schematic(bytes: &[u8], name: &str) -> Result<Document, String> {
@@ -830,7 +832,7 @@ pub fn import_schematic(bytes: &[u8], name: &str) -> Result<Document, String> {
         } else {
             u32::MAX
         };
-        if *stream == "Additional" && !matches!(record_type, 215..=218) {
+        if *stream == "Additional" && !matches!(record_type, 215..=218 | 225) {
             warnings.push(format!(
                 "Additional-stream record {record_type} retained; rendering is not implemented"
             ));
@@ -992,11 +994,26 @@ fn build_document(
         .enumerate()
         .filter(|(_, r)| r.record_type == 45)
     {
-        if let Some(owner) = component_owner(&records, index) {
+        if let Some(component_index) = component_owner(&records, index) {
             models
-                .entry(owner)
+                .entry(component_index)
                 .or_default()
                 .push(eda_core::schematic::ComponentModel {
+                    parameters: records
+                        .iter()
+                        .filter(|p| {
+                            p.record_type == 41
+                                && records.get(owner(&p.fields)).is_some_and(|list| {
+                                    list.record_type == 48 && owner(&list.fields) == index
+                                })
+                        })
+                        .map(|p| {
+                            (
+                                p.fields.text("NAME"),
+                                p.fields.text("TEXT").replace("~1", "\n"),
+                            )
+                        })
+                        .collect(),
                     name: r.fields.text("MODELNAME"),
                     kind: r.fields.text("MODELTYPE"),
                     current: r.fields.yes("ISCURRENT"),
@@ -1136,8 +1153,8 @@ fn build_document(
             && (owner(&r.fields) == 0
                 || records
                     .get(owner(&r.fields))
-                    .is_some_and(|p| p.record_type == 1));
-        if (r.stream != "FileHeader" && !matches!(r.record_type, 215..=218))
+                    .is_some_and(|p| matches!(p.record_type, 1 | 43 | 210)));
+        if (r.stream != "FileHeader" && !matches!(r.record_type, 215..=218 | 225))
             || (!visible && !hidden_parameter && r.record_type != 217)
         {
             continue;
@@ -1165,8 +1182,13 @@ fn build_document(
             }
             let p = SchPrimitive {
                 presentation: eda_core::schematic::Presentation {
-                    parent: matches!(r.record_type, 16 | 32 | 33 | 216 | 217)
-                        .then(|| uuid(id, harness_owner(&records, r) as u32)),
+                    symbol_type: f.text("SYMBOLTYPE"),
+                    parent: (matches!(r.record_type, 16 | 32 | 33 | 216 | 217)
+                        || r.record_type == 41
+                            && records
+                                .get(owner(f))
+                                .is_some_and(|p| matches!(p.record_type, 43 | 210)))
+                    .then(|| uuid(id, harness_owner(&records, r) as u32)),
                     alignment: (r.record_type == 18).then(|| f.n("ALIGNMENT") as u32),
                     text_color: (r.record_type == 18).then(|| f.n("TEXTCOLOR") as u32),
                     harness_type: if matches!(r.record_type, 16 | 18 | 216) {
@@ -1205,7 +1227,8 @@ fn build_document(
                 source_index: r.index,
                 component,
                 color,
-                fill: if (f.yes("ISSOLID") || matches!(r.record_type, 16 | 18 | 215 | 216))
+                fill: if (f.yes("ISSOLID")
+                    || matches!(r.record_type, 16 | 18 | 211 | 215 | 216 | 225))
                     && !f.yes("TRANSPARENT")
                 {
                     Some(f.n("AREACOLOR") as u32)
@@ -1229,7 +1252,13 @@ fn build_document(
                 line_shape_size: f.n("LINESHAPESIZE") as u32,
                 kind,
             };
-            if visible || r.record_type == 217 {
+            if visible
+                || r.record_type == 217
+                || r.record_type == 41
+                    && records
+                        .get(owner(f))
+                        .is_some_and(|p| matches!(p.record_type, 43 | 210))
+            {
                 primitives.push(p);
             } else {
                 parameter_objects.push(p);
@@ -1278,15 +1307,7 @@ fn build_document(
         sheet,
         fonts,
         components,
-        compile_masks: records
-            .iter()
-            .filter(|r| r.record_type == 211)
-            .map(|r| CompileMask {
-                a: r.fields.point("LOCATION"),
-                b: r.fields.point("CORNER"),
-                collapsed: r.fields.yes("COLLAPSED"),
-            })
-            .collect(),
+        compile_masks: vec![],
         primitives,
         parameter_objects,
         records: records.into(),
@@ -1327,6 +1348,33 @@ fn primitive_kind(
         .get("FONTID")
         .map_or(default_font, |_| f.n("FONTID").max(1) as usize - 1);
     let kind = match r.record_type {
+        43 | 210 => K::ParameterSet {
+            position: a,
+            orientation,
+            label: f.text("NAME"),
+            style: f.n("STYLE") as u32,
+        },
+        211 => K::CompileMask {
+            a,
+            b,
+            collapsed: f.yes("COLLAPSED"),
+        },
+        225 => {
+            let count = f.n("LOCATIONCOUNT");
+            if !(3..=100_000).contains(&count) {
+                return Err("Invalid Blanket vertex count".into());
+            }
+            K::Blanket {
+                points: (1..=count)
+                    .map(|n| Point {
+                        x: f.coord(&format!("X{n}")),
+                        y: f.coord(&format!("Y{n}")),
+                    })
+                    .collect(),
+                collapsed: f.yes("COLLAPSED"),
+            }
+        }
+
         1 | 31 | 39 | 44..=48 => return Ok(None),
         5 | 6 | 7 | 26 | 27 | 218 => {
             let count = f.n("LOCATIONCOUNT");
@@ -1451,7 +1499,7 @@ fn primitive_kind(
             {
                 text = c.designator.clone();
             }
-            if text.is_empty() && !(r.record_type == 41 && f.yes("ISHIDDEN")) {
+            if text.is_empty() && r.record_type != 41 {
                 return Ok(None);
             }
             let justification = if f.contains_key("JUSTIFICATION") {
@@ -1528,6 +1576,7 @@ fn primitive_kind(
             }
         }
         17 => K::PowerPort {
+            cross_sheet: f.yes("ISCROSSSHEETCONNECTOR"),
             position: a,
             orientation,
             style: f.n("STYLE") as u32,
@@ -1639,6 +1688,7 @@ fn primitive_kind(
             }
         }
         30 => K::Image {
+            embedded: f.yes("EMBEDIMAGE"),
             a,
             b,
             filename: f.text("FILENAME"),

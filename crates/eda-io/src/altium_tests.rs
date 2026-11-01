@@ -12,7 +12,20 @@ const ASCII: &[u8] = include_bytes!("../../../fixtures/schematic/minimal.SchDoc"
 fn native_compile_masks_preserve_expanded_and_collapsed_state_and_archive_bytes() {
     let bytes=[ASCII,b"\n|RECORD=211|LOCATION.X=0|LOCATION.Y=0|CORNER.X=100|CORNER.Y=100\n|RECORD=211|LOCATION.X=200|LOCATION.Y=0|CORNER.X=300|CORNER.Y=100|COLLAPSED=T\n"].concat();
     let doc = import_schematic(&bytes, "Masks.SchDoc").unwrap();
-    let masks = &doc.schematic.as_ref().unwrap().compile_masks;
+    let masks: Vec<_> = doc
+        .schematic
+        .as_ref()
+        .unwrap()
+        .primitives
+        .iter()
+        .filter_map(|p| {
+            if let K::CompileMask { a, b, collapsed } = p.kind {
+                Some(eda_core::schematic::CompileMask { a, b, collapsed })
+            } else {
+                None
+            }
+        })
+        .collect();
     assert_eq!(masks.len(), 2);
     assert!(!masks[0].collapsed && masks[1].collapsed);
     assert_eq!(

@@ -1856,3 +1856,133 @@ Cause, implementation and validation: docs/pcb-update/INTERACTIVE_ROUTING.md.
 - Actual new-build ReferenceBRouting GUI: ECALL_SW via -> foreground polygon area,
   preview visible, placement succeeds, Escape triggers automatic clearance
   repour; Undo restores clean title. Full parity/native save remain unverified.
+
+### 2026-11-01 — schematic Active Bar restoration (partial)
+
+- Reference screenshot establishes fourteen groups and the separate Arcs and
+  Drawing buttons. Installed AD24.4.1 advsch.rcs TopBarSchematic establishes
+  command captions/order, separators and power-port presets. Official vendor
+  documentation establishes short click, one-second hold, right-click and
+  last-used defaults. The resource's single Drawing group differs from the
+  screenshot; the screenshot takes precedence. No Altium engine/code is used.
+- Replaced the schematic placeholder strip with its own 476 by 33 1/3 point
+  layout, fourteen original vector buttons, real hold/right-click menus, shared
+  last-used defaults and Selection Filter. The 150% DPI interpretation remains
+  an inference; exact visual equivalence has not been measured.
+- Added core region/connection selection, edge/center/grid alignment and
+  distribution, complete-owner stack ordering, Sheet Symbol flips and Sheet
+  Entry operations. GUI actions use validated atomic history; offset and
+  combined alignment dialogs guard document revisions. Existing Move/Drag,
+  Components, Nets, Power Ports and Harness workflows are connected to the bar.
+- Added graphical placement for rectangle/rounded rectangle, circular and
+  elliptical arcs/circles, polygons, chained Bezier, Text Frame/Note, Sheet
+  Symbols with owned texts and Generic No ERC. Escape/cancel, backtrack,
+  rotation, repeated placement and modal canvas blocking are covered.
+- Expanded the preserving native writer for these authored objects and owner
+  groups. Stack changes survive serialization/reimport rather than being
+  silently normalized away. Unknown native index dependencies and cross-stream
+  stack changes still refuse save. Native verification found and resolved
+  coordinate quantization and owned text presentation mismatches.
+- Device Sheet Symbol, Reuse Block, Off Sheet Connector, Parameter Set,
+  Differential Pair, Blanket, Compile Mask and Graphic import stay disabled.
+  Text/Bezier bounds, some region selection, arc placement phases and graphic
+  editing/preferences still differ or require AD24.4.1 observation. Full scope
+  and remaining work: docs/interface/schematic-active-bar.md and features.json.
+- Computer Use is blocked: @oai/sky and cua entry points report a missing
+  Windows native pipe, os error 2. Retry, reconnect and tool reset did not
+  recover it. No live Altium menu inspection or final Windows window check is
+  claimed. A complete T3 Code restart was suggested as a diagnostic step, not
+  a confirmed recovery procedure. Existing user windows were preserved.
+- Required gates PASS: cargo fmt --all -- --check; cargo clippy --workspace
+  --all-targets -- -D warnings; all 595 workspace unit tests. Linux GNU
+  all-targets cargo check PASS; runtime unverified. Tests cover actual egui
+  short click, hold, right-click, remembered defaults, filters, shape keys and
+  validated history; native graphic/owner/power/stack regressions also pass.
+  Headless egui mesh rendering produces
+  target/routing-check/active-bar-panel.png; this is not a live GUI screenshot.
+  Logs are in target/routing-check/active-bar-*.txt. Windows dev build PASS,
+  target/debug/pcbcraft.exe updated successfully. No commit/push.
+- User-requested Computer Use recheck after plugin update to 26.1027.30824:
+  cua.getState still reports missing native pipe, os error 2, and no apps or
+  browsers. Fresh node_repl reset followed by @oai/sky initialization fails
+  before executing JavaScript: failed to write kernel assets, os error 3.
+  Repeated initialization has the same result. Both live inspection paths
+  remain blocked; no screenshots or app input were obtained.
+- Later user-requested reconnect test succeeded: @oai/sky list_windows returned
+  the running Altium 24.4.1 window. Window activation, screenshot capture,
+  switching to HarnessGui.SchDoc, right-click opening Nets and Escape closing
+  the menu all succeeded without editing the schematic. Live toolbar is about
+  476 by 33 logical points at the observed 1707 by 1027 window. Nets popup is
+  much narrower than the current PCBCraft popup and has per-command icons;
+  matching popup metrics/icons remains required. Launched target/debug/
+  pcbcraft.exe and captured its real 1000 by 650 restored PCB window; schematic
+  interaction QA and the full Altium comparison remain outstanding. The
+  Computer Use connection blocker is resolved.
+
+### 2026-11-01 — live schematic Active Bar continuation (partial)
+
+- Computer Use through @oai/sky worked for live AD24.4.1 and PCBCraft research.
+  Corrected the initial screenshot interpretation: Drawing Tools includes all
+  ten arc/graphic commands; the fourteenth gold hexagon is Simulation Sources.
+  Observed all group menus, filter grid, popup dimensions, owner dialogs and
+  native records on the isolated ActiveBarReference-20261101.SchDoc copy.
+- Matched the 476 x 33 1/3 point strip, 29 1/3 point popup rows, native group
+  widths, separators, icon/text offsets, last-used commands and keyboard menu
+  navigation. New original vector icons distinguish menu operations. Fixed the
+  8-point schematic toolbar vertical offset and default Projects width to 334.
+  Exact raster/icon/font/dialog/preference parity remains incomplete.
+- Added typed Off Sheet Connector, Parameter Set, Differential Pair, Blanket,
+  Compile Mask, sources/probes/Initial Condition, Graphic and Device Sheet
+  reference data. Core commands own placement, masks, copies and history.
+  Owned differential-pair parameters determine type independently of the label;
+  copied differential probes receive a new shared pair ID. Masks propagate
+  exclusions to owned children and collapsing restores compilation membership.
+- Added parameter/class/rule and source/probe Properties. Supported schematic
+  PCB rule editors reuse PCBCraft's independent rules UI. Simulation metadata
+  is authored and preserved; no simulator execution or result data is claimed.
+  The existing importer can load installed Simulation Generic Components.IntLib;
+  a three-symbol independent fallback is available when it is absent.
+- Device Sheet selector reads registered folders and derives entries from child
+  ports, with Device Sheet source kind and unique U_<stem> designators. Local
+  Design Reuse creates selection-only snippets, places with fresh IDs and
+  reserved designators, opens documents and edits metadata. Its local manifest
+  and JSON format are PCBCraft-specific; native Altium snippet metadata,
+  thumbnails, deletion and full hierarchical device semantics remain open.
+  Workspace-dependent cloud/Managed commands remain disabled.
+- Expanded preserving SchDoc writing for new objects, owned parameters, source
+  components and SIM models, Device Sheet source kind, Additional Blankets and
+  image Storage. External image caches load from bounded local files and do not
+  alter unchanged native bytes. Native source-body fill requires RECORD=8
+  Ellipse; writing it as RECORD=12 Arc rendered an unfilled body in Altium and
+  was corrected with a regression. Native moves refuse incomplete inactive
+  symbol geometry rather than updating only its represented subset.
+- Real Windows GUI QA: Nets/Drawing/Simulation menus; source placement and
+  pre/post-placement Properties; one-step Undo/Redo and Save; external image
+  visible after reopen; Device Sheet folder registration, port-derived symbol
+  placement and Save. Created ActiveBar Supply QA from one selected source,
+  verified one component/eight primitives/no native archive or records, placed
+  it as V2 and saved again. Latest build reopens the final file, Ctrl+A selects
+  23 roots, and nested Device Sheet windows open/close correctly. Fixed child
+  windows falling behind a disabled parent, native file-dialog ownership and
+  Escape while a field has focus; modal layering has an event regression.
+- AD24.4.1 opened the intermediate ActiveBarImplementation-20261101.SchDoc and
+  recognized VSRC V1 with DC Magnitude=5, AC Magnitude=1 and AC Phase=0. Final
+  ActiveBarFinal-20261101.SchDoc reopens in PCBCraft; its SHA256 is
+  redacted-source-sha256.
+  Final Altium reopen is NOT verified: its former window disappeared from
+  inventory. Refresh found no targetable AD window, and the supported launch
+  retry reported 'launched app did not expose a targetable window'. No original
+  Altium project was saved for research. Removed only the temporary research
+  folder registration in Altium; all files and the original folder entry remain.
+- Required gates PASS after the final code changes: cargo fmt --all -- --check;
+  cargo clippy --workspace --all-targets -- -D warnings; all 604 workspace unit
+  tests (app 127, core 250, geom 1, IO 122, render 104). Linux GNU all-targets
+  cargo check and Windows dev build PASS; Linux runtime/DPI remains unverified.
+  Logs: target/routing-check/active-bar-{fmt,clippy,full-tests,linux-check,build}.txt.
+  Latest separately launched binary: target/routing-check/active-bar-verified/
+  pcbcraft.exe. The existing user PCB window with unsaved edits was preserved.
+- The first full link exhausted disk space in generated test/example artifacts.
+  Cargo clean -p eda-io reclaimed 21.5 GiB, followed by successful full rebuilds;
+  no project/source/research files were removed. Remaining limitations are in
+  docs/interface/schematic-active-bar.md and schematic.active_bar in features.json.
+  No commit or push during this continuation.

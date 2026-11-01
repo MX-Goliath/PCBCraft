@@ -13,6 +13,15 @@ mod widgets;
 #[path = "pcb_rules_wizard.rs"]
 mod wizard_ui;
 use widgets::{CATALOG, RulePage};
+pub(in crate::app) fn schematic_catalog() -> &'static [(&'static str, &'static str, &'static str)] {
+    CATALOG
+}
+pub(in crate::app) fn schematic_constraints(ui: &mut egui::Ui, fields: &mut Fields) {
+    constraints(ui, fields, &Board::default());
+}
+pub(in crate::app) fn schematic_rule_summary(fields: &Fields) -> String {
+    widgets::attributes(fields)
+}
 pub(super) struct Draft {
     revision: u64,
     original: Vec<Fields>,

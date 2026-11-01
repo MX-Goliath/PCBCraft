@@ -58,16 +58,12 @@ pub enum Icon {
     Search,
     Filter,
     Select,
-    Grid,
-    Fit,
     Track,
     MultiRoute,
     Magnet,
     Crosshair,
     Fill,
-    Pad,
     Via,
-    Component,
     LibraryComponent,
     Polygon,
     Text,
@@ -269,17 +265,6 @@ pub fn draw_icon(p: &egui::Painter, rect: egui::Rect, icon: Icon, enabled: bool)
                 Stroke::new(1.0, FIELD),
             ));
         }
-        Icon::Grid | Icon::Fit => {
-            line((8.0, 0.0), (8.0, 16.0), blue);
-            line((0.0, 8.0), (16.0, 8.0), blue);
-            if matches!(icon, Icon::Grid) {
-                for x in [3.0, 13.0] {
-                    for y in [3.0, 13.0] {
-                        p.circle_filled(point(x, y), 1.0, c);
-                    }
-                }
-            }
-        }
         Icon::Track | Icon::Line => {
             p.line(
                 vec![
@@ -324,11 +309,11 @@ pub fn draw_icon(p: &egui::Painter, rect: egui::Rect, icon: Icon, enabled: bool)
                 blue,
             );
         }
-        Icon::Pad | Icon::Via => {
+        Icon::Via => {
             p.circle_filled(rect.center(), 6.0, yellow);
             p.circle_filled(rect.center(), 2.0, FIELD);
         }
-        Icon::Component | Icon::Chip | Icon::LibraryComponent => {
+        Icon::Chip | Icon::LibraryComponent => {
             let body = if matches!(icon, Icon::LibraryComponent) {
                 yellow
             } else {

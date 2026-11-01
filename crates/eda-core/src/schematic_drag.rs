@@ -221,6 +221,7 @@ pub(super) fn carrier_proxy(s: &Schematic, carrier: &str) -> Schematic {
             });
             let Some(position) = position else { continue };
             p.kind = K::PowerPort {
+                cross_sheet: false,
                 position,
                 orientation: 0,
                 style: 0,

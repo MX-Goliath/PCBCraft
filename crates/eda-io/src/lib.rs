@@ -5,6 +5,8 @@ pub mod altium_pcb;
 mod altium_tests;
 #[cfg(test)]
 mod library_tests;
+pub mod schematic_graphic;
+pub mod schematic_reuse;
 use std::{io::Write, path::Path};
 
 pub fn load(path: &Path) -> Result<Document, String> {

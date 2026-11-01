@@ -81,6 +81,7 @@ fn standalone_and_compressed_integrated_footprints_drive_real_eco_geometry() {
         sch.schematic.as_mut().unwrap().components[0]
             .settings
             .models = vec![ComponentModel {
+            parameters: Default::default(),
             name: "LIBPART".into(),
             kind: "PCBLIB".into(),
             current: true,

@@ -42,6 +42,11 @@ pub struct Fragment {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Edit {
+    Reorder {
+        ids: Vec<Uuid>,
+        target: Option<Uuid>,
+        front: bool,
+    },
     SheetFont(crate::schematic::SchFont),
     Font {
         id: Uuid,
@@ -323,7 +328,10 @@ fn refresh_hierarchy(s: &mut Schematic, before: &Schematic) -> Result<(), String
         }
     }
     for p in &mut s.primitives {
-        if let K::SheetEntry { name, .. } | K::Port { name, .. } = &p.kind {
+        if let K::SheetEntry { name, .. }
+        | K::Port { name, .. }
+        | K::ParameterSet { label: name, .. } = &p.kind
+        {
             p.presentation.name = name.clone();
         }
     }
@@ -414,6 +422,9 @@ fn apply(s: &mut Schematic, size: &mut Point, edit: &Edit, depth: usize) -> Resu
         return Err("Edit nesting exceeds limit".into());
     }
     match edit {
+        Edit::Reorder { ids, target, front } => {
+            crate::schematic_arrange::reorder(s, ids, *target, *front)?
+        }
         Edit::DeleteSelection(selection) => selection::delete(s, selection)?,
         Edit::TransformSelection {
             selection,
@@ -488,10 +499,11 @@ fn apply(s: &mut Schematic, size: &mut Point, edit: &Edit, depth: usize) -> Resu
                 return Err("Object identity cannot change through Properties".into());
             }
             let old = p.clone();
-            if !old
-                .presentation
-                .name
-                .eq_ignore_ascii_case(&value.presentation.name)
+            if old.presentation.parent.is_none()
+                && !old
+                    .presentation
+                    .name
+                    .eq_ignore_ascii_case(&value.presentation.name)
             {
                 let values = if let Some(owner) = p.component {
                     &s.components
@@ -536,7 +548,7 @@ fn apply(s: &mut Schematic, size: &mut Point, edit: &Edit, depth: usize) -> Resu
                         c.parameters
                             .insert(p.presentation.name.clone(), text.clone());
                     }
-                } else if !p.presentation.name.is_empty() {
+                } else if p.presentation.parent.is_none() && !p.presentation.name.is_empty() {
                     if old.presentation.name != p.presentation.name {
                         s.sheet.parameters.remove(&old.presentation.name);
                     }
@@ -855,6 +867,23 @@ pub fn transform_primitive(
         Ok(())
     };
     match &mut p.kind {
+        K::Blanket { points, .. } => {
+            for point in points {
+                tx(point)?;
+            }
+        }
+        K::CompileMask { a, b, .. } => {
+            tx(a)?;
+            tx(b)?;
+        }
+        K::ParameterSet {
+            position,
+            orientation,
+            ..
+        } => {
+            tx(position)?;
+            *orientation = (*orientation + turns) % 4;
+        }
         K::Polyline { points, .. } => {
             for p in points {
                 tx(p)?;
@@ -981,6 +1010,9 @@ pub fn anchor(s: &Schematic, id: Uuid) -> Option<Point> {
         .map(|c| c.position)
         .or_else(|| {
             s.primitive(id).and_then(|p| match &p.kind {
+                K::Blanket { points, .. } => points.first().copied(),
+                K::CompileMask { a, .. } => Some(*a),
+                K::ParameterSet { position, .. } => Some(*position),
                 K::Polyline { points, .. } => points.first().copied(),
                 K::Bezier { points } => Some(points[0]),
                 K::Rectangle { a, .. }
@@ -1092,6 +1124,7 @@ impl Fragment {
     pub fn fresh_copy(&self) -> Self {
         let mut f = self.clone();
         let mut ids = std::collections::HashMap::new();
+        let mut probe_pairs = std::collections::HashMap::new();
         for c in &mut f.components {
             let old = c.id;
             c.id = Uuid::new_v4();
@@ -1110,6 +1143,15 @@ impl Fragment {
                 .presentation
                 .parent
                 .map(|id| ids.get(&id).copied().unwrap_or(id));
+            if p.presentation.name.eq_ignore_ascii_case("VD_ID")
+                && let K::Text { text, .. } = &mut p.kind
+            {
+                let new = probe_pairs
+                    .entry(text.clone())
+                    .or_insert_with(|| Uuid::new_v4().simple().to_string()[..8].to_uppercase());
+                text.clone_from(new);
+                p.presentation.raw_text = Some(new.clone());
+            }
         }
         f
     }
@@ -1204,6 +1246,30 @@ pub fn snap_point(s: &Schematic, raw: Point, step: i64, radius: i64) -> Point {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Placement {
+    VoltageSource,
+    CurrentSource,
+    VoltageProbe,
+    VoltageDiffProbe,
+    CurrentProbe,
+    PowerProbe,
+    InitialCondition,
+    ParameterSet,
+    DifferentialPair,
+    Blanket,
+    CompileMask,
+    OffSheetConnector,
+    SheetSymbol,
+    NoErc,
+    TextFrame,
+    Note,
+    Rectangle,
+    RoundRectangle,
+    Arc,
+    FullCircle,
+    EllipticalArc,
+    Ellipse,
+    Polygon,
+    Bezier,
     Resistor,
     Capacitor,
     Wire,
@@ -1223,6 +1289,30 @@ pub enum Placement {
 impl Placement {
     pub fn label(self) -> &'static str {
         match self {
+            Self::VoltageSource => "Voltage Source",
+            Self::CurrentSource => "Current Source",
+            Self::VoltageProbe => "Voltage Probe",
+            Self::VoltageDiffProbe => "Voltage Diff Probe",
+            Self::CurrentProbe => "Current Probe",
+            Self::PowerProbe => "Power Probe",
+            Self::InitialCondition => "Initial Condition",
+            Self::ParameterSet => "Parameter Set",
+            Self::DifferentialPair => "Differential Pair",
+            Self::Blanket => "Blanket",
+            Self::CompileMask => "Compile Mask",
+            Self::OffSheetConnector => "Off Sheet Connector",
+            Self::SheetSymbol => "Sheet Symbol",
+            Self::NoErc => "Generic No ERC",
+            Self::TextFrame => "Text Frame",
+            Self::Note => "Note",
+            Self::Rectangle => "Rectangle",
+            Self::RoundRectangle => "Round Rectangle",
+            Self::Arc => "Arc",
+            Self::FullCircle => "Full Circle",
+            Self::EllipticalArc => "Elliptical Arc",
+            Self::Ellipse => "Ellipse",
+            Self::Polygon => "Polygon",
+            Self::Bezier => "Bezier",
             Self::Resistor => "Resistor",
             Self::Capacitor => "Capacitor",
             Self::Wire => "Wire",
@@ -1276,6 +1366,83 @@ pub fn place(
         p
     };
     match kind {
+        Placement::VoltageSource
+        | Placement::CurrentSource
+        | Placement::InitialCondition
+        | Placement::VoltageProbe
+        | Placement::VoltageDiffProbe
+        | Placement::CurrentProbe
+        | Placement::PowerProbe => {
+            f = crate::schematic_simulation::place(kind, designator, value, font)?;
+        }
+        Placement::ParameterSet | Placement::DifferentialPair => {
+            let mut p = primitive(
+                K::ParameterSet {
+                    position: Point::default(),
+                    orientation: 0,
+                    label: if kind == Placement::DifferentialPair && value.is_empty() {
+                        "DIFFPAIR".into()
+                    } else {
+                        value.into()
+                    },
+                    style: 0,
+                },
+                None,
+            );
+            p.color = 255;
+            p.width_nm = 101_600;
+            p.presentation.allow_sync = true;
+            if let K::ParameterSet { label, .. } = &p.kind {
+                p.presentation.name = label.clone();
+            }
+            let owner = p.id;
+            f.primitives.push(p);
+            if kind == Placement::DifferentialPair {
+                let mut child = primitive(
+                    K::Text {
+                        position: Point::default(),
+                        text: "True".into(),
+                        font,
+                        orientation: 0,
+                        justification: 0,
+                    },
+                    None,
+                );
+                child.presentation.parent = Some(owner);
+                child.presentation.record_type = 41;
+                child.presentation.name = "DifferentialPair".into();
+                child.presentation.raw_text = Some("True".into());
+                child.presentation.hidden = true;
+                child.presentation.auto_position = true;
+                child.presentation.allow_sync = true;
+                child.width_nm = 101_600;
+                f.primitives.push(child);
+            }
+        }
+        Placement::NoErc => {
+            let mut p = primitive(
+                K::NoErc {
+                    position: Point::default(),
+                },
+                None,
+            );
+            p.color = 255;
+            p.presentation.record_type = 22;
+            f.primitives.push(p);
+        }
+        Placement::SheetSymbol
+        | Placement::Blanket
+        | Placement::CompileMask
+        | Placement::TextFrame
+        | Placement::Note
+        | Placement::Rectangle
+        | Placement::RoundRectangle
+        | Placement::Arc
+        | Placement::FullCircle
+        | Placement::EllipticalArc
+        | Placement::Ellipse
+        | Placement::Polygon
+        | Placement::Bezier => return Err("This object requires multiple placement points".into()),
         Placement::Resistor | Placement::Capacitor => {
             if designator.trim().is_empty() {
                 return Err("Designator cannot be empty".into());
@@ -1292,7 +1459,7 @@ pub fn place(
                 description: "PCBCraft basic symbol".into(),
                 part: 1,
                 display_mode: 0,
-                parameters: Default::default(),
+                parameters: std::collections::BTreeMap::from([("Comment".into(), value.into())]),
             });
             for (x, orientation, number) in [(-5_080_000, 2, "1"), (5_080_000, 0, "2")] {
                 f.primitives.push(primitive(
@@ -1395,19 +1562,24 @@ pub fn place(
             (kind == Placement::NetLabel).then_some(TextRole::NetLabel),
             None,
         )),
-        Placement::Ground => {
+        Placement::Ground | Placement::OffSheetConnector => {
+            let cross_sheet = kind == Placement::OffSheetConnector;
             let mut p = primitive(
                 K::PowerPort {
+                    cross_sheet,
                     position: Point::default(),
-                    orientation: 3,
-                    style: 2,
+                    orientation: if cross_sheet { 0 } else { 3 },
+                    style: if cross_sheet { 0 } else { 2 },
                     text: value.into(),
                     show_name: true,
                     font,
                 },
                 None,
             );
-            p.color = 128;
+            p.color = if cross_sheet { 255 } else { 128 };
+            if cross_sheet {
+                p.width_nm = 101_600;
+            }
             f.primitives.push(p);
         }
         Placement::Junction => f.primitives.push(primitive(

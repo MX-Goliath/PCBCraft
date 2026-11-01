@@ -264,7 +264,7 @@ impl PcbCraft {
         let query_id = Id::new("projects_filter");
         let mut query = ctx.data_mut(|d| d.get_temp::<String>(query_id).unwrap_or_default());
         egui::SidePanel::left("projects_tree_v6")
-            .default_width(554.0)
+            .default_width(334.0)
             .width_range(190.0..=900.0)
             .resizable(true)
             .frame(
@@ -887,7 +887,7 @@ mod tests {
                     app.projects(ctx);
                     if width > 0.0 {
                         assert!(
-                            (ctx.available_rect().left() - 554.0).abs() < 1.0,
+                            (ctx.available_rect().left() - 334.0).abs() < 1.0,
                             "{:?}",
                             ctx.available_rect()
                         );

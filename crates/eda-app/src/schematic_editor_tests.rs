@@ -1054,6 +1054,7 @@ fn properties_keeps_dock_width_with_long_parameter_names_and_font_families() {
         .settings
         .models
         .push(eda_core::schematic::ComponentModel {
+            parameters: Default::default(),
             name: "Very long imported footprint model name".into(),
             kind: "PCBLIB".into(),
             current: true,

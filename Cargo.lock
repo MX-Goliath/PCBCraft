@@ -1036,6 +1036,7 @@ dependencies = [
  "eda-geom",
  "encoding_rs",
  "flate2",
+ "image",
  "ruststep",
  "serde_json",
  "tempfile",

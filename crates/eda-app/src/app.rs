@@ -33,6 +33,8 @@ mod pcb_editor;
 mod projects;
 #[path = "properties.rs"]
 mod properties;
+#[path = "schematic_active_bar.rs"]
+mod schematic_active_bar;
 #[path = "schematic_editor.rs"]
 mod schematic_editor;
 #[path = "schematic_properties.rs"]
@@ -112,6 +114,8 @@ struct Settings {
     components: bool,
     right_components: bool,
     libraries: Vec<PathBuf>,
+    device_sheet_folders: Vec<(PathBuf, bool)>,
+    snippet_folders: Vec<PathBuf>,
     projects: bool,
     properties: bool,
     messages: bool,
@@ -130,6 +134,13 @@ impl Default for Settings {
             components: false,
             right_components: false,
             libraries: vec![],
+            device_sheet_folders: default_altium_folder("Library/Device Sheets")
+                .map(|p| (p, true))
+                .into_iter()
+                .collect(),
+            snippet_folders: default_altium_folder("Examples/Snippets Examples")
+                .into_iter()
+                .collect(),
             projects: true,
             properties: true,
             messages: false,
@@ -142,6 +153,13 @@ impl Default for Settings {
             pcb_drc: Default::default(),
         }
     }
+}
+
+fn default_altium_folder(relative: &str) -> Option<PathBuf> {
+    std::env::var_os("PUBLIC")
+        .map(PathBuf::from)
+        .map(|p| p.join("Documents/Altium/AD24").join(relative))
+        .filter(|p| p.is_dir())
 }
 
 #[derive(Clone, Copy)]
@@ -1886,6 +1904,12 @@ impl PcbCraft {
     }
 
     fn shortcuts(&mut self, ctx: &egui::Context) {
+        if let Some(index) = self.active
+            && self.documents[index].sch_editor.bar.resources.modal()
+        {
+            self.schematic_bar_shortcuts(index, ctx);
+            return;
+        }
         if self.sheet_sync.busy() {
             if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Escape)) {
                 self.sheet_sync_escape();

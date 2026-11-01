@@ -48,6 +48,7 @@ fn main() -> Result<(), String> {
             m.current = false;
         }
         settings.models.push(eda_core::schematic::ComponentModel {
+            parameters: Default::default(),
             name: "PCBCraft_Test_0603".into(),
             kind: "PCBLIB".into(),
             current: true,

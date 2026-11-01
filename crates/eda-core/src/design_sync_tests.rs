@@ -14,6 +14,7 @@ fn fixture() -> (Document, Document) {
     let s = sch.schematic.as_mut().unwrap();
     let c = &mut s.components[0];
     c.settings.models.push(schematic::ComponentModel {
+        parameters: Default::default(),
         name: "R0603".into(),
         kind: "PCBLIB".into(),
         current: true,
@@ -630,6 +631,7 @@ fn identical_local_names_on_different_sheets_do_not_merge_accidentally() {
             {
                 let position = edit::electrical_endpoint(p).unwrap();
                 p.kind = K::PowerPort {
+                    cross_sheet: false,
                     position,
                     orientation: 0,
                     style: 0,
@@ -647,6 +649,7 @@ fn identical_local_names_on_different_sheets_do_not_merge_accidentally() {
         {
             let position = edit::electrical_endpoint(p).unwrap();
             p.kind = K::PowerPort {
+                cross_sheet: false,
                 position,
                 orientation: 0,
                 style: 0,

@@ -488,6 +488,7 @@ fn eco_metadata_and_unicode_parameters_roundtrip_ascii_and_binary() {
         let mut settings = c.settings.clone();
         settings.kind = 5;
         settings.models = vec![ComponentModel {
+            parameters: Default::default(),
             name: "Корпус 0603".into(),
             kind: "PCBLIB".into(),
             current: true,
@@ -621,6 +622,7 @@ fn native_net_names_and_existing_model_maps_are_preserved() {
     let mut settings = c.settings.clone();
     settings.models[0].current = false;
     settings.models.push(ComponentModel {
+        parameters: Default::default(),
         name: "0805".into(),
         kind: "PCBLIB".into(),
         current: true,
@@ -681,7 +683,7 @@ fn unsupported_edits_and_opaque_reindexing_leave_destination_unchanged() {
     assert!(
         save(&destination, &moved)
             .unwrap_err()
-            .contains("unsupported scene changes")
+            .contains("unrepresented geometry")
     );
     assert_eq!(std::fs::read(&destination).unwrap(), b"untouched");
     let multiline = edit(

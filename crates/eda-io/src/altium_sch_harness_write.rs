@@ -2,8 +2,10 @@
 use super::*;
 
 pub(super) fn harness(p: &SchPrimitive) -> bool {
-    matches!(p.kind, K::HarnessConnector { .. } | K::HarnessEntry { .. })
-        || p.presentation.record_type == 217
+    matches!(
+        p.kind,
+        K::HarnessConnector { .. } | K::HarnessEntry { .. } | K::Blanket { .. }
+    ) || p.presentation.record_type == 217
         || matches!(&p.kind,K::Polyline{electrical,..} if electrical=="Signal Harness")
 }
 pub(super) fn changes(
@@ -42,6 +44,7 @@ pub(super) fn changes(
             }
             let kind = match p.kind {
                 K::HarnessConnector { .. } => 215,
+                K::Blanket { .. } => 225,
                 K::HarnessEntry { .. } => 216,
                 K::Text { .. } => 217,
                 _ => 218,
@@ -73,6 +76,28 @@ pub(super) fn changes(
                 &mut patch.added[index as usize - count]
             };
             match &p.kind {
+                K::Blanket { points, collapsed } => {
+                    let min = Point {
+                        x: points.iter().map(|p| p.x).min().unwrap(),
+                        y: points.iter().map(|p| p.y).min().unwrap(),
+                    };
+                    let max = Point {
+                        x: points.iter().map(|p| p.x).max().unwrap(),
+                        y: points.iter().map(|p| p.y).max().unwrap(),
+                    };
+                    location(f, min);
+                    coordinate_units(f, "CORNER.X", native_units(max.x));
+                    coordinate_units(f, "CORNER.Y", native_units(max.y));
+                    set(f, "LOCATIONCOUNT", points.len().to_string());
+                    for (n, p) in points.iter().enumerate() {
+                        coordinate_units(f, &format!("X{}", n + 1), native_units(p.x));
+                        coordinate_units(f, &format!("Y{}", n + 1), native_units(p.y));
+                    }
+                    set(f, "COLLAPSED", boolean(*collapsed));
+                    set(f, "LINESTYLE", p.line_style.to_string());
+                    set(f, "LINESTYLEEXT", p.line_style.to_string());
+                }
+
                 K::HarnessConnector {
                     a,
                     b,

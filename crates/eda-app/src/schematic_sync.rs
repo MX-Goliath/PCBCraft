@@ -825,6 +825,9 @@ impl PcbCraft {
         input: &eda_render::SchematicInput,
         ctx: &egui::Context,
     ) -> bool {
+        if self.documents[index].sch_editor.bar.resources.modal() {
+            return true;
+        }
         if self
             .sheet_sync
             .dialog
@@ -906,13 +909,8 @@ impl PcbCraft {
             return true;
         }
         if input.secondary_clicked
-            && let Some(id) = input.hit
-            && self.documents[index]
-                .model
-                .schematic
-                .as_ref()
-                .and_then(|s| s.primitive(id))
-                .is_some_and(|p| matches!(p.kind, K::SheetSymbol { .. }))
+            && !self.documents[index].sch_editor.active()
+            && let Some(id) = input.hit.or(self.documents[index].view.selected)
         {
             self.sheet_sync.popup = ctx
                 .input(|i| i.pointer.hover_pos())
@@ -927,14 +925,38 @@ impl PcbCraft {
         };
         let mut close = false;
         let mut start = false;
+        let mut snippet = false;
+        let is_sheet = self.documents[index]
+            .model
+            .schematic
+            .as_ref()
+            .and_then(|s| s.primitive(id))
+            .is_some_and(|p| matches!(p.kind, K::SheetSymbol { .. }));
+        let selected = self.documents[index].view.selected.is_some()
+            || !self.documents[index].view.sch_selection.is_empty()
+            || !self.documents[index].view.sch_segments.is_empty();
         let response = egui::Area::new(egui::Id::new("sheet_symbol_actions"))
             .fixed_pos(pos)
             .order(egui::Order::Foreground)
             .show(ctx, |ui| {
                 egui::Frame::popup(ui.style()).show(ui, |ui| {
-                    ui.menu_button("Sheet Symbol Actions", |ui| {
-                        if ui.button("Synchronize Sheet Entries and Ports").clicked() {
-                            start = true;
+                    if is_sheet {
+                        ui.menu_button("Sheet Symbol Actions", |ui| {
+                            if ui.button("Synchronize Sheet Entries and Ports").clicked() {
+                                start = true;
+                                ui.close();
+                            }
+                        });
+                    }
+                    ui.menu_button("Snippets", |ui| {
+                        if ui
+                            .add_enabled(
+                                selected,
+                                egui::Button::new("Create Snippet from selected objects"),
+                            )
+                            .clicked()
+                        {
+                            snippet = true;
                             ui.close();
                         }
                     });
@@ -956,6 +978,11 @@ impl PcbCraft {
             self.active = Some(index);
             self.documents[index].view.selected = Some(id);
             self.start_sheet_sync(true);
+            close = true;
+        }
+        if snippet {
+            self.active = Some(index);
+            self.documents[index].sch_editor.bar.resources.open_create();
             close = true;
         }
         if close {

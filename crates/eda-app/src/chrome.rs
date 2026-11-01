@@ -3,6 +3,14 @@ use theme::{Icon, icon_button};
 
 impl PcbCraft {
     pub(super) fn title_bar(&mut self, ctx: &egui::Context) {
+        let height = if self
+            .active
+            .is_some_and(|i| self.documents[i].model.kind == DocumentKind::Schematic)
+        {
+            23.
+        } else {
+            31.
+        };
         let title = self
             .active
             .map(|i| {
@@ -14,7 +22,7 @@ impl PcbCraft {
             })
             .unwrap_or_else(|| "PCBCraft".into());
         egui::TopBottomPanel::top("window_title")
-            .exact_height(31.0)
+            .exact_height(height)
             .frame(egui::Frame::NONE.fill(egui::Color32::from_gray(74)))
             .show(ctx, |ui| {
                 ui.spacing_mut().item_spacing.x = 0.0;
@@ -46,7 +54,7 @@ impl PcbCraft {
                     }
                     let width = (ui.available_width() - 300.0).max(10.0);
                     let (rect, response) = ui.allocate_exact_size(
-                        egui::vec2(width, 31.0),
+                        egui::vec2(width, height),
                         egui::Sense::click_and_drag(),
                     );
                     ui.painter().text(
@@ -130,6 +138,10 @@ impl PcbCraft {
         let schematic = self
             .active
             .is_some_and(|i| self.documents[i].model.kind == DocumentKind::Schematic);
+        if schematic {
+            self.schematic_active_bar(ctx, canvas);
+            return;
+        }
         egui::Area::new(egui::Id::new("active_bar"))
             .fixed_pos(egui::pos2(canvas.center().x - 237.0, canvas.top() + 7.0))
             .show(ctx, |ui| {
@@ -138,122 +150,60 @@ impl PcbCraft {
                     .inner_margin(4)
                     .corner_radius(2)
                     .show(ui, |ui| {
-                        ui.spacing_mut().item_spacing.x = if schematic { 11.5 } else { 9.0 };
+                        ui.spacing_mut().item_spacing.x = 9.0;
                         ui.horizontal(|ui| {
-                            let tools: &[(Icon, &str, Option<Command>)] = if schematic {
-                                &[
-                                    (
-                                        Icon::Select,
-                                        "Select / Cancel",
-                                        Some(Command::SchEdit(SchAction::Select)),
-                                    ),
-                                    (Icon::Grid, "Grids", Some(Command::ToggleGrid)),
-                                    (Icon::Fit, "Fit Document", Some(Command::Fit)),
-                                    (
-                                        Icon::Component,
-                                        "Place Resistor",
-                                        Some(Command::SchPlace(Placement::Resistor)),
-                                    ),
-                                    (
-                                        Icon::Chip,
-                                        "Place Capacitor",
-                                        Some(Command::SchPlace(Placement::Capacitor)),
-                                    ),
-                                    (
-                                        Icon::Track,
-                                        "Place Wire (W)",
-                                        Some(Command::SchPlace(Placement::Wire)),
-                                    ),
-                                    (
-                                        Icon::Pad,
-                                        "Place Junction (J)",
-                                        Some(Command::SchPlace(Placement::Junction)),
-                                    ),
-                                    (
-                                        Icon::Filter,
-                                        "Place Power Port",
-                                        Some(Command::SchPlace(Placement::Ground)),
-                                    ),
-                                    (
-                                        Icon::Text,
-                                        "Place Net Label (L)",
-                                        Some(Command::SchPlace(Placement::NetLabel)),
-                                    ),
-                                    (
-                                        Icon::Text,
-                                        "Place Text String (T)",
-                                        Some(Command::SchPlace(Placement::Text)),
-                                    ),
-                                    (
-                                        Icon::Line,
-                                        "Place Line",
-                                        Some(Command::SchPlace(Placement::Line)),
-                                    ),
-                                    (
-                                        Icon::Component,
-                                        "Move selected (M)",
-                                        Some(Command::SchEdit(SchAction::Move)),
-                                    ),
-                                    (
-                                        Icon::Redo,
-                                        "Rotate selected (Space)",
-                                        Some(Command::SchEdit(SchAction::Rotate)),
-                                    ),
-                                ]
-                            } else {
-                                &[
-                                    (Icon::Filter, "Selection Filter", None),
-                                    (Icon::Magnet, "Object Snap", None),
-                                    (Icon::Crosshair, "Set Origin", None),
-                                    (
-                                        Icon::Select,
-                                        "Select / Cancel",
-                                        Some(Command::Pcb(pcb_editor::Action::Tool(
-                                            pcb_editor::Tool::Select,
-                                        ))),
-                                    ),
-                                    (Icon::Chart, "Measure", None),
-                                    (Icon::Chip, "Component", None),
-                                    (
-                                        Icon::Track,
-                                        "Interactive Routing (Ctrl+W)",
-                                        Some(Command::Pcb(pcb_editor::Action::Tool(
-                                            pcb_editor::Tool::Route,
-                                        ))),
-                                    ),
-                                    (Icon::MultiRoute, "Interactive Multi-Routing", None),
-                                    (
-                                        Icon::Via,
-                                        "Place Via (P, V)",
-                                        Some(Command::Pcb(pcb_editor::Action::Tool(
-                                            pcb_editor::Tool::Via,
-                                        ))),
-                                    ),
-                                    (
-                                        Icon::Fill,
-                                        "Place Fill (P, F)",
-                                        Some(Command::Pcb(pcb_editor::Action::Tool(
-                                            pcb_editor::Tool::Fill,
-                                        ))),
-                                    ),
-                                    (
-                                        Icon::Polygon,
-                                        "Polygon Pour (P, G)",
-                                        Some(Command::Pcb(pcb_editor::Action::Tool(
-                                            pcb_editor::Tool::Polygon,
-                                        ))),
-                                    ),
-                                    (Icon::Dimension, "Dimension", None),
-                                    (
-                                        Icon::Text,
-                                        "Place String (P, S)",
-                                        Some(Command::Pcb(pcb_editor::Action::Tool(
-                                            pcb_editor::Tool::Text,
-                                        ))),
-                                    ),
-                                    (Icon::Line, "Place Line", None),
-                                ]
-                            };
+                            let tools: &[(Icon, &str, Option<Command>)] = &[
+                                (Icon::Filter, "Selection Filter", None),
+                                (Icon::Magnet, "Object Snap", None),
+                                (Icon::Crosshair, "Set Origin", None),
+                                (
+                                    Icon::Select,
+                                    "Select / Cancel",
+                                    Some(Command::Pcb(pcb_editor::Action::Tool(
+                                        pcb_editor::Tool::Select,
+                                    ))),
+                                ),
+                                (Icon::Chart, "Measure", None),
+                                (Icon::Chip, "Component", None),
+                                (
+                                    Icon::Track,
+                                    "Interactive Routing (Ctrl+W)",
+                                    Some(Command::Pcb(pcb_editor::Action::Tool(
+                                        pcb_editor::Tool::Route,
+                                    ))),
+                                ),
+                                (Icon::MultiRoute, "Interactive Multi-Routing", None),
+                                (
+                                    Icon::Via,
+                                    "Place Via (P, V)",
+                                    Some(Command::Pcb(pcb_editor::Action::Tool(
+                                        pcb_editor::Tool::Via,
+                                    ))),
+                                ),
+                                (
+                                    Icon::Fill,
+                                    "Place Fill (P, F)",
+                                    Some(Command::Pcb(pcb_editor::Action::Tool(
+                                        pcb_editor::Tool::Fill,
+                                    ))),
+                                ),
+                                (
+                                    Icon::Polygon,
+                                    "Polygon Pour (P, G)",
+                                    Some(Command::Pcb(pcb_editor::Action::Tool(
+                                        pcb_editor::Tool::Polygon,
+                                    ))),
+                                ),
+                                (Icon::Dimension, "Dimension", None),
+                                (
+                                    Icon::Text,
+                                    "Place String (P, S)",
+                                    Some(Command::Pcb(pcb_editor::Action::Tool(
+                                        pcb_editor::Tool::Text,
+                                    ))),
+                                ),
+                                (Icon::Line, "Place Line", None),
+                            ];
                             for &(icon, tip, command) in tools {
                                 let needs_selection = matches!(
                                     command,
@@ -271,7 +221,7 @@ impl PcbCraft {
                                                 && tool != pcb_editor::Tool::Select
                                         })
                                     }
-                                    _ => matches!(icon, Icon::Grid) && self.settings.show_grid,
+                                    _ => false,
                                 };
                                 if icon_button(ui, icon, selected, enabled)
                                     .on_hover_text(tip)

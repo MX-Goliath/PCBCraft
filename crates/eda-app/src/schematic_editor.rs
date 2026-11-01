@@ -53,6 +53,7 @@ pub(super) mod tests;
 
 #[derive(Default)]
 pub(super) struct Editor {
+    pub(super) bar: super::schematic_active_bar::State,
     pub(super) hierarchy_pick: bool,
     tool: Tool,
     move_popup: Option<egui::Pos2>,
@@ -80,6 +81,7 @@ pub(super) struct Editor {
 enum Tool {
     #[default]
     Select,
+    Graphic,
     Pick {
         connected: bool,
     },
@@ -137,9 +139,10 @@ impl Editor {
         }
     }
     pub fn active(&self) -> bool {
-        self.hierarchy_pick || !matches!(self.tool, Tool::Select)
+        self.bar.interaction.is_some() || self.hierarchy_pick || !matches!(self.tool, Tool::Select)
     }
     pub fn cancel(&mut self, view: &mut View) {
+        self.bar.interaction = None;
         self.hierarchy_pick = false;
         self.tool = Tool::Select;
         self.move_popup = None;
@@ -246,6 +249,31 @@ fn next_designator(s: &Schematic, prefix: &str) -> String {
 }
 
 impl PcbCraft {
+    pub(super) fn start_schematic_fragment(
+        &mut self,
+        index: usize,
+        fragment: Fragment,
+        anchor: Point,
+    ) {
+        let doc = &mut self.documents[index];
+        doc.sch_editor.cancel(&mut doc.view);
+        doc.sch_editor.tool = Tool::Move {
+            fragment,
+            selection: Selection::default(),
+            connected: false,
+            anchor,
+            turns: 0,
+            revision: doc.history.revision,
+            drag: false,
+        };
+        doc.view.sch_tool_active = true;
+    }
+    pub(super) fn schematic_graphic_tool(&mut self, index: usize) {
+        let doc = &mut self.documents[index];
+        doc.sch_editor.cancel(&mut doc.view);
+        doc.sch_editor.tool = Tool::Graphic;
+        doc.view.sch_tool_active = true;
+    }
     pub(super) fn finish_schematic_interaction(&mut self) {
         for (i, doc) in self.documents.iter_mut().enumerate() {
             if self.active != Some(i)
@@ -417,8 +445,8 @@ impl PcbCraft {
             self.action(ui, label, shortcut, Command::SchPlace(kind), true);
         }
         self.action(ui, "Port", "P, R", Command::SchPlace(Placement::Port), true);
-        for label in ["Off Sheet Connector", "Sheet Symbol"] {
-            ui.add_enabled(false, egui::Button::new(label));
+        for kind in [Placement::OffSheetConnector, Placement::SheetSymbol] {
+            self.action(ui, kind.label(), "", Command::SchPlace(kind), true);
         }
         self.action(
             ui,
@@ -427,8 +455,22 @@ impl PcbCraft {
             Command::SchPlace(Placement::SheetEntry),
             true,
         );
-        for label in ["Device Sheet Symbol", "Reuse Block…"] {
-            ui.add_enabled(false, egui::Button::new(label));
+        for (label, device) in [("Device Sheet Symbol", true), ("Reuse Block…", false)] {
+            if ui.button(label).clicked() {
+                if let Some(i) = self.active {
+                    let doc = &mut self.documents[i];
+                    if device {
+                        doc.sch_editor.cancel(&mut doc.view);
+                    }
+                    let resources = &mut self.documents[i].sch_editor.bar.resources;
+                    if device {
+                        resources.open_device();
+                    } else {
+                        resources.open_reuse();
+                    }
+                }
+                ui.close();
+            }
         }
         ui.menu_button("Harness", |ui| {
             for (label, key, kind) in [
@@ -454,6 +496,17 @@ impl PcbCraft {
                 ui.close();
             }
         });
+        ui.menu_button("Directives", |ui| {
+            for kind in [
+                Placement::ParameterSet,
+                Placement::NoErc,
+                Placement::DifferentialPair,
+                Placement::Blanket,
+                Placement::CompileMask,
+            ] {
+                self.action(ui, kind.label(), "", Command::SchPlace(kind), true);
+            }
+        });
         self.action(
             ui,
             "Text String",
@@ -461,22 +514,28 @@ impl PcbCraft {
             Command::SchPlace(Placement::Text),
             true,
         );
-        for label in ["Text Frame", "Note"] {
-            ui.add_enabled(false, egui::Button::new(label));
+        for kind in [Placement::TextFrame, Placement::Note] {
+            self.action(ui, kind.label(), "", Command::SchPlace(kind), true);
         }
         ui.menu_button("Drawing Tools", |ui| {
-            for label in ["Arc", "Full Circle", "Elliptical Arc", "Ellipse"] {
-                ui.add_enabled(false, egui::Button::new(label));
-            }
-            self.action(ui, "Line", "", Command::SchPlace(Placement::Line), true);
-            for label in [
-                "Rectangle",
-                "Round Rectangle",
-                "Polygon",
-                "Bezier",
-                "Graphic…",
+            for kind in [
+                Placement::Arc,
+                Placement::FullCircle,
+                Placement::EllipticalArc,
+                Placement::Ellipse,
+                Placement::Line,
+                Placement::Rectangle,
+                Placement::RoundRectangle,
+                Placement::Polygon,
+                Placement::Bezier,
             ] {
-                ui.add_enabled(false, egui::Button::new(label));
+                self.action(ui, kind.label(), "", Command::SchPlace(kind), true);
+            }
+            if ui.button("Graphic…").clicked() {
+                if let Some(i) = self.active {
+                    self.schematic_graphic_tool(i);
+                }
+                ui.close();
             }
         });
         ui.add_enabled(false, egui::Button::new("Comment…"));
@@ -499,28 +558,66 @@ impl PcbCraft {
             return;
         };
         doc.sch_editor.cancel(&mut doc.view);
+        doc.sch_editor.bar.power = None;
+        doc.sch_editor.bar.shape_turns = 0;
         doc.sch_editor.kind = Some(kind);
         doc.sch_editor.value = match kind {
             Placement::Resistor => "10k",
             Placement::Capacitor => "100nF",
             Placement::Ground => "GND",
+            Placement::OffSheetConnector => "OffSheet",
             Placement::NetLabel => "Net1",
             Placement::Port => "Port",
             Placement::SheetEntry => "Entry",
             Placement::HarnessEntry => "0",
             Placement::HarnessConnector => "*",
-            Placement::Text => "Text",
+            Placement::Text | Placement::TextFrame | Placement::Note => "Text",
+            Placement::SheetSymbol => "Sheet1.SchDoc",
+            Placement::ParameterSet => "Parameter Set",
+            Placement::DifferentialPair => "DIFFPAIR",
+            Placement::VoltageSource => "5",
+            Placement::CurrentSource => "1m",
+            Placement::VoltageDiffProbe => "VD+",
             _ => "",
         }
         .into();
+        if matches!(
+            kind,
+            Placement::Blanket
+                | Placement::CompileMask
+                | Placement::SheetSymbol
+                | Placement::TextFrame
+                | Placement::Note
+                | Placement::Rectangle
+                | Placement::RoundRectangle
+                | Placement::Arc
+                | Placement::FullCircle
+                | Placement::EllipticalArc
+                | Placement::Ellipse
+                | Placement::Polygon
+                | Placement::Bezier
+        ) {
+            doc.sch_editor.bar.interaction =
+                Some(super::schematic_active_bar::Interaction::Shape {
+                    kind,
+                    points: vec![],
+                });
+            doc.view.sch_tool_active = true;
+            return;
+        }
         doc.sch_editor.designator = next_designator(
             s,
-            if kind == Placement::Capacitor {
-                "C"
-            } else {
-                "R"
+            match kind {
+                Placement::Capacitor => "C",
+                Placement::VoltageSource => "V",
+                Placement::CurrentSource => "I",
+                Placement::InitialCondition => "IC",
+                _ => "R",
             },
         );
+        if kind == Placement::VoltageDiffProbe {
+            doc.sch_editor.designator = Uuid::new_v4().simple().to_string()[..8].to_uppercase();
+        }
         doc.sch_editor.harness_width = 508_000;
         doc.sch_editor.harness_color = eda_core::schematic_harness::SIGNAL_COLOR;
         doc.sch_editor.tool = if kind == Placement::HarnessConnector {
@@ -697,6 +794,9 @@ impl PcbCraft {
         if self.documents[i].model.kind != DocumentKind::Schematic {
             return false;
         }
+        if self.schematic_bar_shortcuts(i, ctx) {
+            return true;
+        }
         if self.documents[i].sch_editor.predefined {
             return false;
         }
@@ -870,7 +970,7 @@ impl PcbCraft {
                 | Tool::Library { turns, .. } => *turns = (*turns + 1) % 4,
                 Tool::Path { vertical_first, .. } => *vertical_first = !*vertical_first,
                 Tool::Select => self.schematic_action(SchAction::Rotate, ctx),
-                Tool::Pick { .. } | Tool::WireDrag { .. } => {}
+                Tool::Graphic | Tool::Pick { .. } | Tool::WireDrag { .. } => {}
             }
             return true;
         }
@@ -910,6 +1010,9 @@ impl PcbCraft {
         input: eda_render::SchematicInput,
         ctx: &egui::Context,
     ) {
+        if self.schematic_bar_input(index, &input, ctx) {
+            return;
+        }
         if self.documents[index].sch_editor.hierarchy_pick && input.clicked {
             if let Some(id) = input.hit {
                 self.navigate_hierarchy(index, id);
@@ -917,7 +1020,8 @@ impl PcbCraft {
             return;
         }
         let doc = &mut self.documents[index];
-        if doc.sch_editor.paused || doc.sch_editor.predefined {
+        if doc.sch_editor.paused || doc.sch_editor.predefined || doc.sch_editor.bar.dialog.is_some()
+        {
             return;
         }
         // Escape is processed by schematic_shortcuts, including finishing a path.
@@ -1051,6 +1155,45 @@ impl PcbCraft {
         }
         let kind = doc.sch_editor.kind;
         match &mut doc.sch_editor.tool {
+            Tool::Graphic => {
+                if input.secondary_clicked {
+                    finish = true;
+                } else if input.clicked
+                    && let Some(at) = point
+                {
+                    if let Some(path) = self
+                        .file_dialog
+                        .clone()
+                        .set_title("Choose Graphic")
+                        .add_filter(
+                            "Image Files",
+                            &["png", "jpg", "jpeg", "bmp", "gif", "tif", "tiff", "ico"],
+                        )
+                        .pick_file()
+                    {
+                        match eda_io::schematic_graphic::load(&path, false) {
+                            Ok(fragment) => {
+                                doc.sch_editor.tool = Tool::Move {
+                                    fragment,
+                                    selection: Selection::default(),
+                                    connected: false,
+                                    anchor: Point::default(),
+                                    turns: 0,
+                                    revision: doc.history.revision,
+                                    drag: false,
+                                };
+                                doc.sch_editor.pointer = Some(at);
+                            }
+                            Err(e) => {
+                                error = Some(e);
+                                finish = true;
+                            }
+                        }
+                    } else {
+                        finish = true;
+                    }
+                }
+            }
             Tool::Select | Tool::Pick { .. } => {}
             Tool::WireDrag {
                 id,
@@ -1222,6 +1365,25 @@ impl PcbCraft {
                             s.sheet.system_font,
                         )
                     };
+                    let result = result.map(|mut f| {
+                        if kind == Some(Placement::Ground)
+                            && let Some(n) = doc.sch_editor.bar.power
+                        {
+                            let (_, style, orientation) = super::schematic_active_bar::POWER[n];
+                            for p in &mut f.primitives {
+                                if let K::PowerPort {
+                                    style: s,
+                                    orientation: o,
+                                    ..
+                                } = &mut p.kind
+                                {
+                                    *s = style;
+                                    *o = (orientation + *turns) % 4;
+                                }
+                            }
+                        }
+                        f
+                    });
                     match result {
                         Ok(fragment) => {
                             if input.clicked
@@ -1438,6 +1600,15 @@ impl PcbCraft {
                         {
                             *revision = doc.history.revision;
                         }
+                        if kind == Some(Placement::VoltageDiffProbe) {
+                            if doc.sch_editor.value == "VD+" {
+                                doc.sch_editor.value = "VD-".into();
+                            } else {
+                                doc.sch_editor.value = "VD+".into();
+                                doc.sch_editor.designator =
+                                    Uuid::new_v4().simple().to_string()[..8].to_uppercase();
+                            }
+                        }
                         if kind == Some(Placement::HarnessEntry) {
                             let n = doc
                                 .sch_editor
@@ -1449,13 +1620,24 @@ impl PcbCraft {
                                 doc.sch_editor.value = n.to_string();
                             }
                         }
-                        if matches!(kind, Some(Placement::Resistor | Placement::Capacitor)) {
+                        if matches!(
+                            kind,
+                            Some(
+                                Placement::Resistor
+                                    | Placement::Capacitor
+                                    | Placement::VoltageSource
+                                    | Placement::CurrentSource
+                                    | Placement::InitialCondition
+                            )
+                        ) {
                             doc.sch_editor.designator = next_designator(
                                 doc.model.schematic.as_ref().unwrap(),
-                                if kind == Some(Placement::Capacitor) {
-                                    "C"
-                                } else {
-                                    "R"
+                                match kind {
+                                    Some(Placement::Capacitor) => "C",
+                                    Some(Placement::VoltageSource) => "V",
+                                    Some(Placement::CurrentSource) => "I",
+                                    Some(Placement::InitialCondition) => "IC",
+                                    _ => "R",
                                 },
                             );
                         }
