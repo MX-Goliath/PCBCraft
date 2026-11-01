@@ -9,6 +9,8 @@ pub mod pcb;
 pub mod pcb_3d;
 pub mod pcb_stack;
 mod schematic;
+pub mod schematic_output;
+pub mod schematic_vector;
 
 /// Read-only preview of a library fragment, fitted to its visible geometry.
 pub fn symbol_preview(

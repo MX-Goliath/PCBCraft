@@ -10,6 +10,49 @@ pub use netlist::{Netlist, Pin, compile, compile_project};
 #[path = "design_sync_project.rs"]
 mod project;
 pub use project::{NetScope, ProjectOptions, SheetLink};
+
+/// Validated physical components and connectivity for interchange writers.
+/// Multi-part symbols share one component, using the same rules as ECO.
+#[derive(Clone, Debug)]
+pub struct ExportComponent {
+    pub designator: String,
+    pub comment: String,
+    pub footprint: String,
+}
+pub struct ExportNetlist {
+    pub components: Vec<ExportComponent>,
+    pub connectivity: Netlist,
+}
+pub fn compile_export(
+    sheets: &[&Document],
+    options: &ProjectOptions,
+) -> Result<ExportNetlist, String> {
+    if sheets.is_empty() {
+        return Err("Select at least one schematic".into());
+    }
+    for doc in sheets {
+        doc.validate()?;
+    }
+    let mut export_options = options.clone();
+    export_options.review_annotation = false;
+    let mut components: Vec<_> = components(sheets, &export_options)?
+        .into_iter()
+        .map(|c| ExportComponent {
+            designator: c.designator,
+            comment: c.comment,
+            footprint: c.footprint,
+        })
+        .collect();
+    components.sort_by(|a, b| project::natural_order(&a.designator, &b.designator));
+    let connectivity = compile_project(sheets, options)?;
+    if !connectivity.issues.is_empty() {
+        return Err(connectivity.issues.join("; "));
+    }
+    Ok(ExportNetlist {
+        components,
+        connectivity,
+    })
+}
 pub(crate) fn local_harness(
     s: &schematic::Schematic,
 ) -> Result<netlist::harness::Expansion, String> {

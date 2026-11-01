@@ -4,6 +4,46 @@ use eda_core::schematic_edit::{self, Edit};
 const ASCII: &[u8] = include_bytes!("../../../fixtures/schematic/minimal.SchDoc");
 
 #[test]
+fn new_native_sheet_saves_geometry_and_sheet_settings() {
+    let doc = super::super::new_schematic("Sheet1.SchDoc").unwrap();
+    let mut sheet = doc.schematic.as_ref().unwrap().sheet.clone();
+    sheet.background = 0xfafafa;
+    sheet.grid_visible = false;
+    sheet.options.snap_enabled = false;
+    let mut size = doc.size;
+    sheet.set_standard_format(&mut size, 1);
+    let next = edit(
+        &doc,
+        Edit::SheetProperties {
+            sheet: Box::new(sheet),
+            size,
+        },
+    );
+    let next = edit(
+        &next,
+        Edit::Insert(schematic_edit::Fragment {
+            primitives: vec![schematic_edit::primitive(
+                K::Polyline {
+                    points: vec![Point::mm(10, 10), Point::mm(30, 20)],
+                    electrical: "Wire".into(),
+                    closed: false,
+                },
+                None,
+            )],
+            ..Default::default()
+        }),
+    );
+    let bytes = serialize(&next).unwrap();
+    let read = import_schematic(&bytes, "Sheet1.SchDoc").unwrap();
+    assert_eq!(read.size, next.size);
+    assert_eq!(
+        read.schematic.as_ref().unwrap().sheet,
+        next.schematic.as_ref().unwrap().sheet
+    );
+    assert_eq!(read.schematic.as_ref().unwrap().primitives.len(), 1);
+}
+
+#[test]
 fn modern_component_kind_overrides_legacy_and_round_trips_native_edits() {
     let text = String::from_utf8(ASCII.to_vec()).unwrap().replace(
         "|LIBREFERENCE=Resistor",

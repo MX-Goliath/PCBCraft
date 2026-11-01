@@ -5,7 +5,11 @@ pub mod altium_pcb;
 mod altium_tests;
 #[cfg(test)]
 mod library_tests;
+pub mod project_files;
+pub mod schematic_dxf;
 pub mod schematic_graphic;
+pub mod schematic_netlist;
+pub mod schematic_pdf;
 pub mod schematic_reuse;
 use std::{io::Write, path::Path};
 

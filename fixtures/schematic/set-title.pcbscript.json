@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "name": "Set schematic title",
+  "edits": [
+    {
+      "ParameterValue": {
+        "component": null,
+        "name": "Title",
+        "value": "PCBCraft schematic"
+      }
+    }
+  ]
+}

@@ -97,7 +97,7 @@ impl PcbCraft {
         {
             self.active = Some(index);
         } else if path.extension().is_some_and(|s| {
-            ["PrjPcb", "SchLib", "PcbLib", "IntLib"]
+            ["PrjPcb", "DsnWrk", "SchLib", "PcbLib", "IntLib"]
                 .iter()
                 .any(|ext| s.eq_ignore_ascii_case(ext))
         }) {

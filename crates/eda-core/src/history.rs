@@ -32,6 +32,22 @@ impl Default for History {
 }
 
 impl History {
+    /// Saving under a new filename changes file metadata in every snapshot;
+    /// Undo must continue to address the same document and destination.
+    pub fn rename_file(&mut self, current: &mut Document, name: String) -> Result<(), String> {
+        let mut checked = current.clone();
+        checked.name = name.clone();
+        checked.validate()?;
+        current.name = name.clone();
+        for snapshot in self.undo.iter_mut().chain(&mut self.redo) {
+            self.retained_bytes = self.retained_bytes.saturating_sub(snapshot.bytes);
+            snapshot.document.name = name.clone();
+            snapshot.bytes = snapshot_bytes(&snapshot.document);
+            self.retained_bytes += snapshot.bytes;
+        }
+        self.current_bytes = None;
+        Ok(())
+    }
     /// Keep at least the nearest snapshot even if one large edit exceeds the
     /// byte budget. Dropping older snapshots must not make that edit irreversible.
     pub fn with_limits(max_steps: usize, max_bytes: usize) -> Self {

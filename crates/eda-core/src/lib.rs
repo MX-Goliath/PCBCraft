@@ -15,6 +15,7 @@ pub mod schematic_bus;
 pub mod schematic_compile;
 pub mod schematic_edit;
 pub mod schematic_harness;
+pub mod schematic_script;
 pub mod schematic_simulation;
 pub mod schematic_sync;
 use eda_geom::Point;

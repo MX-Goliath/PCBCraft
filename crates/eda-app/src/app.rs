@@ -23,6 +23,10 @@ mod design_sync;
 mod document_bars;
 #[path = "document_loader.rs"]
 mod document_loader;
+#[path = "file_menu.rs"]
+mod file_menu;
+#[path = "file_save.rs"]
+mod file_save;
 #[path = "layer_stack.rs"]
 mod layer_stack;
 #[path = "pcb_3d.rs"]
@@ -37,6 +41,10 @@ mod properties;
 mod schematic_active_bar;
 #[path = "schematic_editor.rs"]
 mod schematic_editor;
+#[path = "schematic_netlist.rs"]
+mod schematic_netlist;
+#[path = "schematic_output.rs"]
+mod schematic_output;
 #[path = "schematic_properties.rs"]
 mod schematic_properties;
 use eda_core::schematic_edit::Placement;
@@ -55,6 +63,7 @@ enum SchAction {
 }
 
 struct OpenDocument {
+    new_project: Option<PathBuf>,
     session_id: Uuid,
     model: Document,
     path: Option<PathBuf>,
@@ -71,6 +80,7 @@ impl OpenDocument {
     fn new(model: Document, path: Option<PathBuf>) -> Self {
         let saved = path.as_ref().map(|_| model.clone());
         Self {
+            new_project: None,
             session_id: Uuid::new_v4(),
             model,
             path,
@@ -121,6 +131,8 @@ struct Settings {
     messages: bool,
     units: Units,
     recent: Vec<PathBuf>,
+    recent_projects: Vec<PathBuf>,
+    recent_groups: Vec<PathBuf>,
     show_grid: bool,
     grid_nm: i64,
     right_messages: bool,
@@ -146,6 +158,8 @@ impl Default for Settings {
             messages: false,
             units: Units::Millimetres,
             recent: vec![],
+            recent_projects: vec![],
+            recent_groups: vec![],
             show_grid: true,
             grid_nm: 1_000_000,
             right_messages: false,
@@ -164,6 +178,7 @@ fn default_altium_folder(relative: &str) -> Option<PathBuf> {
 
 #[derive(Clone, Copy)]
 enum Command {
+    File(file_menu::Action),
     SynchronizeEntries(bool),
     NavigateHierarchy,
     CrossProbe,
@@ -217,6 +232,7 @@ struct PadEdit {
 }
 
 pub struct PcbCraft {
+    file_state: file_menu::State,
     sheet_sync: schematic_sync::State,
     document_loader: document_loader::State,
     annotation: Option<annotation::Dialog>,
@@ -259,10 +275,32 @@ impl PcbCraft {
             .storage
             .and_then(|s| eframe::get_value(s, "pcbcraft.settings"))
             .unwrap_or_default();
+        let mut documents = Vec::new();
+        for path in std::mem::take(&mut settings.recent) {
+            if path
+                .extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("PrjPcb"))
+            {
+                if !settings.recent_projects.contains(&path) {
+                    settings.recent_projects.push(path);
+                }
+            } else if path
+                .extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("DsnWrk"))
+            {
+                if !settings.recent_groups.contains(&path) {
+                    settings.recent_groups.push(path);
+                }
+            } else {
+                documents.push(path);
+            }
+        }
+        settings.recent = documents;
         if ![100_000, 250_000, 500_000, 1_000_000, 2_500_000].contains(&settings.grid_nm) {
             settings.grid_nm = 1_000_000;
         }
         let mut app = Self {
+            file_state: Default::default(),
             sheet_sync: Default::default(),
             document_loader: Default::default(),
             cross_probe: Default::default(),
@@ -321,6 +359,7 @@ impl PcbCraft {
     fn add_document(&mut self, mut doc: Document, path: Option<PathBuf>) {
         eda_core::pcb::Board::ensure_document(&mut doc);
         let mut opened = OpenDocument::new(doc, path);
+        opened.new_project = self.file_state.project_for_new.take();
         if let Some(settings) = opened
             .path
             .as_ref()
@@ -341,9 +380,23 @@ impl PcbCraft {
     }
 
     fn recent(&mut self, path: PathBuf) {
-        self.settings.recent.retain(|p| *p != path);
-        self.settings.recent.insert(0, path);
-        self.settings.recent.truncate(10);
+        let path = path.canonicalize().unwrap_or(path);
+        let target = if path
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("PrjPcb"))
+        {
+            &mut self.settings.recent_projects
+        } else if path
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("DsnWrk"))
+        {
+            &mut self.settings.recent_groups
+        } else {
+            &mut self.settings.recent
+        };
+        target.retain(|p| *p != path);
+        target.insert(0, path);
+        target.truncate(10);
     }
 
     fn open_path(&mut self, path: PathBuf) {
@@ -363,6 +416,10 @@ impl PcbCraft {
             .to_ascii_lowercase();
         if extension == "prjpcb" {
             self.open_project(path);
+            return;
+        }
+        if extension == "dsnwrk" {
+            self.open_group(path);
             return;
         }
         if matches!(extension.as_str(), "schlib" | "intlib" | "pcblib") {
@@ -418,6 +475,7 @@ impl PcbCraft {
     }
 
     fn open_project(&mut self, path: PathBuf) {
+        self.file_state.selected_project = Some(path.clone());
         if let Some(project) = self.projects.iter().find(|p| p.path == path) {
             if let Some(first) = project
                 .documents
@@ -495,90 +553,6 @@ impl PcbCraft {
         }
     }
 
-    fn save_index(&mut self, index: usize, save_as: bool) -> bool {
-        if let Some(doc) = self.documents.get_mut(index)
-            && doc.model.pcb.is_some()
-            && let Err(error) = pcb_editor::prepare_save(doc)
-        {
-            self.message(true, error);
-            return false;
-        }
-        let Some(doc) = self.documents.get(index) else {
-            return false;
-        };
-        let path = if save_as || doc.path.is_none() {
-            let is_pcb = doc.model.kind == DocumentKind::Board;
-            let mut dialog = self.file_dialog.clone();
-            if is_pcb {
-                dialog = dialog.add_filter("Altium PCB document", &["PcbDoc"]);
-            } else if doc
-                .model
-                .schematic
-                .as_ref()
-                .is_some_and(|s| s.source.is_some())
-            {
-                dialog = dialog.add_filter("Altium schematic document", &["SchDoc"]);
-            }
-            dialog = dialog.add_filter("PCBCraft document", &["json"]);
-            let filename = if let Some(path) = &doc.path {
-                path.file_name().map_or_else(
-                    || doc.model.name.clone(),
-                    |n| n.to_string_lossy().into_owned(),
-                )
-            } else if is_pcb {
-                let name = &doc.model.name;
-                if name.to_ascii_lowercase().ends_with(".pcbdoc") {
-                    name.clone()
-                } else {
-                    format!(
-                        "{}.PcbDoc",
-                        name.trim_end_matches(".pcbcraft.json")
-                            .trim_end_matches(".json")
-                    )
-                }
-            } else if doc.model.name.to_ascii_lowercase().ends_with(".schdoc") {
-                format!(
-                    "{}.pcbcraft.json",
-                    &doc.model.name[..doc.model.name.len() - 7]
-                )
-            } else {
-                doc.model.name.clone()
-            };
-            dialog.set_file_name(filename).save_file()
-        } else {
-            doc.path.clone()
-        };
-        let Some(path) = path else {
-            return false;
-        };
-        let canonical = path.canonicalize().unwrap_or(path.clone());
-        if self
-            .documents
-            .iter()
-            .enumerate()
-            .any(|(i, d)| i != index && d.path.as_ref() == Some(&canonical))
-        {
-            self.message(
-                true,
-                "That file is open in another tab. Choose another destination.",
-            );
-            return false;
-        }
-        match eda_io::save(&path, &self.documents[index].model) {
-            Ok(()) => {
-                self.documents[index].mark_saved();
-                self.documents[index].path = Some(path.canonicalize().unwrap_or(path.clone()));
-                self.recent(path.clone());
-                self.message(false, format!("Saved {}", path.display()));
-                true
-            }
-            Err(error) => {
-                self.message(true, format!("Could not save {}: {error}", path.display()));
-                false
-            }
-        }
-    }
-
     fn remove_document(&mut self, id: Uuid) {
         self.property_ui.schematic.close_document(id);
         let active_id = self
@@ -638,7 +612,11 @@ impl PcbCraft {
             self.message(true, "Apply or discard stack changes before quitting");
             return;
         }
-        if self.annotation.is_some() || self.design_sync.is_some() || self.sheet_sync.busy() {
+        if self.annotation.is_some()
+            || self.design_sync.is_some()
+            || self.sheet_sync.busy()
+            || self.file_state.modal()
+        {
             self.message(true, "Close the active dialog before another command");
             return;
         }
@@ -650,6 +628,7 @@ impl PcbCraft {
             self.cross_probe.enabled = false;
         }
         match command {
+            Command::File(action) => self.file_command(action, ctx),
             Command::SynchronizeEntries(selected) => self.start_sheet_sync(selected),
             Command::NavigateHierarchy => self.start_hierarchy_navigation(),
             Command::CrossProbe => self.start_cross_probe(),
@@ -668,21 +647,20 @@ impl PcbCraft {
             Command::NewBoard | Command::NewSchematic => {
                 let board = matches!(command, Command::NewBoard);
                 let n = self.documents.len() + 1;
-                self.add_document(
-                    Document::new(
-                        if board {
-                            DocumentKind::Board
-                        } else {
-                            DocumentKind::Schematic
-                        },
-                        format!(
-                            "{}{}.pcbcraft.json",
-                            if board { "Board" } else { "Schematic" },
-                            n
-                        ),
-                    ),
-                    None,
-                );
+                self.file_state.project_for_new = self
+                    .file_project_index()
+                    .map(|i| self.projects[i].path.clone());
+                if board {
+                    self.add_document(
+                        Document::new(DocumentKind::Board, format!("PCB{n}.PcbDoc")),
+                        None,
+                    );
+                } else {
+                    match eda_io::altium::new_schematic(&format!("Sheet{n}.SchDoc")) {
+                        Ok(doc) => self.add_document(doc, None),
+                        Err(e) => self.message(true, e),
+                    }
+                }
             }
             Command::Example => self.add_document(Document::example(), None),
             Command::Open => {
@@ -692,16 +670,19 @@ impl PcbCraft {
                     .add_filter(
                         "Design documents and libraries",
                         &[
-                            "SchDoc", "PcbDoc", "PrjPcb", "SchLib", "PcbLib", "IntLib", "json",
+                            "SchDoc", "PcbDoc", "PrjPcb", "DsnWrk", "SchLib", "PcbLib", "IntLib",
+                            "json",
                         ],
                     )
                     .add_filter("Altium libraries", &["SchLib", "PcbLib", "IntLib"])
                     .add_filter("Altium schematic", &["SchDoc"])
                     .add_filter("Altium PCB", &["PcbDoc"])
                     .add_filter("Altium project", &["PrjPcb"])
-                    .pick_file()
+                    .pick_files()
                 {
-                    self.request_open_path(path);
+                    for path in path {
+                        self.request_open_path(path);
+                    }
                 }
             }
             Command::OpenProject => {
@@ -720,10 +701,15 @@ impl PcbCraft {
                 }
             }
             Command::SaveAll => {
+                let mut saved = true;
                 for i in 0..self.documents.len() {
                     if self.documents[i].dirty() && !self.save_index(i, false) {
+                        saved = false;
                         break;
                     }
+                }
+                if saved && self.group_dirty() {
+                    self.save_project_group(false);
                 }
             }
             Command::Close => {
@@ -825,7 +811,7 @@ impl PcbCraft {
             Command::Preferences => self.preferences = true,
             Command::About => self.about = true,
             Command::Quit => {
-                if self.documents.iter().any(OpenDocument::dirty) {
+                if self.documents.iter().any(OpenDocument::dirty) || self.group_dirty() {
                     self.pending = Some(Pending::Quit);
                 } else {
                     self.allow_exit = true;
@@ -866,65 +852,19 @@ impl PcbCraft {
             .is_some_and(|i| self.documents[i].history.can_redo());
         egui::TopBottomPanel::top("menu")
             .exact_height(29.0)
+            .frame(
+                egui::Frame::NONE
+                    .fill(Color32::from_gray(58))
+                    .inner_margin(egui::Margin {
+                        left: 1,
+                        right: 1,
+                        top: 3,
+                        bottom: 0,
+                    }),
+            )
             .show(ctx, |ui| {
                 egui::MenuBar::new().ui(ui, |ui| {
-                    ui.menu_button("File", |ui| {
-                        ui.menu_button("New", |ui| {
-                            self.action(ui, "PCB Document", "Ctrl+N", Command::NewBoard, true);
-                            self.action(
-                                ui,
-                                "Schematic Document",
-                                "Ctrl+Shift+N",
-                                Command::NewSchematic,
-                                true,
-                            );
-                        });
-                        self.action(ui, "Open…", "Ctrl+O", Command::Open, true);
-                        self.action(ui, "Close", "Ctrl+F4", Command::Close, has_doc);
-                        ui.separator();
-                        self.action(ui, "Open Project…", "", Command::OpenProject, true);
-                        ui.add_enabled(false, egui::Button::new("Open Project Group…"));
-                        ui.separator();
-                        self.action(ui, "Save", "Ctrl+S", Command::Save, has_doc);
-                        self.action(ui, "Save As…", "Ctrl+Shift+S", Command::SaveAs, has_doc);
-                        ui.add_enabled(false, egui::Button::new("Save Copy As…"));
-                        self.action(
-                            ui,
-                            "Save All",
-                            "",
-                            Command::SaveAll,
-                            !self.documents.is_empty(),
-                        );
-                        ui.separator();
-                        for label in [
-                            "Save Project As…",
-                            "Save Project Group As…",
-                            "Import",
-                            "Export",
-                            "Import Wizard",
-                            "Run Script…",
-                            "Fabrication Outputs",
-                            "Assembly Outputs",
-                            "Print…",
-                            "Smart PDF…",
-                        ] {
-                            ui.add_enabled(false, egui::Button::new(label));
-                        }
-                        ui.separator();
-                        let recent = self.settings.recent.clone();
-                        ui.add_enabled_ui(!recent.is_empty(), |ui| {
-                            ui.menu_button("Recent Documents", |ui| {
-                                for path in recent {
-                                    if ui.button(path.display().to_string()).clicked() {
-                                        self.request_open_path(path);
-                                        ui.close();
-                                    }
-                                }
-                            });
-                        });
-                        ui.separator();
-                        self.action(ui, "Exit", "Alt+F4", Command::Quit, true);
-                    });
+                    ui.menu_button("File", |ui| self.file_menu(ui));
                     if has_doc {
                         ui.menu_button("Edit", |ui| {
                             self.action(ui, "Undo", "Ctrl+Z", Command::Undo, undo);
@@ -1843,7 +1783,7 @@ impl PcbCraft {
                 ui.set_width(410.0);
                 ui.heading("Save changes?");
                 ui.add_space(8.0);
-                let names: Vec<_> = self
+                let mut names: Vec<_> = self
                     .documents
                     .iter()
                     .filter(|d| {
@@ -1855,6 +1795,9 @@ impl PcbCraft {
                     })
                     .map(|d| d.model.name.clone())
                     .collect();
+                if matches!(pending, Pending::Quit) && self.group_dirty() {
+                    names.push(self.file_state.group_name());
+                }
                 ui.label("The following documents have unsaved changes:");
                 for name in names {
                     ui.label(RichText::new(name).color(ACCENT));
@@ -1890,6 +1833,13 @@ impl PcbCraft {
                     }
                 }
                 if proceed {
+                    if choice == 1
+                        && matches!(pending, Pending::Quit)
+                        && self.group_dirty()
+                        && !self.save_project_group(false)
+                    {
+                        return;
+                    }
                     self.pending = None;
                     match pending {
                         Pending::Close(id) => self.remove_document(id),
@@ -1917,6 +1867,7 @@ impl PcbCraft {
             return;
         }
         if self.annotation.is_some()
+            || self.file_state.modal()
             || self.design_sync.is_some()
             || self.layer_stack_active()
             || self.pending.is_some()
@@ -1968,6 +1919,7 @@ impl PcbCraft {
                 (ctrl, Key::N, Command::NewBoard),
                 (ctrl, Key::O, Command::Open),
                 (ctrl, Key::S, Command::Save),
+                (ctrl, Key::P, Command::File(file_menu::Action::Print)),
                 (ctrl, Key::W, Command::Close),
                 (ctrl, Key::F4, Command::Close),
                 (ctrl, Key::Z, Command::Undo),
@@ -2056,6 +2008,7 @@ impl eframe::App for PcbCraft {
         self.sheet_sync_dialog(ctx);
         self.sheet_sync_context_menu(ctx);
         self.document_loading_dialog(ctx);
+        self.file_dialogs(ctx);
         self.resize_edges(ctx);
         if let Some(command) = self.command.take() {
             self.run(command, ctx);

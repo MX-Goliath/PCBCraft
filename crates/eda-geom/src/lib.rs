@@ -1,6 +1,13 @@
 //! Exact document coordinates. Pixels and camera coordinates belong to the renderer.
 use serde::{Deserialize, Serialize};
 
+/// Flattened, ordered drawing faces in document coordinates (RGB, no GUI types).
+#[derive(Clone, Debug)]
+pub struct DrawingFace {
+    pub points: [Point; 3],
+    pub rgb: [u8; 3],
+}
+
 /// Nanometres. Bounded to +/- 100 metres, including large schematic sheets.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

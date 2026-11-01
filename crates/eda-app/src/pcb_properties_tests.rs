@@ -6,6 +6,7 @@ fn app() -> PcbCraft {
     let mut model = model;
     model.pcb = Some(board);
     PcbCraft {
+        file_state: Default::default(),
         sheet_sync: Default::default(),
         document_loader: Default::default(),
         cross_probe: Default::default(),

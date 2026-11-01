@@ -42,6 +42,8 @@ pub fn search_field_height(
 
 #[derive(Clone, Copy)]
 pub enum Icon {
+    Print,
+    Pdf,
     New,
     Open,
     Save,
@@ -131,6 +133,41 @@ pub fn draw_icon(p: &egui::Painter, rect: egui::Rect, icon: Icon, enabled: bool)
         p.line_segment([point(a.0, a.1), point(b.0, b.1)], Stroke::new(1.3, color));
     };
     match icon {
+        Icon::Print => {
+            p.rect_filled(
+                egui::Rect::from_min_max(point(2., 5.), point(14., 12.)),
+                0.,
+                c,
+            );
+            p.rect_filled(
+                egui::Rect::from_min_max(point(4., 0.), point(12., 6.)),
+                0.,
+                Color32::WHITE,
+            );
+            p.rect_filled(
+                egui::Rect::from_min_max(point(4., 9.), point(12., 16.)),
+                0.,
+                Color32::WHITE,
+            );
+            for y in [11., 13., 15.] {
+                line((5., y), (11., y), blue);
+            }
+        }
+        Icon::Pdf => {
+            p.rect_filled(rect, 0., Color32::WHITE);
+            p.rect_filled(
+                egui::Rect::from_min_max(point(0., 0.), point(13., 4.)),
+                0.,
+                Color32::from_rgb(190, 55, 55),
+            );
+            p.rect_filled(
+                egui::Rect::from_min_max(point(2., 6.), point(8., 15.)),
+                0.,
+                Color32::from_rgb(100, 170, 135),
+            );
+            line((9., 6.), (15., 12.), blue);
+            line((15., 12.), (9., 15.), blue);
+        }
         Icon::Close => {
             line((3.0, 3.0), (13.0, 13.0), c);
             line((13.0, 3.0), (3.0, 13.0), c);
@@ -522,7 +559,19 @@ pub fn apply(ctx: &egui::Context) {
         style.spacing.button_padding = egui::vec2(5.0, 2.0);
         style.spacing.interact_size.y = 20.0;
         style.spacing.window_margin = egui::Margin::same(6);
-        style.spacing.menu_margin = egui::Margin::same(3);
+        style.spacing.menu_margin = egui::Margin {
+            left: 3,
+            right: 3,
+            top: 1,
+            bottom: 1,
+        };
+        style.visuals.menu_corner_radius = egui::CornerRadius::ZERO;
+        style.visuals.popup_shadow = egui::epaint::Shadow {
+            offset: [2, 2],
+            blur: 3,
+            spread: 0,
+            color: Color32::from_black_alpha(80),
+        };
         for widget in [
             &mut style.visuals.widgets.inactive,
             &mut style.visuals.widgets.hovered,

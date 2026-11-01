@@ -210,7 +210,7 @@ impl PcbCraft {
         ));
         let mut root = Node::folder(
             Id::new("project_group"),
-            "Project Group 1.DsnWrk",
+            &self.file_state.group_name(),
             true,
             nodes,
         );
@@ -841,6 +841,7 @@ mod tests {
     #[test]
     fn startup_sizing_does_not_collapse_projects_or_change_width_between_editors() {
         let mut app = PcbCraft {
+            file_state: Default::default(),
             sheet_sync: Default::default(),
             document_loader: Default::default(),
             cross_probe: Default::default(),

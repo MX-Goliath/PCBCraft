@@ -2024,3 +2024,106 @@ Cause, implementation and validation: docs/pcb-update/INTERACTIVE_ROUTING.md.
   Windows dev build and Linux GNU all-target check PASS. Logs:
   target/routing-check/sheet-cursor-{fmt,clippy,tests,build,linux}.txt.
   No commit or push requested for this fix.
+
+### 2026-11-01 ? schematic File menu and file operations (partial)
+
+- Compared live File/New/Script/Mixed-Signal Simulation/Import/Export in Altium
+  Designer Enterprise 24.4.1 through Windows Computer Use. Inspected Preview SCH
+  and Smart PDF welcome/target/BOM/additional-settings pages. Both applications
+  were maximized on the same desktop DPI for menu comparison. The real Altium
+  LastWorkspace DsnWrk confirmed `[ProjectGroup]`, not an assumed workspace
+  section. Research did not save or edit the user's Altium project.
+- Replaced the File placeholders with the observed order and nested menus,
+  independent icon gutter, measured row widths, 22 px rows and native-style
+  separator groups. Removed unrelated fabrication/assembly entries from this
+  schematic menu. Added local PrjPcb and DsnWrk operations, separate recent
+  histories/migration, group dirty protection, Save Copy, project/document
+  reference relocation, safe native authored-sheet creation and sheet-property
+  writing. Undo survives Save As without reverting the new file name.
+- Added bounded ASCII DXF interchange and declarative PCBCraft command scripts.
+  Imports and scripts validate before a single history transaction; unsupported
+  DXF entities/primitive families refuse conversion. Independent command script
+  fixture: fixtures/schematic/set-title.pcbscript.json.
+- Added read-only Print preview and Smart PDF using the actual schematic
+  renderer, including current unsaved scene snapshots. Print has drawing scope,
+  color, media/orientation, fit/scale and offsets; Windows invokes system Print
+  and GDI, Linux uses CUPS lp. PDF uses lossless raster pages and component/pin/
+  label/port bookmarks with invisible destination links and optional local net
+  information/parameters. Output is bounded by page and total memory limits.
+- Windows QA: File width initially expanded to 600 px; corrected by measuring
+  row content. Nested item spacing and dialog button order were corrected after
+  visual inspection. Save Copy As created target/file-menu-qa/gui-copy.SchDoc:
+  its SHA-256 matches the unchanged fixture, and the original tab/name stayed
+  active. Smart PDF wizard produced gui-smart.pdf; pypdf checks and independent
+  PDFium page rendering verified its page, four link annotations and bookmarks.
+  Visible annotation note icons discovered in PDF QA were replaced with invisible
+  links. Preview SCH reached the real Xerox printer dialog and was cancelled
+  without submitting a print job. Parent-window ownership/DPI restoration and
+  repaint after the printer dialog are explicit in the implementation.
+- Required gates PASS: cargo fmt --all -- --check; strict all-target workspace
+  Clippy; 617 workspace tests (app 131, core 252, geom 1, IO 127, render 106).
+  Windows dev build and Linux GNU all-targets cargo check PASS. Logs/artifacts:
+  target/file-menu-qa/{fmt.log,clippy.log,tests-final.log,linux-check.log}.
+  One repeat hit disk exhaustion while linking examples; standard cargo clean
+  -p eda-io removed 12.2 GiB of generated artifacts, then the full tests passed.
+- Full requested parity is NOT achieved. Disabled New authoring systems and
+  legacy/proprietary converters, DWG, Altium Delphi APIs, Excel BOM templates,
+  variants/full-project PDF semantics and exact dialog/icon/raster parity remain
+  incomplete. Physical printer output and Linux runtime/DPI were not verified.
+  Complete implemented/partial/disabled matrix: docs/interface/schematic-file-menu.md;
+  feature entry schematic.file_menu is explicitly partial.
+- Final executable is target/debug/pcbcraft.exe; a separate portable copy in
+  target/file-menu-qa/pcbcraft.exe is launched for review. The original running
+  user window was preserved by renaming its old executable to
+  target/debug/pcbcraft-before-file-menu-20261101.exe before rebuilding.
+  No commit, push or external publication was requested or performed.
+
+### 2026-11-01 — SCH File continuation: NET, graphical DXF, project PDF links
+
+- Computer Use in AD Enterprise 24.4.1 confirmed Export NetList: Export File,
+  Project/Document Scope, 20 ordered format choices, OK/Cancel. A separate
+  Protel NET under target/file-menu-qa confirmed bracket component records,
+  three reserved fields, parenthesis net records, designator-pin endpoints,
+  CRLF and CP1251. The original Altium schematic was not edited or saved.
+  Export to AutoCAD was inspected and canceled: version, format, units and
+  Include Template options are recorded as observed, not implemented parity.
+- Enabled Netlist Schematic with a working Protel exporter. eda-core supplies
+  validated physical components and compiled connectivity using the existing
+  multipart, annotation, mask and project hierarchy rules. eda-io handles
+  format/encoding and atomic writes. Current unsaved project models take
+  precedence over disk without opening additional tabs; other formats stay
+  disabled. Live PCBCraft exported the active TCI sheet to gui-export.NET:
+  14 component records, 14 nets, 991 bytes, source tab still clean.
+  The observed dialog group positions and outer size were corrected after live
+  comparison; repeat GUI NET export produced identical bytes. A newly created,
+  not-yet-saved schematic also retains its project scope for export/output and
+  Save Project As; the snapshot regression covers this association.
+- Extended DXF from the old primitive subset to ordered graphical SOLID faces
+  from the shared read-only renderer. Includes component/pin/power-port/port
+  graphics, fills, frame and outlined fonts with holes; curves are flattened.
+  eda-geom owns document-space faces, eda-render converts screen geometry and
+  font contours, eda-io writes R2004/mm true-color DXF. Added planar SOLID
+  reimport with fill-only triangles. Images/unknown objects/non-outline fonts
+  and drawings above 250,000 faces refuse output before destination replacement.
+- Smart PDF now compiles net information once in project context, including
+  unchecked sheets, using native project options. Exported pin links cycle
+  through visible pins of a net and prefer another selected page. Forward page
+  references are valid; unchecked sheets cannot become dangling destinations.
+  Invalid link destinations preserve an existing output file.
+- Independent QA: ezdxf 1.4.5 read 23,922 faces with zero audit errors/fixes;
+  independently rendered geometry/font details were compared with the canvas.
+  pypdf verified both directions of a two-page VCC link; PDFium rendered both
+  pages. Tests cover current unsaved project NET, native NET syntax/encoding and
+  destination preservation, graphic DXF roundtrip, glyph counters, project PDF
+  links and selected-page boundaries. Artifacts/logs: target/file-menu-qa.
+- Required gates PASS: fmt check, strict workspace/all-target Clippy, 624 tests
+  (app 134, core 252, geom 1, IO 130, render 107). Native build and Linux GNU
+  all-target check PASS. A full example relink initially exhausted the disk;
+  standard cargo clean for eda-app/eda-render/eda-io removed 59.1 GiB of generated
+  artifacts, after which the complete workspace test run passed.
+- Remaining scope is explicit in docs/features.json and
+  docs/interface/schematic-file-menu.md: only Protel among the 20 NET formats;
+  DXF graphic faces rather than electrical CAD transfer; native AutoCAD options,
+  DWG and other CAD converters, separate authoring systems, Delphi API, BOM
+  templates/variants and full dialog/icon/typeface parity remain incomplete.
+  PDF drawing text remains rasterized. No claim of full File parity is made.

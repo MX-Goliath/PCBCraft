@@ -241,6 +241,7 @@ mod tests {
     use eda_core::{pcb::Shape, schematic::SchPrimitiveKind as K};
     fn app() -> PcbCraft {
         let mut app = PcbCraft {
+            file_state: Default::default(),
             sheet_sync: Default::default(),
             document_loader: Default::default(),
             cross_probe: Default::default(),

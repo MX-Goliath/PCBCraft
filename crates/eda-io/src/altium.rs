@@ -18,6 +18,16 @@ pub mod library;
 #[path = "altium_sch_write.rs"]
 pub mod writer;
 
+/// An independently authored ASCII 5.0 sheet, with a native source identity.
+/// Starting from a native sheet lets the verified writer handle subsequent edits.
+pub fn new_schematic(name: &str) -> Result<Document, String> {
+    let bytes = format!(
+        "|HEADER=Protel for Windows - Schematic Capture Ascii File Version 5.0|WEIGHT=1|MINORVERSION=9|UNIQUEID={}\r\n|RECORD=31|FONTIDCOUNT=1|SIZE1=10|FONTNAME1=Arial|SYSTEMFONT=1|SHEETSTYLE=0|BORDERON=T|TITLEBLOCKON=T|AREACOLOR=16317695|VISIBLEGRIDON=T|VISIBLEGRIDSIZE=10|SNAPGRIDSIZE=10\r\n",
+        Uuid::new_v4()
+    );
+    import_schematic(bytes.as_bytes(), name)
+}
+
 /// Read the native textual harness definitions, including legacy Cyrillic files.
 pub fn load_harness_definitions(
     path: &Path,
@@ -274,12 +284,23 @@ pub fn load_project(path: &Path) -> Result<Project, String> {
         if !seen.insert(path.clone()) {
             continue;
         }
-        let kind = path
+        let mut kind = path
             .extension()
             .unwrap_or_default()
             .to_string_lossy()
             .to_ascii_lowercase();
         let exists = path.is_file();
+        if kind == "json"
+            && exists
+            && let Ok(doc) = crate::load(&path)
+        {
+            kind = if doc.kind == DocumentKind::Schematic {
+                "schdoc"
+            } else {
+                "pcbdoc"
+            }
+            .into();
+        }
         if !exists && !is_generated {
             warnings.push(format!("Missing project document: {original_path}"));
         }

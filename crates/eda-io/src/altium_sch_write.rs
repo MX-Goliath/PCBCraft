@@ -897,6 +897,98 @@ fn changes(original: &Document, doc: &Document) -> Result<Patch, String> {
             .collect(),
         authored: BTreeMap::new(),
     };
+    if source.sheet != target.sheet || original.size != doc.size {
+        let a = &source.sheet;
+        let b = &target.sheet;
+        let f = patch.record(0)?;
+        for (key, before, after) in [
+            ("BORDERON", a.border, b.border),
+            ("TITLEBLOCKON", a.title_block, b.title_block),
+            ("VISIBLEGRIDON", a.grid_visible, b.grid_visible),
+            (
+                "REFERENCEZONESOFF",
+                !a.options.show_zones,
+                !b.options.show_zones,
+            ),
+            ("SNAPGRIDON", a.options.snap_enabled, b.options.snap_enabled),
+            (
+                "HOTSPOTGRIDON",
+                a.options.electrical_snap,
+                b.options.electrical_snap,
+            ),
+        ] {
+            if before != after {
+                set(f, key, boolean(after));
+            }
+        }
+        for (key, before, after) in [
+            ("AREACOLOR", a.background, b.background),
+            (
+                "BORDERCOLOR",
+                a.options.border_color,
+                b.options.border_color,
+            ),
+            (
+                "REFERENCEZONESTYLE",
+                u32::from(a.zone_origin_lower_right),
+                u32::from(b.zone_origin_lower_right),
+            ),
+            (
+                "SYSTEMFONT",
+                a.system_font as u32 + 1,
+                b.system_font as u32 + 1,
+            ),
+        ] {
+            if before != after {
+                set(f, key, after.to_string());
+            }
+        }
+        for (key, before, after) in [
+            ("VISIBLEGRIDSIZE", a.grid_nm, b.grid_nm),
+            ("SNAPGRIDSIZE", a.snap_nm, b.snap_nm),
+            (
+                "HOTSPOTGRIDSIZE",
+                a.options.snap_distance_nm,
+                b.options.snap_distance_nm,
+            ),
+        ] {
+            if before != after {
+                coordinate_units(f, key, native_units(after));
+            }
+        }
+        if a.style != b.style
+            || original.size != doc.size
+            || a.zones != b.zones
+            || a.margin_nm != b.margin_nm
+        {
+            let custom = b.style.eq_ignore_ascii_case("Custom");
+            set(f, "USECUSTOMSHEET", boolean(custom));
+            if custom {
+                coordinate_units(f, "CUSTOMX", native_units(doc.size.x));
+                coordinate_units(f, "CUSTOMY", native_units(doc.size.y));
+                coordinate_units(f, "CUSTOMMARGINWIDTH", native_units(b.margin_nm));
+                set(f, "CUSTOMXZONES", b.zones[0].to_string());
+                set(f, "CUSTOMYZONES", b.zones[1].to_string());
+            } else {
+                let index = b
+                    .style
+                    .strip_prefix("Standard ")
+                    .and_then(|n| n.parse::<usize>().ok())
+                    .or_else(|| {
+                        eda_core::schematic::STANDARD_SHEETS
+                            .iter()
+                            .position(|(name, _, _)| name.eq_ignore_ascii_case(&b.style))
+                    })
+                    .ok_or("Unrecognized standard sheet format")?;
+                set(f, "SHEETSTYLE", index.to_string());
+                set(
+                    f,
+                    "WORKSPACEORIENTATION",
+                    u32::from(doc.size.y > doc.size.x).to_string(),
+                );
+            }
+        }
+    }
     for old in &source.components {
         if !target.components.iter().any(|c| c.id == old.id) {
             patch.remove_tree(old.source_index as usize);
@@ -1562,7 +1654,8 @@ pub fn serialize(doc: &Document) -> Result<Vec<u8>, String> {
     if bytes.len() > MAX_FILE {
         return Err("Native schematic exceeds save limit".into());
     }
-    let original = import_schematic(&bytes, &doc.name)?;
+    let mut original = import_schematic(&bytes, &source.filename)?;
+    original.name.clone_from(&doc.name);
     if original.id != doc.id {
         return Err("Native schematic document identity changed".into());
     }

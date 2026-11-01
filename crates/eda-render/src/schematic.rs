@@ -202,6 +202,9 @@ impl Scene<'_> {
         (n as f64 / 1e6 * self.camera.pixels_per_mm) as f32
     }
     fn line(&self, a: Pos2, b: Pos2, stroke: Stroke) {
+        if stroke.is_empty() {
+            return;
+        }
         // GDI-style cosmetic strokes: an integral number of physical pixels.
         // Keep topology/world coordinates intact when a view is zoomed.
         let ppp = self.painter.ctx().pixels_per_point();
@@ -378,7 +381,11 @@ impl Scene<'_> {
         } else {
             p.fill.map(color)
         };
-        let stroke = Stroke::new(self.nm(p.width_nm).clamp(0.45, 100.0), c);
+        let stroke = if p.width_nm == 0 && p.fill.is_some() {
+            Stroke::NONE
+        } else {
+            Stroke::new(self.nm(p.width_nm).clamp(0.45, 100.0), c)
+        };
         if p.presentation.record_type == 210
             && let K::ParameterSet {
                 position,
@@ -1507,8 +1514,37 @@ pub(super) fn paint(
     rect: Rect,
     response: &egui::Response,
 ) -> CanvasOutput {
+    paint_mode(ui, doc, view, rect, response, false)
+}
+
+pub(super) fn paint_output(
+    ui: &mut egui::Ui,
+    doc: &Document,
+    view: &mut View,
+    rect: Rect,
+    response: &egui::Response,
+) -> CanvasOutput {
+    paint_mode(ui, doc, view, rect, response, true)
+}
+
+fn paint_mode(
+    ui: &mut egui::Ui,
+    doc: &Document,
+    view: &mut View,
+    rect: Rect,
+    response: &egui::Response,
+    output: bool,
+) -> CanvasOutput {
     let painter = ui.painter_at(rect);
-    painter.rect_filled(rect, 0.0, Color32::from_gray(195));
+    painter.rect_filled(
+        rect,
+        0.0,
+        if output {
+            Color32::WHITE
+        } else {
+            Color32::from_gray(195)
+        },
+    );
     let scene = Scene {
         painter: painter.clone(),
         camera: &view.camera,
@@ -1924,6 +1960,12 @@ pub(super) fn paint(
                 color(ink),
             );
         }
+    }
+    if output {
+        return CanvasOutput {
+            cursor_mm: None,
+            schematic_input: None,
+        };
     }
     if response.clicked() && !view.sch_tool_active {
         let span = hit.and_then(|id| {

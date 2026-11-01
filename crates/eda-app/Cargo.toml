@@ -25,6 +25,10 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_UI_Controls_Dialogs", "Win32_UI_HiDpi", "Win32_UI_Input_KeyboardAndMouse", "Win32_Storage_Xps"] }
+
 [dev-dependencies]
 pollster = "0.4"
+tempfile = "3.23"
 image = { version = "0.25", default-features = false, features = ["png"] }

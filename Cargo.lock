@@ -1001,10 +1001,12 @@ dependencies = [
  "rfd",
  "serde",
  "serde_json",
+ "tempfile",
  "tracing",
  "tracing-subscriber",
  "uuid",
  "wgpu",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
