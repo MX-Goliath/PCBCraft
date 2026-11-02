@@ -1,10 +1,12 @@
 # Cross Probe between schematic and PCB
 
-Implemented 2026-10-22. The Altium-style entry points are Tools > Cross Probe,
-T then C, and Ctrl+click for a one-shot jump. In the persistent mode, clicking an
-object activates the counterpart document; the mode remains active in both
-editors. Esc or a right click leaves the mode. Pan and zoom continue working.
-The status bar identifies the mode. Tool changes leave the mode.
+Implemented 2026-10-22; control entry updated 2026-11-02 after comparing the
+native selection shortcuts. Enter through Tools > Cross Probe or T then C.
+While the mode is active, an ordinary click updates the counterpart view while
+keeping the source tab active; Ctrl+click jumps to the counterpart. Esc or right
+click leaves the mode. Pan and zoom continue working. The former implicit
+Ctrl+click shortcut outside Cross Probe mode was removed: in PCB that input
+belongs to routed-net highlighting. The status bar identifies the mode.
 
 Supported objects:
 
@@ -47,7 +49,7 @@ references, wrong-project exclusion, absent/ambiguous destinations, automatic
 opening without duplicate tabs, T,C across idle frames, Esc, crossing vs junction
 connectivity and named islands.
 
-Linux GUI verification: Ctrl+click R1 opens the previously unopened PCB and
+Historical Linux GUI verification (2026-10-22, before the entry-point correction): Ctrl+click R1 opens the previously unopened PCB and
 selects R1; Ctrl+click its pad selects schematic pin 1. T,C then clicking the
 wire highlights two pads and a track on PCB; clicking the track returns to the
 schematic net. Esc exits; neither tab becomes dirty.
@@ -60,8 +62,7 @@ explicit instance selection. Full hierarchical compilation, bus/harness
 expansion, sheet-entry scoping and variant mappings are not resolved. A schematic
 net spanning several compiled PCB channel nets reports ambiguity. Source UID
 suffix collisions require explicit instance selection. Net names are
-fallbacks, not proof of hierarchical connectivity. Split-window continuous
-probing without activating the destination, Altium masking preferences and exact
+fallbacks, not proof of hierarchical connectivity. Split-window presentation, Altium masking preferences and exact
 zoom/pixel parity have not been reproduced or verified against a live AD 24.4.1
 instance in this Linux environment.
 

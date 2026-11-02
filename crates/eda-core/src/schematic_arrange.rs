@@ -345,7 +345,9 @@ pub fn select_region(s: &Schematic, path: &[Point], mode: Region) -> Vec<Uuid> {
     for p in s.primitives.iter().filter(|p| !p.presentation.hidden) {
         if let Some(b) = primitive_bounds(s, p) {
             merge(&mut boxes, p.id, b);
-            if let Some(owner) = p.component.or(p.presentation.parent) {
+            if let Some(owner) = p.component.or(p.presentation.parent)
+                && !(p.component.is_some() && matches!(p.kind, K::Text { .. }))
+            {
                 merge(&mut boxes, owner, b);
             }
         }
@@ -358,7 +360,7 @@ pub fn select_region(s: &Schematic, path: &[Point], mode: Region) -> Vec<Uuid> {
             s.primitives
                 .iter()
                 .filter(|p| {
-                    p.component.is_none()
+                    (p.component.is_none() || matches!(p.kind, K::Text { .. }))
                         && p.presentation.parent.is_none()
                         && !p.presentation.hidden
                 })

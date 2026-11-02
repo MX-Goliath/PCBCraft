@@ -45,6 +45,9 @@ pub(super) enum Action {
     Rotate,
     RotateBack,
     SelectAll,
+    SelectBoard,
+    SelectCopper,
+    SelectNet,
     Layers,
     Grid,
     Report,
@@ -83,6 +86,8 @@ enum Gesture {
     Box {
         origin: Point,
         add: bool,
+        pads: bool,
+        connections: bool,
     },
     Handle {
         base: Board,
@@ -105,6 +110,13 @@ struct ComponentDraft {
 struct PolygonDraft {
     revision: u64,
     value: Polygon,
+}
+struct TabSelection {
+    original: Vec<Uuid>,
+    last: Vec<Uuid>,
+    revision: u64,
+    layer: u16,
+    stage: u8,
 }
 pub(super) struct Editor {
     pub tool: Tool,
@@ -134,11 +146,14 @@ pub(super) struct Editor {
     gesture: Option<Gesture>,
     gesture_preview: Option<(Point, u64)>,
     tool_base: Option<(Board, u64)>,
+    selection_pick: Option<bool>,
+    tab_selection: Option<TabSelection>,
     draft: Option<Draft>,
     sequence: Option<(Key, f64)>,
     cut_after_copy: bool,
     last_hits: Vec<Uuid>,
     overlap: usize,
+    last_click: Option<(Point, Vec<Uuid>, usize)>,
     route_session: Option<RouteSession>,
     last_point: Option<Point>,
     component_draft: Option<ComponentDraft>,
@@ -232,11 +247,14 @@ impl Default for Editor {
             gesture: None,
             gesture_preview: None,
             tool_base: None,
+            selection_pick: None,
+            tab_selection: None,
             draft: None,
             sequence: None,
             cut_after_copy: false,
             last_hits: vec![],
             overlap: 0,
+            last_click: None,
             route_session: None,
             last_point: None,
             component_draft: None,
@@ -253,6 +271,7 @@ impl Editor {
         self.route_session = None;
         self.last_error = None;
         self.tool = Tool::Select;
+        self.selection_pick = None;
         self.start = None;
         self.points.clear();
         self.gesture = None;
@@ -486,11 +505,21 @@ fn pasted(board: &Board, clip: &Clipboard, at: Point) -> Result<(Board, Vec<Uuid
     })?;
     Ok((next, selection))
 }
+#[cfg(test)]
 fn box_selection(
     board: &Board,
     view: &eda_render::pcb::BoardView,
     a: Point,
     z: Point,
+) -> Vec<Uuid> {
+    box_selection_filtered(board, view, a, z, false)
+}
+fn box_selection_filtered(
+    board: &Board,
+    view: &eda_render::pcb::BoardView,
+    a: Point,
+    z: Point,
+    pads: bool,
 ) -> Vec<Uuid> {
     let box_ = Bounds::points(&[a, z]);
     let crossing = z.x < a.x;
@@ -504,10 +533,15 @@ fn box_selection(
     let mut ids = BTreeSet::new();
     let mut components: BTreeMap<u32, Bounds> = BTreeMap::new();
     for i in &board.items {
-        if !view.selectable_on_board(board, i) {
+        if if pads {
+            !matches!(i.shape, Shape::Pad { .. }) || !view.selectable(i)
+        } else {
+            !view.selectable_on_board(board, i)
+        } {
             continue;
         }
-        if view.component_selection
+        if !pads
+            && view.component_selection
             && let Some(c) = i.component
         {
             components
@@ -516,8 +550,14 @@ fn box_selection(
                 .union(i.bounds());
             continue;
         }
-        if test(i.bounds()) {
-            ids.insert(picked(board, view, i.id));
+        if test(i.bounds())
+            && (!crossing || eda_core::pcb_selection::touches_rectangle(i, box_, view.active_layer))
+        {
+            ids.insert(if pads {
+                i.id
+            } else {
+                picked(board, view, i.id)
+            });
         }
     }
     for (index, bounds) in components {
@@ -529,10 +569,12 @@ fn box_selection(
         }
     }
     for p in &board.polygon_pours {
-        if view.filters[7]
+        if !pads
+            && view.filters[7]
             && view.visible.contains(&p.layer)
             && (view.select_locked || !p.locked)
             && test(Bounds::points(&p.points()))
+            && (!crossing || eda_core::pcb_selection::polygon_boundary_touches_rectangle(p, box_))
         {
             ids.insert(p.id);
         }
@@ -771,7 +813,25 @@ fn input(
         route_layer(doc, ed, layer)?;
         ctx.request_repaint();
     }
-    let modifiers = ctx.input(|s| s.modifiers);
+    let modifiers = i.modifiers.unwrap_or_else(|| ctx.input(|s| s.modifiers));
+    if ed.tool == Tool::Select && ed.selection_pick.is_some() {
+        if i.secondary_clicked {
+            ed.selection_pick = None;
+            return Ok(());
+        }
+        if i.clicked
+            && let Some(id) = i.hit
+        {
+            let board = doc.model.pcb.as_ref().ok_or("Not a PCB document")?;
+            doc.view.pcb.selected = if ed.selection_pick == Some(true) {
+                eda_core::pcb_selection::net_objects(board, &[id])
+            } else {
+                eda_core::pcb_selection::connected(board, &[id], None, false)
+            };
+            ed.selection_pick = None;
+        }
+        return Ok(());
+    }
     if ed.paused {
         if i.clicked {
             ed.paused = false;
@@ -832,6 +892,14 @@ fn input(
                         ed.gesture = None;
                         doc.view.pcb.set_preview(None);
                         return Err("Document changed during drag; gesture cancelled".into());
+                    }
+                    let mut p = p;
+                    if ctx.input(|i| i.modifiers.alt) {
+                        if (p.x - origin.x).abs() >= (p.y - origin.y).abs() {
+                            p.y = origin.y;
+                        } else {
+                            p.x = origin.x;
+                        }
                     }
                     let preview_key = (p, rotation.to_bits());
                     if i.drag_stopped
@@ -1003,13 +1071,38 @@ fn input(
                         }
                     }
                 }
-                Gesture::Box { origin, add } => {
+                Gesture::Box {
+                    origin,
+                    add,
+                    pads,
+                    connections,
+                } => {
                     let a = *origin;
                     let add = *add;
                     doc.view.pcb.selection_box = Some((a, p));
                     if i.drag_stopped {
                         let board = doc.model.pcb.as_ref().ok_or("Not a PCB document")?;
-                        let selection = box_selection(board, &doc.view.pcb, a, p);
+                        let mut selection = if doc.view.camera.mirrored_x {
+                            box_selection_filtered(board, &doc.view.pcb, p, a, *pads)
+                        } else {
+                            box_selection_filtered(board, &doc.view.pcb, a, p, *pads)
+                        };
+                        if *connections {
+                            selection.clear();
+                            if !add {
+                                doc.view.pcb.selected_connections.clear();
+                            }
+                            if (p.x < a.x) != doc.view.camera.mirrored_x {
+                                let bounds = Bounds::points(&[a, p]);
+                                for connection in doc.view.pcb.visible_connections(board) {
+                                    if connection_touches(&connection, bounds)
+                                        && !doc.view.pcb.selected_connections.contains(&connection)
+                                    {
+                                        doc.view.pcb.selected_connections.push(connection);
+                                    }
+                                }
+                            }
+                        }
                         if !add {
                             doc.view.pcb.selected.clear();
                         }
@@ -1033,10 +1126,17 @@ fn input(
         let board = doc.model.pcb.as_ref().ok_or("Not a PCB document")?;
         if i.drag_started {
             let origin = i.press_origin.unwrap_or(p);
+            let ctrl_via = modifiers.ctrl
+                && board.items.iter().any(|v| {
+                    matches!(v.shape, Shape::Via { .. })
+                        && v.hit_distance_on_layer(origin, doc.view.pcb.active_layer)
+                            <= 7e6 / doc.view.camera.pixels_per_mm
+                });
+            let force_box = modifiers.shift || modifiers.alt || modifiers.ctrl && !ctrl_via;
             let tol = 7e6 / doc.view.camera.pixels_per_mm;
             if let Some((handle, _)) = pcb_tools::handles(board, &doc.view.pcb.selected)
                 .into_iter()
-                .filter(|(_, at)| pcb::distance_sq(*at, origin) <= tol * tol)
+                .filter(|(_, at)| !force_box && pcb::distance_sq(*at, origin) <= tol * tol)
                 .min_by(|a, b| {
                     pcb::distance_sq(a.1, origin).total_cmp(&pcb::distance_sq(b.1, origin))
                 })
@@ -1105,14 +1205,30 @@ fn input(
                         .iter()
                         .rev()
                         .find(|poly| {
-                            doc.view.pcb.visible.contains(&poly.layer)
-                                && pcb::point_in_polygon(origin, &poly.points())
+                            doc.view.pcb.filters[7]
+                                && doc.view.pcb.polygon_visible(poly.layer)
+                                && (doc.view.pcb.select_locked || !poly.locked)
+                                && eda_core::pcb_selection::polygon_boundary_hit(poly, origin, tol)
                         })
                         .map(|p| p.id)
                 });
-            if let Some(id) = hit {
+            if let Some(id) = hit.filter(|_| !force_box) {
                 if !doc.view.pcb.selected.contains(&id) {
                     doc.view.pcb.selected = vec![id];
+                    if !modifiers.ctrl
+                        && let Some(via) = board
+                            .item(id)
+                            .filter(|v| matches!(v.shape, Shape::Via { .. }))
+                    {
+                        doc.view.pcb.selected = board
+                            .items
+                            .iter()
+                            .filter(|i| {
+                                matches!(i.shape, Shape::Via { .. }) && i.anchor() == via.anchor()
+                            })
+                            .map(|i| i.id)
+                            .collect();
+                    }
                 }
                 ed.gesture = Some(Gesture::Move {
                     base: board.clone(),
@@ -1139,6 +1255,8 @@ fn input(
                 ed.gesture = Some(Gesture::Box {
                     origin,
                     add: modifiers.shift,
+                    pads: modifiers.ctrl,
+                    connections: modifiers.alt,
                 });
             }
             return input(
@@ -1153,12 +1271,71 @@ fn input(
             );
         }
         if i.clicked || i.double_clicked {
-            if modifiers.ctrl || modifiers.command {
-                doc.view.pcb.highlight_net =
-                    i.hit.and_then(|id| board.item(id)).and_then(|v| v.net);
+            ed.tab_selection = None;
+            if modifiers.alt {
+                if !modifiers.shift {
+                    doc.view.pcb.selected_connections.clear();
+                    doc.view.pcb.selected.clear();
+                }
+                if let Some(connection) = i.connection
+                    && !doc.view.pcb.selected_connections.contains(&connection)
+                {
+                    doc.view.pcb.selected_connections.push(connection);
+                }
                 return Ok(());
             }
-            let id = i.hit.map(|id| picked(board, &doc.view.pcb, id));
+            doc.view.pcb.selected_connections.clear();
+            if modifiers.ctrl || modifiers.command {
+                let net = i
+                    .hit
+                    .and_then(|id| board.item(id))
+                    .and_then(|v| board.item_net(v));
+                if !modifiers.shift {
+                    doc.view.pcb.highlight_nets.clear();
+                } else if let Some(old) = doc.view.pcb.highlight_net {
+                    doc.view.pcb.highlight_nets.insert(old);
+                }
+                if let Some(net) = net {
+                    doc.view.pcb.highlight_nets.insert(net);
+                }
+                if !modifiers.shift || net.is_some() {
+                    doc.view.pcb.highlight_net = net;
+                }
+                return Ok(());
+            }
+            let mut id = i.hit.map(|id| picked(board, &doc.view.pcb, id));
+            if !modifiers.shift {
+                let mut candidates = vec![];
+                for raw in i.hits.iter().copied().chain(i.hit) {
+                    let id = picked(board, &doc.view.pcb, raw);
+                    if !candidates.contains(&id) {
+                        candidates.push(id);
+                    }
+                }
+                let at = i.raw_point.or(i.point).unwrap_or_default();
+                let previous = ed.last_click.take();
+                let index = if let Some((old, hits, n)) = previous.filter(|(old, hits, _)| {
+                    pcb::distance_sq(*old, at) <= (1e6 / doc.view.camera.pixels_per_mm).powi(2)
+                        && hits == &candidates
+                }) {
+                    let _ = (old, hits);
+                    if candidates.len() > 1
+                        && doc.view.pcb.selected.as_slice() == std::slice::from_ref(&candidates[n])
+                        && !i.double_clicked
+                    {
+                        (n + 1) % candidates.len()
+                    } else {
+                        n
+                    }
+                } else {
+                    0
+                };
+                if !candidates.is_empty() {
+                    id = Some(candidates[index]);
+                    ed.last_click = Some((at, candidates, index));
+                }
+            }
+
             if modifiers.shift {
                 if let Some(id) = id {
                     if let Some(n) = doc.view.pcb.selected.iter().position(|v| *v == id) {
@@ -1168,7 +1345,14 @@ fn input(
                     }
                 }
             } else {
-                doc.view.pcb.selected = id.into_iter().collect();
+                doc.view.pcb.selected = if id.is_some()
+                    && doc.view.pcb.selected.as_slice() == id.as_slice()
+                    && !i.double_clicked
+                {
+                    vec![]
+                } else {
+                    id.into_iter().collect()
+                };
             }
             ed.draft = None;
         }
@@ -1662,6 +1846,24 @@ impl PcbCraft {
                         ed.draft = None;
                     }
                 }
+                Action::SelectCopper | Action::SelectNet => {
+                    ed.selection_pick = Some(matches!(action, Action::SelectNet));
+                }
+                Action::SelectBoard => {
+                    let board = doc.model.pcb.as_ref().unwrap();
+                    let outline = board.outline_points(256);
+                    doc.view.pcb.selected = board
+                        .items
+                        .iter()
+                        .filter(|i| {
+                            doc.view.pcb.selectable_on_board(board, i)
+                                && pcb::point_in_polygon(i.anchor(), &outline)
+                        })
+                        .map(|i| picked(board, &doc.view.pcb, i.id))
+                        .collect();
+                    doc.view.pcb.selected.sort();
+                    doc.view.pcb.selected.dedup();
+                }
                 Action::SelectAll => {
                     let board = doc.model.pcb.as_ref().unwrap();
                     let mut selected: BTreeSet<_> = board
@@ -1856,6 +2058,15 @@ impl PcbCraft {
         }
         let mut action = None;
         let mut handled = false;
+        let mut selection_tab = false;
+        if self.active.is_some_and(|n| {
+            self.documents[n].model.pcb.is_some()
+                && self.documents[n].pcb_editor.tool == Tool::Select
+                && !self.documents[n].pcb_editor.has_pending()
+        }) && self.selection_shortcuts(ctx)
+        {
+            return true;
+        }
         let doc = &mut self.documents[index];
         let now = ctx.input(|i| i.time);
         if doc
@@ -1934,6 +2145,8 @@ impl PcbCraft {
                 (ctrl, Key::X, Action::Cut),
                 (ctrl, Key::V, Action::Paste),
                 (ctrl, Key::A, Action::SelectAll),
+                (ctrl, Key::B, Action::SelectBoard),
+                (ctrl, Key::H, Action::SelectCopper),
                 (egui::Modifiers::NONE, Key::Delete, Action::Delete),
                 (egui::Modifiers::NONE, Key::L, Action::Layers),
                 (egui::Modifiers::NONE, Key::G, Action::Grid),
@@ -1980,6 +2193,7 @@ impl PcbCraft {
             }
             if input.consume_key(shift, Key::C) {
                 doc.view.pcb.highlight_net = None;
+                doc.view.pcb.highlight_nets.clear();
                 handled = true;
                 return;
             }
@@ -2053,6 +2267,7 @@ impl PcbCraft {
                     doc.view.pcb.selected = vec![doc.pcb_editor.last_hits[doc.pcb_editor.overlap]];
                 }
                 handled = true;
+                selection_tab = doc.pcb_editor.tool == Tool::Select;
                 return;
             }
             if input.consume_key(egui::Modifiers::NONE, Key::Tab) {
@@ -2060,23 +2275,9 @@ impl PcbCraft {
                     doc.pcb_editor.paused = !doc.pcb_editor.paused;
                     doc.pcb_editor.properties_panel.focus_route_width =
                         doc.pcb_editor.paused && doc.pcb_editor.tool == Tool::Route;
-                } else if let Some(id) = doc.view.pcb.selected.first().copied() {
-                    let board = doc.model.pcb.as_ref().unwrap();
-                    if let Some(item) = board.item(id) {
-                        if let Some(owner) = item
-                            .component
-                            .and_then(|c| board.components.iter().find(|o| o.index == c))
-                        {
-                            doc.view.pcb.selected = vec![owner.id];
-                        } else if let Some(net) = item.net {
-                            doc.view.pcb.selected = board
-                                .items
-                                .iter()
-                                .filter(|i| i.net == Some(net))
-                                .map(|i| i.id)
-                                .collect();
-                        }
-                    }
+                } else {
+                    extend_route_selection(doc);
+                    selection_tab = true;
                 }
                 handled = true;
                 return;
@@ -2120,6 +2321,20 @@ impl PcbCraft {
                 handled = true;
             }
         });
+        if selection_tab {
+            // egui schedules Tab focus traversal before shortcuts consume its
+            // key event. Resolve that traversal here, before the property fields
+            // register, so selecting copper does not focus an unrelated editor.
+            ctx.memory_mut(|memory| {
+                memory.interested_in_focus(
+                    egui::Id::new("pcb_selection_tab"),
+                    egui::LayerId::background(),
+                );
+                if let Some(id) = memory.focused() {
+                    memory.surrender_focus(id);
+                }
+            });
+        }
         if let Some(a) = action {
             self.pcb_action(a);
         }
@@ -2151,6 +2366,14 @@ impl PcbCraft {
                 selected,
             ),
             ("Select All", "Ctrl+A", Action::SelectAll, true),
+            ("Select Board", "Ctrl+B", Action::SelectBoard, true),
+            ("Select Net", "", Action::SelectNet, true),
+            (
+                "Select Connected Copper",
+                "Ctrl+H",
+                Action::SelectCopper,
+                true,
+            ),
         ] {
             self.action(ui, label, shortcut, Command::Pcb(a), enabled);
         }
@@ -3405,5 +3628,423 @@ mod controller_tests {
         assert!(matches!(preview,Shape::Pad {rotation,..} if rotation==90.0));
         assert_eq!(reused_items, d.model.pcb.as_ref().unwrap().items.as_ptr());
         assert_eq!(d.history.revision, 1);
+    }
+}
+
+fn connection_touches(c: &eda_core::pcb_connectivity::Connection, b: Bounds) -> bool {
+    let d = Point {
+        x: c.end.x - c.start.x,
+        y: c.end.y - c.start.y,
+    };
+    let mut lo = 0.0_f64;
+    let mut hi = 1.0_f64;
+    for (origin, delta, min, max) in [
+        (c.start.x, d.x, b.min.x, b.max.x),
+        (c.start.y, d.y, b.min.y, b.max.y),
+    ] {
+        if delta == 0 {
+            if origin < min || origin > max {
+                return false;
+            }
+        } else {
+            let a = (min - origin) as f64 / delta as f64;
+            let z = (max - origin) as f64 / delta as f64;
+            lo = lo.max(a.min(z));
+            hi = hi.min(a.max(z));
+        }
+    }
+    lo <= hi
+}
+fn extend_route_selection(doc: &mut OpenDocument) {
+    let board = doc.model.pcb.as_ref().unwrap();
+    let current = &doc.view.pcb.selected;
+    let revision = doc.history.revision;
+    let layer = doc.view.pcb.active_layer;
+    let previous = doc.pcb_editor.tab_selection.take();
+    let (original, mut stage) = if let Some(previous) =
+        previous.filter(|s| &s.last == current && s.revision == revision && s.layer == layer)
+    {
+        (previous.original, previous.stage)
+    } else {
+        (current.clone(), 0)
+    };
+    let mut seeds: Vec<_> = original
+        .iter()
+        .copied()
+        .filter(|id| board.item(*id).is_some())
+        .collect();
+    if seeds.is_empty() {
+        seeds.extend(
+            doc.pcb_editor
+                .last_hits
+                .iter()
+                .copied()
+                .filter(|id| board.item(*id).is_some())
+                .take(1),
+        );
+    }
+    if seeds.is_empty() {
+        return;
+    }
+    for _ in 0..4 {
+        stage = (stage + 1) % 4;
+        let selected = match stage {
+            1 => eda_core::pcb_selection::connected(board, &seeds, Some(layer), true),
+            2 => eda_core::pcb_selection::connected(board, &seeds, None, true),
+            3 => eda_core::pcb_selection::net_objects(board, &seeds),
+            _ => original.clone(),
+        };
+        let before: BTreeSet<_> = current.iter().copied().collect();
+        if selected.iter().copied().collect::<BTreeSet<_>>() != before || stage == 0 {
+            doc.view.pcb.selected = selected.clone();
+            doc.pcb_editor.tab_selection = Some(TabSelection {
+                original,
+                last: selected,
+                revision,
+                layer,
+                stage,
+            });
+            break;
+        }
+    }
+}
+
+#[cfg(test)]
+mod electrical_selection_tests {
+    use super::*;
+    #[test]
+    fn selection_tab_does_not_send_following_shortcuts_to_property_fields() {
+        for modifiers in [egui::Modifiers::NONE, egui::Modifiers::SHIFT] {
+            let ctx = egui::Context::default();
+            let mut app = schematic_editor::tests::app();
+            let mut model = Document::new(DocumentKind::Board, "Focus.PcbDoc");
+            model.pcb = Some(Board::default());
+            app.documents[0] = OpenDocument::new(model, None);
+            let mut property = String::new();
+            for key in [None, Some(Key::Tab), Some(Key::S)] {
+                let modifiers = if key == Some(Key::Tab) {
+                    modifiers
+                } else {
+                    egui::Modifiers::NONE
+                };
+                let _ = ctx.run(
+                    egui::RawInput {
+                        focused: true,
+                        modifiers,
+                        events: key
+                            .into_iter()
+                            .flat_map(|key| {
+                                [true, false].map(|pressed| egui::Event::Key {
+                                    key,
+                                    physical_key: None,
+                                    pressed,
+                                    repeat: false,
+                                    modifiers,
+                                })
+                            })
+                            .collect(),
+                        ..Default::default()
+                    },
+                    |ctx| {
+                        if key.is_some() {
+                            assert!(!ctx.wants_keyboard_input());
+                            assert!(app.pcb_shortcuts(ctx));
+                        }
+                        egui::CentralPanel::default().show(ctx, |ui| {
+                            ui.text_edit_singleline(&mut property);
+                        });
+                    },
+                );
+                assert!(!ctx.wants_keyboard_input());
+            }
+            assert!(ctx.data(|d| {
+                d.get_temp::<(Uuid, egui::Pos2, bool)>(egui::Id::new("selection_popup"))
+                    .is_some()
+            }));
+            assert!(property.is_empty());
+        }
+    }
+    #[test]
+    fn empty_unpoured_polygon_interior_starts_selection_instead_of_moving_the_polygon() {
+        for (stale, reverse) in [(false, false), (true, false), (false, true), (true, true)] {
+            let mut model = Document::new(DocumentKind::Board, "Empty pour.PcbDoc");
+            model.pcb = Some(Board {
+                pours_stale: stale,
+                polygon_pours: vec![Polygon {
+                    contour: pcb_polygon::straight_contour(&[
+                        Point::mm(0, 0),
+                        Point::mm(40, 0),
+                        Point::mm(40, 30),
+                        Point::mm(0, 30),
+                    ]),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            });
+            let mut doc = OpenDocument::new(model, None);
+            doc.view.pcb.initialize(doc.model.pcb.as_ref().unwrap());
+            doc.view.camera.pixels_per_mm = 100.;
+            let original = doc.model.clone();
+            let mut editor = Editor::default();
+            input(
+                &mut doc,
+                &mut editor,
+                &mut None,
+                Input {
+                    drag_started: true,
+                    drag_stopped: true,
+                    hovered: true,
+                    point: Some(if reverse {
+                        Point::mm(5, 8)
+                    } else {
+                        Point::mm(8, 8)
+                    }),
+                    press_origin: Some(if reverse {
+                        Point::mm(8, 5)
+                    } else {
+                        Point::mm(5, 5)
+                    }),
+                    ..Default::default()
+                },
+                &egui::Context::default(),
+            )
+            .unwrap();
+            assert_eq!(doc.model, original);
+            assert_eq!(doc.history.revision, 0);
+            assert!(doc.view.pcb.selected.is_empty());
+            assert!(editor.gesture.is_none());
+        }
+    }
+    #[test]
+    fn ctrl_click_highlights_and_ctrl_shift_click_adds_nets_without_editing_or_selecting() {
+        let mut model = Document::new(DocumentKind::Board, "Highlight.PcbDoc");
+        model.pcb = Some(Board {
+            items: vec![
+                Item::new(
+                    pcb::TOP,
+                    Some(0),
+                    Shape::Track {
+                        start: Point::mm(0, 0),
+                        end: Point::mm(10, 0),
+                        width: 100_000,
+                    },
+                ),
+                Item::new(
+                    pcb::TOP,
+                    Some(1),
+                    Shape::Track {
+                        start: Point::mm(0, 10),
+                        end: Point::mm(10, 10),
+                        width: 100_000,
+                    },
+                ),
+            ],
+            ..Default::default()
+        });
+        let mut doc = OpenDocument::new(model, None);
+        let original = doc.model.clone();
+        let mut editor = Editor::default();
+        let ctx = egui::Context::default();
+        for (n, mods) in [
+            egui::Modifiers::CTRL,
+            egui::Modifiers {
+                ctrl: true,
+                shift: true,
+                ..Default::default()
+            },
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let id = doc.model.pcb.as_ref().unwrap().items[n].id;
+            input(
+                &mut doc,
+                &mut editor,
+                &mut None,
+                Input {
+                    clicked: true,
+                    point: Some(Point::default()),
+                    hit: Some(id),
+                    modifiers: Some(mods),
+                    ..Default::default()
+                },
+                &ctx,
+            )
+            .unwrap();
+            assert_eq!(doc.view.pcb.highlight_nets.len(), n + 1);
+        }
+        input(
+            &mut doc,
+            &mut editor,
+            &mut None,
+            Input {
+                clicked: true,
+                point: Some(Point::default()),
+                modifiers: Some(egui::Modifiers::CTRL),
+                ..Default::default()
+            },
+            &ctx,
+        )
+        .unwrap();
+        assert!(doc.view.pcb.highlight_nets.is_empty());
+        assert!(doc.view.pcb.highlight_net.is_none());
+        assert!(doc.view.pcb.selected.is_empty());
+        assert_eq!(doc.model, original);
+        assert_eq!(doc.history.revision, 0);
+    }
+    #[test]
+    fn click_cycles_overlapping_objects_and_alt_shift_accumulates_virtual_connections() {
+        let mut model = Document::new(DocumentKind::Board, "Selection.PcbDoc");
+        let board = Board {
+            items: vec![
+                Item::new(
+                    pcb::TOP,
+                    None,
+                    Shape::Track {
+                        start: Point::mm(0, 0),
+                        end: Point::mm(10, 0),
+                        width: 100_000,
+                    },
+                ),
+                Item::new(
+                    pcb::TOP,
+                    None,
+                    Shape::Track {
+                        start: Point::mm(5, -5),
+                        end: Point::mm(5, 5),
+                        width: 100_000,
+                    },
+                ),
+            ],
+            ..Default::default()
+        };
+        let ids: Vec<_> = board.items.iter().map(|i| i.id).collect();
+        model.pcb = Some(board);
+        let mut doc = OpenDocument::new(model, None);
+        let original = doc.model.clone();
+        let mut editor = Editor::default();
+        let ctx = egui::Context::default();
+        for id in [ids[0], ids[1], ids[0]] {
+            input(
+                &mut doc,
+                &mut editor,
+                &mut None,
+                Input {
+                    clicked: true,
+                    point: Some(Point::mm(5, 0)),
+                    raw_point: Some(Point::mm(5, 0)),
+                    hit: Some(ids[0]),
+                    hits: ids.clone(),
+                    ..Default::default()
+                },
+                &ctx,
+            )
+            .unwrap();
+            assert_eq!(doc.view.pcb.selected, vec![id]);
+        }
+        for (n, mods) in [
+            egui::Modifiers::ALT,
+            egui::Modifiers {
+                alt: true,
+                shift: true,
+                ..Default::default()
+            },
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let connection = eda_core::pcb_connectivity::Connection {
+                net: 0,
+                start: Point::mm(n as i64, 0),
+                end: Point::mm(n as i64, 10),
+            };
+            input(
+                &mut doc,
+                &mut editor,
+                &mut None,
+                Input {
+                    clicked: true,
+                    point: Some(Point::default()),
+                    modifiers: Some(mods),
+                    connection: Some(connection),
+                    ..Default::default()
+                },
+                &ctx,
+            )
+            .unwrap();
+            assert_eq!(doc.view.pcb.selected_connections.len(), n + 1);
+        }
+        assert!(doc.view.pcb.selected.is_empty());
+        assert_eq!(doc.model, original);
+        assert_eq!(doc.history.revision, 0);
+    }
+    #[test]
+    fn tab_expands_layer_copper_net_then_returns_to_original_without_history() {
+        let mut model = Document::new(DocumentKind::Board, "Tab.PcbDoc");
+        let mut board = Board::default();
+        for (layer, a, b) in [
+            (pcb::TOP, Point::mm(0, 0), Point::mm(10, 0)),
+            (pcb::TOP, Point::mm(10, 0), Point::mm(20, 0)),
+            (pcb::BOTTOM, Point::mm(20, 0), Point::mm(30, 0)),
+            (pcb::TOP, Point::mm(60, 0), Point::mm(70, 0)),
+        ] {
+            board.items.push(Item::new(
+                layer,
+                Some(0),
+                Shape::Track {
+                    start: a,
+                    end: b,
+                    width: 400_000,
+                },
+            ));
+        }
+        board.items.push(Item::new(
+            pcb::MULTI_LAYER,
+            Some(0),
+            Shape::Via {
+                position: Point::mm(20, 0),
+                diameter: 1_000_000,
+                hole: 400_000,
+                from_layer: pcb::TOP,
+                to_layer: pcb::BOTTOM,
+            },
+        ));
+        let seed = board.items[0].id;
+        model.pcb = Some(board);
+        let mut doc = OpenDocument::new(model, None);
+        doc.view.pcb.active_layer = pcb::TOP;
+        doc.view.pcb.selected = vec![seed];
+        let original = doc.model.clone();
+        for count in [3, 4, 5, 1] {
+            extend_route_selection(&mut doc);
+            assert_eq!(doc.view.pcb.selected.len(), count);
+        }
+        assert_eq!(doc.view.pcb.selected, vec![seed]);
+        assert_eq!(doc.model, original);
+        assert_eq!(doc.history.revision, 0);
+    }
+    #[test]
+    fn copper_crossing_selection_does_not_select_an_empty_corner_of_a_diagonal_bounds() {
+        let item = Item::new(
+            pcb::TOP,
+            None,
+            Shape::Track {
+                start: Point::mm(0, 0),
+                end: Point::mm(10, 10),
+                width: 100_000,
+            },
+        );
+        let empty = Bounds::points(&[Point::mm(0, 9), Point::mm(1, 10)]);
+        assert!(item.bounds().intersects(empty));
+        assert!(!eda_core::pcb_selection::touches_rectangle(
+            &item,
+            empty,
+            pcb::TOP
+        ));
+        assert!(eda_core::pcb_selection::touches_rectangle(
+            &item,
+            Bounds::points(&[Point::mm(4, 4), Point::mm(6, 6)]),
+            pcb::TOP
+        ));
     }
 }

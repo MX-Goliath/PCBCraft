@@ -248,6 +248,59 @@ impl PcbCraft {
     }
 }
 
+impl PcbCraft {
+    pub(super) fn highlight_schematic_net(&mut self, index: usize, hit: Option<Uuid>) {
+        let active_id = self.documents[index].model.id;
+        let project = self.file_project_index();
+        let result = (|| {
+            let snapshots = if project.is_some() {
+                self.schematic_project_snapshots()?
+            } else {
+                vec![]
+            };
+            let sheets: Vec<_> = snapshots.iter().map(|(p, d)| (p.as_path(), d)).collect();
+            let mut options = if let Some(p) = project {
+                self.projects[p].compile_options(&sheets)?
+            } else {
+                ProjectOptions::default()
+            };
+            let docs: Vec<_> = if sheets.is_empty() {
+                vec![&self.documents[index].model]
+            } else {
+                sheets.iter().map(|(_, d)| *d).collect()
+            };
+            options.report_label_conflicts = true;
+            options.review_annotation = true;
+            let compiled = eda_core::design_sync::compile_project(&docs, &options)?;
+            let objects = hit
+                .and_then(|id| {
+                    compiled
+                        .electrical_islands
+                        .into_iter()
+                        .find(|island| island.contains(&(active_id, id)))
+                })
+                .unwrap_or_default();
+            Ok::<_, String>(objects)
+        })();
+        match result {
+            Ok(objects) => {
+                for doc in &mut self.documents {
+                    doc.view.sch_highlight = objects
+                        .iter()
+                        .filter(|(sheet, _)| *sheet == doc.model.id)
+                        .map(|(_, id)| *id)
+                        .collect();
+                }
+                let view = &mut self.documents[index].view;
+                view.sch_selection = hit.into_iter().collect();
+                view.selected = hit;
+                view.sch_segments.clear();
+            }
+            Err(e) => self.message(true, e),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

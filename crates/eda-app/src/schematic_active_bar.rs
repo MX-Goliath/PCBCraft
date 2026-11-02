@@ -18,7 +18,7 @@ use icons::Glyph;
 pub(super) use resources::resolve_device;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Action {
+pub(super) enum Action {
     None,
     Place(Placement),
     Power(usize),
@@ -991,7 +991,12 @@ impl PcbCraft {
         }
     }
 
-    fn schematic_bar_action(&mut self, index: usize, action: Action, ctx: &egui::Context) {
+    pub(super) fn schematic_bar_action(
+        &mut self,
+        index: usize,
+        action: Action,
+        ctx: &egui::Context,
+    ) {
         match action {
             Action::Part => {
                 self.schematic_action(SchAction::Select, ctx);

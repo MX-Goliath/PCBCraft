@@ -1719,14 +1719,19 @@ impl BoardView {
         p.masked_dim = self.display.masked_dim;
         p.selection_color = self.display.selection_color;
         p.highlight_color = self.display.highlight_color;
-        self.three_d.highlighted = self.highlight_net.map(|net| {
-            board
-                .items
-                .iter()
-                .filter(|i| i.net == Some(net))
-                .map(|i| i.id)
-                .collect()
-        });
+        self.three_d.highlighted =
+            (self.highlight_net.is_some() || !self.highlight_nets.is_empty()).then(|| {
+                board
+                    .items
+                    .iter()
+                    .filter(|i| {
+                        board.item_net(i).is_some_and(|net| {
+                            self.highlight_net == Some(net) || self.highlight_nets.contains(&net)
+                        })
+                    })
+                    .map(|i| i.id)
+                    .collect()
+            });
     }
     pub fn configuration_panel(
         &mut self,

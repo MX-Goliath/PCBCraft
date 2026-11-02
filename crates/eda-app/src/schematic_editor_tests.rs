@@ -1,6 +1,67 @@
 use super::*;
 use eda_render::SchematicInput;
 
+#[test]
+fn alt_mouse_move_constrains_the_committed_transform_and_remains_one_undo() {
+    let mut app = app();
+    let p = edit::primitive(
+        K::Rectangle {
+            a: Point::mm(10, 10),
+            b: Point::mm(20, 20),
+            radius: Point::default(),
+        },
+        None,
+    );
+    let id = p.id;
+    let d = &mut app.documents[0];
+    let s = d.model.schematic.as_mut().unwrap();
+    s.sheet.snap_nm = 1_000_000;
+    s.primitives.push(p);
+    let fragment = edit::extract(s, id).unwrap();
+    let original = d.model.clone();
+    d.sch_editor.tool = Tool::Move {
+        fragment,
+        reflected: false,
+        selection: Selection {
+            ids: vec![id],
+            segments: vec![],
+        },
+        connected: false,
+        anchor: Point::mm(10, 10),
+        turns: 0,
+        revision: 0,
+        drag: true,
+    };
+    d.view.sch_tool_active = true;
+    let ctx = egui::Context::default();
+    let _ = ctx.run(
+        egui::RawInput {
+            focused: true,
+            modifiers: egui::Modifiers::ALT,
+            ..Default::default()
+        },
+        |ctx| {
+            app.schematic_input(
+                0,
+                SchematicInput {
+                    point: Some(Point::mm(25, 13)),
+                    drop_point: Some(Point::mm(25, 13)),
+                    drag_stopped: true,
+                    ..Default::default()
+                },
+                ctx,
+            );
+        },
+    );
+    let d = &mut app.documents[0];
+    assert_eq!(d.history.revision, 1);
+    assert!(
+        matches!(d.model.schematic.as_ref().unwrap().primitive(id).unwrap().kind,K::Rectangle{a,..} if a==Point::mm(25,10))
+    );
+    d.history.undo(&mut d.model);
+    assert_eq!(d.model, original);
+}
+
 pub(in crate::app) fn app() -> PcbCraft {
     PcbCraft {
         file_state: Default::default(),

@@ -31,16 +31,7 @@ pub enum FitTarget {
     Selection,
 }
 
-fn zoom_at(camera: &mut Camera, point: Pos2, rect: Rect, factor: f64) {
-    if !factor.is_finite() || factor <= 0.0 {
-        return;
-    }
-    let before = camera.world_mm(point, rect);
-    camera.pixels_per_mm = (camera.pixels_per_mm * factor).clamp(0.001, 100_000.0);
-    let after = camera.world_mm(point, rect);
-    camera.centre_mm[0] += before[0] - after[0];
-    camera.centre_mm[1] += before[1] - after[1];
-}
+use crate::interaction::zoom_at;
 fn fit_target(camera: &mut Camera, board: &Board, view: &BoardView, rect: Rect, target: FitTarget) {
     let bounds = match target {
         FitTarget::Document => Some(board.bounds()),
@@ -79,6 +70,11 @@ pub(super) fn requested_layer(ui: &egui::Ui, r: &Response, view: &BoardView) -> 
                     egui::PointerButton::Extra2 => Some(1),  // Forward
                     _ => None,
                 },
+                egui::Event::MouseWheel {
+                    delta, modifiers, ..
+                } if modifiers.ctrl && modifiers.shift && !modifiers.alt => {
+                    (delta.y != 0.).then_some(if delta.y > 0. { 1 } else { -1 })
+                }
                 _ => None,
             })
             .sum()
@@ -114,51 +110,25 @@ pub(super) fn navigate(
     if !ui.input(|i| i.focused) {
         return false;
     }
-    let panning =
-        r.dragged_by(egui::PointerButton::Middle) || r.dragged_by(egui::PointerButton::Secondary);
-    if panning {
-        let d = ui.input(|i| i.pointer.delta());
-        camera.centre_mm[0] -=
-            d.x as f64 / camera.pixels_per_mm * if camera.mirrored_x { -1.0 } else { 1.0 };
-        camera.centre_mm[1] += d.y as f64 / camera.pixels_per_mm;
-    }
-    if let Some(p) = r.hover_pos() {
-        // egui routes Ctrl+wheel into zoom_delta, not smooth_scroll_delta.
-        // Use this also for pinch and for the residual smoothed zoom frames
-        // after Ctrl has been released. Do not apply wheel zoom a second time.
-        let (scroll, zoom, modifiers) =
-            ui.input(|i| (i.smooth_scroll_delta, i.zoom_delta(), i.modifiers));
-        if zoom != 1.0 {
-            zoom_at(camera, p, rect, zoom as f64);
-        }
-        if view.navigation.wheel_zoom && !modifiers.shift {
-            if scroll.y != 0.0 {
-                zoom_at(camera, p, rect, (scroll.y as f64 * 0.003).exp());
+    let panning = crate::interaction::navigate(ui, r, camera, rect, view.navigation.wheel_zoom);
+    if let Some(p) = r.hover_pos()
+        && !ui.ctx().wants_keyboard_input()
+    {
+        ui.input_mut(|i| {
+            let ctrl = egui::Modifiers::CTRL;
+            let none = egui::Modifiers::NONE;
+            if i.consume_key(ctrl, egui::Key::PageDown) {
+                fit_target(camera, b, view, rect, FitTarget::Document);
+            } else if i.consume_key(ctrl, egui::Key::Home) {
+                fit_target(camera, b, view, rect, FitTarget::Selection);
+            } else if i.consume_key(none, egui::Key::PageUp) {
+                zoom_at(camera, p, rect, 1.5);
+            } else if i.consume_key(none, egui::Key::PageDown) {
+                zoom_at(camera, p, rect, 1.0 / 1.5);
+            } else if i.consume_key(none, egui::Key::Home) {
+                camera.centre_mm = camera.world_mm(p, rect);
             }
-            camera.centre_mm[0] -= scroll.x as f64 / camera.pixels_per_mm;
-        } else if modifiers.shift {
-            camera.centre_mm[0] -= (scroll.x + scroll.y) as f64 / camera.pixels_per_mm;
-        } else {
-            camera.centre_mm[0] -= scroll.x as f64 / camera.pixels_per_mm;
-            camera.centre_mm[1] += scroll.y as f64 / camera.pixels_per_mm;
-        }
-        if !ui.ctx().wants_keyboard_input() {
-            ui.input_mut(|i| {
-                let ctrl = egui::Modifiers::CTRL;
-                let none = egui::Modifiers::NONE;
-                if i.consume_key(ctrl, egui::Key::PageDown) {
-                    fit_target(camera, b, view, rect, FitTarget::Document);
-                } else if i.consume_key(ctrl, egui::Key::Home) {
-                    fit_target(camera, b, view, rect, FitTarget::Selection);
-                } else if i.consume_key(none, egui::Key::PageUp) {
-                    zoom_at(camera, p, rect, 1.5);
-                } else if i.consume_key(none, egui::Key::PageDown) {
-                    zoom_at(camera, p, rect, 1.0 / 1.5);
-                } else if i.consume_key(none, egui::Key::Home) {
-                    camera.centre_mm = camera.world_mm(p, rect);
-                }
-            });
-        }
+        });
     }
     panning
 }
@@ -331,6 +301,48 @@ mod tests {
         h.frame(vec![], Modifiers::NONE);
         h.view.pcb.visible = [1, 32, 35, 57, 75].into();
         h
+    }
+    #[test]
+    fn empty_polygon_definition_does_not_intercept_the_canvas_hit() {
+        let mut h = layer_harness();
+        h.board.polygon_pours.push(eda_core::pcb_polygon::Polygon {
+            contour: eda_core::pcb_polygon::straight_contour(&[
+                Point::mm(-10, -10),
+                Point::mm(10, -10),
+                Point::mm(10, 10),
+                Point::mm(-10, 10),
+            ]),
+            ..Default::default()
+        });
+        h.frame(vec![], Modifiers::NONE);
+        assert!(h.view.pcb.input.as_ref().unwrap().hit.is_none());
+    }
+    #[test]
+    fn ctrl_shift_wheel_changes_layer_without_camera_motion_or_a_later_zoom_tail() {
+        let mut h = layer_harness();
+        let before = h.view.camera.clone();
+        let mods = Modifiers {
+            ctrl: true,
+            shift: true,
+            ..Default::default()
+        };
+        h.wheel(mods);
+        assert_eq!(h.view.pcb.input.as_ref().unwrap().requested_layer, Some(32));
+        for _ in 0..20 {
+            h.frame(vec![], Modifiers::NONE);
+        }
+        assert_eq!(h.view.camera.pixels_per_mm, before.pixels_per_mm);
+        close(h.view.camera.centre_mm, before.centre_mm);
+        h.view.pcb.active_layer = 32;
+        h.frame(
+            vec![Event::MouseWheel {
+                unit: MouseWheelUnit::Line,
+                delta: Vec2::new(0., -1.),
+                modifiers: mods,
+            }],
+            mods,
+        );
+        assert_eq!(h.view.pcb.input.as_ref().unwrap().requested_layer, Some(1));
     }
     fn side_button(pos: Pos2, button: PointerButton, pressed: bool) -> Event {
         Event::PointerButton {
@@ -547,7 +559,7 @@ mod tests {
         assert!(h.view.camera.pixels_per_mm > 100.0);
     }
     #[test]
-    fn right_and_middle_drags_pan_without_emitting_edit_or_cancel_clicks() {
+    fn right_drag_pans_and_middle_drag_zooms_without_emitting_edit_or_cancel_clicks() {
         for button in [PointerButton::Secondary, PointerButton::Middle] {
             let mut h = Harness::new();
             let before = h.board.clone();
@@ -569,7 +581,17 @@ mod tests {
             assert!(!input.dragging && !input.clicked);
             h.frame(vec![event(h.pointer, false)], Modifiers::NONE);
             assert!(!h.view.pcb.input.as_ref().unwrap().secondary_clicked);
-            close(h.view.camera.centre_mm, [-0.4, 0.25]);
+            if button == PointerButton::Secondary {
+                close(h.view.camera.centre_mm, [-0.4, 0.25]);
+            } else {
+                assert!(h.view.camera.pixels_per_mm < 100.);
+                close(
+                    h.view
+                        .camera
+                        .world_mm(Pos2::new(250., 120.), Harness::rect()),
+                    [0.5, 0.3],
+                );
+            }
             assert_eq!(h.board, before);
         }
     }

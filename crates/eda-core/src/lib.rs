@@ -8,6 +8,7 @@ pub mod pcb_connectivity;
 pub mod pcb_polygon;
 pub mod pcb_route;
 pub mod pcb_rules;
+pub mod pcb_selection;
 pub mod pcb_tools;
 pub mod schematic;
 pub mod schematic_arrange;

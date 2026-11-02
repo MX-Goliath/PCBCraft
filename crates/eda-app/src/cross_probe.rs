@@ -5,6 +5,7 @@ use eda_core::cross_probe::{self as probe, Target};
 pub(super) struct State {
     pub enabled: bool,
     prefix: Option<f64>,
+    keep_source: Option<Uuid>,
     choices: Vec<(Uuid, Target)>,
     pub status: String,
 }
@@ -81,15 +82,12 @@ impl PcbCraft {
             self.cross_probe = State::default();
             return true;
         }
-        let d = &self.documents[index];
-        let idle = !d.sch_editor.active()
-            && !d.pcb_editor.has_pending()
-            && d.pcb_editor.tool == pcb_editor::Tool::Select;
-        let quick = idle && ctx.input(|i| i.modifiers.ctrl && !i.modifiers.shift);
-        if !(self.cross_probe.enabled || (quick && clicked)) {
+        if !self.cross_probe.enabled {
             return false;
         }
         if clicked && let Some(id) = hit {
+            self.cross_probe.keep_source =
+                (!ctx.input(|i| i.modifiers.ctrl)).then_some(self.documents[index].session_id);
             self.probe_object(index, id);
         }
         true
@@ -194,11 +192,17 @@ impl PcbCraft {
             doc.view.camera.pixels_per_mm = doc.view.camera.pixels_per_mm.max(12.0);
             doc.view.camera.fitted = true;
         }
-        self.active = Some(index);
+        let destination_name = doc.model.name.clone();
+        self.active = self
+            .cross_probe
+            .keep_source
+            .and_then(|id| self.documents.iter().position(|d| d.session_id == id))
+            .or(Some(index));
         self.settings.properties = true;
         self.settings.right_components = false;
         self.settings.right_messages = false;
-        self.cross_probe.status = format!("Located in {} · Esc exits Cross Probe", doc.model.name);
+        self.cross_probe.status =
+            format!("Located in {} · Esc exits Cross Probe", destination_name);
     }
     pub(super) fn cross_probe_dialog(&mut self, ctx: &egui::Context) {
         if self.cross_probe.choices.is_empty() {
@@ -239,6 +243,23 @@ impl PcbCraft {
 mod tests {
     use super::*;
     use eda_core::{pcb::Shape, schematic::SchPrimitiveKind as K};
+    #[test]
+    fn ctrl_click_does_not_implicitly_enter_cross_probe_mode() {
+        let mut app = app();
+        let ctx = egui::Context::default();
+        let original = app.active;
+        let _ = ctx.run(
+            egui::RawInput {
+                modifiers: egui::Modifiers::CTRL,
+                ..Default::default()
+            },
+            |ctx| {
+                assert!(!app.cross_probe_input(0, None, true, false, ctx));
+            },
+        );
+        assert!(!app.cross_probe.enabled);
+        assert_eq!(app.active, original);
+    }
     fn app() -> PcbCraft {
         let mut app = PcbCraft {
             file_state: Default::default(),

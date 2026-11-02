@@ -34,11 +34,13 @@ pub struct BoardView {
     pub three_d: crate::pcb_3d::State,
     pub initialized: bool,
     pub selected: Vec<Uuid>,
+    pub selected_connections: Vec<eda_core::pcb_connectivity::Connection>,
     pub visible: BTreeSet<u16>,
     pub active_layer: u16,
     /// 0: all layers, 1: dim other layers, 2: hide other layers.
     pub single_layer: u8,
     pub highlight_net: Option<u32>,
+    pub highlight_nets: BTreeSet<u32>,
     pub component_selection: bool,
     pub select_locked: bool,
     pub filters: [bool; 8],
@@ -50,6 +52,7 @@ pub struct BoardView {
     primary_origin: Option<Point>,
     primary_press: Option<Pos2>,
     primary_dragging: bool,
+    primary_modifiers: egui::Modifiers,
     suppress_primary_until_release: bool,
     preview: Option<std::sync::Arc<Board>>,
     preview_generation: u64,
@@ -80,6 +83,8 @@ struct RoutePainting {
 }
 #[derive(Clone, Default)]
 pub struct Input {
+    pub modifiers: Option<egui::Modifiers>,
+    pub connection: Option<eda_core::pcb_connectivity::Connection>,
     /// Apply through the editor's layer-change command, including route vias.
     pub requested_layer: Option<u16>,
     pub point: Option<Point>,
@@ -142,6 +147,28 @@ pub fn layer_color(id: u16) -> Color32 {
     }
 }
 impl BoardView {
+    pub fn visible_connections(
+        &self,
+        board: &Board,
+    ) -> Vec<eda_core::pcb_connectivity::Connection> {
+        if !self.display.connections {
+            return vec![];
+        }
+        self.connections
+            .lines
+            .iter()
+            .filter(|c| {
+                self.single_layer == 0
+                    || self.display.all_connections
+                    || board
+                        .items
+                        .iter()
+                        .any(|i| i.net == Some(c.net) && i.layer == self.active_layer)
+            })
+            .cloned()
+            .collect()
+    }
+
     pub fn preview_generation(&self) -> u64 {
         self.preview_generation
     }
@@ -285,7 +312,7 @@ impl BoardView {
                 || item.layer == MULTI_LAYER)
             && (self.polygons_visible || item.polygon.is_none())
     }
-    fn polygon_visible(&self, layer: u16) -> bool {
+    pub fn polygon_visible(&self, layer: u16) -> bool {
         self.polygons_visible
             && !self.display.hidden[10]
             && self.visible.contains(&layer)
@@ -625,14 +652,7 @@ pub fn canvas(ui: &mut egui::Ui, b: &Board, view: &mut View) -> CanvasOutput {
                 {
                     continue;
                 }
-                let points = poly.points();
-                let edge = points
-                    .iter()
-                    .enumerate()
-                    .any(|(n, a)| segment_distance(p, *a, points[(n + 1) % points.len()]) <= tol);
-                let inside = point_in_polygon(p, &points)
-                    && !poly.holes.iter().any(|h| point_in_polygon(p, h));
-                if inside || edge {
+                if eda_core::pcb_selection::polygon_boundary_hit(poly, p, tol) {
                     hits.push(poly.id);
                 }
             }
@@ -698,6 +718,20 @@ pub fn canvas(ui: &mut egui::Ui, b: &Board, view: &mut View) -> CanvasOutput {
         view.pcb.primary_origin = Some(world(&view.camera, pos, rect));
         view.pcb.primary_press = Some(pos);
         view.pcb.primary_dragging = false;
+        view.pcb.primary_modifiers = ui.input(|i| {
+            i.events
+                .iter()
+                .find_map(|e| match e {
+                    egui::Event::PointerButton {
+                        button: egui::PointerButton::Primary,
+                        pressed: true,
+                        modifiers,
+                        ..
+                    } => Some(*modifiers),
+                    _ => None,
+                })
+                .unwrap_or(i.modifiers)
+        });
     }
     let origin = view.pcb.primary_origin;
     let was_dragging = view.pcb.primary_dragging;
@@ -724,7 +758,32 @@ pub fn canvas(ui: &mut egui::Ui, b: &Board, view: &mut View) -> CanvasOutput {
         view.pcb.primary_press = None;
         view.pcb.primary_dragging = false;
     }
+    let connection = raw.and_then(|at| {
+        view.pcb
+            .connections
+            .lines
+            .iter()
+            .filter(|_| view.pcb.display.connections)
+            .filter(|c| {
+                view.pcb.single_layer == 0
+                    || view.pcb.display.all_connections
+                    || scene
+                        .items
+                        .iter()
+                        .any(|i| i.net == Some(c.net) && i.layer == view.pcb.active_layer)
+            })
+            .map(|c| (c, segment_distance(at, c.start, c.end)))
+            .filter(|(_, d)| *d <= 6e6 / view.camera.pixels_per_mm)
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+            .map(|(c, _)| c.clone())
+    });
     view.pcb.input = Some(Input {
+        modifiers: Some(if origin.is_some() {
+            view.pcb.primary_modifiers
+        } else {
+            ui.input(|i| i.modifiers)
+        }),
+        connection,
         requested_layer: navigation::requested_layer(ui, &response, &view.pcb),
         point,
         raw_point: raw,
@@ -785,8 +844,10 @@ fn artwork_color(scene: &Board, item: &Item, view: &BoardView, selected: bool) -
     if view.single_layer == 1 && item.layer != view.active_layer && item.layer != MULTI_LAYER {
         color = dim(color, view.display.dim);
     }
-    if let Some(net) = view.highlight_net {
-        color = if item.net == Some(net) {
+    if view.highlight_net.is_some() || !view.highlight_nets.is_empty() {
+        color = if scene.item_net(item).is_some_and(|net| {
+            view.highlight_net == Some(net) || view.highlight_nets.contains(&net)
+        }) {
             dim(view.display.highlight_color, view.display.highlight_dim)
         } else {
             dim(color, view.display.masked_dim)
@@ -1157,11 +1218,12 @@ fn paint_connections(
             {
                 continue;
             }
-            let color = if view
-                .pcb
-                .highlight_net
-                .is_some_and(|net| net != connection.net)
-            {
+            let selected = view.pcb.selected_connections.contains(connection);
+            let color = if selected {
+                Color32::WHITE
+            } else if view.pcb.highlight_net.is_some_and(|net| {
+                net != connection.net && !view.pcb.highlight_nets.contains(&connection.net)
+            }) {
                 dim(view.pcb.display.connection_color, view.pcb.display.dim)
             } else if view.pcb.display.layer_connections {
                 view.pcb.color(view.pcb.active_layer)
@@ -1173,7 +1235,7 @@ fn paint_connections(
                     camera.screen(connection.start, rect),
                     camera.screen(connection.end, rect),
                 ],
-                Stroke::new(1.0, color),
+                Stroke::new(if selected { 2.0 } else { 1.0 }, color),
             );
         }
     }

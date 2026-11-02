@@ -5,6 +5,7 @@ use egui::{Color32, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 mod image_cache;
+mod interaction;
 pub mod pcb;
 pub mod pcb_3d;
 pub mod pcb_stack;
@@ -121,6 +122,10 @@ pub struct View {
     pub sch_filters: [bool; 12],
     pub sch_selection: Vec<Uuid>,
     #[serde(skip)]
+    pub selection_memory: [Vec<Uuid>; 8],
+    #[serde(skip)]
+    pub segment_memory: [Vec<eda_core::schematic_edit::WireSegment>; 8],
+    #[serde(skip)]
     pub sch_segments: Vec<eda_core::schematic_edit::WireSegment>,
     /// Ephemeral display strings supplied by the shell, never document geometry.
     #[serde(skip)]
@@ -137,6 +142,16 @@ pub struct View {
     sch_press_origin: Option<Pos2>,
     #[serde(skip)]
     sch_primary_down: bool,
+    #[serde(skip)]
+    sch_primary_dragging: bool,
+    #[serde(skip)]
+    sch_press_modifiers: egui::Modifiers,
+    #[serde(skip)]
+    sch_suppress_primary: bool,
+    #[serde(skip)]
+    pub sch_selection_box: Option<(Point, Point)>,
+    #[serde(skip)]
+    pub sch_highlight: Vec<Uuid>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -191,6 +206,8 @@ impl Default for View {
             sch_select_graphics: true,
             sch_filters: [true; 12],
             sch_selection: vec![],
+            selection_memory: Default::default(),
+            segment_memory: Default::default(),
             sch_segments: vec![],
             source_display_path: String::new(),
             display_date: String::new(),
@@ -199,6 +216,11 @@ impl Default for View {
             sch_junction_cache: None,
             sch_press_origin: None,
             sch_primary_down: false,
+            sch_primary_dragging: false,
+            sch_press_modifiers: egui::Modifiers::NONE,
+            sch_suppress_primary: false,
+            sch_selection_box: None,
+            sch_highlight: vec![],
         }
     }
 }
@@ -207,6 +229,9 @@ impl View {
     pub fn cancel_schematic_gesture(&mut self) {
         self.sch_press_origin = None;
         self.sch_primary_down = false;
+        self.sch_primary_dragging = false;
+        self.sch_selection_box = None;
+        self.sch_suppress_primary = true;
     }
     /// Candidate search reads the actual visible geometry; it never edits document coordinates.
     pub fn snap_point(&self, doc: &Document, raw: Point) -> Point {
@@ -287,6 +312,9 @@ pub struct CanvasOutput {
 
 #[derive(Default)]
 pub struct SchematicInput {
+    pub panning: bool,
+    pub cancelled: bool,
+    pub modifiers: Option<egui::Modifiers>,
     pub double_clicked: bool,
     /// Pointer over the unobscured canvas, including a drag originating in another panel.
     pub drop_point: Option<Point>,
@@ -311,42 +339,53 @@ pub fn canvas(ui: &mut egui::Ui, doc: &Document, view: &mut View) -> CanvasOutpu
     if !view.camera.fitted {
         view.camera.fit(doc, rect);
     }
-    if response.dragged_by(egui::PointerButton::Middle)
-        || response.dragged_by(egui::PointerButton::Secondary)
+    let panning = interaction::navigate(ui, &response, &mut view.camera, rect, false);
+    if doc.kind == DocumentKind::Schematic
+        && response.hovered()
+        && ui.input(|i| i.focused)
+        && !ui.ctx().wants_keyboard_input()
     {
-        let delta = ui.input(|i| i.pointer.delta());
-        view.camera.centre_mm[0] -= delta.x as f64 / view.camera.pixels_per_mm;
-        view.camera.centre_mm[1] += delta.y as f64 / view.camera.pixels_per_mm;
+        let pointer = response.hover_pos().unwrap_or(rect.center());
+        ui.input_mut(|i| {
+            if i.consume_key(egui::Modifiers::CTRL, egui::Key::PageDown) {
+                if let Some(s) = &doc.schematic {
+                    let bounds: Vec<_> = s
+                        .primitives
+                        .iter()
+                        .filter(|p| !p.presentation.hidden)
+                        .filter_map(|p| eda_core::schematic_arrange::primitive_bounds(s, p))
+                        .collect();
+                    if let (Some(x0), Some(y0), Some(x1), Some(y1)) = (
+                        bounds.iter().map(|b| b.min.x).min(),
+                        bounds.iter().map(|b| b.min.y).min(),
+                        bounds.iter().map(|b| b.max.x).max(),
+                        bounds.iter().map(|b| b.max.y).max(),
+                    ) {
+                        view.camera.centre_mm =
+                            [(x0 as f64 + x1 as f64) / 2e6, (y0 as f64 + y1 as f64) / 2e6];
+                        view.camera.pixels_per_mm = ((rect.width() as f64 - 40.)
+                            / ((x1 - x0).max(1) as f64 / 1e6))
+                            .min((rect.height() as f64 - 40.) / ((y1 - y0).max(1) as f64 / 1e6))
+                            .clamp(0.001, 100_000.);
+                    }
+                }
+            } else if i.consume_key(egui::Modifiers::NONE, egui::Key::PageUp) {
+                interaction::zoom_at(&mut view.camera, pointer, rect, 1.5);
+            } else if i.consume_key(egui::Modifiers::NONE, egui::Key::PageDown) {
+                interaction::zoom_at(&mut view.camera, pointer, rect, 1. / 1.5);
+            } else if i.consume_key(egui::Modifiers::NONE, egui::Key::Home) {
+                view.camera.centre_mm = view.camera.world_mm(pointer, rect);
+            }
+        });
     }
     let pointer = response.hover_pos();
-    if let Some(pointer) = pointer {
-        let scroll = ui.input(|i| i.smooth_scroll_delta.y);
-        if scroll != 0.0 {
-            view.camera
-                .zoom_at(pointer, rect, (scroll as f64 * 0.003).exp());
-        }
-        if doc.kind == DocumentKind::Schematic && !ui.ctx().wants_keyboard_input() {
-            let factor = ui.input(|i| {
-                if i.key_pressed(egui::Key::PageUp) {
-                    1.5
-                } else if i.key_pressed(egui::Key::PageDown) {
-                    1.0 / 1.5
-                } else {
-                    1.0
-                }
-            });
-            if factor != 1.0 {
-                view.camera.zoom_at(pointer, rect, factor);
-            }
-        }
-    }
     // Schematic repeated clicks refine wire selection; fitting here changes
     // document coordinates before the second click can select a segment.
     if response.double_clicked() && doc.kind != DocumentKind::Schematic && !view.sch_tool_active {
         view.camera.fit(doc, rect);
     }
     if doc.kind == DocumentKind::Schematic {
-        return schematic::paint(ui, doc, view, rect, &response);
+        return schematic::paint(ui, doc, view, rect, &response, panning);
     }
     let top_left = view.camera.screen(
         Point {

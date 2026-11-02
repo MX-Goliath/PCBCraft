@@ -49,6 +49,8 @@ mod schematic_output;
 mod schematic_properties;
 #[path = "schematic_validation.rs"]
 mod schematic_validation;
+#[path = "selection_controls.rs"]
+mod selection_controls;
 use eda_core::schematic_edit::Placement;
 
 #[derive(Clone, Copy)]
@@ -1989,6 +1991,7 @@ impl eframe::App for PcbCraft {
         self.design_sync_dialog(ctx);
         self.sheet_sync_dialog(ctx);
         self.sheet_sync_context_menu(ctx);
+        self.selection_popup(ctx);
         self.document_loading_dialog(ctx);
         self.file_dialogs(ctx);
         self.resize_edges(ctx);

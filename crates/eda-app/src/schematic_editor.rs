@@ -836,6 +836,9 @@ impl PcbCraft {
         if self.documents[i].model.kind != DocumentKind::Schematic {
             return false;
         }
+        if !self.documents[i].sch_editor.active() && self.selection_shortcuts(ctx) {
+            return true;
+        }
         if self.schematic_bar_shortcuts(i, ctx) {
             return true;
         }
@@ -982,6 +985,7 @@ impl PcbCraft {
                 doc.view.selected = None;
                 doc.view.sch_selection.clear();
                 doc.view.sch_segments.clear();
+                doc.view.cancel_schematic_gesture();
             }
             return true;
         }
@@ -1078,6 +1082,36 @@ impl PcbCraft {
         input: eda_render::SchematicInput,
         ctx: &egui::Context,
     ) {
+        if input.panning || input.cancelled {
+            let doc = &mut self.documents[index];
+            if input.cancelled && !input.panning
+                || matches!(
+                    doc.sch_editor.tool,
+                    Tool::Move { drag: true, .. }
+                        | Tool::WireDrag { drag: true, .. }
+                        | Tool::AreaResize { .. }
+                )
+            {
+                doc.sch_editor.cancel(&mut doc.view);
+            }
+            return;
+        }
+        if input.clicked
+            && input
+                .modifiers
+                .unwrap_or_else(|| ctx.input(|i| i.modifiers))
+                .alt
+            && !self.documents[index].sch_editor.active()
+        {
+            self.highlight_schematic_net(index, input.hit);
+            return;
+        }
+        if !self.documents[index].sch_editor.active()
+            && input.modifiers.is_some_and(|m| m.shift)
+            && (input.drag_started || input.dragging || input.drag_stopped)
+        {
+            return;
+        }
         if self.schematic_bar_input(index, &input, ctx) {
             return;
         }
@@ -1118,7 +1152,14 @@ impl PcbCraft {
         let step = s.sheet.snap_nm;
         let radius = ((8.0 / doc.view.camera.pixels_per_mm * 1e6) as i64)
             .min(s.sheet.options.snap_distance_nm);
-        let snap = |p| edit::snap_point(s, p, step, radius);
+        let modifiers = ctx.input(|i| i.modifiers);
+        let snap = |p| {
+            if modifiers.ctrl && modifiers.shift {
+                p
+            } else {
+                edit::snap_point(s, p, step, radius)
+            }
+        };
         let point = input.point.map(snap);
         if point.is_some() {
             doc.sch_editor.pointer = point;
@@ -1356,10 +1397,17 @@ impl PcbCraft {
                     point.or(doc.sch_editor.pointer)
                 };
                 if let Some(at) = at {
-                    let delta = Point {
+                    let mut delta = Point {
                         x: at.x - anchor.x,
                         y: at.y - anchor.y,
                     };
+                    if ctx.input(|i| i.modifiers.alt) {
+                        if delta.x.abs() >= delta.y.abs() {
+                            delta.y = 0;
+                        } else {
+                            delta.x = 0;
+                        }
+                    }
                     let edit = Edit::DragWire {
                         id: *id,
                         handle: *handle,
@@ -1811,10 +1859,17 @@ impl PcbCraft {
                 };
                 let cancelled = ctx.input(|i| !i.focused || i.key_down(Key::Escape));
                 if let Some(at) = at.filter(|_| !cancelled) {
-                    let delta = Point {
+                    let mut delta = Point {
                         x: at.x - anchor.x,
                         y: at.y - anchor.y,
                     };
+                    if ctx.input(|i| i.modifiers.alt) {
+                        if delta.x.abs() >= delta.y.abs() {
+                            delta.y = 0;
+                        } else {
+                            delta.x = 0;
+                        }
+                    }
                     let edit = if *reflected {
                         eda_core::schematic_directives::transform_areas(
                             fragment, *anchor, *turns, true, delta,

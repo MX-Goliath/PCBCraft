@@ -168,3 +168,14 @@ This uses footprint bounds, not exact arbitrary body contours. Altium selection
 preferences/overlap parity, Windows runtime and full-board drag latency remain
 unverified. There was no new live Altium comparison; the user's original PCB was
 never saved.
+
+
+## 02.11.2026 ? Shared SCH/PCB controls
+
+The current control matrix, native AD24 observations, regression coverage and
+remaining differences are in [editor-controls](../interface/editor-controls.md).
+This supersedes the earlier middle-button-pan and bounds-only crossing rows:
+middle drag now zooms; right drag pans; individual PCB copper shapes use geometric
+crossing tests. Component envelopes and remaining native preference differences
+are described in the current matrix. Schematic now shares wheel/pan navigation
+and provides a default left-button directional selection rectangle.

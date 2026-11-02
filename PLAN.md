@@ -2338,3 +2338,69 @@ Cause, implementation and validation: docs/pcb-update/INTERACTIVE_ROUTING.md.
   No PCB GPU implementation/test files were changed by this merge. Full log:
   target/sync-qa/workspace-tests.log. Final strict checks: fmt-final.log and
   clippy-final.log; successful Windows build: build.log.
+
+
+### 2026-11-02 ? SCH/PCB selection and navigation correspondence
+
+- User requested native Altium controls, especially default left-button rectangle,
+  right-button pan, component/wire/net selection and Alt/Shift variants.
+- Observed AD Enterprise 24.4.1 using an authored fixture copy: component toggle,
+  wire then segment refinement, directional frame/partial child text selection;
+  inspected PCB Select menu without editing/saving user designs. Official rules
+  and unverified native modifier combinations are distinguished in
+  docs/interface/editor-controls.md.
+- Shared SCH/PCB camera navigation, robust schematic press/release cancellation,
+  default/additive frame, child text selection, electrical-island net highlights,
+  memory and nudge/Undo implemented. PCB adds Ctrl-pad frame, Alt airwire choice,
+  exact individual-copper crossing, overlap click cycle and physical/Tab expansion.
+- Source/GUI validation is in progress; final results follow below. Full native
+  preference/menu/marker/edge-pan/shove parity is not claimed; features.json keeps
+  both controls features partial and enumerates remaining differences.
+
+- Read native System/General and Mouse Wheel Configuration without changing
+  settings. Left/Right selection is enabled; Ctrl-wheel zoom, plain/Shift scroll
+  and Ctrl+Shift-wheel layer/channel mappings are confirmed in the installed UI.
+- Restored native Ctrl-click PCB highlight and Ctrl+Shift-click cumulative nets;
+  Ctrl-click no longer implicitly starts Cross Probe. T,C retains explicit
+  continuous/jump modes. Ctrl+Shift-wheel now requests a layer change and does not
+  leak an egui smoothed camera zoom. Schematic compiled channels remain absent.
+
+- Real portable GUI: SCH default left rectangle selected four authored objects;
+  S popup opened; Escape preserved the selection; source stayed clean. Maximized
+  PCBCraft client 1920x1032 and AD client 1918x1030 use the same desktop DPI,
+  but dock widths and exact marker/Fit metrics still differ.
+- PCB GUI exposed an existing invisible-polygon hit: a drag through empty,
+  unpoured polygon interior moved its definition instead of making a rectangle.
+  Undid the authored-copy movement and closed without saving. Picking now uses
+  polygon boundaries or actually drawn copper; crossing frames test boundaries.
+  Added renderer/controller regressions, including unpoured/non-stale state and
+  both directions. Final fresh GUI check and verification results follow below.
+
+- Fresh extracted portable PCB check: left-to-right containing frame and
+  right-to-left crossing frame select R1 without editing the model; empty
+  unpoured polygon interiors no longer capture the gesture. Track click followed
+  by Tab selects the two physically connected copper objects (track and pad).
+  S menu layout is readable in the real window. No authored fixtures were saved.
+- GUI also exposed egui's pending Tab focus traversal stealing subsequent editor
+  shortcuts. Selection Tab/Shift+Tab now resolve that traversal before property
+  fields register; a multi-frame real-egui regression checks the following S key
+  and confirms that property text receives no input. Routing Tab retains its
+  deliberate property editing mode.
+- Final source checks: cargo fmt --all -- --check PASS; cargo clippy --workspace
+  --all-targets -- -D warnings PASS. cargo test --workspace --no-fail-fast:
+  677 PASS, one previously documented GPU pixel comparison FAIL. App 153, core
+  273, geom 1, IO 139 PASS; render 111 PASS / 1 FAIL. The unchanged failure is
+  Rgba8Unorm frame 13 dither=true, difference 4 versus tolerance 3, at
+  crates/eda-render/src/tests/pcb_route_gpu_tests.rs:235. No test was disabled or
+  weakened. Full log: .tools/interaction-tests-final.log.
+- Final portable (release, locked MSVC x64) re-extracted and launched from TEMP
+  with only Windows on PATH: Track -> Tab -> S opens Select immediately, Escape
+  preserves two selected objects, Shift+S changes layer display without opening
+  Select. Document title stays clean; both authored reference files remain byte
+  identical to the fixtures. Data/app.ron is written next to the EXE. ZIP CRC,
+  executable manifest hash and absence of smoke-test state in the archive PASS.
+- Delivery: dist/PCBCraft-0.1.0-windows-x64-portable-2026-11-02-controls.zip,
+  13,806,587 bytes, SHA256
+  redacted-source-sha256.
+  Sibling controls-verification.json and windows-portable-2026-11-02-controls-tests.log
+  record the checks and known failure. Original dated portable archive preserved.

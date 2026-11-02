@@ -610,6 +610,8 @@ fn pcb_shortcut_sequences_and_inactive_drag_cleanup_are_routed_to_active_documen
     let doc = &mut app.documents[0];
     let before = doc.model.clone();
     doc.pcb_editor.gesture = Some(Gesture::Box {
+        pads: false,
+        connections: false,
         origin: Point::default(),
         add: false,
     });
@@ -732,6 +734,8 @@ fn three_d_mode_shortcuts_selection_rotation_and_return_preserve_history_and_cam
 fn entering_three_d_rejects_pending_gesture_and_two_d_noop_keeps_it() {
     let mut app = app();
     app.documents[0].pcb_editor.gesture = Some(Gesture::Box {
+        pads: false,
+        connections: false,
         origin: Point::mm(1, 1),
         add: false,
     });

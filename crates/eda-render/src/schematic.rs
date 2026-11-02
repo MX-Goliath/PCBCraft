@@ -1556,8 +1556,9 @@ pub(super) fn paint(
     view: &mut View,
     rect: Rect,
     response: &egui::Response,
+    panning: bool,
 ) -> CanvasOutput {
-    paint_mode(ui, doc, view, rect, response, false)
+    paint_mode(ui, doc, view, rect, response, false, panning)
 }
 
 pub(super) fn paint_output(
@@ -1567,7 +1568,7 @@ pub(super) fn paint_output(
     rect: Rect,
     response: &egui::Response,
 ) -> CanvasOutput {
-    paint_mode(ui, doc, view, rect, response, true)
+    paint_mode(ui, doc, view, rect, response, true, false)
 }
 
 fn paint_mode(
@@ -1577,6 +1578,7 @@ fn paint_mode(
     rect: Rect,
     response: &egui::Response,
     output: bool,
+    panning: bool,
 ) -> CanvasOutput {
     let painter = ui.painter_at(rect);
     painter.rect_filled(
@@ -1791,47 +1793,73 @@ fn paint_mode(
     // Retain the press location through release: egui clears pointer.press_origin
     // before a fast press/move/release sequence has necessarily been painted.
     let mut release = None;
-    let pointer_buttons = ui.input(|i| {
+    let focused = ui.is_enabled() && ui.input(|i| i.focused);
+    let suppressed = view.sch_suppress_primary;
+    for (pos, pressed, modifiers) in ui.input(|i| {
         i.events
             .iter()
-            .filter_map(|event| {
-                if let egui::Event::PointerButton {
+            .filter_map(|e| match e {
+                egui::Event::PointerButton {
                     pos,
                     button: egui::PointerButton::Primary,
                     pressed,
-                    ..
-                } = event
-                {
-                    Some((*pos, *pressed))
-                } else {
-                    None
-                }
+                    modifiers,
+                } => Some((*pos, *pressed, *modifiers)),
+                _ => None,
             })
             .collect::<Vec<_>>()
-    });
-    for (pos, pressed) in pointer_buttons {
+    }) {
         if pressed {
-            // Floating toolbars own a different layer and must not start canvas drags.
-            view.sch_primary_down =
-                rect.contains(pos) && ui.ctx().layer_id_at(pos) == Some(response.layer_id);
+            view.sch_primary_down = !suppressed
+                && focused
+                && rect.contains(pos)
+                && ui.ctx().layer_id_at(pos) == Some(response.layer_id);
             if view.sch_primary_down {
                 view.sch_press_origin = Some(pos);
+                view.sch_press_modifiers = modifiers;
+                view.sch_primary_dragging = false;
             }
         } else if view.sch_primary_down {
             release = Some(pos);
             view.sch_primary_down = false;
         }
     }
-    // A busy frame can receive the entire gesture before egui has started a drag.
-    let drag_stopped = response.drag_stopped_by(egui::PointerButton::Primary)
-        || release
-            .zip(view.sch_press_origin)
-            .is_some_and(|(end, start)| end.distance(start) > 6.0);
-    let hit_pointer = if response.drag_started_by(egui::PointerButton::Primary) || drag_stopped {
-        view.sch_press_origin
+    let was_dragging = view.sch_primary_dragging;
+    let pointer = release.or_else(|| ui.ctx().pointer_latest_pos());
+    if view
+        .sch_press_origin
+        .zip(pointer)
+        .is_some_and(|(a, b)| a.distance(b) > 6.)
+    {
+        view.sch_primary_dragging = true;
+    }
+    let interrupted = !focused || panning;
+    let dragging = view.sch_primary_dragging && !interrupted;
+    let drag_started = dragging && !was_dragging;
+    let drag_stopped = dragging && release.is_some();
+    let origin = view.sch_press_origin;
+    let modifiers = if origin.is_some() {
+        view.sch_press_modifiers
+    } else {
+        ui.input(|i| i.modifiers)
+    };
+    let hit_pointer = if dragging {
+        origin
     } else {
         response.hover_pos()
     };
+    if interrupted {
+        view.sch_primary_down = false;
+        view.sch_primary_dragging = false;
+        view.sch_press_origin = None;
+        view.sch_selection_box = None;
+        view.sch_suppress_primary = true;
+    }
+    if !ui.input(|i| i.pointer.primary_down()) {
+        view.sch_suppress_primary = false;
+        view.sch_press_origin = None;
+        view.sch_primary_dragging = false;
+    }
     let mut selected_bounds = Rect::NOTHING;
     let mut component_bounds = HashMap::<Uuid, Rect>::new();
     let preview_ids: std::collections::HashSet<_> = view
@@ -1861,11 +1889,15 @@ fn paint_mode(
                 || primitive
                     .component
                     .is_some_and(|c| excluded.components.contains(&c));
-            let faded = masked.then(|| {
+            let highlighted = view.sch_highlight.contains(&primitive.id);
+            let net_dimmed = !view.sch_highlight.is_empty() && !highlighted;
+            let faded = (masked || net_dimmed || highlighted).then(|| {
                 let mut p = primitive.clone();
-                p.color = 0xa0a0a0;
-                p.fill = p.fill.map(|_| 0xe0e0e0);
-                p.presentation.text_color = Some(0xa0a0a0);
+                p.color = if highlighted { 0x00b000 } else { 0xa0a0a0 };
+                p.fill = p
+                    .fill
+                    .map(|_| if highlighted { 0xb0ffb0 } else { 0xe0e0e0 });
+                p.presentation.text_color = Some(p.color);
                 p
             });
             let (bounds, is_hit) =
@@ -1892,36 +1924,13 @@ fn paint_mode(
             {
                 selected_bounds = selected_bounds.union(bounds);
             }
-            let category = if primitive.text_role == Some(eda_core::schematic::TextRole::NetLabel) {
-                5
-            } else if primitive.text_role.is_some()
-                || (matches!(primitive.kind, K::Text { .. })
-                    && !primitive.presentation.name.is_empty())
-            {
-                6
-            } else if primitive.component.is_some() {
-                0
-            } else if primitive.presentation.record_type == 15 {
-                3
-            } else if primitive.presentation.record_type == 16 {
-                4
-            } else {
-                match &primitive.kind {
-                    K::Polyline { electrical, .. } if electrical == "Wire" => 1,
-                    K::Polyline { electrical, .. } if electrical == "Bus" => 2,
-                    K::Port { .. } => 7,
-                    K::PowerPort { .. } => 8,
-                    K::Text { .. } => 9,
-                    K::Junction { .. } | K::NoErc { .. } => 11,
-                    _ => 10,
-                }
-            };
+            let category = selection_category(primitive);
             if is_hit && view.sch_filters[category] {
                 let parameter = category == 5 || category == 6;
                 hit = Some(
                     if parameter
                         || (matches!(primitive.kind, K::Pin { .. })
-                            && (view.cross_probe || ui.input(|i| i.modifiers.ctrl)))
+                            && (view.cross_probe || modifiers.ctrl || modifiers.alt))
                     {
                         primitive.id
                     } else {
@@ -2035,7 +2044,70 @@ fn paint_mode(
             schematic_input: None,
         };
     }
-    if response.clicked() && !view.sch_tool_active {
+    if dragging
+        && !view.sch_tool_active
+        && (hit.is_none() || modifiers.shift)
+        && !modifiers.alt
+        && let (Some(a), Some(z)) = (origin, pointer)
+    {
+        let world = |p| {
+            let mm = view.camera.world_mm(p, rect);
+            Point {
+                x: (mm[0] * 1e6).round() as i64,
+                y: (mm[1] * 1e6).round() as i64,
+            }
+        };
+        let (a, z) = (world(a), world(z));
+        view.sch_selection_box = Some((a, z));
+        if drag_stopped {
+            if let Some(s) = &doc.schematic {
+                let mode = if (z.x < a.x) != view.camera.mirrored_x {
+                    eda_core::schematic_arrange::Region::Touching
+                } else {
+                    eda_core::schematic_arrange::Region::Inside
+                };
+                let ids = eda_core::schematic_arrange::select_region(s, &[a, z], mode)
+                    .into_iter()
+                    .filter(|id| {
+                        s.components.iter().any(|c| c.id == *id) && view.sch_filters[0]
+                            || s.primitive(*id)
+                                .is_some_and(|p| view.sch_filters[selection_category(p)])
+                    })
+                    .collect::<Vec<_>>();
+                if !modifiers.shift {
+                    view.sch_selection.clear();
+                    view.sch_segments.clear();
+                    view.selected = None;
+                }
+                for id in ids {
+                    if !view.sch_selection.contains(&id) {
+                        view.sch_selection.push(id);
+                    }
+                }
+                view.selected = view.sch_selection.first().copied();
+            }
+            view.sch_selection_box = None;
+        }
+    }
+    if let Some((a, z)) = view.sch_selection_box {
+        let a = scene.screen(a);
+        let z = scene.screen(z);
+        let ink = if z.x >= a.x {
+            Color32::LIGHT_BLUE
+        } else {
+            Color32::LIGHT_GREEN
+        };
+        let r = Rect::from_two_pos(a, z);
+        painter.rect_filled(r, 0., ink.linear_multiply(0.12));
+        painter.rect_stroke(r, 0., Stroke::new(1., ink), StrokeKind::Inside);
+    }
+    if response.clicked()
+        && !view.sch_tool_active
+        && !dragging
+        && !interrupted
+        && !suppressed
+        && !modifiers.alt
+    {
         let span = hit.and_then(|id| {
             let mm = view.camera.world_mm(hit_pointer?, rect);
             eda_core::schematic_edit::wire_segment_at(
@@ -2048,7 +2120,7 @@ fn paint_mode(
                 (6.0 / view.camera.pixels_per_mm * 1e6) as i64,
             )
         });
-        select_hit(view, hit, span, ui.input(|i| i.modifiers.shift));
+        select_hit(view, hit, span, modifiers.shift);
     }
     if (response.hovered() || response.dragged())
         && ui.input(|i| i.focused)
@@ -2072,6 +2144,9 @@ fn paint_mode(
     CanvasOutput {
         cursor_mm: response.hover_pos().map(|p| view.camera.world_mm(p, rect)),
         schematic_input: Some(SchematicInput {
+            panning,
+            cancelled: interrupted,
+            modifiers: Some(modifiers),
             drop_point: ui
                 .rect_contains_pointer(rect)
                 .then(|| ui.ctx().pointer_latest_pos())
@@ -2098,16 +2173,13 @@ fn paint_mode(
                         y: (mm[1] * 1e6).round() as i64,
                     }
                 }),
-            press_origin: view
-                .sch_press_origin
-                .filter(|p| rect.contains(*p))
-                .map(|p| {
-                    let mm = view.camera.world_mm(p, rect);
-                    Point {
-                        x: (mm[0] * 1e6).round() as i64,
-                        y: (mm[1] * 1e6).round() as i64,
-                    }
-                }),
+            press_origin: origin.filter(|p| rect.contains(*p)).map(|p| {
+                let mm = view.camera.world_mm(p, rect);
+                Point {
+                    x: (mm[0] * 1e6).round() as i64,
+                    y: (mm[1] * 1e6).round() as i64,
+                }
+            }),
             hit,
             wire_handle: hit.and_then(|id| {
                 let pointer = hit_pointer?;
@@ -2123,11 +2195,11 @@ fn paint_mode(
                     (6.0 / view.camera.pixels_per_mm * 1e6) as i64,
                 )
             }),
-            clicked: response.clicked(),
-            double_clicked: response.double_clicked(),
+            clicked: response.clicked() && !dragging && !interrupted && !suppressed,
+            double_clicked: response.double_clicked() && !dragging && !interrupted && !suppressed,
             secondary_clicked: response.secondary_clicked(),
-            drag_started: response.drag_started_by(egui::PointerButton::Primary),
-            dragging: response.dragged_by(egui::PointerButton::Primary),
+            drag_started,
+            dragging: dragging && ui.input(|i| i.pointer.primary_down()),
             drag_stopped,
         }),
     }
@@ -2618,7 +2690,7 @@ fn select_hit(
             }
         } else if additive && view.sch_selection.contains(&id) {
             view.sch_selection.retain(|old| *old != id);
-        } else {
+        } else if !repeated || additive {
             view.sch_selection.push(id);
         }
     }
@@ -2657,3 +2729,36 @@ mod selection_tests {
         assert!(v.sch_selection.is_empty());
     }
 }
+
+fn selection_category(p: &SchPrimitive) -> usize {
+    use eda_core::schematic::TextRole;
+    if p.text_role == Some(TextRole::NetLabel) {
+        5
+    } else if p.text_role.is_some()
+        || matches!(p.kind, K::Text { .. }) && !p.presentation.name.is_empty()
+    {
+        6
+    } else if p.component.is_some() {
+        0
+    } else {
+        match &p.kind {
+            K::Polyline { electrical, .. } if electrical == "Wire" => 1,
+            K::Polyline { electrical, .. } if electrical == "Bus" => 2,
+            K::SheetSymbol { .. } => 3,
+            K::SheetEntry { .. } => 4,
+            K::Port { .. } => 7,
+            K::PowerPort { .. } => 8,
+            K::Text { .. } | K::TextFrame { .. } => 9,
+            K::Junction { .. }
+            | K::NoErc { .. }
+            | K::ParameterSet { .. }
+            | K::Blanket { .. }
+            | K::CompileMask { .. } => 11,
+            _ => 10,
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "schematic_interaction_tests.rs"]
+mod interaction_tests;

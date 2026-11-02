@@ -704,6 +704,7 @@ fn common_hash(view: &View, ctx: &egui::Context) -> std::collections::hash_map::
         pcb.active_layer,
         pcb.single_layer,
         pcb.highlight_net,
+        &pcb.highlight_nets,
         &pcb.selected,
         pcb.polygons_visible,
     )
