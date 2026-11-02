@@ -1342,7 +1342,7 @@ pub fn extract(s: &Schematic, id: Uuid) -> Result<Fragment, String> {
     Ok(f)
 }
 
-fn remap_fonts(kind: &mut K, map: &[usize]) -> Result<(), String> {
+pub(crate) fn remap_fonts(kind: &mut K, map: &[usize]) -> Result<(), String> {
     if map.is_empty() {
         return Ok(());
     }

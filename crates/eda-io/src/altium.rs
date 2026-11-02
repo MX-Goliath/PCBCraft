@@ -52,7 +52,7 @@ pub struct Project {
     pub name: String,
     pub documents: Vec<ProjectEntry>,
     pub generated_documents: Vec<ProjectEntry>,
-    pub variants: Vec<String>,
+    pub variants: Vec<eda_core::assembly_variants::Variant>,
     pub virtual_bom: bool,
     pub sheet_children: BTreeMap<PathBuf, Vec<PathBuf>>,
     pub sheet_numbers: BTreeMap<PathBuf, usize>,
@@ -317,7 +317,8 @@ pub fn load_project(path: &Path) -> Result<Project, String> {
             exists,
         });
     }
-    let mut variants = Vec::new();
+    let mut variants = crate::project_variants::parse(&text)?;
+    crate::project_variants::resolve_alternates(&mut variants, path, &mut warnings);
     let mut netlist_options = eda_core::design_sync::ProjectOptions {
         allow_port_names: false,
         allow_entry_names: true,
@@ -395,7 +396,7 @@ pub fn load_project(path: &Path) -> Result<Project, String> {
                 && key.eq_ignore_ascii_case("Description")
                 && !value.trim().is_empty()
             {
-                variants.push(value.trim().to_owned());
+                // Full ProjectVariant/legacy Variant definitions are parsed above.
             }
         }
     }

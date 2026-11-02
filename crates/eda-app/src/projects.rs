@@ -15,6 +15,8 @@ enum Icon {
 }
 
 struct Node {
+    variant: Option<(PathBuf, Option<String>)>,
+    project: Option<PathBuf>,
     id: Id,
     label: String,
     icon: Icon,
@@ -32,6 +34,8 @@ struct Node {
 impl Node {
     fn folder(id: Id, label: &str, expanded: bool, children: Vec<Node>) -> Self {
         Self {
+            variant: None,
+            project: None,
             id,
             label: label.into(),
             icon: Icon::Folder,
@@ -78,13 +82,27 @@ impl PcbCraft {
             let id = Id::new(("project", &project.path));
             let mut children = Vec::new();
             if !project.variants.is_empty() {
-                let variants = std::iter::once("[No Variations]")
-                    .chain(project.variants.iter().map(String::as_str))
-                    .map(|name| {
+                let current = self
+                    .settings
+                    .active_variants
+                    .get(&project.path)
+                    .cloned()
+                    .flatten();
+                let variants = std::iter::once(("[No Variations]", None))
+                    .chain(
+                        project
+                            .variants
+                            .iter()
+                            .map(|v| (v.name.as_str(), Some(v.id.clone()))),
+                    )
+                    .map(|(name, variant)| {
                         let mut n = Node::folder(id.with(("variant", name)), name, false, vec![]);
                         n.branch = false;
                         n.icon = Icon::Pcb;
-                        n.enabled = false;
+                        n.enabled = true;
+                        n.active = current == variant;
+                        n.variant = Some((project.path.clone(), variant));
+                        n.project = Some(project.path.clone());
                         n
                     })
                     .collect();
@@ -161,6 +179,8 @@ impl PcbCraft {
             let mut node = Node::folder(id, &project.name, true, children);
             node.icon = Icon::Project;
             node.status = true;
+            node.project = Some(project.path.clone());
+            node.dirty = self.variants.dirty(project);
             node.active = project.documents.iter().any(|entry| {
                 self.active
                     .is_some_and(|i| document_path(&self.documents[i]) == Some(&entry.path))
@@ -179,6 +199,8 @@ impl PcbCraft {
                 })
             })
             .map(|(i, doc)| Node {
+                variant: None,
+                project: None,
                 id: Id::new(("free", doc.session_id)),
                 label: doc.model.name.clone(),
                 icon: if doc.model.kind == DocumentKind::Board {
@@ -230,6 +252,8 @@ impl PcbCraft {
             .position(|doc| document_path(doc) == Some(&entry.path));
         let name = entry.path.file_name().unwrap_or_default().to_string_lossy();
         Node {
+            variant: None,
+            project: None,
             id,
             label: sheet.map_or_else(|| name.to_string(), |n| format!("[{n}] {name}")),
             icon: file_icon(&entry.kind),
@@ -448,6 +472,17 @@ impl PcbCraft {
                 }
             });
         ctx.data_mut(|d| d.insert_temp(query_id, query));
+        if let Some((path, id)) = ctx.data_mut(|d| {
+            d.remove_temp::<(PathBuf, Option<String>)>(Id::new("project_variant_select"))
+        }) {
+            self.select_variant(path, id);
+        }
+        if let Some(path) =
+            ctx.data_mut(|d| d.remove_temp::<PathBuf>(Id::new("project_variant_manage")))
+        {
+            self.variants.request_project = Some(path);
+            self.command = Some(Command::Variants);
+        }
         if let Some(i) = activate {
             self.active = Some(i);
             self.pad_edit = None;
@@ -681,7 +716,8 @@ fn draw_node(
     );
     let font = FontId::new(
         11.0,
-        if matches!(node.icon, Icon::Project | Icon::Group) {
+        if matches!(node.icon, Icon::Project | Icon::Group) || node.variant.is_some() && node.active
+        {
             egui::FontFamily::Name("ui-bold".into())
         } else {
             egui::FontFamily::Proportional
@@ -750,6 +786,12 @@ fn draw_node(
         {
             expanded = !expanded;
         } else if node.enabled {
+            if let Some(action) = &node.variant
+                && (response.double_clicked() || enter)
+            {
+                ui.ctx()
+                    .data_mut(|d| d.insert_temp(Id::new("project_variant_select"), action.clone()));
+            }
             if let Some(i) = node.document {
                 *activate = Some(i);
             } else if let Some(path) = &node.path {
@@ -758,6 +800,20 @@ fn draw_node(
         }
     }
     response.context_menu(|ui| {
+        if let Some(action) = &node.variant
+            && ui.button("Set as Current").clicked()
+        {
+            ui.ctx()
+                .data_mut(|d| d.insert_temp(Id::new("project_variant_select"), action.clone()));
+            ui.close();
+        }
+        if let Some(project) = &node.project
+            && ui.button("Variants…").clicked()
+        {
+            ui.ctx()
+                .data_mut(|d| d.insert_temp(Id::new("project_variant_manage"), project.clone()));
+            ui.close();
+        }
         if node.branch
             && ui
                 .button(if expanded { "Collapse" } else { "Expand" })
@@ -841,6 +897,7 @@ mod tests {
     #[test]
     fn startup_sizing_does_not_collapse_projects_or_change_width_between_editors() {
         let mut app = PcbCraft {
+            variants: Default::default(),
             file_state: Default::default(),
             sheet_sync: Default::default(),
             document_loader: Default::default(),

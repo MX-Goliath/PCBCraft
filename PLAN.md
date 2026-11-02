@@ -2554,3 +2554,42 @@ Cause, implementation and validation: docs/pcb-update/INTERACTIVE_ROUTING.md.
   13,856,945 bytes, SHA256
   redacted-source-sha256.
   This is a reviewable checkpoint, not completion of the Altium parity stage.
+
+### 2026-11-02 - project assembly variants checkpoint (user stopped)
+
+- User requested full variant operation and schematic display, then explicitly
+  requested stopping further implementation and committing/pushing the result.
+  This checkpoint does not complete the full variant stage.
+- Observed live AD Enterprise 24.4.1 Variant Management on the existing research
+  project: component and parameter grids, variant columns, bottom actions,
+  Projects selection and Editor/physical sheet tabs. Native stale VD7/VD9 link
+  warning observed, not repaired. No native project/schematic Save performed.
+- Corrected the actual ProjectVariantN import (legacy VariantN retained), native
+  Kind 0/1/2, UniqueId hierarchy, ParamVariation/ParamDesignator and read-only
+  .PrjPcbVariants symbol decoding. Native Desktop sources were read only.
+- Added GUI-independent variant/variation/alternate models, validation, history
+  and read-only assembly projections; not-fitted marks, varied parameter italics,
+  special strings, pin-compatible alternate geometry and stable pin identity.
+  Added manager CRUD/parameter/reset/history controls, project variant selection,
+  physical sheet view/toolbar, independent project dirty/save handling, atomic
+  external-change guarded Save and current-definition Save Project As. Print/PDF
+  snapshots use the physical view within the documented channel restrictions.
+- Core/IO/app regressions cover unchanged base documents/pins/wires/history,
+  invalid-history atomicity, scoped UIDs, alternate pin mismatch, parameter
+  precedence, native metadata/unknown-field roundtrip, Unicode Save As, external
+  modifications, view cache/read-only guard, save/reopen and project Undo.
+- Validation: cargo fmt --all -- --check PASS; strict workspace all-target
+  Clippy PASS after fixing a new test initializer warning; dev app build PASS.
+  cargo test --workspace: app 157, core 299, geom 1, IO 141, renderer 111 PASS:
+  total 709 PASS / 1 existing FAIL. The unchanged renderer routing pixel test
+  still reports Rgba8Unorm frame 13, dither=true, 4 pixels vs tolerance 3.
+- Attempted a real-window smoke launch of an isolated newly built executable
+  with its own portable state. Computer Use returned "accessibility window-opened
+  handler did not become ready"; refreshed window inventory had no PCBCraft
+  window. Final Windows UI behavior/pixel QA remains unverified; no success claim.
+- Remaining work is explicit in docs/interface/schematic-variants.md and
+  docs/features.json. In particular, newly authored alternate geometry is stored
+  as PCBCraftAlternateDataN extension fields; native Altium alternate-library
+  writing, complete multipart/Repeat/channel behavior, UID repair, reports,
+  other assembly outputs and exact UI parity remain unfinished. No new portable
+  release was requested or built for this checkpoint.

@@ -262,6 +262,7 @@ mod tests {
     }
     fn app() -> PcbCraft {
         let mut app = PcbCraft {
+            variants: Default::default(),
             file_state: Default::default(),
             sheet_sync: Default::default(),
             document_loader: Default::default(),

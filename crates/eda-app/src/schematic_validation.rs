@@ -199,7 +199,10 @@ impl PcbCraft {
         );
         if project.is_some() {
             project_row(ui, "Component Links…", "", None, false, false);
-            project_row(ui, "Variants…", "", None, false, false);
+            if project_row(ui, "Variants…", "", None, true, false).clicked() {
+                self.command = Some(Command::Variants);
+                ui.close();
+            }
         }
         file_menu::separator(ui);
         project_row(

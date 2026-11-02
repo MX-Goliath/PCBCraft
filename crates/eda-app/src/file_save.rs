@@ -113,7 +113,10 @@ impl PcbCraft {
                         for p in &mut self.projects {
                             if p.documents.iter().any(|e| e.path == old) {
                                 match eda_io::project_files::replace_document(p, &old, &new) {
-                                    Ok(updated) => *p = updated,
+                                    Ok(updated) => {
+                                        *p = updated;
+                                        self.variants.project_updated(p);
+                                    }
                                     Err(e) => {
                                         project_errors.push(format!("Document saved, project reference could not be updated: {e}"));
                                     }
@@ -125,7 +128,7 @@ impl PcbCraft {
                         && let Some(p) = self.projects.iter().position(|p| p.path == project)
                     {
                         match eda_io::project_files::add_document(&self.projects[p],self.documents[index].path.as_ref().unwrap()){
-                            Ok(updated)=>{self.projects[p]=updated;self.documents[index].new_project=None;},
+                            Ok(updated)=>{self.projects[p]=updated;self.variants.project_updated(&self.projects[p]);self.documents[index].new_project=None;},
                             Err(e)=>self.message(true,format!("Document saved, but project reference could not be updated: {e}")),
                         }
                     }

@@ -51,6 +51,8 @@ mod schematic_properties;
 mod schematic_validation;
 #[path = "selection_controls.rs"]
 mod selection_controls;
+#[path = "variants.rs"]
+mod variants;
 use eda_core::schematic_edit::Placement;
 
 #[derive(Clone, Copy)]
@@ -142,6 +144,8 @@ struct Settings {
     right_messages: bool,
     pcb_navigation: eda_render::pcb::NavigationOptions,
     pcb_drc: std::collections::BTreeMap<PathBuf, pcb_editor::CheckSettings>,
+    active_variants: std::collections::BTreeMap<PathBuf, Option<String>>,
+    variant_style: eda_core::assembly_variants::DisplayStyle,
 }
 
 impl Default for Settings {
@@ -169,6 +173,8 @@ impl Default for Settings {
             right_messages: false,
             pcb_navigation: Default::default(),
             pcb_drc: Default::default(),
+            active_variants: Default::default(),
+            variant_style: Default::default(),
         }
     }
 }
@@ -182,6 +188,7 @@ fn default_altium_folder(relative: &str) -> Option<PathBuf> {
 
 #[derive(Clone, Copy)]
 enum Command {
+    Variants,
     ValidateProject,
     ValidationMessage(bool),
     File(file_menu::Action),
@@ -238,6 +245,7 @@ struct PadEdit {
 }
 
 pub struct PcbCraft {
+    variants: variants::State,
     file_state: file_menu::State,
     sheet_sync: schematic_sync::State,
     document_loader: document_loader::State,
@@ -306,6 +314,7 @@ impl PcbCraft {
             settings.grid_nm = 1_000_000;
         }
         let mut app = Self {
+            variants: Default::default(),
             file_state: Default::default(),
             sheet_sync: Default::default(),
             document_loader: Default::default(),
@@ -623,6 +632,7 @@ impl PcbCraft {
             || self.design_sync.is_some()
             || self.sheet_sync.busy()
             || self.file_state.modal()
+            || self.variants.dialog.is_some()
         {
             self.message(true, "Close the active dialog before another command");
             return;
@@ -635,6 +645,7 @@ impl PcbCraft {
             self.cross_probe.enabled = false;
         }
         match command {
+            Command::Variants => self.open_variants(),
             Command::File(action) => self.file_command(action, ctx),
             Command::SynchronizeEntries(selected) => self.start_sheet_sync(selected),
             Command::NavigateHierarchy => self.start_hierarchy_navigation(),
@@ -705,11 +716,17 @@ impl PcbCraft {
                 }
             }
             Command::Save | Command::SaveAs => {
+                if !self.save_variants() {
+                    return;
+                }
                 if let Some(i) = self.active {
                     self.save_index(i, matches!(command, Command::SaveAs));
                 }
             }
             Command::SaveAll => {
+                if !self.save_variants() {
+                    return;
+                }
                 let mut saved = true;
                 for i in 0..self.documents.len() {
                     if self.documents[i].dirty() && !self.save_index(i, false) {
@@ -727,6 +744,9 @@ impl PcbCraft {
                 }
             }
             Command::Undo | Command::Redo => {
+                if self.variant_undo(matches!(command, Command::Redo)) {
+                    return;
+                }
                 if let Some(i) = self.active {
                     let doc = &mut self.documents[i];
                     doc.sch_editor.cancel(&mut doc.view);
@@ -820,7 +840,10 @@ impl PcbCraft {
             Command::Preferences => self.preferences = true,
             Command::About => self.about = true,
             Command::Quit => {
-                if self.documents.iter().any(OpenDocument::dirty) || self.group_dirty() {
+                if self.documents.iter().any(OpenDocument::dirty)
+                    || self.group_dirty()
+                    || self.variants_dirty()
+                {
                     self.pending = Some(Pending::Quit);
                 } else {
                     self.allow_exit = true;
@@ -1554,7 +1577,10 @@ impl PcbCraft {
             } else if messages {
                 self.messages_panel(ui);
             } else {
-                self.properties(ui);
+                let compiled = self
+                    .active
+                    .is_some_and(|i| self.documents[i].sch_editor.compiled_path.is_some());
+                ui.add_enabled_ui(!compiled, |ui| self.properties(ui));
             }
         });
     }
@@ -1586,6 +1612,7 @@ impl PcbCraft {
                             .rect_filled(canvas, 0.0, Color32::from_gray(195));
                         ui.add_space(26.0);
                     }
+                    let projection = self.variant_projection(index);
                     let doc = &mut self.documents[index];
                     doc.view.source_display_path = doc
                         .source_path
@@ -1596,10 +1623,21 @@ impl PcbCraft {
                     doc.view.pcb.navigation = self.settings.pcb_navigation;
                     doc.view.pcb.three_d.revision = doc.history.revision;
                     doc.view.cross_probe = self.cross_probe.enabled;
-                    let output = eda_render::canvas(ui, &doc.model, &mut doc.view);
+                    let output = eda_render::canvas(
+                        ui,
+                        projection.as_deref().unwrap_or(&doc.model),
+                        &mut doc.view,
+                    );
                     let pcb_input = doc.view.pcb.input.take();
                     self.cursor_mm = output.cursor_mm;
+                    if let Some(input) = &output.schematic_input
+                        && self.documents[index].sch_editor.compiled_path.is_some()
+                        && input.clicked
+                    {
+                        self.documents[index].view.selected = input.hit;
+                    }
                     if let Some(input) = output.schematic_input
+                        && self.documents[index].sch_editor.compiled_path.is_none()
                         && !self.sheet_sync_input(index, &input, ctx)
                         && !self.hierarchy_click(index, &input, ctx)
                         && !self.cross_probe_input(
@@ -1627,7 +1665,11 @@ impl PcbCraft {
                         self.schematic_harness_overlay(ctx, canvas, index);
                     }
                     if !self.documents[index].view.pcb.three_d.enabled {
-                        self.active_bar(ctx, canvas);
+                        if self.documents[index].sch_editor.compiled_path.is_some() {
+                            self.variant_active_bar(ctx, canvas, index);
+                        } else {
+                            self.active_bar(ctx, canvas);
+                        }
                     }
                 } else {
                     self.home(ui);
@@ -1780,6 +1822,13 @@ impl PcbCraft {
                 if matches!(pending, Pending::Quit) && self.group_dirty() {
                     names.push(self.file_state.group_name());
                 }
+                if matches!(pending, Pending::Quit) {
+                    for p in &self.projects {
+                        if self.variants.dirty(p) {
+                            names.push(p.name.clone());
+                        }
+                    }
+                }
                 ui.label("The following documents have unsaved changes:");
                 for name in names {
                     ui.label(RichText::new(name).color(ACCENT));
@@ -1803,6 +1852,9 @@ impl PcbCraft {
             if choice == 1 || choice == 2 {
                 let mut proceed = true;
                 if choice == 1 {
+                    if matches!(pending, Pending::Quit) && !self.save_variants() {
+                        return;
+                    }
                     for i in 0..self.documents.len() {
                         let target = match pending {
                             Pending::Close(id) => self.documents[i].session_id == id,
@@ -1850,6 +1902,7 @@ impl PcbCraft {
         }
         if self.annotation.is_some()
             || self.file_state.modal()
+            || self.variants.dialog.is_some()
             || self.design_sync.is_some()
             || self.layer_stack_active()
             || self.pending.is_some()
@@ -1994,6 +2047,7 @@ impl eframe::App for PcbCraft {
         self.selection_popup(ctx);
         self.document_loading_dialog(ctx);
         self.file_dialogs(ctx);
+        self.variants_dialog(ctx);
         self.resize_edges(ctx);
         if let Some(command) = self.command.take() {
             self.run(command, ctx);

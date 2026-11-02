@@ -6,6 +6,7 @@ mod altium_tests;
 #[cfg(test)]
 mod library_tests;
 pub mod project_files;
+pub mod project_variants;
 pub mod schematic_dxf;
 pub mod schematic_graphic;
 pub mod schematic_netlist;

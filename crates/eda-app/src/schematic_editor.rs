@@ -53,6 +53,7 @@ pub(super) mod tests;
 
 #[derive(Default)]
 pub(super) struct Editor {
+    pub(super) compiled_path: Option<String>,
     pub(super) bar: super::schematic_active_bar::State,
     pub(super) hierarchy_pick: bool,
     tool: Tool,
@@ -187,6 +188,9 @@ impl OpenDocument {
         Ok(())
     }
     pub(super) fn edit_schematic(&mut self, command: Edit, revision: u64) -> Result<bool, String> {
+        if self.sch_editor.compiled_path.is_some() {
+            return Err("The physical variant view is read-only; switch to Editor to change the base schematic".into());
+        }
         let partial_primary = self
             .view
             .selected
@@ -834,6 +838,9 @@ impl PcbCraft {
             return false;
         };
         if self.documents[i].model.kind != DocumentKind::Schematic {
+            return false;
+        }
+        if self.documents[i].sch_editor.compiled_path.is_some() {
             return false;
         }
         if !self.documents[i].sch_editor.active() && self.selection_shortcuts(ctx) {

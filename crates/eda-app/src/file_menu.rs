@@ -210,6 +210,24 @@ impl PcbCraft {
         }
     }
     fn confirm_group_replacement(&mut self) -> bool {
+        if self.variants_dirty() {
+            match rfd::MessageDialog::new()
+                .set_title("Save project variants?")
+                .set_description(
+                    "Modified assembly variants will be closed with the project group.",
+                )
+                .set_buttons(rfd::MessageButtons::YesNoCancel)
+                .show()
+            {
+                rfd::MessageDialogResult::Yes => {
+                    if !self.save_variants() {
+                        return false;
+                    }
+                }
+                rfd::MessageDialogResult::No => {}
+                _ => return false,
+            }
+        }
         if !self.group_dirty() {
             return true;
         }
@@ -616,6 +634,7 @@ impl PcbCraft {
                             }
                             self.file_state.selected_project = Some(p.path.clone());
                             self.projects[i] = p;
+                            self.variants.project_updated(&self.projects[i]);
                             self.recent(path);
                         }
                         Err(e) => self.message(true, e),

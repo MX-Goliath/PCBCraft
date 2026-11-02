@@ -225,20 +225,47 @@ impl PcbCraft {
     }
 
     pub(super) fn schematic_bottom_bar(&mut self, ui: &mut egui::Ui, index: usize) {
+        let paths = self.variant_paths(index);
+        let enabled = self.file_project_index().is_some();
+        let selected = self.documents[index].sch_editor.compiled_path.clone();
+        let name = self.documents[index]
+            .model
+            .name
+            .trim_end_matches(".SchDoc")
+            .to_owned();
+        let mut chosen = selected.clone();
         egui::TopBottomPanel::bottom("schematic_editor")
             .exact_height(22.0)
             .frame(egui::Frame::NONE.fill(BACKGROUND))
             .show_inside(ui, |ui| {
                 ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
                 ui.horizontal(|ui| {
-                    tab(ui, "Editor", true, 20.0, None);
-                    let name = self.documents[index].model.name.trim_end_matches(".SchDoc");
-                    ui.add_enabled_ui(false, |ui| {
-                        tab(ui, name, false, 20.0, None)
-                            .on_hover_text("Compiled sheet view is not implemented");
+                    if tab(ui, "Editor", selected.is_none(), 20.0, None).clicked() {
+                        chosen = None;
+                    }
+                    ui.add_enabled_ui(enabled, |ui| {
+                        for (n, path) in paths.iter().enumerate() {
+                            let title = if paths.len() > 1 {
+                                format!("{name} ({})", n + 1)
+                            } else {
+                                name.clone()
+                            };
+                            if tab(ui, &title, selected.as_ref() == Some(path), 20.0, None)
+                                .on_hover_text("Read-only physical design / assembly variant")
+                                .clicked()
+                            {
+                                chosen = Some(path.clone());
+                            }
+                        }
                     });
                 });
             });
+        if chosen != selected {
+            let d = &mut self.documents[index];
+            d.sch_editor.cancel(&mut d.view);
+            d.sch_editor.compiled_path = chosen;
+            self.variants.cache = None;
+        }
     }
 
     pub(super) fn pcb_bottom_bar(&mut self, ui: &mut egui::Ui, index: usize) {

@@ -708,7 +708,13 @@ fn project_tree_metadata_keeps_sources_generated_and_variants_separate() {
     assert_eq!(p.documents[1].kind, "outjob");
     assert_eq!(p.generated_documents.len(), 2);
     assert_eq!(p.generated_documents[0].kind, "rep");
-    assert_eq!(p.variants, ["Assembly A", "Assembly B"]);
+    assert_eq!(
+        p.variants
+            .iter()
+            .map(|v| v.name.as_str())
+            .collect::<Vec<_>>(),
+        ["Assembly A", "Assembly B"]
+    );
     assert!(p.virtual_bom);
     assert_eq!(p.warnings.len(), 2); // Missing generated output is not a missing source warning.
     assert_eq!(std::fs::read(&path).unwrap(), before);

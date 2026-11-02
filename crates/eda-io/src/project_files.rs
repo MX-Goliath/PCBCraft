@@ -17,7 +17,7 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
-fn decode(bytes: &[u8]) -> Result<String, String> {
+pub(crate) fn decode(bytes: &[u8]) -> Result<String, String> {
     if bytes.starts_with(&[255, 254]) {
         if !bytes.len().is_multiple_of(2) {
             return Err("Truncated UTF-16 INI file".into());
@@ -63,7 +63,10 @@ pub fn create_project(path: &Path) -> Result<Project, String> {
 
 /// Rebase every document reference, preserving options, variants and unknown keys.
 pub fn save_project_as(project: &Project, destination: &Path) -> Result<Project, String> {
-    let text = decode(&altium::read_bounded(&project.path)?)?;
+    let text = crate::project_variants::rewrite(
+        &decode(&altium::read_bounded(&project.path)?)?,
+        &project.variants,
+    )?;
     let old_base = project.path.parent().unwrap_or(Path::new("."));
     let new_base = destination.parent().unwrap_or(Path::new("."));
     let mut output = String::new();

@@ -35,14 +35,22 @@ impl PcbCraft {
         if self.documents[index].model.schematic.is_none() {
             return;
         }
-        let current = self.documents[index].model.clone();
-        let snapshots = match self.schematic_project_snapshots() {
+        let current = self
+            .variant_projection(index)
+            .as_deref()
+            .unwrap_or(&self.documents[index].model)
+            .clone();
+        let mut snapshots = match self.schematic_project_snapshots() {
             Ok(sheets) => sheets,
             Err(error) => {
                 self.message(true, format!("Cannot prepare project output: {error}"));
                 return;
             }
         };
+        if let Err(e) = self.variant_output_snapshots(&mut snapshots, index) {
+            self.message(true, e);
+            return;
+        }
         let project_options = if let Some(p) = self.file_project_index() {
             let sheets: Vec<_> = snapshots.iter().map(|(p, d)| (p.as_path(), d)).collect();
             self.projects[p].compile_options(&sheets)
