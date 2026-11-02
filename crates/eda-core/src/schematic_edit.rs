@@ -143,8 +143,16 @@ pub fn preview(doc: &Document, edit: &Edit) -> Result<Document, String> {
         .ok_or("Schematic scene is unavailable")?;
     apply(s, &mut next.size, edit, 0)?;
     refresh_hierarchy(s, doc.schematic.as_ref().unwrap())?;
+    if s.primitives
+        .iter()
+        .chain(&doc.schematic.as_ref().unwrap().primitives)
+        .any(|p| matches!(p.kind, K::CompileMask { .. }))
+    {
+        crate::schematic_directives::refresh_masks(s);
+    }
     wire_cleanup::optimize(s, doc.schematic.as_ref().unwrap());
     crate::schematic_harness::refresh(s, doc.schematic.as_ref().unwrap())?;
+    refresh_directive_parameters(s, doc.schematic.as_ref().unwrap())?;
     refresh_parameters(s);
     if s != doc.schematic.as_ref().unwrap() && s.source.is_some() {
         s.source_modified = true;
@@ -328,9 +336,8 @@ fn refresh_hierarchy(s: &mut Schematic, before: &Schematic) -> Result<(), String
         }
     }
     for p in &mut s.primitives {
-        if let K::SheetEntry { name, .. }
-        | K::Port { name, .. }
-        | K::ParameterSet { label: name, .. } = &p.kind
+        if let K::SheetEntry { name, .. } | K::Port { name, .. } | K::ParameterSet { name, .. } =
+            &p.kind
         {
             p.presentation.name = name.clone();
         }
@@ -500,6 +507,7 @@ fn apply(s: &mut Schematic, size: &mut Point, edit: &Edit, depth: usize) -> Resu
             }
             let old = p.clone();
             if old.presentation.parent.is_none()
+                && old.presentation.raw_text.is_some()
                 && !old
                     .presentation
                     .name
@@ -521,7 +529,9 @@ fn apply(s: &mut Schematic, size: &mut Point, edit: &Edit, depth: usize) -> Resu
                     return Err("A parameter with this name already exists".into());
                 }
             }
-            if (!old.presentation.name.is_empty() && value.presentation.name.trim().is_empty())
+            if (old.presentation.raw_text.is_some()
+                && !old.presentation.name.is_empty()
+                && value.presentation.name.trim().is_empty())
                 || (p.text_role == Some(TextRole::Designator)
                     && value
                         .presentation
@@ -801,6 +811,258 @@ fn apply(s: &mut Schematic, size: &mut Point, edit: &Edit, depth: usize) -> Resu
     Ok(())
 }
 
+fn refresh_directive_parameters(s: &mut Schematic, before: &Schematic) -> Result<(), String> {
+    // Native parameter children retain their presentation, while the typed fields
+    // supply compilation/ECO. Reconcile child edits without overwriting an
+    // explicit edit of the typed directive itself.
+    let children = |scene: &Schematic, owner| {
+        scene
+            .primitives
+            .iter()
+            .chain(&scene.parameter_objects)
+            .filter(|p| p.presentation.parent == Some(owner) && p.presentation.record_type == 41)
+            .filter_map(|p| match &p.kind {
+                K::Text { text, .. } => Some((p.presentation.name.clone(), text.clone())),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    let child_changes: Vec<_> = s
+        .primitives
+        .iter()
+        .filter(|p| matches!(p.kind, K::ParameterSet { .. }))
+        .map(|p| (p.id, children(before, p.id), children(s, p.id)))
+        .collect();
+    for (id, old_children, new_children) in child_changes {
+        let old = before.primitive(id);
+        let p = s.primitives.iter_mut().find(|p| p.id == id).unwrap();
+        let K::ParameterSet {
+            parameters, rules, ..
+        } = &mut p.kind
+        else {
+            continue;
+        };
+        let (old_parameters, old_rules) = match old.map(|p| &p.kind) {
+            Some(K::ParameterSet {
+                parameters, rules, ..
+            }) => (Some(parameters), Some(rules)),
+            _ => (None, None),
+        };
+        if old_parameters.is_none_or(|old| old == parameters) {
+            for (name, _) in old_children.iter().chain(&new_children) {
+                if name.eq_ignore_ascii_case("Rule") {
+                    continue;
+                }
+                let find = |items: &Vec<(String, String)>| {
+                    items
+                        .iter()
+                        .find(|(k, _)| k.eq_ignore_ascii_case(name))
+                        .map(|(_, v)| v.clone())
+                };
+                if find(&old_children) != find(&new_children) {
+                    parameters.retain(|k, _| !k.eq_ignore_ascii_case(name));
+                    if let Some(value) = find(&new_children) {
+                        parameters.insert(name.clone(), value);
+                    }
+                }
+            }
+        }
+        let rule_values = |items: &Vec<(String, String)>| {
+            items
+                .iter()
+                .filter(|(k, _)| k.eq_ignore_ascii_case("Rule"))
+                .map(|(_, v)| v.clone())
+                .collect::<Vec<_>>()
+        };
+        if old_rules.is_none_or(|old| old == rules)
+            && rule_values(&old_children) != rule_values(&new_children)
+        {
+            *rules = rule_values(&new_children)
+                .iter()
+                .map(|text| {
+                    text.split('\u{a6}')
+                        .filter_map(|f| f.split_once('='))
+                        .map(|(k, v)| (k.to_ascii_uppercase(), v.to_owned()))
+                        .collect()
+                })
+                .collect();
+        }
+    }
+    let mut moves = std::collections::HashMap::new();
+    for p in &s.primitives {
+        if let K::ParameterSet {
+            position,
+            orientation,
+            ..
+        } = p.kind
+            && let Some(old) = before.primitive(p.id)
+            && let K::ParameterSet {
+                position: from,
+                orientation: turns,
+                ..
+            } = old.kind
+        {
+            moves.insert(
+                p.id,
+                (
+                    from,
+                    (orientation + 4 - turns) % 4,
+                    Point {
+                        x: position.x - from.x,
+                        y: position.y - from.y,
+                    },
+                ),
+            );
+        }
+    }
+    let parameters: std::collections::HashMap<_, _> = s
+        .primitives
+        .iter()
+        .filter_map(|p| {
+            if let K::ParameterSet { parameters, .. } = &p.kind {
+                Some((p.id, parameters.clone()))
+            } else {
+                None
+            }
+        })
+        .collect();
+    let rules: std::collections::HashMap<_, _> = s
+        .primitives
+        .iter()
+        .filter_map(|p| match &p.kind {
+            K::ParameterSet { rules, .. } => Some((p.id, rules.clone())),
+            _ => None,
+        })
+        .collect();
+    let mut rule_positions = std::collections::HashMap::<_, usize>::new();
+    let mut retain = |p: &SchPrimitive| {
+        if p.presentation.record_type == 41
+            && p.presentation.name.eq_ignore_ascii_case("Rule")
+            && let Some((id, rules)) = p
+                .presentation
+                .parent
+                .and_then(|id| rules.get(&id).map(|rules| (id, rules)))
+        {
+            let position = rule_positions.entry(id).or_default();
+            let keep = *position < rules.len();
+            *position += 1;
+            return keep;
+        }
+        p.presentation
+            .parent
+            .and_then(|id| parameters.get(&id))
+            .is_none_or(|values| {
+                p.presentation.record_type != 41
+                    || p.presentation.name.eq_ignore_ascii_case("Rule")
+                    || values
+                        .keys()
+                        .any(|k| k.eq_ignore_ascii_case(&p.presentation.name))
+            })
+    };
+    s.primitives.retain(&mut retain);
+    s.parameter_objects.retain(retain);
+    rule_positions.clear();
+    for p in s.primitives.iter_mut().chain(&mut s.parameter_objects) {
+        if let Some((pivot, turns, delta)) = p.presentation.parent.and_then(|id| moves.get(&id))
+            && before.primitive(p.id).is_some_and(|old| old.kind == p.kind)
+        {
+            transform_primitive(p, *pivot, *turns, *delta)?;
+        }
+        if let K::ParameterSet { name, .. } = &p.kind {
+            p.presentation.name = name.clone();
+        }
+        if p.presentation.record_type == 41
+            && p.presentation.name.eq_ignore_ascii_case("Rule")
+            && let Some((id, rules)) = p
+                .presentation
+                .parent
+                .and_then(|id| rules.get(&id).map(|rules| (id, rules)))
+        {
+            let position = rule_positions.entry(id).or_default();
+            if let (Some(rule), K::Text { text, .. }) = (rules.get(*position), &mut p.kind) {
+                let current: std::collections::BTreeMap<_, _> = text
+                    .split('\u{a6}')
+                    .filter_map(|f| f.split_once('='))
+                    .map(|(k, v)| (k.to_ascii_uppercase(), v.to_owned()))
+                    .collect();
+                if &current != rule {
+                    *text = rule
+                        .iter()
+                        .map(|(k, v)| format!("{k}={v}"))
+                        .collect::<Vec<_>>()
+                        .join("\u{a6}");
+                    p.presentation.raw_text = Some(text.clone());
+                }
+            }
+            *position += 1;
+        }
+        if p.presentation.record_type == 41
+            && let Some(values) = p.presentation.parent.and_then(|id| parameters.get(&id))
+            && let Some((_, value)) = values
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case(&p.presentation.name))
+        {
+            p.presentation.raw_text = Some(value.clone());
+            if let K::Text { text, .. } = &mut p.kind {
+                *text = value.clone();
+            }
+        }
+    }
+    let mut added = vec![];
+    for parent in &s.primitives {
+        let K::ParameterSet {
+            position,
+            parameters,
+            rules,
+            ..
+        } = &parent.kind
+        else {
+            continue;
+        };
+        let children: Vec<_> = s
+            .primitives
+            .iter()
+            .chain(&s.parameter_objects)
+            .filter(|p| {
+                p.presentation.parent == Some(parent.id) && p.presentation.record_type == 41
+            })
+            .collect();
+        let mut values: Vec<_> = parameters
+            .iter()
+            .filter(|(name, _)| {
+                !children
+                    .iter()
+                    .any(|p| p.presentation.name.eq_ignore_ascii_case(name))
+            })
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        let existing_rules = children
+            .iter()
+            .filter(|p| p.presentation.name.eq_ignore_ascii_case("Rule"))
+            .count();
+        values.extend(rules.iter().skip(existing_rules).map(|rule| {
+            (
+                "Rule".into(),
+                rule.iter()
+                    .map(|(k, v)| format!("{k}={v}"))
+                    .collect::<Vec<_>>()
+                    .join("\u{a6}"),
+            )
+        }));
+        for (name, value) in values {
+            added.push(crate::schematic_simulation::parameter(
+                parent.id,
+                &name,
+                &value,
+                *position,
+                s.sheet.system_font,
+                true,
+            ));
+        }
+    }
+    s.primitives.extend(added);
+    Ok(())
+}
 fn refresh_parameters(s: &mut Schematic) {
     use crate::schematic::parameter_text;
     for c in &mut s.components {
@@ -867,24 +1129,7 @@ pub fn transform_primitive(
         Ok(())
     };
     match &mut p.kind {
-        K::Blanket { points, .. } => {
-            for point in points {
-                tx(point)?;
-            }
-        }
-        K::CompileMask { a, b, .. } => {
-            tx(a)?;
-            tx(b)?;
-        }
-        K::ParameterSet {
-            position,
-            orientation,
-            ..
-        } => {
-            tx(position)?;
-            *orientation = (*orientation + turns) % 4;
-        }
-        K::Polyline { points, .. } => {
+        K::Polyline { points, .. } | K::Blanket { points, .. } => {
             for p in points {
                 tx(p)?;
             }
@@ -928,7 +1173,7 @@ pub fn transform_primitive(
                 terminal.x - a.x
             };
         }
-        K::SheetSymbol { a, b, .. } => {
+        K::SheetSymbol { a, b, .. } | K::CompileMask { a, b, .. } => {
             tx(a)?;
             tx(b)?;
             let (left, right, top, bottom) =
@@ -960,6 +1205,11 @@ pub fn transform_primitive(
             *end = *start + sweep;
         }
         K::Text {
+            position,
+            orientation,
+            ..
+        }
+        | K::ParameterSet {
             position,
             orientation,
             ..
@@ -1375,25 +1625,37 @@ pub fn place(
         | Placement::PowerProbe => {
             f = crate::schematic_simulation::place(kind, designator, value, font)?;
         }
+        Placement::Blanket | Placement::CompileMask => {
+            return Err("Area directives require two corners or a polygon".into());
+        }
         Placement::ParameterSet | Placement::DifferentialPair => {
             let mut p = primitive(
                 K::ParameterSet {
                     position: Point::default(),
                     orientation: 0,
-                    label: if kind == Placement::DifferentialPair && value.is_empty() {
+                    name: if kind == Placement::DifferentialPair && value.is_empty() {
                         "DIFFPAIR".into()
                     } else {
                         value.into()
                     },
                     style: 0,
+                    parameters: if kind == Placement::DifferentialPair {
+                        std::collections::BTreeMap::from([(
+                            "DifferentialPair".into(),
+                            "True".into(),
+                        )])
+                    } else {
+                        Default::default()
+                    },
+                    rules: vec![],
                 },
                 None,
             );
             p.color = 255;
             p.width_nm = 101_600;
             p.presentation.allow_sync = true;
-            if let K::ParameterSet { label, .. } = &p.kind {
-                p.presentation.name = label.clone();
+            if let K::ParameterSet { name, .. } = &p.kind {
+                p.presentation.name = name.clone();
             }
             let owner = p.id;
             f.primitives.push(p);
@@ -1431,8 +1693,6 @@ pub fn place(
             f.primitives.push(p);
         }
         Placement::SheetSymbol
-        | Placement::Blanket
-        | Placement::CompileMask
         | Placement::TextFrame
         | Placement::Note
         | Placement::Rectangle

@@ -12,6 +12,8 @@ use directive_ui::{
     directive_parameters, directive_rule_dialog, is_pair, simulation_probe_properties,
     simulation_source_properties,
 };
+#[path = "schematic_typed_directive_properties.rs"]
+mod directive_properties;
 
 #[derive(Default)]
 pub(super) struct Panel {
@@ -317,7 +319,11 @@ impl PcbCraft {
             .len()
             .saturating_add(doc.view.sch_segments.len())
             .max(usize::from(doc.view.selected.is_some()));
-        let context = if doc.sch_editor.active() && doc.sch_editor.kind.is_some() {
+        let context = if doc.sch_editor.active()
+            && let Some(p) = &doc.sch_editor.directive
+        {
+            caption(p)
+        } else if doc.sch_editor.active() && doc.sch_editor.kind.is_some() {
             doc.sch_editor.kind.unwrap().label()
         } else if count > 1 {
             "Objects"
@@ -388,7 +394,7 @@ impl PcbCraft {
             .show(ui, |ui| {
                 ui.set_min_width(ui.available_width());
                 if doc.sch_editor.active() && !doc.sch_editor.hierarchy_pick {
-                    placement_options(ui, doc);
+                    placement_options(ui, doc, self.settings.units);
                 } else if count > 1 {
                     section(ui, "Properties", &query, |ui| {
                         ui.add_enabled(false, egui::Label::new("<Mixed>"));
@@ -522,18 +528,20 @@ impl PcbCraft {
                                 },
                             );
                         }
-                        commit |= directive_parameters(
-                            ui,
-                            p,
-                            &mut draft.related,
-                            doc.model.schematic.as_ref().unwrap(),
-                            &query,
-                            (
-                                &mut panel.filter,
-                                &mut panel.selected_parameter,
-                                &mut panel.rule,
-                            ),
-                        );
+                        if !draft.related.is_empty() {
+                            commit |= directive_parameters(
+                                ui,
+                                p,
+                                &mut draft.related,
+                                doc.model.schematic.as_ref().unwrap(),
+                                &query,
+                                (
+                                    &mut panel.filter,
+                                    &mut panel.selected_parameter,
+                                    &mut panel.rule,
+                                ),
+                            );
+                        }
                     }
                 }
             });
@@ -2288,6 +2296,30 @@ fn primitive_properties(
     if matches!(p.kind, K::SheetEntry { .. }) {
         return sheet_entry_properties(ui, p, font, query);
     }
+    if matches!(p.kind, K::Blanket { .. } | K::CompileMask { .. }) {
+        section(ui, "Properties", query, |ui| {
+            if matches!(p.kind, K::Blanket { .. }) {
+                row(ui, "Border Width", |ui| {
+                    changed |= width_combo(ui, &mut p.width_nm)
+                });
+                changed |= line_style(ui, &mut p.line_style);
+                divider(ui);
+                row(ui, "Border Color", |ui| changed |= color(ui, &mut p.color));
+            } else {
+                changed |= border_row(ui, &mut p.width_nm, &mut p.color);
+            }
+            row(ui, "Fill Color", |ui| {
+                changed |= color(ui, p.fill.get_or_insert(0xffffff));
+            });
+            divider(ui);
+            if let K::Blanket { collapsed, .. } | K::CompileMask { collapsed, .. } = &mut p.kind {
+                row(ui, "", |ui| {
+                    changed |= ui.checkbox(collapsed, "Collapsed and Disabled").changed()
+                });
+            }
+        });
+        return changed;
+    }
     let mut pos = primitive_anchor(p);
     let mut turns = match &p.kind {
         K::Text { orientation, .. }
@@ -2331,9 +2363,18 @@ fn primitive_properties(
         net_sections(ui, query);
         return changed;
     }
+    if matches!(p.kind, K::ParameterSet { .. })
+        && !s
+            .primitives
+            .iter()
+            .chain(&s.parameter_objects)
+            .any(|child| child.presentation.parent == Some(p.id))
+    {
+        return changed | directive_properties::properties(ui, p, query);
+    }
     section(ui, "Properties", query, |ui| match &mut p.kind {
-        K::ParameterSet { label, style, .. } => {
-            changed |= text_row(ui, "Label", label);
+        K::ParameterSet { name, style, .. } => {
+            changed |= text_row(ui, "Label", name);
             row(ui, "Style", |ui| {
                 if title != "Differential Pair" {
                     changed |= combo(ui, "directive_style", style, &["Large", "Small"]);
@@ -2914,7 +2955,20 @@ fn net_sections(ui: &mut egui::Ui, query: &str) {
             });
     });
 }
-fn placement_options(ui: &mut egui::Ui, doc: &mut OpenDocument) {
+fn placement_options(ui: &mut egui::Ui, doc: &mut OpenDocument, units: Units) {
+    if let Some(p) = &mut doc.sch_editor.directive {
+        primitive_properties(
+            ui,
+            p,
+            &mut default_font(),
+            doc.model.schematic.as_ref().unwrap(),
+            units,
+            "",
+            false,
+            &mut None,
+        );
+        return;
+    }
     let editor = &mut doc.sch_editor;
     section(ui, "Properties", "", |ui| match editor.kind {
         Some(Placement::Resistor | Placement::Capacitor) => {

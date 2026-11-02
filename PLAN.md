@@ -2229,3 +2229,112 @@ Cause, implementation and validation: docs/pcb-update/INTERACTIVE_ROUTING.md.
   Clippy, all 640 tests (139 app, 261 core, 1 geom, 132 IO, 107 render), Windows
   build and Linux GNU all-target check PASS. Original user PrjPcb/SchDoc hashes
   checked unchanged. Full feature parity remains explicitly unfinished.
+
+### 2026-10-28 — Blanket, Compile Mask and Parameter Set directives
+
+- Observed AD Enterprise 24.4.1 live Properties: Blanket Border Width, Line Style,
+  Border/Fill Color and Collapsed and Disabled; Parameter Set Location, Label,
+  Large/Small style and All/Parameters/Rules/Classes; native Width rule dialog.
+  Official reference: https://www.altium.com/documentation/altium-designer/schematic/directives
+- Implemented typed core objects and validated edit/history lifecycle. Blankets
+  support rectangular/polygonal outlines, concave containment, nonintersection,
+  corner/edge resizing and perimeter-attached directives. Masks exclude complete
+  objects and descendant sheets of masked Sheet Symbols. Collapse restores scope.
+  The legacy JSON compile_masks field remains readable and follows typed edits.
+- Added editor placement, preview, repeat placement, Enter/Backspace, border-only
+  picking, collapse toggles, handles and pre-placement appearance/parameter drafts.
+  Properties shows area-specific controls and Parameter Set filters/add/edit/remove;
+  supported schematic constraints share the PCB constraint widgets. Placed masks
+  fade excluded objects; an unfilled sheet border no longer intercepts area picks.
+- Blanket net/component classes, component parameters, differential pairs and
+  supported PCB rule families enter ECO. Multipart sections map to one physical
+  component class member. Width rules affect route checks. Class membership is
+  cleared when its Blanket is disabled; scope is determined from the same Blanket.
+- Native SCH: 225 Additional, 211 FileHeader, 43 Parameter Set and hidden 41 rule
+  children using the native broken-bar separator. ASCII/CFB create/edit/delete,
+  coordinate quantization and owner remaps are verified. Additional WEIGHT must
+  include newly authored Blankets; creating the stream requires its own header.
+  AD reopening caught the missing-count issue that self-roundtrip did not detect.
+- Live native research found legacy Blanket border width stored as LineStyle + 1,
+  modern width as LineWidth (0..3), and LineStyleExt directly 0=Solid/1=Dashed/2=Dotted.
+  Added regression coverage for all width/style choices; missing style stays Solid.
+  Native PCB Classes6/DifferentialPairs6 preserve unchanged/opaque fields. Rules6
+  creation uses only observed AD24 family tags; unknown families require a template.
+- Real ReferenceG read-only comparison after multipart fix: 4 existing unavailable baseline
+  rows, 0 enabled changes, about 2.4 s to compare. Logs:
+  target/directives-ReferenceG-profile-final.txt. QA mask excludes C8, R17, R20, R21, R22,
+  R24, TP168, VD3, VD4 and corresponding UART_PROG_MCU class members. AD24 live ECO
+  showed the same 9 removals, 19 pin removals and class changes. No Execute Changes.
+  Research copies live only under target; all 11 original source SHA256 hashes match.
+- Native AD reopened target/directives-pcbcraft-qa2.SchDoc, displaying the authored
+  polygon after Additional count correction; observed Dashed exposed and fixed an
+  off-by-one in LineStyleExt. Final generated copy is directives-pcbcraft-qa3.SchDoc.
+- Full parity remains open: X/Y reflection/protected locks, shared multi-selection
+  Properties, complete ERC/No ERC filtering, bus/harness/multichannel scope,
+  duplicate parameter names/diff-pair classes, class-generation/comparator options,
+  removal reconciliation for all generated rules/pairs, exact visuals and Linux QA.
+  Native ASCII PCB class/pair modifications and new rule creation remain refused.
+  These are recorded as partial, not as completed commands or verified parity.
+- Validation logs: target/directives-{workspace-current,core-verified,io-current,
+  clippy-current,build-current,fmt-final}.txt. Latest full run before the final
+  style regression: 568 pass, one pre-existing GPU routing dither pixel failure
+  (frame 13, Rgba8Unorm, difference 4 versus tolerance 3). New IO style suite: 115 pass.
+  Strict workspace/all-target Clippy and fmt check pass; final rerun follows below.
+
+- Final style/Additional regression suite: 115 IO PASS. Final workspace run:
+  569 PASS and the same pre-existing GPU pixel mismatch only. After the live Width
+  dialog exposed clipped OK/Cancel controls, constrained the shared schematic
+  constraint region and added an all-supported-families bounds regression.
+  Final app suite: 116 PASS, strict all-target Clippy and fmt PASS. Build:
+  target/debug/pcbcraft.exe. Logs: directives-{workspace-release,io-current,
+  rule-layout,app-ui-verified,clippy-ui-verified,build-ui-verified,fmt-final}.txt.
+  Live PCBCraft confirmed area Properties, mask collapse/unmask and exact Undo to
+  clean state, Parameter Set values and opening the Width constraint editor.
+
+- Follow-up real-window check: Width Constraint shows both OK and Cancel below
+  the table; Cancel returns to the clean document without applying an edit.
+- Added document-coordinate X/Y reflection of Blanket/Compile Mask while moving
+  or dragging, composing with Space/Shift+Space around the cursor. Covered
+  circuitry is never transformed. Preview and commit share a core transformation;
+  one History transaction updates mask exclusions and Undo restores the old scope.
+  Parameter Set reflection and the other parity gaps listed above remain open.
+- Differential Pair ECO now preserves actual positive/negative net spelling and
+  updates existing pair names case-insensitively while retaining opaque fields.
+
+- Latest complete validation after reflection/pair-case fixes: 573 PASS, 1 existing
+  GPU routing pixel failure (app 117, core 237, geom 1, IO 115, render 103+1).
+  fmt and strict workspace/all-target Clippy PASS; debug build PASS.
+  Logs: target/directives-{workspace-latest,clippy-latest,fmt-latest,build-latest}.txt.
+- Final real Windows QA: Altium opened directives-pcbcraft-qa3.SchDoc and selected
+  the authored polygon with Medium/Solid matching PCBCraft. New PCBCraft instance
+  demonstrated M,M then X reflected preview, click commit and one Ctrl+Z returning
+  the document to its clean state. Source circuit did not move. Exactly one live
+  PCBCraft window left running on the QA copy. All 11 original ReferenceG hashes still match.
+
+
+### 2026-11-02 — Synchronize local directive work with origin/main
+
+- User requested fetching upstream updates, merging as necessary, committing all
+  current work and pushing. Preserved the original local work in a temporary Git
+  stash and fast-forwarded main from 91a890f to ca2a9f0 (six upstream commits).
+- Reconciled area directives with upstream harnesses, Active Bar placement,
+  simulation probes, File workflows and Project Validate. Kept both work logs and
+  feature entries; unsupported/full-parity limitations remain explicit.
+- Unified Parameter Set data with retained native child presentation. Child edits
+  update typed parameters/rules atomically; typed edits retain/update children,
+  native saves avoid duplicate parameters, and old JSON label fields are accepted.
+  Regression coverage checks child editing/Undo and native field/rule roundtrips.
+- Verification artifacts are under target/sync-qa. Final gate and real-window
+  results are recorded below after the completed checks.
+- Windows dev build, final fmt check and strict workspace/all-target Clippy PASS.
+  Real-window QA was attempted through the Computer Use skill: launch_app twice
+  returned `accessibility window-opened handler did not become ready`, and no
+  PCBCraft window was returned afterward. No GUI parity verification is claimed
+  for this merge. The existing Altium window was not manipulated.
+- Final cargo test --workspace: 659 PASS, one previously documented GPU routing
+  pixel failure: Rgba8Unorm, frame 13, dither=true, difference 4 versus tolerance
+  3 (eda-render/src/tests/pcb_route_gpu_tests.rs:235). App 142, core 271, geom 1
+  and IO 139 all PASS; render 106 PASS / 1 FAIL. All merge regression checks pass.
+  No PCB GPU implementation/test files were changed by this merge. Full log:
+  target/sync-qa/workspace-tests.log. Final strict checks: fmt-final.log and
+  clippy-final.log; successful Windows build: build.log.

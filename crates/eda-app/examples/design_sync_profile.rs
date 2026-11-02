@@ -211,6 +211,38 @@ fn main() -> Result<(), String> {
             *groups.entry(c.group).or_insert(0usize) += 1;
         }
         println!("Groups: {groups:?}");
+        if std::env::args().any(|a| a == "--class-audit") {
+            use std::collections::BTreeSet;
+            let nets = design_sync::compile_project(&sheets, &options)?;
+            let directives = eda_core::schematic_directives::compile(
+                &sheets,
+                &nets,
+                options.connection_precision_nm.unwrap_or(0),
+            );
+            for ((kind, name), after) in directives.classes {
+                let old = b.classes.iter().find(|c| {
+                    c.get("NAME").is_some_and(|n| n.eq_ignore_ascii_case(&name))
+                        && c.get("KIND") == Some(&kind.to_string())
+                });
+                let before: BTreeSet<_> = old
+                    .into_iter()
+                    .flat_map(|f| f.iter())
+                    .filter(|(k, _)| {
+                        k.strip_prefix('M')
+                            .is_some_and(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()))
+                    })
+                    .map(|(_, v)| v.to_uppercase())
+                    .collect();
+                let after: BTreeSet<_> = after.iter().map(|n| n.to_uppercase()).collect();
+                if before != after {
+                    println!(
+                        "Class {name}, add {:?}, remove {:?}",
+                        after.difference(&before).collect::<Vec<_>>(),
+                        before.difference(&after).collect::<Vec<_>>()
+                    );
+                }
+            }
+        }
         if std::env::args().any(|a| a == "--no-validate") {
             print!("{}", p.report());
             for warning in &p.warnings {

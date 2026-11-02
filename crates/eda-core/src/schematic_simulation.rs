@@ -72,8 +72,10 @@ pub fn place(
             K::ParameterSet {
                 position: Point::default(),
                 orientation: 0,
-                label: "Simulation Probe".into(),
+                name: "Simulation Probe".into(),
                 style: 0,
+                parameters: Default::default(),
+                rules: vec![],
             },
             None,
         );

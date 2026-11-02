@@ -338,6 +338,7 @@ impl PcbCraft {
                     doc.sch_editor.cancel(&mut doc.view);
                     doc.sch_editor.predefined = false;
                     doc.sch_editor.tool = Tool::Move {
+                        reflected: false,
                         fragment,
                         selection: Selection::default(),
                         connected: false,

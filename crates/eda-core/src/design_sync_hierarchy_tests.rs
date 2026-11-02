@@ -578,3 +578,178 @@ fn staged_metadata_matches_reference_operations_and_locked_rows_leave_no_partial
             .any(|c| c.check.as_ref().is_some_and(Result::is_err))
     );
 }
+
+#[test]
+fn typed_mask_excludes_sheet_symbol_and_its_descendants_from_compilation_and_eco() {
+    let (mut sheets, board, options) = project_fixture();
+    sheets[0]
+        .schematic
+        .as_mut()
+        .unwrap()
+        .primitives
+        .push(crate::schematic_directives::primitive(K::CompileMask {
+            a: Point::mm(-1, -1),
+            b: Point::mm(21, 31),
+            collapsed: false,
+        }));
+    let refs: Vec<_> = sheets.iter().collect();
+    let nets = compile_project(&refs, &options).unwrap();
+    assert!(nets.pins.iter().all(|p| p.sheet != sheets[1].id));
+    assert!(nets.pins.iter().any(|p| p.sheet == sheets[2].id));
+    let plan = compare_project(&refs, &board, Direction::ToPcb, vec![], &options).unwrap();
+    assert!(plan.changes.iter().any(|r|matches!(&r.operation,Operation::RemoveComponent(id) if *id==board.pcb.as_ref().unwrap().components[0].id)));
+}
+#[test]
+fn blanket_classes_and_width_constraints_reach_pcb_routing_through_eco() {
+    let (mut sheet, board) = fixture();
+    let s = sheet.schematic.as_mut().unwrap();
+    s.primitives.extend([
+        crate::schematic_directives::primitive(K::Blanket {
+            points: crate::schematic_directives::rectangle(Point::mm(0, 0), Point::mm(40, 40)),
+            collapsed: false,
+        }),
+        crate::schematic_directives::primitive(K::ParameterSet {
+            position: Point::mm(0, 10),
+            orientation: 0,
+            name: "Clock".into(),
+            style: 0,
+            parameters: BTreeMap::from([
+                ("ClassName".into(), "Clock".into()),
+                ("CompClassName".into(), "Clock Parts".into()),
+                ("Layer".into(), "TOP".into()),
+            ]),
+            rules: vec![BTreeMap::from([
+                ("RULEKIND".into(), "Width".into()),
+                ("MINLIMIT".into(), "0.3mm".into()),
+                ("MAXLIMIT".into(), "0.5mm".into()),
+                ("PREFEREDWIDTH".into(), "0.4mm".into()),
+            ])],
+        }),
+    ]);
+    let mut plan = super::plan(&sheet, &board, Direction::ToPcb);
+    let prepared = plan.validate(&[&sheet, &board]).unwrap();
+    assert!(
+        plan.changes
+            .iter()
+            .all(|r| r.check.as_ref().is_none_or(Result::is_ok)),
+        "{}",
+        plan.report()
+    );
+    let changed = prepared
+        .documents
+        .iter()
+        .find(|d| d.id == board.id)
+        .unwrap();
+    let b = changed.pcb.as_ref().unwrap();
+    assert_eq!(b.classes.len(), 2);
+    assert_eq!(b.components[0].parameters.as_ref().unwrap()["Layer"], "TOP");
+    let probe = crate::pcb_rules::probe(pcb::TOP, Some(0), Point::mm(0, 0), 100_000);
+    assert_eq!(
+        crate::pcb_rules::preferred(b, &probe, "Width", "PREFEREDWIDTH").unwrap(),
+        Some(400_000)
+    );
+    assert!(crate::pcb_rules::route_check(b, &probe).is_err());
+    assert!(
+        super::plan(&sheet, changed, Direction::ToPcb)
+            .changes
+            .is_empty()
+    );
+    let id = sheet
+        .schematic
+        .as_ref()
+        .unwrap()
+        .primitives
+        .iter()
+        .find(|p| matches!(p.kind, K::Blanket { .. }))
+        .unwrap()
+        .id;
+    if let K::Blanket { collapsed, .. } = &mut sheet
+        .schematic
+        .as_mut()
+        .unwrap()
+        .primitives
+        .iter_mut()
+        .find(|p| p.id == id)
+        .unwrap()
+        .kind
+    {
+        *collapsed = true;
+    }
+    let mut disabled = super::plan(&sheet, changed, Direction::ToPcb);
+    let disabled = disabled.validate(&[&sheet, changed]).unwrap();
+    let b = disabled
+        .documents
+        .iter()
+        .find(|d| d.id == board.id)
+        .unwrap()
+        .pcb
+        .as_ref()
+        .unwrap();
+    assert!(
+        b.classes
+            .iter()
+            .all(|f| !f.keys().any(|k| class_member_key(k)))
+    );
+}
+
+#[test]
+fn blanket_differential_pairs_preserve_actual_net_spelling_and_update_case_insensitively() {
+    let (mut sheet, mut board) = fixture();
+    let s = sheet.schematic.as_mut().unwrap();
+    for p in &mut s.primitives {
+        if p.text_role == Some(schematic::TextRole::NetLabel)
+            && let K::Text { text, .. } = &mut p.kind
+        {
+            *text = if text == "N1" { "USB_p" } else { "usb_n" }.into();
+        }
+    }
+    s.primitives.extend([
+        crate::schematic_directives::primitive(K::Blanket {
+            points: crate::schematic_directives::rectangle(Point::mm(0, 0), Point::mm(40, 40)),
+            collapsed: false,
+        }),
+        crate::schematic_directives::primitive(K::ParameterSet {
+            position: Point::mm(0, 10),
+            orientation: 0,
+            name: "DIFFPAIR".into(),
+            style: 0,
+            parameters: BTreeMap::from([("DifferentialPair".into(), "True".into())]),
+            rules: vec![],
+        }),
+    ]);
+    board
+        .pcb
+        .as_mut()
+        .unwrap()
+        .differential_pairs
+        .push(BTreeMap::from([
+            ("NAME".into(), "Usb".into()),
+            ("POSITIVENETNAME".into(), "Old_P".into()),
+            ("NEGATIVENETNAME".into(), "Old_N".into()),
+            ("OPAQUE".into(), "retain".into()),
+        ]));
+    let mut plan = super::plan(&sheet, &board, Direction::ToPcb);
+    let prepared = plan.validate(&[&sheet, &board]).unwrap();
+    assert!(
+        plan.changes
+            .iter()
+            .all(|r| r.check.as_ref().is_none_or(Result::is_ok)),
+        "{}",
+        plan.report()
+    );
+    let changed = prepared
+        .documents
+        .iter()
+        .find(|d| d.id == board.id)
+        .unwrap();
+    let pairs = &changed.pcb.as_ref().unwrap().differential_pairs;
+    assert_eq!(pairs.len(), 1);
+    assert_eq!(pairs[0]["POSITIVENETNAME"], "USB_p");
+    assert_eq!(pairs[0]["NEGATIVENETNAME"], "usb_n");
+    assert_eq!(pairs[0]["OPAQUE"], "retain");
+    assert!(
+        super::plan(&sheet, changed, Direction::ToPcb)
+            .changes
+            .is_empty()
+    );
+}

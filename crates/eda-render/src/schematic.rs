@@ -338,6 +338,41 @@ impl Scene<'_> {
             self.text(position, text, font, orientation, justification, c)
         }
     }
+    fn patterned_line(&self, a: Pos2, b: Pos2, style: u32, stroke: Stroke) {
+        if style == 0 {
+            self.line(a, b, stroke);
+            return;
+        }
+        let delta = b - a;
+        let length = delta.length();
+        if length <= 0.0 {
+            return;
+        }
+        let step = self
+            .nm(if style == 2 { 508_000 } else { 1_270_000 })
+            .max(if style == 2 {
+                stroke.width.max(1.0) * 2.5
+            } else {
+                3.0
+            });
+        let mut offset = 0.0;
+        while offset < length {
+            if style == 2 {
+                self.painter.circle_filled(
+                    a + delta * (offset / length),
+                    stroke.width.max(1.0) * 0.5,
+                    stroke.color,
+                );
+            } else {
+                self.line(
+                    a + delta * (offset / length),
+                    a + delta * ((offset + step * 0.55).min(length) / length),
+                    stroke,
+                );
+            }
+            offset += step;
+        }
+    }
     fn poly(&self, points: Vec<Pos2>, closed: bool, fill: Option<Color32>, stroke: Stroke) -> Rect {
         if points.is_empty() {
             return Rect::NOTHING;
@@ -422,18 +457,104 @@ impl Scene<'_> {
         }
         let mut hit = false;
         let bounds = match &p.kind {
+            K::Blanket { points, collapsed } => {
+                let pts: Vec<_> = points.iter().map(|p| self.screen(*p)).collect();
+                let rect = Rect::from_points(&pts);
+                let toggle =
+                    Rect::from_min_size(rect.left_top(), Vec2::splat(self.nm(1_524_000).max(3.0)));
+                if !collapsed {
+                    self.poly(
+                        pts.clone(),
+                        true,
+                        Some(fill.unwrap_or(Color32::WHITE).gamma_multiply(0.5)),
+                        if p.line_style == 0 {
+                            stroke
+                        } else {
+                            Stroke::NONE
+                        },
+                    );
+                    if p.line_style > 0 {
+                        for (a, b) in pts
+                            .iter()
+                            .copied()
+                            .zip(pts.iter().copied().cycle().skip(1))
+                            .take(pts.len())
+                        {
+                            self.patterned_line(a, b, p.line_style, stroke);
+                        }
+                    }
+                    hit = pointer.is_some_and(|p| {
+                        pts.iter()
+                            .copied()
+                            .zip(pts.iter().copied().cycle().skip(1))
+                            .take(pts.len())
+                            .any(|(a, b)| distance_segment(p, a, b) < 4.0)
+                    });
+                }
+                self.painter.add(Shape::convex_polygon(
+                    vec![
+                        toggle.left_top(),
+                        toggle.right_top(),
+                        if *collapsed {
+                            toggle.left_bottom()
+                        } else {
+                            toggle.center_bottom()
+                        },
+                    ],
+                    c,
+                    Stroke::NONE,
+                ));
+                hit |= pointer.is_some_and(|p| toggle.expand(2.0).contains(p));
+                if *collapsed { toggle } else { rect }
+            }
+            K::CompileMask { a, b, collapsed } => {
+                let rect = Rect::from_two_pos(self.screen(*a), self.screen(*b));
+                let toggle =
+                    Rect::from_min_size(rect.left_top(), Vec2::splat(self.nm(1_524_000).max(3.0)));
+                if !collapsed {
+                    self.painter.rect_filled(
+                        rect,
+                        0.0,
+                        fill.unwrap_or(Color32::WHITE).gamma_multiply(0.25),
+                    );
+                    self.painter
+                        .rect_stroke(rect, 0.0, stroke, StrokeKind::Middle);
+                    hit = pointer.is_some_and(|p| {
+                        rect.expand(4.0).contains(p) && !rect.shrink(4.0).contains(p)
+                    });
+                }
+                self.painter
+                    .rect_stroke(toggle, 0.0, stroke, StrokeKind::Middle);
+                self.painter.add(Shape::convex_polygon(
+                    vec![
+                        toggle.left_top(),
+                        toggle.right_top(),
+                        if *collapsed {
+                            toggle.left_bottom()
+                        } else {
+                            toggle.center_bottom()
+                        },
+                    ],
+                    c,
+                    Stroke::NONE,
+                ));
+                hit |= pointer.is_some_and(|p| toggle.expand(2.0).contains(p));
+                if *collapsed { toggle } else { rect }
+            }
             K::ParameterSet {
                 position,
                 orientation,
-                label,
+                name: label,
+                parameters,
                 style,
+                ..
             } => {
                 let a = self.screen(*position);
                 let d = direction(*orientation);
                 let across = Vec2::new(-d.y, d.x);
                 let size = self.nm(2_540_000);
                 let b = a + d * size;
-                let pair=self.schematic.is_some_and(|s|s.primitives.iter().chain(&s.parameter_objects).any(|child|child.presentation.parent==Some(p.id)&&child.presentation.name.eq_ignore_ascii_case("DifferentialPair")&&matches!(&child.kind,K::Text{text,..} if text.eq_ignore_ascii_case("True"))));
+                let pair=parameters.iter().any(|(k,v)| k.eq_ignore_ascii_case("DifferentialPair") && v.eq_ignore_ascii_case("True")) || self.schematic.is_some_and(|s|s.primitives.iter().chain(&s.parameter_objects).any(|child|child.presentation.parent==Some(p.id)&&child.presentation.name.eq_ignore_ascii_case("DifferentialPair")&&matches!(&child.kind,K::Text{text,..} if text.eq_ignore_ascii_case("True"))));
                 self.line(a, b - d * size * 0.5, stroke);
                 if pair {
                     self.poly(
@@ -474,85 +595,6 @@ impl Scene<'_> {
                     ));
                 }
                 hit = pointer.is_some_and(|at| bounds.expand(3.0).contains(at));
-                bounds
-            }
-            K::Blanket { points, collapsed } => {
-                let mut path: Vec<_> = points.iter().map(|p| self.screen(*p)).collect();
-                let mut bounds = Rect::NOTHING;
-                for at in &path {
-                    bounds.extend_with(*at);
-                }
-                if let Some(first) = path.first().copied() {
-                    path.push(first);
-                }
-                if *collapsed {
-                    bounds = Rect::from_min_size(bounds.min, Vec2::splat(self.nm(2_540_000)));
-                    self.painter
-                        .rect_stroke(bounds, 0., stroke, egui::StrokeKind::Inside);
-                } else {
-                    for edge in path.windows(2) {
-                        let vector = edge[1] - edge[0];
-                        let length = vector.length();
-                        let count = ((length / 4.).ceil() as usize).min(16_384);
-                        let step = length / count.max(1) as f32;
-                        for n in 0..count {
-                            let start = (n as f32 * step).min(length);
-                            let end = (start + step * 0.5).min(length);
-                            if length > 0. {
-                                self.line(
-                                    edge[0] + vector * (start / length),
-                                    edge[0] + vector * (end / length),
-                                    stroke,
-                                );
-                            }
-                        }
-                    }
-                }
-                let marker = bounds.left_top();
-                self.poly(
-                    vec![
-                        marker,
-                        marker + egui::vec2(6., 6.),
-                        marker + egui::vec2(0., 6.),
-                    ],
-                    true,
-                    None,
-                    stroke,
-                );
-                hit = pointer.is_some_and(|at| {
-                    bounds.expand(4.).contains(at)
-                        && (!bounds.shrink(4.).contains(at) || *collapsed)
-                });
-                bounds
-            }
-            K::CompileMask { a, b, collapsed } => {
-                let mut bounds = Rect::from_two_pos(self.screen(*a), self.screen(*b));
-                if *collapsed {
-                    bounds =
-                        Rect::from_min_size(bounds.left_top(), Vec2::splat(self.nm(2_540_000)));
-                }
-                self.painter.rect(
-                    bounds,
-                    0.,
-                    fill.unwrap_or(Color32::WHITE).gamma_multiply(0.08),
-                    stroke,
-                    egui::StrokeKind::Inside,
-                );
-                let marker = bounds.left_top();
-                self.poly(
-                    vec![
-                        marker,
-                        marker + egui::vec2(6., 6.),
-                        marker + egui::vec2(0., 6.),
-                    ],
-                    true,
-                    None,
-                    stroke,
-                );
-                hit = pointer.is_some_and(|at| {
-                    bounds.expand(4.).contains(at)
-                        && (!bounds.shrink(4.).contains(at) || *collapsed)
-                });
                 bounds
             }
             K::HarnessConnector {
@@ -858,7 +900,8 @@ impl Scene<'_> {
                     );
                 }
                 if let Some(pos) = pointer {
-                    hit = rect.expand(3.0).contains(pos);
+                    hit = rect.expand(3.0).contains(pos)
+                        && (fill.is_some() || !rect.shrink(3.0).contains(pos));
                 }
                 rect
             }
@@ -1803,20 +1846,38 @@ fn paint_mode(
             painter: painter.with_clip_rect(board.intersect(rect)),
             ..scene
         };
-        for primitive in schematic
+        let excluded = eda_core::schematic_compile::exclusions(schematic);
+        let mut ordered: Vec<_> = schematic
             .primitives
             .iter()
             .chain(&schematic.parameter_objects)
+            .collect();
+        ordered.sort_by_key(|p| !matches!(p.kind, K::Blanket { .. } | K::CompileMask { .. }));
+        for primitive in ordered
+            .into_iter()
             .filter(|p| !p.presentation.hidden && !preview_ids.contains(&p.id))
         {
-            let (bounds, is_hit) = scene.primitive(primitive, hit_pointer);
+            let masked = excluded.primitives.contains(&primitive.id)
+                || primitive
+                    .component
+                    .is_some_and(|c| excluded.components.contains(&c));
+            let faded = masked.then(|| {
+                let mut p = primitive.clone();
+                p.color = 0xa0a0a0;
+                p.fill = p.fill.map(|_| 0xe0e0e0);
+                p.presentation.text_color = Some(0xa0a0a0);
+                p
+            });
+            let (bounds, is_hit) =
+                scene.primitive(faded.as_ref().unwrap_or(primitive), hit_pointer);
             if let Some(id) = primitive.component {
                 component_bounds
                     .entry(id)
                     .and_modify(|r| *r = r.union(bounds))
                     .or_insert(bounds);
             }
-            if !matches!(&primitive.kind,K::Polyline{electrical,..} if electrical=="Wire")
+            if !matches!(primitive.kind, K::Blanket { .. } | K::CompileMask { .. })
+                && !matches!(&primitive.kind,K::Polyline{electrical,..} if electrical=="Wire")
                 && !view.sch_segments.iter().any(|span| span.id == primitive.id)
                 && ((view.selected.is_some()
                     && (view.selected == Some(primitive.id)
@@ -1898,6 +1959,13 @@ fn paint_mode(
                     || view.selected == Some(primitive.id))
             {
                 continue;
+            }
+            for at in eda_core::schematic_directives::handles(&primitive.kind) {
+                painter.rect_filled(
+                    Rect::from_center_size(scene.screen(at), Vec2::splat(6.0)),
+                    0.0,
+                    Color32::GREEN,
+                );
             }
             if let K::Polyline {
                 points,

@@ -48,6 +48,7 @@ pub struct Netlist {
     /// Electrical islands, including those without component pins, for ERC.
     pub electrical_islands: Vec<Vec<(Uuid, Uuid)>>,
     pub names: Vec<String>,
+    pub primitive_nets: BTreeMap<(Uuid, Uuid), String>,
     pub pins: Vec<Pin>,
     pub issues: Vec<String>,
     pub warnings: Vec<String>,
@@ -188,6 +189,12 @@ pub fn compile_project(sheets: &[&Document], options: &ProjectOptions) -> Result
         return Err(reason.clone());
     }
     let graph = project::hierarchy(sheets, options)?;
+    let active_sheets: Vec<_> = sheets
+        .iter()
+        .copied()
+        .filter(|d| !graph.excluded_sheets.contains(&d.id))
+        .collect();
+    let sheets = active_sheets.as_slice();
     let hierarchical = matches!(
         graph.scope,
         NetScope::Hierarchical | NetScope::StrictHierarchical
@@ -637,6 +644,12 @@ pub fn compile_project(sheets: &[&Document], options: &ProjectOptions) -> Result
                 .entry(name.clone())
                 .or_default()
                 .extend(labels.iter().map(|(_, _, d, id)| (*d, *id)));
+        }
+        if let Some(name) = &net {
+            for n in indices {
+                out.primitive_nets
+                    .insert((nodes[*n].0.id, nodes[*n].1.id), name.clone());
+            }
         }
         for (designator, number, sheet, component) in pins {
             let key = (sheet, component, number.to_uppercase());

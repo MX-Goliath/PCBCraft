@@ -59,6 +59,7 @@ pub(super) struct Editor {
     move_popup: Option<egui::Pos2>,
     pub kind: Option<Placement>,
     pub value: String,
+    pub directive: Option<eda_core::schematic::SchPrimitive>,
     pub designator: String,
     pointer: Option<Point>,
     pub(super) harness_width: i64,
@@ -100,6 +101,16 @@ enum Tool {
         turns: u32,
         revision: u64,
     },
+    Area {
+        points: Vec<Point>,
+        revision: u64,
+    },
+    AreaResize {
+        id: Uuid,
+        handle: usize,
+        anchor: Point,
+        revision: u64,
+    },
     Place {
         turns: u32,
         revision: u64,
@@ -117,6 +128,7 @@ enum Tool {
     },
     Move {
         fragment: Fragment,
+        reflected: bool,
         selection: Selection,
         connected: bool,
         anchor: Point,
@@ -156,6 +168,24 @@ impl Editor {
 }
 
 impl OpenDocument {
+    fn rotate_schematic_selection(&mut self, turns: u32) -> Result<(), String> {
+        let selection = view_selection(&self.view);
+        if !selection.is_empty() {
+            let pivot = edit::selection_anchor(self.model.schematic.as_ref().unwrap(), &selection)
+                .ok_or("Nothing selected")?;
+            self.edit_schematic(
+                Edit::TransformSelection {
+                    selection,
+                    pivot,
+                    quarter_turns: turns,
+                    delta: Point::default(),
+                    connected: false,
+                },
+                self.history.revision,
+            )?;
+        }
+        Ok(())
+    }
     pub(super) fn edit_schematic(&mut self, command: Edit, revision: u64) -> Result<bool, String> {
         let partial_primary = self
             .view
@@ -258,6 +288,7 @@ impl PcbCraft {
         let doc = &mut self.documents[index];
         doc.sch_editor.cancel(&mut doc.view);
         doc.sch_editor.tool = Tool::Move {
+            reflected: false,
             fragment,
             selection: Selection::default(),
             connected: false,
@@ -283,6 +314,8 @@ impl PcbCraft {
                         | Tool::WireDrag { .. }
                         | Tool::Pick { .. }
                         | Tool::Path { .. }
+                        | Tool::Area { .. }
+                        | Tool::AreaResize { .. }
                 ) || doc.sch_editor.move_popup.is_some())
             {
                 doc.sch_editor.cancel(&mut doc.view);
@@ -561,6 +594,28 @@ impl PcbCraft {
         doc.sch_editor.bar.power = None;
         doc.sch_editor.bar.shape_turns = 0;
         doc.sch_editor.kind = Some(kind);
+        doc.sch_editor.directive = match kind {
+            Placement::Blanket => Some(eda_core::schematic_directives::primitive(K::Blanket {
+                points: eda_core::schematic_directives::rectangle(
+                    Point::default(),
+                    Point::mm(10, 10),
+                ),
+                collapsed: false,
+            })),
+            Placement::CompileMask => {
+                Some(eda_core::schematic_directives::primitive(K::CompileMask {
+                    a: Point::default(),
+                    b: Point::mm(10, 10),
+                    collapsed: false,
+                }))
+            }
+            Placement::ParameterSet | Placement::DifferentialPair | Placement::NoErc => {
+                edit::place(kind, Point::default(), 0, "", "", s.sheet.system_font)
+                    .ok()
+                    .and_then(|f| f.primitives.into_iter().next())
+            }
+            _ => None,
+        };
         doc.sch_editor.value = match kind {
             Placement::Resistor => "10k",
             Placement::Capacitor => "100nF",
@@ -583,9 +638,7 @@ impl PcbCraft {
         .into();
         if matches!(
             kind,
-            Placement::Blanket
-                | Placement::CompileMask
-                | Placement::SheetSymbol
+            Placement::SheetSymbol
                 | Placement::TextFrame
                 | Placement::Note
                 | Placement::Rectangle
@@ -636,6 +689,11 @@ impl PcbCraft {
                 angle_mode: 0,
                 revision: doc.history.revision,
             }
+        } else if matches!(kind, Placement::Blanket | Placement::CompileMask) {
+            Tool::Area {
+                points: vec![],
+                revision: doc.history.revision,
+            }
         } else {
             Tool::Place {
                 turns: 0,
@@ -665,25 +723,7 @@ impl PcbCraft {
                         doc.edit_schematic(Edit::DeleteSelection(selection.clone()), revision)?;
                     }
                 }
-                SchAction::Rotate => {
-                    if !selection.is_empty() {
-                        let pivot = edit::selection_anchor(
-                            doc.model.schematic.as_ref().unwrap(),
-                            &selection,
-                        )
-                        .ok_or("Nothing selected")?;
-                        doc.edit_schematic(
-                            Edit::TransformSelection {
-                                selection: selection.clone(),
-                                pivot,
-                                quarter_turns: 1,
-                                delta: Point::default(),
-                                connected: false,
-                            },
-                            revision,
-                        )?;
-                    }
-                }
+                SchAction::Rotate => doc.rotate_schematic_selection(1)?,
                 SchAction::Move | SchAction::Drag => {
                     let connected = matches!(action, SchAction::Drag);
                     doc.sch_editor.cancel(&mut doc.view);
@@ -705,6 +745,7 @@ impl PcbCraft {
                     let anchor = edit::selection_anchor(s, &selection).ok_or("Nothing selected")?;
                     doc.sch_editor.tool = Tool::Move {
                         fragment: edit::extract_selection(s, &selection)?,
+                        reflected: false,
                         selection: selection.clone(),
                         connected,
                         anchor,
@@ -776,6 +817,7 @@ impl PcbCraft {
             doc.sch_editor.kind = None;
             doc.sch_editor.tool = Tool::Move {
                 fragment,
+                reflected: false,
                 selection: Selection::default(),
                 connected: false,
                 anchor: *anchor,
@@ -962,15 +1004,41 @@ impl PcbCraft {
             }
             return true;
         }
-        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Space)) {
+        for key in [Key::X, Key::Y] {
+            if let Tool::Move {
+                fragment,
+                reflected,
+                turns,
+                ..
+            } = &mut self.documents[i].sch_editor.tool
+                && eda_core::schematic_directives::area_fragment(fragment)
+                && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, key))
+            {
+                // Mx R(t) = R(-t) Mx; My = R(2) Mx.
+                *turns = (if key == Key::X { 4 } else { 6 } - *turns) % 4;
+                *reflected = !*reflected;
+                return true;
+            }
+        }
+        let clockwise = ctx.input_mut(|i| i.consume_key(egui::Modifiers::SHIFT, Key::Space));
+        if clockwise || ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Space)) {
+            let turns_to_add = if clockwise { 3 } else { 1 };
             match &mut self.documents[i].sch_editor.tool {
                 Tool::Connector { turns, .. }
                 | Tool::Place { turns, .. }
                 | Tool::Move { turns, .. }
-                | Tool::Library { turns, .. } => *turns = (*turns + 1) % 4,
+                | Tool::Library { turns, .. } => *turns = (*turns + turns_to_add) % 4,
                 Tool::Path { vertical_first, .. } => *vertical_first = !*vertical_first,
-                Tool::Select => self.schematic_action(SchAction::Rotate, ctx),
-                Tool::Graphic | Tool::Pick { .. } | Tool::WireDrag { .. } => {}
+                Tool::Select => {
+                    if let Err(e) = self.documents[i].rotate_schematic_selection(turns_to_add) {
+                        self.message(true, e);
+                    }
+                }
+                Tool::Graphic
+                | Tool::Pick { .. }
+                | Tool::WireDrag { .. }
+                | Tool::Area { .. }
+                | Tool::AreaResize { .. } => {}
             }
             return true;
         }
@@ -1037,6 +1105,8 @@ impl PcbCraft {
                     | Tool::WireDrag { .. }
                     | Tool::Pick { .. }
                     | Tool::Path { .. }
+                    | Tool::Area { .. }
+                    | Tool::AreaResize { .. }
             ) {
                 doc.sch_editor.cancel(&mut doc.view);
             }
@@ -1085,6 +1155,7 @@ impl PcbCraft {
                     } else {
                         Tool::Move {
                             fragment,
+                            reflected: false,
                             selection: Selection {
                                 ids: vec![id],
                                 segments: vec![],
@@ -1099,6 +1170,72 @@ impl PcbCraft {
                 }
             }
             return;
+        }
+        if !doc.sch_editor.active()
+            && input.clicked
+            && let (Some(id), Some(at)) = (input.hit, input.point)
+            && let Some(p) = s.primitive(id)
+        {
+            let points = match &p.kind {
+                K::Blanket { points, .. } => Some(points.clone()),
+                K::CompileMask { a, b, .. } => {
+                    Some(eda_core::schematic_directives::rectangle(*a, *b))
+                }
+                _ => None,
+            };
+            if let Some(points) = points {
+                let top = Point {
+                    x: points.iter().map(|p| p.x).min().unwrap(),
+                    y: points.iter().map(|p| p.y).max().unwrap(),
+                };
+                let size = 1_524_000.max((3.0 / doc.view.camera.pixels_per_mm * 1e6) as i64);
+                if at.x >= top.x - radius / 3
+                    && at.x <= top.x + size
+                    && at.y <= top.y + radius / 3
+                    && at.y >= top.y - size
+                {
+                    let mut value = p.clone();
+                    if let K::Blanket { collapsed, .. } | K::CompileMask { collapsed, .. } =
+                        &mut value.kind
+                    {
+                        *collapsed = !*collapsed;
+                    }
+                    let revision = doc.history.revision;
+                    if let Err(e) = doc.edit_schematic(
+                        Edit::PrimitiveProperties {
+                            id,
+                            value: Box::new(value),
+                        },
+                        revision,
+                    ) {
+                        self.message(true, e);
+                    }
+                    return;
+                }
+            }
+        }
+        if !doc.sch_editor.active()
+            && (input.drag_started || input.drag_stopped)
+            && let (Some(id), Some(origin)) = (input.hit, input.press_origin)
+            && doc.view.selected == Some(id)
+            && let Some(p) = s.primitive(id)
+        {
+            let h = eda_core::schematic_directives::handles(&p.kind);
+            if let Some((handle, _)) = h
+                .iter()
+                .enumerate()
+                .map(|(i, p)| (i, (p.x - origin.x).abs() + (p.y - origin.y).abs()))
+                .filter(|(_, d)| *d <= radius * 2)
+                .min_by_key(|(_, d)| *d)
+            {
+                doc.sch_editor.tool = Tool::AreaResize {
+                    id,
+                    handle,
+                    anchor: snap(origin),
+                    revision: doc.history.revision,
+                };
+                doc.view.sch_tool_active = true;
+            }
         }
         if !doc.sch_editor.active()
             && !ctx.input(|i| !i.focused || i.key_down(Key::Escape))
@@ -1140,6 +1277,7 @@ impl PcbCraft {
                     } else {
                         Tool::Move {
                             fragment,
+                            reflected: false,
                             selection,
                             connected: true,
                             anchor: snap(origin),
@@ -1154,6 +1292,15 @@ impl PcbCraft {
             }
         }
         let kind = doc.sch_editor.kind;
+        let directive = doc.sch_editor.directive.clone();
+        let styled_directive = |shape: K| {
+            let mut p = directive
+                .clone()
+                .unwrap_or_else(|| eda_core::schematic_directives::primitive(shape.clone()));
+            p.id = Uuid::new_v4();
+            p.kind = shape;
+            p
+        };
         match &mut doc.sch_editor.tool {
             Tool::Graphic => {
                 if input.secondary_clicked {
@@ -1174,6 +1321,7 @@ impl PcbCraft {
                         match eda_io::schematic_graphic::load(&path, false) {
                             Ok(fragment) => {
                                 doc.sch_editor.tool = Tool::Move {
+                                    reflected: false,
                                     fragment,
                                     selection: Selection::default(),
                                     connected: false,
@@ -1285,6 +1433,124 @@ impl PcbCraft {
                     finish = true;
                 }
             }
+            Tool::AreaResize {
+                id,
+                handle,
+                anchor,
+                revision,
+            } => {
+                if let Some(at) = input.drop_point.map(snap).or(point)
+                    && let Some(original) = s.primitive(*id)
+                {
+                    let mut value = original.clone();
+                    let result = eda_core::schematic_directives::resize(
+                        &mut value.kind,
+                        *handle,
+                        Point {
+                            x: at.x - anchor.x,
+                            y: at.y - anchor.y,
+                        },
+                    );
+                    if result.is_ok() {
+                        let edit = Edit::PrimitiveProperties {
+                            id: *id,
+                            value: Box::new(value),
+                        };
+                        if let Ok(f) = edit::preview_fragment(&doc.model, &edit) {
+                            preview = Some(f);
+                        }
+                        if input.drag_stopped {
+                            command = Some((edit, *revision));
+                        }
+                    } else if input.drag_stopped {
+                        error = result.err();
+                    }
+                }
+                finish = input.secondary_clicked || input.drag_stopped;
+            }
+            Tool::Area { points, revision } => {
+                if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Backspace)) {
+                    points.pop();
+                }
+                let enter = ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Enter));
+                let mask = kind == Some(Placement::CompileMask);
+                let anchor = input.clicked || (enter && (mask || points.len() < 2));
+                if let Some(at) = point {
+                    let mut path = points.clone();
+                    if path.last() != Some(&at) {
+                        path.push(at);
+                    }
+                    let mask = kind == Some(Placement::CompileMask);
+                    let shape = if path.len() >= 2 {
+                        Some(if mask {
+                            K::CompileMask {
+                                a: path[0],
+                                b: path[1],
+                                collapsed: false,
+                            }
+                        } else {
+                            K::Blanket {
+                                points: if path.len() == 2 {
+                                    eda_core::schematic_directives::rectangle(path[0], path[1])
+                                } else {
+                                    path.clone()
+                                },
+                                collapsed: false,
+                            }
+                        })
+                    } else {
+                        None
+                    };
+                    if let Some(shape) = shape {
+                        let p = styled_directive(shape);
+                        let fragment = Fragment {
+                            primitives: vec![p],
+                            ..Default::default()
+                        };
+                        if edit::preview(&doc.model, &Edit::Insert(fragment.clone())).is_ok() {
+                            preview = Some(fragment);
+                        }
+                    }
+                    if anchor && points.last() != Some(&at) {
+                        points.push(at);
+                    }
+                }
+                let mask = kind == Some(Placement::CompileMask);
+                let end = if mask {
+                    anchor && points.len() == 2
+                } else {
+                    input.secondary_clicked || enter
+                };
+                if end && points.len() >= 2 {
+                    let shape = if mask {
+                        K::CompileMask {
+                            a: points[0],
+                            b: points[1],
+                            collapsed: false,
+                        }
+                    } else {
+                        K::Blanket {
+                            points: if points.len() == 2 {
+                                eda_core::schematic_directives::rectangle(points[0], points[1])
+                            } else {
+                                points.clone()
+                            },
+                            collapsed: false,
+                        }
+                    };
+                    let p = styled_directive(shape);
+                    command = Some((
+                        Edit::Insert(Fragment {
+                            primitives: vec![p],
+                            ..Default::default()
+                        }),
+                        *revision,
+                    ));
+                    points.clear();
+                } else if input.secondary_clicked {
+                    finish = true;
+                }
+            }
             Tool::Connector {
                 start,
                 turns,
@@ -1385,7 +1651,16 @@ impl PcbCraft {
                         f
                     });
                     match result {
-                        Ok(fragment) => {
+                        Ok(mut fragment) => {
+                            if let Some(template) = &directive {
+                                let mut p = template.clone();
+                                p.id = Uuid::new_v4();
+                                if edit::transform_primitive(&mut p, Point::default(), *turns, at)
+                                    .is_ok()
+                                {
+                                    fragment.primitives = vec![p];
+                                }
+                            }
                             if input.clicked
                                 || ctx
                                     .input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Enter))
@@ -1521,6 +1796,7 @@ impl PcbCraft {
             }
             Tool::Move {
                 fragment,
+                reflected,
                 selection,
                 connected,
                 anchor,
@@ -1539,7 +1815,26 @@ impl PcbCraft {
                         x: at.x - anchor.x,
                         y: at.y - anchor.y,
                     };
-                    let edit = if selection.is_empty() {
+                    let edit = if *reflected {
+                        eda_core::schematic_directives::transform_areas(
+                            fragment, *anchor, *turns, true, delta,
+                        )
+                        .map(|f| {
+                            if selection.is_empty() {
+                                Edit::Insert(f)
+                            } else {
+                                Edit::Batch(
+                                    f.primitives
+                                        .into_iter()
+                                        .map(|p| Edit::PrimitiveProperties {
+                                            id: p.id,
+                                            value: Box::new(p),
+                                        })
+                                        .collect(),
+                                )
+                            }
+                        })
+                    } else if selection.is_empty() {
                         fragment
                             .transformed(*anchor, *turns, delta)
                             .map(Edit::Insert)
@@ -1579,7 +1874,10 @@ impl PcbCraft {
         if let Some((command, revision)) = command {
             let is_place = matches!(
                 doc.sch_editor.tool,
-                Tool::Place { .. } | Tool::Library { .. } | Tool::Connector { .. }
+                Tool::Place { .. }
+                    | Tool::Library { .. }
+                    | Tool::Connector { .. }
+                    | Tool::Area { .. }
             );
             match doc.edit_schematic(command, revision) {
                 Ok(_) => {
@@ -1595,6 +1893,7 @@ impl PcbCraft {
                     }
                     if is_place {
                         if let Tool::Place { revision, .. }
+                        | Tool::Area { revision, .. }
                         | Tool::Connector { revision, .. }
                         | Tool::Library { revision, .. } = &mut doc.sch_editor.tool
                         {

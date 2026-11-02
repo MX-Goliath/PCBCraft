@@ -307,21 +307,6 @@ pub fn parameter_text(
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", deny_unknown_fields)]
 pub enum SchPrimitiveKind {
-    ParameterSet {
-        position: Point,
-        orientation: u32,
-        label: String,
-        style: u32,
-    },
-    Blanket {
-        points: Vec<Point>,
-        collapsed: bool,
-    },
-    CompileMask {
-        a: Point,
-        b: Point,
-        collapsed: bool,
-    },
     HarnessConnector {
         a: Point,
         b: Point,
@@ -340,6 +325,26 @@ pub enum SchPrimitiveKind {
         points: Vec<Point>,
         closed: bool,
         electrical: String,
+    },
+    Blanket {
+        points: Vec<Point>,
+        collapsed: bool,
+    },
+    CompileMask {
+        a: Point,
+        b: Point,
+        collapsed: bool,
+    },
+    ParameterSet {
+        position: Point,
+        orientation: u32,
+        #[serde(alias = "label")]
+        name: String,
+        style: u32,
+        #[serde(default)]
+        parameters: BTreeMap<String, String>,
+        #[serde(default)]
+        rules: Vec<BTreeMap<String, String>>,
     },
     Rectangle {
         a: Point,
@@ -556,16 +561,6 @@ impl Schematic {
                 return Err("Invalid schematic primitive or owner".into());
             }
             let valid = match &p.kind {
-                SchPrimitiveKind::ParameterSet {
-                    position,
-                    orientation,
-                    style,
-                    ..
-                } => position.valid() && *orientation < 4 && *style <= 1,
-                SchPrimitiveKind::Blanket { points, .. } => {
-                    (3..=100_000).contains(&points.len()) && points.iter().all(|p| p.valid())
-                }
-                SchPrimitiveKind::CompileMask { a, b, .. } => a.valid() && b.valid() && a != b,
                 SchPrimitiveKind::HarnessConnector {
                     a,
                     b,
@@ -588,6 +583,27 @@ impl Schematic {
                 } => position.valid() && *side <= 3 && !name.trim().is_empty(),
                 SchPrimitiveKind::Polyline { points, .. } => {
                     points.len() <= 100_000 && points.iter().all(|p| p.valid())
+                }
+                SchPrimitiveKind::Blanket { points, .. } => {
+                    crate::schematic_directives::valid_polygon(points)
+                }
+                SchPrimitiveKind::CompileMask { a, b, .. } => {
+                    a.valid() && b.valid() && a.x != b.x && a.y != b.y
+                }
+                SchPrimitiveKind::ParameterSet {
+                    position,
+                    parameters,
+                    rules,
+                    orientation,
+                    style,
+                    ..
+                } => {
+                    position.valid()
+                        && *orientation < 4
+                        && *style < 2
+                        && parameters.len() <= 10000
+                        && rules.len() <= 1000
+                        && rules.iter().all(|r| r.len() <= 10000)
                 }
                 SchPrimitiveKind::Rectangle { a, b, radius } => {
                     a.valid() && b.valid() && radius.valid()

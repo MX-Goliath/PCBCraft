@@ -574,6 +574,7 @@ fn binary(bytes: &[u8], ns: Uuid, control: &ImportControl) -> Result<Board> {
         .collect();
     let known = [
         "Classes6",
+        "DifferentialPairs6",
         "Board6",
         "Nets6",
         "Components6",
@@ -635,6 +636,7 @@ fn binary(bytes: &[u8], ns: Uuid, control: &ImportControl) -> Result<Board> {
         "Rules6",
         "Polygons6",
         "Classes6",
+        "DifferentialPairs6",
     ] {
         control.check(&format!("Decoding {family}"))?;
         let Some(data) = streams.get(&format!("/{family}/Data")) else {
@@ -663,6 +665,7 @@ fn binary(bytes: &[u8], ns: Uuid, control: &ImportControl) -> Result<Board> {
                 "Components6" => board.components.push(component(f, ns, n)?),
                 "Rules6" => board.rules.push(f),
                 "Classes6" => board.classes.push(f),
+                "DifferentialPairs6" => board.differential_pairs.push(f),
                 "Polygons6" => board.polygons.push(f),
                 _ => {}
             }

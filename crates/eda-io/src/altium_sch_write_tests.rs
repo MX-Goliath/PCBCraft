@@ -153,7 +153,7 @@ fn synchronization_preserves_additional_drawing_payloads_when_native_indices_shi
     use eda_core::schematic_sync::{self as sync, Destination, Signal};
     let mut file = cfb::CompoundFile::open(Cursor::new(binary(&hierarchy_source()))).unwrap();
     let payload =
-        b"|RECORD=225|OWNERPARTID=-1|INDEXINSHEET=19|LOCATIONCOUNT=4|CustomCase=untouched\0";
+        b"|RECORD=225|OWNERPARTID=-1|INDEXINSHEET=19|LOCATIONCOUNT=4|X1=1|Y1=1|X2=1|Y2=2|X3=2|Y3=2|X4=2|Y4=1|CustomCase=untouched\0";
     {
         let mut stream = file.create_stream("Additional").unwrap();
         stream
@@ -771,4 +771,354 @@ fn unsupported_edits_and_opaque_reindexing_leave_destination_unchanged() {
     );
     assert!(save(&destination, &next).unwrap_err().contains("Opaque"));
     assert_eq!(std::fs::read(&destination).unwrap(), b"untouched");
+}
+
+#[test]
+fn native_directives_round_trip_new_polygon_mask_parameters_rules_and_deletion() {
+    use eda_core::schematic_directives::{primitive, rectangle};
+    use eda_core::schematic_edit::Fragment;
+    for bytes in [ASCII.to_vec(), binary(ASCII)] {
+        let original = import_schematic(&bytes, "directives.SchDoc").unwrap();
+        let points = vec![
+            Point::mm(10, 10),
+            Point::mm(20, 10),
+            Point::mm(20, 20),
+            Point::mm(15, 15),
+            Point::mm(10, 20),
+        ];
+        let primitives = vec![
+            primitive(K::Blanket {
+                points: points.clone(),
+                collapsed: false,
+            }),
+            primitive(K::CompileMask {
+                a: Point::mm(30, 30),
+                b: Point::mm(40, 40),
+                collapsed: false,
+            }),
+            primitive(K::ParameterSet {
+                position: Point::mm(10, 15),
+                orientation: 0,
+                name: "Clock".into(),
+                style: 0,
+                parameters: BTreeMap::from([
+                    ("ClassName".into(), "CLK".into()),
+                    ("CompClassName".into(), "Clock Components".into()),
+                ]),
+                rules: vec![BTreeMap::from([
+                    ("RULEKIND".into(), "Width".into()),
+                    ("MINLIMIT".into(), "10mil".into()),
+                    ("MAXLIMIT".into(), "20mil".into()),
+                    ("PREFEREDWIDTH".into(), "12mil".into()),
+                ])],
+            }),
+        ];
+        let inserted = edit(
+            &original,
+            Edit::Insert(Fragment {
+                primitives,
+                ..Default::default()
+            }),
+        );
+        let saved = serialize(&inserted).unwrap();
+        if saved.starts_with(&[0xd0, 0xcf]) {
+            let mut file = cfb::CompoundFile::open(Cursor::new(saved.clone())).unwrap();
+            let mut data = vec![];
+            file.open_stream("Additional")
+                .unwrap()
+                .read_to_end(&mut data)
+                .unwrap();
+            let len = u32::from_le_bytes(data[..4].try_into().unwrap()) as usize;
+            let text = String::from_utf8_lossy(&data[4..4 + len]);
+            assert!(
+                text.contains(
+                    "HEADER=Protel for Windows - Schematic Capture Binary File Version 5.0"
+                )
+            );
+            assert!(
+                text.contains("WEIGHT=1"),
+                "Additional must advertise the authored Blanket to Altium: {text}"
+            );
+        }
+
+        let imported = import_schematic(&saved, "directives.SchDoc").unwrap();
+        let s = imported.schematic.as_ref().unwrap();
+        let blanket = s
+            .primitives
+            .iter()
+            .find(|p| matches!(p.kind, K::Blanket { .. }))
+            .unwrap();
+        if let K::Blanket { points: read, .. } = &blanket.kind {
+            assert!(
+                read.iter()
+                    .zip(&points)
+                    .all(|(a, b)| (a.x - b.x).abs() <= 2 && (a.y - b.y).abs() <= 2)
+            );
+        }
+        let mut replacement = blanket.clone();
+        if let K::Blanket { points, collapsed } = &mut replacement.kind {
+            *points = rectangle(Point::mm(5, 5), Point::mm(25, 25));
+            *collapsed = true;
+        }
+        let resized = edit(
+            &imported,
+            Edit::PrimitiveProperties {
+                id: blanket.id,
+                value: Box::new(replacement),
+            },
+        );
+        let resized = import_schematic(&serialize(&resized).unwrap(), "directives.SchDoc").unwrap();
+        let mask = resized
+            .schematic
+            .as_ref()
+            .unwrap()
+            .primitives
+            .iter()
+            .find(|p| matches!(p.kind, K::CompileMask { .. }))
+            .unwrap()
+            .id;
+        let removed = edit(&resized, Edit::Delete(mask));
+        let removed = import_schematic(&serialize(&removed).unwrap(), "directives.SchDoc").unwrap();
+        assert!(removed.schematic.as_ref().unwrap().compile_masks.is_empty());
+        let set = removed
+            .schematic
+            .as_ref()
+            .unwrap()
+            .primitives
+            .iter()
+            .find(|p| matches!(p.kind, K::ParameterSet { .. }))
+            .unwrap();
+        let K::ParameterSet {
+            parameters, rules, ..
+        } = &set.kind
+        else {
+            panic!()
+        };
+        assert_eq!(parameters["ClassName"], "CLK");
+        assert_eq!(rules[0]["PREFEREDWIDTH"], "12mil");
+    }
+}
+
+#[test]
+fn directive_typed_and_native_child_edits_save_without_duplicate_parameters() {
+    use eda_core::{schematic_directives::primitive, schematic_edit::Fragment};
+    for bytes in [ASCII.to_vec(), binary(ASCII)] {
+        let original = import_schematic(&bytes, "fields.SchDoc").unwrap();
+        let set = primitive(K::ParameterSet {
+            position: Point::mm(10, 10),
+            orientation: 0,
+            name: "Constraints".into(),
+            style: 0,
+            parameters: BTreeMap::from([("ClassName".into(), "Clock".into())]),
+            rules: vec![BTreeMap::from([
+                ("RULEKIND".into(), "Width".into()),
+                ("MINLIMIT".into(), "10mil".into()),
+            ])],
+        });
+        let inserted = edit(
+            &original,
+            Edit::Insert(Fragment {
+                primitives: vec![set],
+                ..Default::default()
+            }),
+        );
+        let mut doc = import_schematic(&serialize(&inserted).unwrap(), "fields.SchDoc").unwrap();
+        let owner = doc
+            .schematic
+            .as_ref()
+            .unwrap()
+            .primitives
+            .iter()
+            .find(|p| matches!(p.kind, K::ParameterSet { .. }))
+            .unwrap()
+            .id;
+        let mut child = doc
+            .schematic
+            .as_ref()
+            .unwrap()
+            .primitives
+            .iter()
+            .find(|p| p.presentation.parent == Some(owner) && p.presentation.name == "ClassName")
+            .unwrap()
+            .clone();
+        if let K::Text { text, .. } = &mut child.kind {
+            *text = "Data".into();
+        }
+        child.presentation.raw_text = Some("Data".into());
+        doc = edit(
+            &doc,
+            Edit::PrimitiveProperties {
+                id: child.id,
+                value: Box::new(child),
+            },
+        );
+        let saved = serialize(&doc).unwrap();
+        doc = import_schematic(&saved, "fields.SchDoc").unwrap();
+        let mut set = doc
+            .schematic
+            .as_ref()
+            .unwrap()
+            .primitives
+            .iter()
+            .find(|p| matches!(p.kind, K::ParameterSet { .. }))
+            .unwrap()
+            .clone();
+        if let K::ParameterSet {
+            parameters, rules, ..
+        } = &mut set.kind
+        {
+            assert_eq!(parameters["ClassName"], "Data");
+            parameters.insert("CompClassName".into(), "Parts".into());
+            rules[0].insert("MINLIMIT".into(), "12mil".into());
+            rules.push(BTreeMap::from([
+                ("RULEKIND".into(), "Clearance".into()),
+                ("GAP".into(), "8mil".into()),
+            ]));
+        }
+        doc = edit(
+            &doc,
+            Edit::PrimitiveProperties {
+                id: set.id,
+                value: Box::new(set),
+            },
+        );
+        let saved = serialize(&doc).unwrap();
+        let read = import_schematic(&saved, "fields.SchDoc").unwrap();
+        let s = read.schematic.as_ref().unwrap();
+        let set = s
+            .primitives
+            .iter()
+            .find(|p| matches!(p.kind, K::ParameterSet { .. }))
+            .unwrap();
+        let K::ParameterSet {
+            parameters, rules, ..
+        } = &set.kind
+        else {
+            panic!()
+        };
+        assert_eq!(parameters.len(), 2);
+        assert_eq!(rules.len(), 2);
+        assert_eq!(rules[0]["MINLIMIT"], "12mil");
+        assert_eq!(
+            s.records
+                .iter()
+                .filter(
+                    |r| r.record_type == 41 && r.fields.n("OWNERINDEX") == set.source_index as i64
+                )
+                .count(),
+            4
+        );
+        assert_eq!(serialize(&read).unwrap(), saved);
+    }
+}
+
+#[test]
+fn blanket_legacy_and_modern_border_widths_keep_all_four_choices() {
+    let head = String::from_utf8(hierarchy_source()).unwrap();
+    for (fields, width) in [
+        ("|LINESTYLE=0", 254_000),
+        ("|LINESTYLE=1", 508_000),
+        ("|LINESTYLE=2", 1_016_000),
+        ("", 101_600),
+        ("|LINEWIDTH=0", 101_600),
+        ("|LINEWIDTH=1", 254_000),
+        ("|LINEWIDTH=2", 508_000),
+        ("|LINEWIDTH=3", 1_016_000),
+    ] {
+        let text = format!(
+            "{head}\n|RECORD=225|LOCATIONCOUNT=4|X1=1|Y1=1|X2=1|Y2=2|X3=2|Y3=2|X4=2|Y4=1{fields}\n"
+        );
+        let doc = import_schematic(&binary(text.as_bytes()), "width.SchDoc").unwrap();
+        let blanket = doc
+            .schematic
+            .as_ref()
+            .unwrap()
+            .primitives
+            .iter()
+            .find(|p| matches!(p.kind, K::Blanket { .. }))
+            .unwrap();
+        assert_eq!(blanket.width_nm, width, "{fields}");
+        for width in [101_600, 254_000, 508_000, 1_016_000] {
+            let mut value = blanket.clone();
+            value.width_nm = width;
+            let next = edit(
+                &doc,
+                Edit::PrimitiveProperties {
+                    id: blanket.id,
+                    value: Box::new(value),
+                },
+            );
+            let read = import_schematic(&serialize(&next).unwrap(), "width.SchDoc").unwrap();
+            assert_eq!(
+                read.schematic
+                    .as_ref()
+                    .unwrap()
+                    .primitives
+                    .iter()
+                    .find(|p| matches!(p.kind, K::Blanket { .. }))
+                    .unwrap()
+                    .width_nm,
+                width
+            );
+        }
+    }
+}
+
+#[test]
+fn authored_no_erc_and_differential_pair_directives_survive_native_copy() {
+    for placement in [
+        schematic_edit::Placement::NoErc,
+        schematic_edit::Placement::DifferentialPair,
+    ] {
+        let doc = import_schematic(&binary(ASCII), "directive.SchDoc").unwrap();
+        let f = schematic_edit::place(placement, Point::mm(100, 100), 1, "", "", 0).unwrap();
+        let next = edit(&doc, Edit::Insert(f));
+        let bytes = serialize(&next).unwrap();
+        let read = import_schematic(&bytes, "directive.SchDoc").unwrap();
+        assert_eq!(
+            read.schematic.as_ref().unwrap().primitives.len(),
+            next.schematic.as_ref().unwrap().primitives.len()
+        );
+    }
+}
+
+#[test]
+fn blanket_line_style_ext_matches_native_solid_dashed_dotted_values() {
+    for style in 0..=2 {
+        let text = format!(
+            "{}\n|RECORD=225|LOCATIONCOUNT=4|X1=1|Y1=1|X2=1|Y2=2|X3=2|Y3=2|X4=2|Y4=1|LINEWIDTH=2|LINESTYLEEXT={style}\n",
+            String::from_utf8(hierarchy_source()).unwrap()
+        );
+        let doc = import_schematic(&binary(text.as_bytes()), "pattern.SchDoc").unwrap();
+        let p = doc
+            .schematic
+            .as_ref()
+            .unwrap()
+            .primitives
+            .iter()
+            .find(|p| matches!(p.kind, K::Blanket { .. }))
+            .unwrap();
+        assert_eq!(p.line_style, style);
+        for next in 0..=2 {
+            let mut value = p.clone();
+            value.line_style = next;
+            let edited = edit(
+                &doc,
+                Edit::PrimitiveProperties {
+                    id: p.id,
+                    value: Box::new(value),
+                },
+            );
+            let read = import_schematic(&serialize(&edited).unwrap(), "pattern.SchDoc").unwrap();
+            let record = read
+                .schematic
+                .as_ref()
+                .unwrap()
+                .records
+                .iter()
+                .find(|r| r.record_type == 225)
+                .unwrap();
+            assert_eq!(record.fields.n("LINESTYLEEXT"), next as i64);
+        }
+    }
 }

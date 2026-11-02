@@ -1301,18 +1301,29 @@ fn build_document(
                 } else {
                     None
                 },
-                width_nm: match f.n(if r.record_type == 18 {
-                    "BORDERWIDTH"
+                width_nm: match if r.record_type == 225
+                    && !f.contains_key("LINEWIDTH")
+                    && f.contains_key("LINESTYLE")
+                {
+                    f.n("LINESTYLE") + 1
                 } else {
-                    "LINEWIDTH"
-                }) {
+                    f.n(if r.record_type == 18 {
+                        "BORDERWIDTH"
+                    } else {
+                        "LINEWIDTH"
+                    })
+                } {
                     0 => 101_600,
                     1 => 254_000,
                     2 => 508_000,
                     3 => 1_016_000,
                     _ => 254_000,
                 },
-                line_style: f.n("LINESTYLE") as u32,
+                line_style: if r.record_type == 225 {
+                    f.n("LINESTYLEEXT").max(0) as u32
+                } else {
+                    f.n("LINESTYLE") as u32
+                },
                 start_shape: f.n("STARTLINESHAPE") as u32,
                 end_shape: f.n("ENDLINESHAPE") as u32,
                 line_shape_size: f.n("LINESHAPESIZE") as u32,
@@ -1414,33 +1425,6 @@ fn primitive_kind(
         .get("FONTID")
         .map_or(default_font, |_| f.n("FONTID").max(1) as usize - 1);
     let kind = match r.record_type {
-        43 | 210 => K::ParameterSet {
-            position: a,
-            orientation,
-            label: f.text("NAME"),
-            style: f.n("STYLE") as u32,
-        },
-        211 => K::CompileMask {
-            a,
-            b,
-            collapsed: f.yes("COLLAPSED"),
-        },
-        225 => {
-            let count = f.n("LOCATIONCOUNT");
-            if !(3..=100_000).contains(&count) {
-                return Err("Invalid Blanket vertex count".into());
-            }
-            K::Blanket {
-                points: (1..=count)
-                    .map(|n| Point {
-                        x: f.coord(&format!("X{n}")),
-                        y: f.coord(&format!("Y{n}")),
-                    })
-                    .collect(),
-                collapsed: f.yes("COLLAPSED"),
-            }
-        }
-
         1 | 31 | 39 | 44..=48 => return Ok(None),
         5 | 6 | 7 | 26 | 27 | 218 => {
             let count = f.n("LOCATIONCOUNT");
@@ -1517,6 +1501,64 @@ fn primitive_kind(
                 text_color: f.n("TEXTCOLOR") as u32,
             }
         }
+        211 => K::CompileMask {
+            a,
+            b,
+            collapsed: f.yes("COLLAPSED"),
+        },
+        225 => {
+            let count = f.n("LOCATIONCOUNT");
+            if !(0..=10000).contains(&count) {
+                return Err("Invalid Blanket vertex count".into());
+            }
+            let mut points: Vec<_> = (1..=count)
+                .map(|n| Point {
+                    x: f.coord(&format!("X{n}")),
+                    y: f.coord(&format!("Y{n}")),
+                })
+                .collect();
+            if points.len() > 1 && points.first() == points.last() {
+                points.pop();
+            }
+            if points.is_empty() {
+                points = eda_core::schematic_directives::rectangle(a, b);
+            }
+            K::Blanket {
+                points,
+                collapsed: f.yes("COLLAPSED"),
+            }
+        }
+        43 | 210 => K::ParameterSet {
+            position: a,
+            orientation,
+            name: f.text("NAME"),
+            style: f.n("STYLE") as u32,
+            parameters: records
+                .iter()
+                .filter(|p| {
+                    p.record_type == 41
+                        && owner(&p.fields) == r.index as usize
+                        && !p.fields.text("NAME").eq_ignore_ascii_case("Rule")
+                })
+                .map(|p| (p.fields.text("NAME"), p.fields.text("TEXT")))
+                .collect(),
+            rules: records
+                .iter()
+                .filter(|p| {
+                    p.record_type == 41
+                        && owner(&p.fields) == r.index as usize
+                        && p.fields.text("NAME").eq_ignore_ascii_case("Rule")
+                })
+                .map(|p| {
+                    p.fields
+                        .text("TEXT")
+                        .split('¦')
+                        .filter_map(|s| s.split_once('='))
+                        .map(|(k, v)| (k.to_ascii_uppercase(), v.into()))
+                        .collect()
+                })
+                .collect(),
+        },
         10 | 14 => K::Rectangle {
             a,
             b,

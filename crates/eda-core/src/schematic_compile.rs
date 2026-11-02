@@ -13,10 +13,10 @@ pub struct Exclusions {
     pub primitives: HashSet<Uuid>,
     pub records: HashSet<u32>,
 }
-fn geometry(p: &SchPrimitive) -> Vec<Point> {
+pub(crate) fn geometry(p: &SchPrimitive) -> Vec<Point> {
     match &p.kind {
         K::Blanket { points, .. } => points.clone(),
-        K::CompileMask { a, b, .. } => vec![*a, *b],
+        K::CompileMask { a, b, .. } => crate::schematic_directives::rectangle(*a, *b),
         K::ParameterSet { position, .. } => vec![*position],
         K::Polyline { points, .. } | K::Bezier { points } => points.clone(),
         K::Rectangle { a, b, .. }
@@ -24,7 +24,7 @@ fn geometry(p: &SchPrimitive) -> Vec<Point> {
         | K::SheetSymbol { a, b, .. }
         | K::TextFrame { a, b, .. }
         | K::Image { a, b, .. }
-        | K::Unsupported { a, b, .. } => vec![*a, *b],
+        | K::Unsupported { a, b, .. } => crate::schematic_directives::rectangle(*a, *b),
         K::Arc { centre, radii, .. } => vec![
             Point {
                 x: centre.x - radii.x,
@@ -80,14 +80,7 @@ fn geometry(p: &SchPrimitive) -> Vec<Point> {
 }
 pub fn exclusions(s: &Schematic) -> Exclusions {
     let mut out = Exclusions::default();
-    let mut masks = s.compile_masks.clone();
-    masks.extend(s.primitives.iter().filter_map(|p| {
-        if let K::CompileMask { a, b, collapsed } = p.kind {
-            Some(crate::schematic::CompileMask { a, b, collapsed })
-        } else {
-            None
-        }
-    }));
+    let masks = crate::schematic_directives::masks(s);
     if masks.iter().all(|m| m.collapsed) {
         return out;
     }

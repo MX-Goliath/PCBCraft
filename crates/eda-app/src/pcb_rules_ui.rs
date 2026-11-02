@@ -2648,6 +2648,26 @@ pub(super) fn show(doc: &mut OpenDocument, ctx: &egui::Context) {
     doc.pcb_editor.rules = state;
 }
 
+/// Constraint controls shared by PCB rules and schematic Rule directives.
+pub(in crate::app) fn schematic_rule_constraints(ui: &mut egui::Ui, fields: &mut Fields) {
+    let height = (ui.ctx().screen_rect().height() - 220.0).clamp(240.0, 380.0);
+    let (rect, _) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), height),
+        egui::Sense::hover(),
+    );
+    widgets::child(
+        ui,
+        egui::UiBuilder::new()
+            .id_salt("schematic_constraints")
+            .max_rect(rect),
+        |ui| constraints(ui, fields, &Board::default()),
+    );
+}
+pub(in crate::app) fn schematic_rule_catalog()
+-> &'static [(&'static str, &'static str, &'static str)] {
+    CATALOG
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2659,6 +2679,36 @@ mod tests {
         });
         OpenDocument::new(model, None)
     }
+    #[test]
+    fn schematic_constraints_leave_visible_space_for_accept_and_cancel() {
+        let ctx = egui::Context::default();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000.0, 700.0));
+        for (_, _, kind) in rules::KINDS {
+            let mut rule = rules::default_rule(kind);
+            for _ in 0..2 {
+                let mut buttons = egui::Rect::NOTHING;
+                let _ = ctx.run(
+                    egui::RawInput {
+                        screen_rect: Some(screen),
+                        ..Default::default()
+                    },
+                    |ctx| {
+                        egui::Window::new("Schematic rule")
+                            .id(egui::Id::new(kind))
+                            .default_width(640.0)
+                            .show(ctx, |ui| {
+                                schematic_rule_constraints(ui, &mut rule);
+                                ui.horizontal(|ui| {
+                                    buttons = ui.button("OK").rect.union(ui.button("Cancel").rect);
+                                });
+                            });
+                    },
+                );
+                assert!(screen.contains_rect(buttons), "{kind}: {buttons:?}");
+            }
+        }
+    }
+
     #[test]
     fn browsing_every_rule_and_summary_page_keeps_native_fields_unchanged() {
         let mut doc = document();

@@ -257,6 +257,7 @@ fn hierarchy_changes(
                             | K::TextFrame { .. }
                             | K::Bezier { .. }
                             | K::NoErc { .. }
+                            | K::Blanket { .. }
                             | K::ParameterSet { .. }
                             | K::CompileMask { .. }
                             | K::Image { .. }
@@ -290,6 +291,7 @@ fn hierarchy_changes(
                         | K::TextFrame { .. }
                         | K::Bezier { .. }
                         | K::NoErc { .. }
+                        | K::Blanket { .. }
                         | K::ParameterSet { .. }
                         | K::CompileMask { .. }
                         | K::Image { .. }
@@ -315,6 +317,7 @@ fn hierarchy_changes(
                         | K::TextFrame { .. }
                         | K::Bezier { .. }
                         | K::NoErc { .. }
+                        | K::Blanket { .. }
                         | K::ParameterSet { .. }
                         | K::CompileMask { .. }
                         | K::Image { .. }
@@ -366,6 +369,7 @@ fn hierarchy_changes(
                 K::Image { .. } => 30,
                 K::Pin { .. } => 2,
                 K::CompileMask { .. } => 211,
+                K::Blanket { .. } => 225,
                 K::NoErc { .. } => 22,
                 K::Rectangle { radius, .. } => {
                     if *radius == Point::default() {
@@ -447,6 +451,93 @@ fn hierarchy_changes(
         } else {
             continue;
         };
+        if let K::ParameterSet {
+            parameters: next,
+            rules,
+            ..
+        } = &p.kind
+        {
+            let child_values = |scene: &Schematic, rule: bool| {
+                let mut values: Vec<_> = scene
+                    .primitives
+                    .iter()
+                    .chain(&scene.parameter_objects)
+                    .filter(|child| {
+                        child.presentation.parent == Some(p.id)
+                            && child.presentation.record_type == 41
+                            && child.presentation.name.eq_ignore_ascii_case("Rule") == rule
+                    })
+                    .filter_map(|child| match &child.kind {
+                        K::Text { text, .. } => {
+                            Some((child.id, child.presentation.name.clone(), text.clone()))
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                values.sort();
+                values
+            };
+            let old_rules = old.and_then(|p| {
+                if let K::ParameterSet { rules, .. } = &p.kind {
+                    Some(rules)
+                } else {
+                    None
+                }
+            });
+            if old_rules != Some(rules) && child_values(source, true) == child_values(target, true)
+            {
+                let originals: Vec<_> = source
+                    .records
+                    .iter()
+                    .filter(|r| {
+                        r.record_type == 41
+                            && r.fields.n("OWNERINDEX") == index as i64
+                            && r.fields.text("NAME").eq_ignore_ascii_case("Rule")
+                    })
+                    .collect();
+                for (n, rule) in rules.iter().enumerate() {
+                    let record = if let Some(r) = originals.get(n) {
+                        r.index
+                    } else {
+                        let i = patch.add(41, index);
+                        let uid = patch.fresh_uid(index, 41, &format!("Rule{n}"))?;
+                        set(patch.added.last_mut().unwrap(), "UNIQUEID", uid);
+                        i
+                    };
+                    let f = if (record as usize) < patch.records.len() {
+                        patch.record(record)?
+                    } else {
+                        &mut patch.added[record as usize - patch.records.len()]
+                    };
+                    set(f, "NAME", "Rule".into());
+                    set(f, "ISHIDDEN", "T".into());
+                    set(
+                        f,
+                        "TEXT",
+                        rule.iter()
+                            .map(|(k, v)| format!("{k}={v}"))
+                            .collect::<Vec<_>>()
+                            .join("¦"),
+                    );
+                }
+                for r in originals.iter().skip(rules.len()) {
+                    patch.remove_tree(r.index as usize);
+                }
+            }
+
+            let before = old
+                .and_then(|p| {
+                    if let K::ParameterSet { parameters, .. } = &p.kind {
+                        Some(parameters.clone())
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or_default();
+            if child_values(source, false) == child_values(target, false) {
+                parameters(patch, source, index, &before, next)?;
+            }
+        }
         let f = if index as usize >= patch.records.len() {
             let n = index as usize - patch.records.len();
             &mut patch.added[n]
@@ -508,17 +599,6 @@ fn hierarchy_changes(
                 set(f, "SYMBOL_OUTEREDGE", outer_symbol.to_string());
                 set(f, "SYMBOL_INNEREDGE", inner_symbol.to_string());
             }
-            K::ParameterSet {
-                position,
-                orientation,
-                label,
-                style,
-            } => {
-                location(f, *position);
-                set(f, "ORIENTATION", orientation.to_string());
-                set(f, "NAME", label.clone());
-                set(f, "STYLE", style.to_string());
-            }
             K::CompileMask { a, b, collapsed } => {
                 location(f, *a);
                 coordinate_units(f, "CORNER.X", native_units(b.x));
@@ -562,6 +642,26 @@ fn hierarchy_changes(
                 set(f, "WORDWRAP", boolean(*word_wrap));
                 set(f, "SHOWBORDER", boolean(*show_border));
             }
+            K::Blanket { points, collapsed } => {
+                let a = Point {
+                    x: points.iter().map(|p| p.x).min().unwrap(),
+                    y: points.iter().map(|p| p.y).min().unwrap(),
+                };
+                let b = Point {
+                    x: points.iter().map(|p| p.x).max().unwrap(),
+                    y: points.iter().map(|p| p.y).max().unwrap(),
+                };
+                location(f, a);
+                coordinate_units(f, "CORNER.X", native_units(b.x));
+                coordinate_units(f, "CORNER.Y", native_units(b.y));
+                set(f, "LOCATIONCOUNT", points.len().to_string());
+                set(f, "COLLAPSED", boolean(*collapsed));
+                set(f, "LINESTYLEEXT", p.line_style.to_string());
+                for (n, p) in points.iter().enumerate() {
+                    coordinate_units(f, &format!("X{}", n + 1), native_units(p.x));
+                    coordinate_units(f, &format!("Y{}", n + 1), native_units(p.y));
+                }
+            }
             K::Bezier { points } => {
                 set(f, "LOCATIONCOUNT", points.len().to_string());
                 for (n, p) in points.iter().enumerate() {
@@ -570,6 +670,18 @@ fn hierarchy_changes(
                 }
             }
             K::NoErc { position } => location(f, *position),
+            K::ParameterSet {
+                position,
+                orientation,
+                name,
+                style,
+                ..
+            } => {
+                location(f, *position);
+                set(f, "ORIENTATION", orientation.to_string());
+                set(f, "NAME", name.clone());
+                set(f, "STYLE", style.to_string());
+            }
             K::SheetSymbol { a, b, .. } => {
                 set(f, "SYMBOLTYPE", p.presentation.symbol_type.clone());
                 location(f, *a);
@@ -708,6 +820,9 @@ fn hierarchy_changes(
             _ => continue,
         }
         set(f, "DISABLESYNC", boolean(!p.presentation.allow_sync));
+        if matches!(p.kind, K::Blanket { .. }) {
+            f.remove("LINESTYLE");
+        }
         set(f, "COLOR", p.color.to_string());
         set(f, "ISSOLID", boolean(p.fill.is_some()));
         if let Some(color) = p.fill {
@@ -1534,6 +1649,13 @@ fn verify(
             _ => {}
         }
     }
+    if expected_scene
+        .primitives
+        .iter()
+        .any(|p| matches!(p.kind, K::CompileMask { .. }))
+    {
+        eda_core::schematic_directives::refresh_masks(scene);
+    }
     // New entries are serialized inside their owner's native subtree. Match
     // their model order only after validating identity, ownership and topology.
     if !authored_indices.is_empty() {
@@ -1723,7 +1845,7 @@ pub fn serialize(doc: &Document) -> Result<Vec<u8>, String> {
                 .added
                 .iter()
                 .filter(|f| {
-                    if matches!(f.n("RECORD") as u32, 215..=218 | 225) {
+                    if binary && matches!(f.n("RECORD") as u32, 215..=218 | 225) {
                         stream == "Additional"
                     } else {
                         stream == "FileHeader"
@@ -1749,7 +1871,7 @@ pub fn serialize(doc: &Document) -> Result<Vec<u8>, String> {
     }
     for (added, f) in patch.added.iter().enumerate() {
         let index = (record + added) as u32;
-        let stream = if matches!(f.n("RECORD") as u32, 215..=218 | 225) {
+        let stream = if binary && matches!(f.n("RECORD") as u32, 215..=218 | 225) {
             "Additional"
         } else {
             "FileHeader"

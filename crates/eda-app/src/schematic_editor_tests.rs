@@ -1980,3 +1980,148 @@ fn actual_canvas_repeated_shift_clicks_delete_only_selected_wire_spans() {
     app.run(Command::Undo, &ctx);
     assert_eq!(app.documents[0].model, before);
 }
+
+#[test]
+fn area_directives_can_be_placed_repeatedly_and_collapse_undoes_without_moving_contents() {
+    let mut app = app();
+    let ctx = focused_context();
+    app.start_schematic_tool(Placement::CompileMask);
+    app.documents[0]
+        .sch_editor
+        .directive
+        .as_mut()
+        .unwrap()
+        .color = 0x123456;
+    for (x, y) in [(10, 10), (20, 20), (30, 30), (40, 40)] {
+        app.schematic_input(
+            0,
+            SchematicInput {
+                point: Some(Point::mm(x, y)),
+                clicked: true,
+                ..Default::default()
+            },
+            &ctx,
+        );
+    }
+    let doc = &mut app.documents[0];
+    assert_eq!(doc.model.schematic.as_ref().unwrap().compile_masks.len(), 2);
+    assert_eq!(doc.history.revision, 2);
+    assert!(
+        doc.model
+            .schematic
+            .as_ref()
+            .unwrap()
+            .primitives
+            .iter()
+            .all(|p| p.color == 0x123456)
+    );
+    doc.sch_editor.cancel(&mut doc.view);
+    let id = doc.model.schematic.as_ref().unwrap().primitives[0].id;
+    app.schematic_input(
+        0,
+        SchematicInput {
+            point: Some(Point::mm(10, 20)),
+            hit: Some(id),
+            clicked: true,
+            ..Default::default()
+        },
+        &ctx,
+    );
+    assert!(
+        app.documents[0]
+            .model
+            .schematic
+            .as_ref()
+            .unwrap()
+            .compile_masks[0]
+            .collapsed
+    );
+    let doc = &mut app.documents[0];
+    doc.history.undo(&mut doc.model);
+    assert!(!doc.model.schematic.as_ref().unwrap().compile_masks[0].collapsed);
+}
+
+#[test]
+fn blanket_reflection_and_rotation_shortcuts_compose_about_cursor_with_one_undo() {
+    let cases = [
+        (vec![(Key::X, false)], vec![(70, 70), (50, 70), (70, 80)]),
+        (vec![(Key::Y, false)], vec![(70, 70), (90, 70), (70, 60)]),
+        (
+            vec![(Key::Space, false), (Key::X, false)],
+            vec![(70, 70), (70, 90), (80, 70)],
+        ),
+        (
+            vec![(Key::X, false), (Key::Space, false)],
+            vec![(70, 70), (70, 50), (60, 70)],
+        ),
+        (vec![(Key::Space, true)], vec![(70, 70), (70, 50), (80, 70)]),
+        (
+            vec![(Key::X, false), (Key::X, false)],
+            vec![(70, 70), (90, 70), (70, 80)],
+        ),
+    ];
+    for (keys, expected) in cases {
+        let (mut app, wire) = wire_app();
+        let ctx = focused_context();
+        let blanket = eda_core::schematic_directives::primitive(K::Blanket {
+            points: vec![Point::mm(20, 40), Point::mm(40, 40), Point::mm(20, 50)],
+            collapsed: false,
+        });
+        let id = blanket.id;
+        app.documents[0]
+            .model
+            .schematic
+            .as_mut()
+            .unwrap()
+            .primitives
+            .push(blanket);
+        app.documents[0].view.selected = Some(id);
+        app.documents[0].view.sch_selection = vec![id];
+        let before = app.documents[0].model.clone();
+        app.schematic_action(SchAction::Move, &ctx);
+        for (key, shift) in keys {
+            let mods = if shift {
+                egui::Modifiers::SHIFT
+            } else {
+                egui::Modifiers::NONE
+            };
+            let _ = ctx.run(
+                egui::RawInput {
+                    focused: true,
+                    modifiers: mods,
+                    events: vec![egui::Event::Key {
+                        key,
+                        physical_key: None,
+                        pressed: true,
+                        repeat: false,
+                        modifiers: mods,
+                    }],
+                    ..Default::default()
+                },
+                |ctx| {
+                    assert!(app.schematic_shortcuts(ctx));
+                },
+            );
+        }
+        app.schematic_input(0, pointer(Point::mm(70, 70), false), &ctx);
+        assert_eq!(app.documents[0].model, before);
+        let expected: Vec<_> = expected.into_iter().map(|(x, y)| Point::mm(x, y)).collect();
+        assert!(
+            matches!(&app.documents[0].view.sch_preview.as_ref().unwrap().primitive(id).unwrap().kind,
+            K::Blanket{points,..} if points==&expected)
+        );
+        app.schematic_input(0, pointer(Point::mm(70, 70), true), &ctx);
+        let doc = &app.documents[0];
+        let s = doc.model.schematic.as_ref().unwrap();
+        assert!(
+            matches!(&s.primitive(id).unwrap().kind,K::Blanket{points,..} if points==&expected)
+        );
+        assert_eq!(
+            s.primitive(wire),
+            before.schematic.as_ref().unwrap().primitive(wire)
+        );
+        assert_eq!(doc.history.revision, 1);
+        app.run(Command::Undo, &ctx);
+        assert_eq!(app.documents[0].model, before);
+    }
+}

@@ -9,8 +9,8 @@ mod netlist;
 pub use netlist::{LabelConflict, Netlist, Pin, compile, compile_project};
 #[path = "design_sync_project.rs"]
 mod project;
-pub(crate) use project::natural_order;
 pub use project::{NetScope, ProjectOptions, SheetLink};
+pub(crate) use project::{logical_designator, natural_order};
 
 /// Validated physical components and connectivity for interchange writers.
 /// Multi-part symbols share one component, using the same rules as ECO.
@@ -129,6 +129,12 @@ fn components(
     options: &ProjectOptions,
 ) -> Result<Vec<LogicalComponent>, String> {
     let graph = project::hierarchy(sheets, options)?;
+    let active_sheets: Vec<_> = sheets
+        .iter()
+        .copied()
+        .filter(|d| !graph.excluded_sheets.contains(&d.id))
+        .collect();
+    let sheets = active_sheets.as_slice();
     let excluded: HashMap<_, _> = sheets
         .iter()
         .map(|d| {
@@ -384,6 +390,9 @@ enum Operation {
         primitives: Vec<(Uuid, Uuid)>,
         name: String,
     },
+    UpsertClass(pcb::Fields),
+    UpsertRule(pcb::Fields),
+    UpsertDifferentialPair(pcb::Fields),
     Unsupported(String),
 }
 #[derive(Clone, Debug)]
@@ -943,6 +952,162 @@ pub fn compare_project(
                 );
             }
             net_changes(&mut p, &nets, b, &links, board);
+            if direction == Direction::ToPcb {
+                let graph = project::hierarchy(sheets, options)?;
+                let active: Vec<_> = sheets
+                    .iter()
+                    .copied()
+                    .filter(|d| !graph.excluded_sheets.contains(&d.id))
+                    .collect();
+                let directives = crate::schematic_directives::compile(
+                    &active,
+                    &nets,
+                    options.connection_precision_nm.unwrap_or(0),
+                );
+                for scoped in &directives.rules {
+                    let (directive, rule, names, class) =
+                        (&scoped.id, &scoped.fields, &scoped.nets, &scoped.class);
+                    let class = class.clone();
+                    let scopes: Vec<_> = if let Some(class) = class {
+                        vec![(
+                            class.clone(),
+                            format!("InNetClass('{}')", class.replace('\'', "''")),
+                        )]
+                    } else {
+                        names
+                            .iter()
+                            .map(|n| (n.clone(), format!("InNet('{}')", n.replace('\'', "''"))))
+                            .collect()
+                    };
+                    for (target, scope) in scopes {
+                        let mut fields = rule.clone();
+                        let kind = field(&fields, "RULEKIND").unwrap_or("").to_owned();
+                        let uid = Uuid::new_v5(directive, format!("{kind}/{target}").as_bytes())
+                            .simple()
+                            .to_string()[..8]
+                            .to_uppercase();
+                        if !crate::pcb_rules::supported(&kind) {
+                            p.push("Change Rules","Change",kind,board.name.clone(),Operation::Unsupported("This schematic rule family is retained but not evaluated by the PCB rule engine".into()));
+                            continue;
+                        }
+                        fields.insert("NAME".into(), format!("{kind}_{target}"));
+                        fields.insert("UNIQUEID".into(), uid.clone());
+                        fields.insert("SCOPE1EXPRESSION".into(), scope);
+                        fields.insert("SCOPE2EXPRESSION".into(), "All".into());
+                        fields.insert("ENABLED".into(), "TRUE".into());
+                        fields.insert("PRIORITY".into(), "1".into());
+                        if !b.rules.iter().any(|r| r == &fields) {
+                            p.push(
+                                "Change Rules",
+                                "Change",
+                                format!("{kind} ({target})"),
+                                board.name.clone(),
+                                Operation::UpsertRule(fields),
+                            );
+                        }
+                    }
+                }
+                for ((kind, name), members) in directives.classes {
+                    let existing = b.classes.iter().find(|f| {
+                        field(f, "NAME").is_some_and(|n| n.eq_ignore_ascii_case(&name))
+                            && field(f, "KIND") == Some(kind.to_string().as_str())
+                    });
+                    if members.is_empty() && existing.is_none() {
+                        continue;
+                    }
+                    let before: BTreeSet<_> = existing
+                        .into_iter()
+                        .flat_map(|f| f.iter())
+                        .filter(|(k, _)| class_member_key(k))
+                        .map(|(_, v)| v.to_uppercase())
+                        .collect();
+                    if before == members.iter().map(|v| v.to_uppercase()).collect() {
+                        continue;
+                    }
+                    let mut fields = existing.cloned().unwrap_or_default();
+                    fields.retain(|key, _| !class_member_key(key));
+                    fields.insert("NAME".into(), name.clone());
+                    fields.insert("KIND".into(), kind.to_string());
+                    fields.insert("SUPERCLASS".into(), "FALSE".into());
+                    for (i, member) in members.into_iter().enumerate() {
+                        fields.insert(format!("M{i}"), member);
+                    }
+                    p.push(
+                        if kind == 0 {
+                            "Change Net Classes"
+                        } else {
+                            "Change Component Classes"
+                        },
+                        "Change",
+                        name,
+                        board.name.clone(),
+                        Operation::UpsertClass(fields),
+                    );
+                }
+                for positive in &directives.differential_nets {
+                    if !positive.to_ascii_uppercase().ends_with("_P") {
+                        continue;
+                    }
+                    let base = &positive[..positive.len() - 2];
+                    let expected_negative = format!("{base}_N");
+                    let Some(negative) = directives
+                        .differential_nets
+                        .iter()
+                        .find(|n| n.eq_ignore_ascii_case(&expected_negative))
+                    else {
+                        continue;
+                    };
+                    let existing = b
+                        .differential_pairs
+                        .iter()
+                        .find(|f| field(f, "NAME").is_some_and(|n| n.eq_ignore_ascii_case(base)));
+                    if existing.is_some_and(|f| {
+                        field(f, "POSITIVENETNAME") == Some(positive.as_str())
+                            && field(f, "NEGATIVENETNAME") == Some(negative.as_str())
+                    }) {
+                        continue;
+                    }
+                    let mut fields = existing.cloned().unwrap_or_default();
+                    fields.insert("NAME".into(), base.into());
+                    fields.insert("POSITIVENETNAME".into(), positive.clone());
+                    fields.insert("NEGATIVENETNAME".into(), negative.clone());
+                    p.push(
+                        "Change Differential Pairs",
+                        "Change",
+                        base.into(),
+                        board.name.clone(),
+                        Operation::UpsertDifferentialPair(fields),
+                    );
+                }
+                for (part, values) in directives.component_parameters {
+                    if let Some(id) = links.get(&part)
+                        && let Some(c) = b.components.iter().find(|c| c.id == *id)
+                    {
+                        // Merge with any ordinary component parameter ECO row.
+                        let existing=p.changes.iter_mut().find(|row|matches!(&row.operation,Operation::PcbValue(owner,Value::Parameters(_)) if owner==id));
+                        if let Some(row) = existing {
+                            if let Operation::PcbValue(_, Value::Parameters(target)) =
+                                &mut row.operation
+                            {
+                                target.extend(values);
+                            }
+                        } else {
+                            let mut target = c.parameters.clone().unwrap_or_default();
+                            target.extend(values);
+                            if c.parameters.as_ref() != Some(&target) {
+                                p.push(
+                                    "Change Component Parameters",
+                                    "Change",
+                                    c.designator.clone(),
+                                    board.name.clone(),
+                                    Operation::PcbValue(*id, Value::Parameters(target)),
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+
             if options.review_annotation {
                 // Native exported netlists and native ECO differ for omitted
                 // single-pin nets. Do not infer destructive ECO from export loss.
@@ -1273,6 +1438,11 @@ fn net_changes(
     }
 }
 
+fn class_member_key(key: &str) -> bool {
+    key.strip_prefix("MEMBER")
+        .or_else(|| key.strip_prefix('M'))
+        .is_some_and(|n| !n.is_empty() && n.bytes().all(|c| c.is_ascii_digit()))
+}
 fn scalar_pcb_operation(op: &Operation) -> bool {
     matches!(op,Operation::PcbValue(_,v) if !matches!(v,Value::Footprint(_)))
         || matches!(
@@ -1281,10 +1451,50 @@ fn scalar_pcb_operation(op: &Operation) -> bool {
                 | Operation::RemoveNet(_)
                 | Operation::RenameNet(..)
                 | Operation::PadNet { .. }
+                | Operation::UpsertClass(_)
+                | Operation::UpsertRule(_)
+                | Operation::UpsertDifferentialPair(_)
         )
 }
 fn apply_pcb_scalar(op: &Operation, b: &mut pcb::Board) -> Result<(), String> {
     match op {
+        Operation::UpsertRule(fields) => {
+            crate::pcb_rules::validate_rule(b, fields)?;
+            let uid = field(fields, "UNIQUEID").ok_or("Rule identity missing")?;
+            if let Some(old) = b
+                .rules
+                .iter_mut()
+                .find(|f| field(f, "UNIQUEID") == Some(uid))
+            {
+                *old = fields.clone();
+            } else {
+                b.rules.push(fields.clone());
+            }
+        }
+        Operation::UpsertDifferentialPair(fields) => {
+            let name = field(fields, "NAME").ok_or("Differential pair name missing")?;
+            if let Some(old) = b
+                .differential_pairs
+                .iter_mut()
+                .find(|f| field(f, "NAME").is_some_and(|n| n.eq_ignore_ascii_case(name)))
+            {
+                *old = fields.clone();
+            } else {
+                b.differential_pairs.push(fields.clone());
+            }
+        }
+        Operation::UpsertClass(fields) => {
+            let name = field(fields, "NAME").ok_or("Class name is required")?;
+            let kind = field(fields, "KIND").ok_or("Class kind missing")?;
+            if let Some(old) = b.classes.iter_mut().find(|f| {
+                field(f, "NAME").is_some_and(|n| n.eq_ignore_ascii_case(name))
+                    && field(f, "KIND") == Some(kind)
+            }) {
+                *old = fields.clone();
+            } else {
+                b.classes.push(fields.clone());
+            }
+        }
         Operation::PcbValue(id, value) => return apply_pcb_metadata(b, *id, value),
         Operation::AddNet(name) => {
             if b.nets.iter().any(|n| n.name.eq_ignore_ascii_case(name)) {

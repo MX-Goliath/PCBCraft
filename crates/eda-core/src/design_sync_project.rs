@@ -72,20 +72,19 @@ pub(super) struct Hierarchy {
     pub depths: HashMap<Uuid, usize>,
     pub paths: HashMap<Uuid, String>,
     pub scope: NetScope,
+    pub excluded_sheets: HashSet<Uuid>,
 }
 pub(super) fn hierarchy(
     sheets: &[&Document],
     options: &ProjectOptions,
 ) -> Result<Hierarchy, String> {
     let mut links = vec![];
+    let mut excluded_sheets = HashSet::new();
     for doc in sheets {
         let s = doc.schematic.as_ref().ok_or("Not a schematic")?;
         let excluded = crate::schematic_compile::exclusions(s);
         for symbol in &s.primitives {
             if let schematic::SchPrimitiveKind::SheetSymbol { filename, .. } = &symbol.kind {
-                if excluded.primitives.contains(&symbol.id) {
-                    return Err("A compile-masked Sheet Symbol requires whole-sheet instance exclusion, which is not yet supported".into());
-                }
                 let child = if let Some(resolved) = &options.links {
                     let matches: Vec<_> = resolved
                         .iter()
@@ -113,12 +112,26 @@ pub(super) fn hierarchy(
                 if !sheets.iter().any(|d| d.id == child) {
                     return Err("Resolved child schematic is missing".into());
                 }
+                if excluded.primitives.contains(&symbol.id) {
+                    excluded_sheets.insert(child);
+                }
                 links.push(SheetLink {
                     parent: doc.id,
                     symbol: symbol.id,
                     child,
                 });
             }
+        }
+    }
+    loop {
+        let before = excluded_sheets.len();
+        for link in &links {
+            if excluded_sheets.contains(&link.parent) {
+                excluded_sheets.insert(link.child);
+            }
+        }
+        if excluded_sheets.len() == before {
+            break;
         }
     }
     let mut parents = HashMap::new();
@@ -200,7 +213,9 @@ pub(super) fn hierarchy(
         } else {
             options.scope
         };
+    links.retain(|l| !excluded_sheets.contains(&l.parent) && !excluded_sheets.contains(&l.child));
     Ok(Hierarchy {
+        excluded_sheets,
         links,
         depths,
         paths,
@@ -208,7 +223,7 @@ pub(super) fn hierarchy(
     })
 }
 
-pub(super) fn logical_designator(c: &schematic::Component) -> &str {
+pub(crate) fn logical_designator(c: &schematic::Component) -> &str {
     if c.settings.part_count > 1
         && let Some(suffix) = char::from_u32('A' as u32 + c.part - 1)
     {

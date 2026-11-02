@@ -1298,12 +1298,55 @@ fn encode_binary(
             wide_strings(&wide)?.len(),
         )?;
     }
-    if let Some(old) = old_board
-        && old.rules != board.rules
-    {
+    for (family, table, old_table) in [
+        ("Classes6", &board.classes, old_board.map(|b| &b.classes)),
+        (
+            "DifferentialPairs6",
+            &board.differential_pairs,
+            old_board.map(|b| &b.differential_pairs),
+        ),
+    ] {
+        if old_table == Some(table) {
+            continue;
+        }
         let raw = streams
-            .get("/Rules6/Data")
-            .ok_or("Original native rule stream is absent")?;
+            .get(&format!("/{family}/Data"))
+            .map(|data| property_blocks(data))
+            .transpose()?
+            .unwrap_or_default();
+        let original = raw.iter().map(|r| fields(r)).collect::<Result<Vec<_>>>()?;
+        let mut written = vec![];
+        for class in table {
+            let identity = |f: &Fields| {
+                f.get("NAME") == class.get("NAME") && f.get("KIND") == class.get("KIND")
+            };
+            let source = original.iter().position(identity);
+            let before = source.map(|i| &original[i]);
+            let mut changes = map_changes(class);
+            if let Some(before) = before {
+                changes.retain(|key, value| value.as_ref() != before.get(key));
+                for key in before.keys().filter(|key| !class.contains_key(*key)) {
+                    changes.insert(key.clone(), None);
+                }
+            }
+            written.push(patch_fields(
+                source.map_or(&[][..], |i| raw[i].as_slice()),
+                &changes,
+            )?);
+        }
+        section(
+            &mut c,
+            &streams,
+            family,
+            &encode_blocks(&written)?,
+            written.len(),
+        )?;
+    }
+    if old_board.map(|old| &old.rules) != Some(&board.rules)
+        && (!board.rules.is_empty() || old_board.is_some())
+    {
+        let old_rules = old_board.map_or(&[][..], |b| b.rules.as_slice());
+        let raw = streams.get("/Rules6/Data").map_or(&[][..], Vec::as_slice);
         let mut reader = Bytes::new(raw);
         let mut data = Vec::new();
         let mut records = Vec::new();
@@ -1311,31 +1354,36 @@ fn encode_binary(
             let prefix = reader.take(2)?.to_vec();
             records.push((prefix, reader.block()?.to_vec()));
         }
-        if records.len() != old.rules.len() {
+        if records.len() != old_rules.len() {
             return Err("Rule count does not match native stream".into());
         }
         for (index, rule) in board.rules.iter().enumerate() {
-            let source = rule_source(&old.rules, rule, index)?;
-            let template = source
-                .or_else(|| {
-                    old.rules
-                        .iter()
-                        .position(|r| r.get("RULEKIND") == rule.get("RULEKIND"))
-                })
-                .ok_or("No native template for this rule kind; save in PCBCraft JSON")?;
-            let (prefix, block) = &records[template];
-            let patched = if source.is_some_and(|n| old.rules[n] == *rule) {
-                block.clone()
+            let source = rule_source(old_rules, rule, index)?;
+            let template = source.or_else(|| {
+                old_rules
+                    .iter()
+                    .position(|r| r.get("RULEKIND") == rule.get("RULEKIND"))
+            });
+            let prefix = if let Some(n) = template {
+                records[n].0.clone()
+            } else {
+                native_rule_tag(rule)?.to_le_bytes().to_vec()
+            };
+            let patched = if let Some(n) = source.filter(|n| old_rules[*n] == *rule) {
+                records[n].1.clone()
             } else {
                 let mut changes = map_changes(rule);
                 if let Some(n) = source {
-                    for key in old.rules[n].keys().filter(|key| !rule.contains_key(*key)) {
+                    for key in old_rules[n].keys().filter(|k| !rule.contains_key(*k)) {
                         changes.insert(key.clone(), None);
                     }
                 }
-                patch_fields(if source.is_some() { block } else { &[] }, &changes)?
+                patch_fields(
+                    source.map_or(&[][..], |n| records[n].1.as_slice()),
+                    &changes,
+                )?
             };
-            data.extend_from_slice(prefix);
+            data.extend(prefix);
             data.extend_from_slice(&(patched.len() as u32).to_le_bytes());
             data.extend(patched);
         }
@@ -1892,7 +1940,10 @@ fn encode_ascii(
     Ok(output)
 }
 fn verify_tables(expected: &Board, actual: &Board, maps: Option<&Maps>) -> Result<()> {
-    if expected.rules != actual.rules || expected.classes != actual.classes {
+    if expected.rules != actual.rules
+        || expected.classes != actual.classes
+        || expected.differential_pairs != actual.differential_pairs
+    {
         return Err("Rule/class table write/read verification failed".into());
     }
     if expected.nets.len() != actual.nets.len()
@@ -2175,6 +2226,36 @@ fn equivalent_item(a: &Item, b: &Item) -> bool {
     }
 }
 /// Serialize in memory and re-import the result before returning any bytes.
+/// Observed Rules6 little-endian family tags in the AD24.4.1 ReferenceG native corpus.
+/// Unknown families require an existing native template; no guessed tag is emitted.
+fn native_rule_tag(rule: &Fields) -> Result<u16> {
+    Ok(
+        match rule.get("RULEKIND").map(String::as_str).unwrap_or("") {
+            "Clearance" => 0,
+            "Width" => 2,
+            "RoutingLayers" => 9,
+            "RoutingVias" => 11,
+            "SolderMaskExpansion" => 13,
+            "PasteMaskExpansion" => 14,
+            "ShortCircuit" => 15,
+            "UnRoutedNet" => 16,
+            "MinimumAnnularRing" => 19,
+            "PolygonConnect" => 20,
+            "HoleSize" => 42,
+            "LayerPairs" => 48,
+            "HoleToHoleClearance" => 52,
+            "MinimumSolderMaskSliver" => 53,
+            "SilkToSolderMaskClearance" => 54,
+            "UnpouredPolygon" => 62,
+            "BoardOutlineClearance" => 63,
+            _ => {
+                return Err(
+                    "No observed native rule tag for this family; keep it in PCBCraft JSON".into(),
+                );
+            }
+        },
+    )
+}
 pub fn serialize(doc: &Document, format: Format) -> Result<Vec<u8>> {
     doc.validate()?;
     if doc.kind != DocumentKind::Board {
@@ -2229,8 +2310,8 @@ pub fn serialize(doc: &Document, format: Format) -> Result<Vec<u8>> {
         if a == b {
             return Ok(original.unwrap());
         }
-        if a.classes != b.classes {
-            return Err("Native class edits are not supported".into());
+        if !binary && (a.classes != b.classes || a.differential_pairs != b.differential_pairs) {
+            return Err("Class and differential pair edits currently require binary PcbDoc or PCBCraft JSON".into());
         }
         if a.rules != b.rules {
             if !binary && a.rules.len() != b.rules.len() {
@@ -2259,9 +2340,13 @@ pub fn serialize(doc: &Document, format: Format) -> Result<Vec<u8>> {
             return Err("Native save refused: original unresolved references require repair/interpretation; JSON remains available".into());
         }
     } else if !board.rules.is_empty() {
-        return Err(
-            "Creating native rule records is not supported; keep this document in JSON".into(),
-        );
+        if !binary {
+            return Err("Creating ASCII rules requires PCBCraft JSON".into());
+        }
+        for rule in &board.rules {
+            native_rule_tag(rule)?;
+            eda_core::pcb_rules::validate_rule(board, rule)?;
+        }
     }
     for component in &board.components {
         let original_parameters = old_board
@@ -2420,6 +2505,52 @@ mod tests {
         ));
         d.pcb = Some(b);
         d
+    }
+    #[test]
+    fn binary_directive_class_and_differential_pair_edits_round_trip() {
+        let original = serialize(&doc(), Format::Binary).unwrap();
+        let mut imported = import_pcb(&original, "classes.PcbDoc").unwrap();
+        let b = imported.pcb.as_mut().unwrap();
+        b.classes.push(Fields::from([
+            ("NAME".into(), "Ground".into()),
+            ("KIND".into(), "0".into()),
+            ("M0".into(), "GND".into()),
+            ("CUSTOM".into(), "retained".into()),
+        ]));
+        b.differential_pairs.push(Fields::from([
+            ("NAME".into(), "DATA".into()),
+            ("POSITIVENETNAME".into(), "DATA_P".into()),
+            ("NEGATIVENETNAME".into(), "DATA_N".into()),
+        ]));
+        let classes = b.classes.clone();
+        let pairs = b.differential_pairs.clone();
+        let saved = serialize(&imported, Format::Preserve).unwrap();
+        let mut read = import_pcb(&saved, "classes.PcbDoc").unwrap();
+        assert_eq!(read.pcb.as_ref().unwrap().classes, classes);
+        assert_eq!(read.pcb.as_ref().unwrap().differential_pairs, pairs);
+        read.pcb.as_mut().unwrap().classes[0].remove("M0");
+        let bytes = serialize(&read, Format::Preserve).unwrap();
+        let read = import_pcb(&bytes, "classes.PcbDoc").unwrap();
+        assert_eq!(read.pcb.as_ref().unwrap().classes[0]["CUSTOM"], "retained");
+        assert!(!read.pcb.as_ref().unwrap().classes[0].contains_key("M0"));
+    }
+    #[test]
+    fn authored_width_rule_needs_no_source_template_and_keeps_native_family_tag() {
+        let mut d = doc();
+        let mut rule = eda_core::pcb_rules::default_rule("Width");
+        rule.insert("SCOPE1EXPRESSION".into(), "InNet('GND')".into());
+        d.pcb.as_mut().unwrap().rules.push(rule.clone());
+        let bytes = serialize(&d, Format::Binary).unwrap();
+        let mut read = import_pcb(&bytes, "rules.PcbDoc").unwrap();
+        assert_eq!(read.pcb.as_ref().unwrap().rules, vec![rule]);
+        read.pcb
+            .as_mut()
+            .unwrap()
+            .rules
+            .push(eda_core::pcb_rules::default_rule("Clearance"));
+        let bytes = serialize(&read, Format::Preserve).unwrap();
+        let read = import_pcb(&bytes, "rules.PcbDoc").unwrap();
+        assert_eq!(read.pcb.as_ref().unwrap().rules.len(), 2);
     }
     #[test]
     fn coordinate_roundtrip_is_bounded_and_no_wrapping() {

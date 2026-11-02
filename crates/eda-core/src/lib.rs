@@ -13,6 +13,7 @@ pub mod schematic;
 pub mod schematic_arrange;
 pub mod schematic_bus;
 pub mod schematic_compile;
+pub mod schematic_directives;
 pub mod schematic_edit;
 pub mod schematic_harness;
 pub mod schematic_script;

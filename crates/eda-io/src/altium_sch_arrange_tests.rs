@@ -81,7 +81,7 @@ fn active_bar_directives_offsheet_and_mask_round_trip_and_keep_owners() {
         .find(|p| p.presentation.name == "DifferentialPair")
         .unwrap();
     let pair = s.primitive(marker.presentation.parent.unwrap()).unwrap();
-    assert!(matches!(&pair.kind,K::ParameterSet{label,..}if label=="Parameter Set"));
+    assert!(matches!(&pair.kind,K::ParameterSet{name,..}if name=="Parameter Set"));
     assert!(s.primitives.iter().any(
         |p| p.presentation.parent == Some(pair.id) && p.presentation.name == "DifferentialPair"
     ));
