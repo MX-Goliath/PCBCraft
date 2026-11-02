@@ -3,7 +3,11 @@ use super::*;
 use eda_core::pcb::Fields;
 use eda_core::pcb_rules::{self as rules, Report, text};
 use std::{
-    sync::mpsc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    },
     time::{Duration, Instant},
 };
 #[path = "pcb_rules_query.rs"]
@@ -42,16 +46,62 @@ pub(super) struct State {
     online: bool,
     markers: bool,
     report: Option<(Version, Report)>,
-    pending: Option<mpsc::Receiver<(Version, Report)>>,
+    pending: Option<CheckJob>,
     pub(super) settings: CheckSettings,
     pub setup: Option<CheckSettings>,
     settings_page: String,
     generation: u64,
-    last_start: Instant,
+    observed: Option<Version>,
+    changed_at: Instant,
     force: bool,
     filter: String,
 }
 type Version = (u64, u64, u64);
+struct CheckJob {
+    version: Version,
+    batch: bool,
+    cancel: Arc<AtomicBool>,
+    receiver: mpsc::Receiver<Option<Report>>,
+}
+impl Drop for CheckJob {
+    fn drop(&mut self) {
+        self.cancel.store(true, Ordering::Relaxed);
+    }
+}
+impl State {
+    fn poll_check(&mut self, token: Version, now: Instant) {
+        if self.observed != Some(token) {
+            self.observed = Some(token);
+            self.changed_at = now;
+        }
+        if let Some(job) = &self.pending {
+            if job.version != token || (!job.batch && (!self.online || self.force)) {
+                job.cancel.store(true, Ordering::Relaxed);
+            }
+            match job.receiver.try_recv() {
+                Ok(report) => {
+                    if job.version == token
+                        && !job.cancel.load(Ordering::Relaxed)
+                        && let Some(report) = report
+                    {
+                        self.report = Some((token, report));
+                    }
+                    self.pending = None;
+                }
+                Err(mpsc::TryRecvError::Disconnected) => self.pending = None,
+                Err(mpsc::TryRecvError::Empty) => {}
+            }
+        }
+    }
+    fn needs_check(&self, token: Version, has_rules: bool, now: Instant) -> bool {
+        self.pending.is_none()
+            && (self.force
+                || (self.online
+                    && has_rules
+                    && self.report.as_ref().is_none_or(|(v, _)| *v != token)
+                    && now.duration_since(self.changed_at) >= Duration::from_millis(500)))
+    }
+}
 const CATEGORIES: &[&str] = &[
     "Electrical",
     "Routing",
@@ -95,7 +145,8 @@ impl Default for State {
             setup: None,
             settings_page: "Report Options".into(),
             generation: 0,
-            last_start: Instant::now() - Duration::from_secs(1),
+            observed: None,
+            changed_at: Instant::now(),
             force: false,
             filter: String::new(),
         }
@@ -2489,26 +2540,10 @@ pub(super) fn show(doc: &mut OpenDocument, ctx: &egui::Context) {
         doc.view.pcb.preview_generation(),
         state.generation,
     );
-    if let Some(receiver) = &state.pending {
-        match receiver.try_recv() {
-            Ok((version, report)) => {
-                if version == token {
-                    state.report = Some((version, report));
-                }
-                state.pending = None;
-            }
-            Err(mpsc::TryRecvError::Disconnected) => state.pending = None,
-            Err(mpsc::TryRecvError::Empty) => {}
-        }
-    }
+    state.poll_check(token, Instant::now());
     let board = doc.view.pcb.preview().or(doc.model.pcb.as_ref()).unwrap();
-    if state.pending.is_none()
-        && (state.force
-            || (state.online
-                && !board.rules.is_empty()
-                && state.report.as_ref().is_none_or(|(v, _)| *v != token)
-                && state.last_start.elapsed() > Duration::from_millis(500)))
-    {
+    let has_rules = !board.rules.is_empty();
+    if state.needs_check(token, has_rules, Instant::now()) {
         let board = board.clone();
         let options = rules::CheckOptions {
             excluded: if state.force {
@@ -2519,14 +2554,20 @@ pub(super) fn show(doc: &mut OpenDocument, ctx: &egui::Context) {
             limit: state.settings.limit,
         };
         let (tx, rx) = mpsc::channel();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let worker_cancel = cancel.clone();
         let ctx = ctx.clone();
         std::thread::spawn(move || {
-            let report = rules::check_with_options(&board, &options);
-            let _ = tx.send((token, report));
+            let report = rules::check_owned_cancellable(board, &options, worker_cancel);
+            let _ = tx.send(report);
             ctx.request_repaint();
         });
-        state.pending = Some(rx);
-        state.last_start = Instant::now();
+        state.pending = Some(CheckJob {
+            version: token,
+            batch: state.force,
+            cancel,
+            receiver: rx,
+        });
         state.force = false;
     }
     doc.view.pcb.drc_markers = if state.markers && state.settings.create_violations {
@@ -2539,7 +2580,13 @@ pub(super) fn show(doc: &mut OpenDocument, ctx: &egui::Context) {
     } else {
         vec![]
     };
-    if state.pending.is_some() || state.online {
+    if state.pending.is_some()
+        || state.needs_check(
+            token,
+            has_rules,
+            Instant::now() + Duration::from_millis(500),
+        )
+    {
         ctx.request_repaint_after(Duration::from_millis(250));
     }
     if state.show_report {
@@ -2863,14 +2910,75 @@ mod tests {
         let mut doc = document();
         doc.pcb_editor.rules.online = false;
         let (tx, rx) = mpsc::channel();
-        doc.pcb_editor.rules.pending = Some(rx);
+        doc.pcb_editor.rules.pending = Some(CheckJob {
+            version: (0, doc.view.pcb.preview_generation(), 0),
+            batch: false,
+            cancel: Arc::new(AtomicBool::new(false)),
+            receiver: rx,
+        });
         doc.pcb_editor.rules.generation = 1;
-        tx.send(((0, doc.view.pcb.preview_generation(), 0), Report::default()))
-            .unwrap();
+        tx.send(Some(Report::default())).unwrap();
         let ctx = egui::Context::default();
         let _ = ctx.run(egui::RawInput::default(), |ctx| show(&mut doc, ctx));
         assert!(doc.pcb_editor.rules.report.is_none());
         assert!(doc.view.pcb.drc_markers.is_empty());
+    }
+    #[test]
+    fn online_drc_waits_for_stable_revision_and_manual_check_preempts_worker() {
+        let mut state = State::default();
+        let now = Instant::now();
+        let first = (1, 0, 0);
+        state.poll_check(first, now);
+        assert!(!state.needs_check(first, true, now + Duration::from_millis(499)));
+        assert!(state.needs_check(first, true, now + Duration::from_millis(500)));
+        let next = (1, 1, 0);
+        state.poll_check(next, now + Duration::from_millis(450));
+        assert!(!state.needs_check(next, true, now + Duration::from_millis(900)));
+        let (tx, rx) = mpsc::channel();
+        let cancel = Arc::new(AtomicBool::new(false));
+        state.pending = Some(CheckJob {
+            version: next,
+            batch: false,
+            cancel: cancel.clone(),
+            receiver: rx,
+        });
+        state.force = true;
+        state.poll_check(next, now + Duration::from_secs(1));
+        assert!(cancel.load(Ordering::Relaxed));
+        assert!(
+            !state.needs_check(next, true, now + Duration::from_secs(2)),
+            "No overlapping worker while the old job exits"
+        );
+        tx.send(Some(Report::default())).unwrap();
+        state.poll_check(next, now + Duration::from_secs(2));
+        assert!(
+            state.report.is_none(),
+            "Even a racing completed online result is discarded"
+        );
+        assert!(state.needs_check(next, true, now + Duration::from_secs(2)));
+    }
+    #[test]
+    fn closing_document_cancels_drc_and_current_report_does_not_restart_it() {
+        let mut state = State::default();
+        let token = (2, 0, 1);
+        let now = Instant::now();
+        state.poll_check(token, now);
+        let (_tx, rx) = mpsc::channel();
+        let cancel = Arc::new(AtomicBool::new(false));
+        state.pending = Some(CheckJob {
+            version: token,
+            batch: true,
+            cancel: cancel.clone(),
+            receiver: rx,
+        });
+        drop(state);
+        assert!(cancel.load(Ordering::Relaxed));
+        let mut state = State {
+            report: Some((token, Report::default())),
+            ..Default::default()
+        };
+        state.poll_check(token, now);
+        assert!(!state.needs_check(token, true, now + Duration::from_secs(10)));
     }
     #[test]
     fn rules_and_checker_windows_fit_screen_with_all_rule_categories() {

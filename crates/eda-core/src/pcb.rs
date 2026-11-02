@@ -679,10 +679,25 @@ impl Board {
     pub fn item_net(&self, item: &Item) -> Option<u32> {
         item.net.or_else(|| {
             item.polygon.and_then(|index| {
-                self.polygon_pours
+                if let Some(polygon) = self.polygon_pours.iter().find(|p| p.index == index) {
+                    return polygon.net;
+                }
+                // A native outline can be read-only (for example a retraced arc),
+                // while its saved copper fragments and net identity remain valid.
+                // An editable polygon, including an explicitly unassigned net,
+                // always takes precedence over this archived metadata.
+                self.polygons
                     .iter()
-                    .find(|p| p.index == index)
-                    .and_then(|p| p.net)
+                    .enumerate()
+                    .find(|(n, p)| {
+                        p.get("ID")
+                            .and_then(|s| s.parse::<u32>().ok())
+                            .unwrap_or(*n as u32)
+                            == index
+                    })
+                    .and_then(|(_, p)| p.get("NET"))
+                    .and_then(|s| s.parse::<u32>().ok())
+                    .filter(|&net| net != 65535)
             })
         })
     }

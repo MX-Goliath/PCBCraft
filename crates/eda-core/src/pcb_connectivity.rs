@@ -1,8 +1,8 @@
-//! Physical copper connectivity and a minimum spanning tree of disconnected islands.
+//! Electrical copper connectivity and a minimum spanning tree of disconnected islands.
 //! Display visibility never affects this calculation. Coordinates in geo are millimetres.
 use crate::{pcb::*, pcb_polygon};
 use eda_geom::Point;
-use geo::{BooleanOps, BoundingRect, Intersects, MultiPolygon, Polygon};
+use geo::{BoundingRect, Intersects, Polygon};
 use std::collections::BTreeMap;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -108,8 +108,18 @@ fn distance(a: Point, b: Point) -> f64 {
 /// O(n²) worst case, with a per-net/layer bounds sweep before exact intersection.
 /// One nearest-island edge per iteration; no quadratic edge allocation.
 pub fn connections(board: &Board) -> Vec<Connection> {
+    connections_cancellable(board, &|| false).unwrap_or_default()
+}
+/// Cancellation discards the entire result; partial airwires are never published.
+pub(crate) fn connections_cancellable(
+    board: &Board,
+    cancelled: &dyn Fn() -> bool,
+) -> Option<Vec<Connection>> {
     let mut nets: BTreeMap<u32, Vec<&Item>> = BTreeMap::new();
     for item in &board.items {
+        if cancelled() {
+            return None;
+        }
         // Native Regions6/ShapeBasedRegions6 pour fragments may inherit NET
         // from their owning polygon instead of repeating it in the fragment.
         if let Some(net) = connection_net(board, item) {
@@ -121,22 +131,20 @@ pub fn connections(board: &Board) -> Vec<Connection> {
         let mut nodes: Vec<Copper> = Vec::new();
         let mut barrels = Vec::new();
         for item in items {
+            if cancelled() {
+                return None;
+            }
             let begin = nodes.len();
             for layer in board
                 .layers
                 .iter()
                 .filter(|l| l.copper && pcb_polygon::on_layer(board, item, l.id))
             {
-                let mut material = pcb_polygon::copper(item, layer.id);
-                if item.drill_size() > 0 {
-                    let ring: Vec<_> = item
-                        .drill_outline()
-                        .iter()
-                        .map(|p| (p.x as f64 / 1e6, p.y as f64 / 1e6))
-                        .collect();
-                    material =
-                        material.difference(&MultiPolygon(vec![Polygon::new(ring.into(), vec![])]));
-                }
+                // Electrical connectivity uses pad lands, including their
+                // centres. A test pad at the centre of a connector's plated
+                // hole belongs to that pad; subtracting the drill invents an
+                // isolated island. Drill clearance is checked separately.
+                let material = pcb_polygon::copper(item, layer.id);
                 for shape in material.0 {
                     let Some(bounds) = shape.bounding_rect() else {
                         continue;
@@ -189,13 +197,17 @@ pub fn connections(board: &Board) -> Vec<Connection> {
                 .then_with(|| nodes[a].bounds.min().x.total_cmp(&nodes[b].bounds.min().x))
         });
         for (pos, &a) in order.iter().enumerate() {
+            if cancelled() {
+                return None;
+            }
             for &b in &order[pos + 1..] {
                 if nodes[a].layer != nodes[b].layer
                     || nodes[b].bounds.min().x > nodes[a].bounds.max().x
                 {
                     break;
                 }
-                if nodes[a].bounds.intersects(&nodes[b].bounds)
+                if root(&mut parents, a) != root(&mut parents, b)
+                    && nodes[a].bounds.intersects(&nodes[b].bounds)
                     && nodes[a].shape.intersects(&nodes[b].shape)
                 {
                     join(&mut parents, a, b);
@@ -217,12 +229,18 @@ pub fn connections(board: &Board) -> Vec<Connection> {
         let mut best = vec![(f64::INFINITY, Point::default(), Point::default()); islands.len()];
         let mut current = 0;
         for _ in 1..islands.len() {
+            if cancelled() {
+                return None;
+            }
             used[current] = true;
             for next in 0..islands.len() {
                 if used[next] {
                     continue;
                 }
                 for &a in &islands[current] {
+                    if cancelled() {
+                        return None;
+                    }
                     for &b in &islands[next] {
                         let d = distance(a, b);
                         if d < best[next].0 {
@@ -245,12 +263,78 @@ pub fn connections(board: &Board) -> Vec<Connection> {
             current = next;
         }
     }
-    result
+    Some(result)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn concentric_test_pad_connects_to_connector_land_and_only_plated_barrels_join_layers() {
+        let connector = Item::new(
+            MULTI_LAYER,
+            Some(0),
+            Shape::Pad {
+                position: Point::default(),
+                size: Point::mm(2, 2),
+                rotation: 0.,
+                shape: PadShape::Round,
+                hole: 1_300_000,
+                plated: true,
+                name: "1".into(),
+                bottom_size: None,
+                middle_size: None,
+            },
+        );
+        let test_pad = Item::new(
+            BOTTOM,
+            Some(0),
+            Shape::Pad {
+                position: Point::default(),
+                size: Point {
+                    x: 900_000,
+                    y: 900_000,
+                },
+                rotation: 0.,
+                shape: PadShape::Round,
+                hole: 0,
+                plated: false,
+                name: "1".into(),
+                bottom_size: None,
+                middle_size: None,
+            },
+        );
+        let mut board = Board {
+            items: vec![
+                connector,
+                test_pad,
+                track(TOP, 0, Point::default(), Point::mm(3, 0)),
+            ],
+            ..Default::default()
+        };
+        assert!(connections(&board).is_empty());
+        if let Shape::Pad { plated, .. } = &mut board.items[0].shape {
+            *plated = false;
+        }
+        assert_eq!(connections(&board).len(), 1);
+    }
+    #[test]
+    fn cancellation_during_connectivity_never_returns_partial_airwires() {
+        let board = Board {
+            items: (0..100)
+                .map(|n| track(TOP, 0, Point::mm(n * 3, 0), Point::mm(n * 3 + 1, 0)))
+                .collect(),
+            ..Default::default()
+        };
+        let polls = std::cell::Cell::new(0);
+        let result = connections_cancellable(&board, &|| {
+            polls.set(polls.get() + 1);
+            polls.get() > 150
+        });
+        assert!(result.is_none());
+        assert_eq!(polls.get(), 151);
+        assert_eq!(connections(&board).len(), 99);
+    }
     #[test]
     fn point_line_regions_do_not_bridge_copper_islands() {
         let a = Point::mm(1, 0);

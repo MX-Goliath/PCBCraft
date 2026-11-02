@@ -1,11 +1,23 @@
 use super::*;
 use crate::{pcb_connectivity, pcb_polygon};
-use geo::{Contains, Distance, Euclidean, Intersects};
+use geo::{BoundingRect, Contains, Distance, Euclidean, Intersects, LinesIter, Relate};
 use std::collections::BTreeSet;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 #[path = "pcb_drc_holes.rs"]
 mod holes;
 #[path = "pcb_drc_mask.rs"]
 mod mask;
+#[path = "pcb_drc_geometry.rs"]
+mod prepared_geometry;
+#[path = "pcb_drc_rules.rs"]
+mod prepared_rules;
+use prepared_rules::Rules;
+#[cfg(test)]
+#[path = "pcb_drc_tests.rs"]
+mod tests;
 #[derive(Clone, Debug)]
 pub struct Violation {
     pub rule: usize,
@@ -21,6 +33,7 @@ pub struct Report {
     pub diagnostics: BTreeSet<String>,
     pub truncated: bool,
     limit: usize,
+    cancel: Option<Arc<AtomicBool>>,
 }
 impl Default for Report {
     fn default() -> Self {
@@ -29,6 +42,7 @@ impl Default for Report {
             diagnostics: BTreeSet::new(),
             truncated: false,
             limit: 5000,
+            cancel: None,
         }
     }
 }
@@ -52,9 +66,74 @@ pub fn check_with_options(board: &Board, options: &CheckOptions) -> Report {
             r.insert("ENABLED".into(), "FALSE".into());
         }
     }
-    check_inner(&filtered, options.limit.clamp(1, 50_000))
+    check_inner(&filtered, options.limit.clamp(1, 50_000), None, &mut |_| {})
+}
+/// Own the worker snapshot, avoiding a second clone. Cancelled checks publish no report.
+pub fn check_owned_cancellable(
+    mut board: Board,
+    options: &CheckOptions,
+    cancel: Arc<AtomicBool>,
+) -> Option<Report> {
+    if cancel.load(Ordering::Relaxed) {
+        return None;
+    }
+    for rule in &mut board.rules {
+        if options.excluded.contains(text(rule, "RULEKIND")) {
+            rule.insert("ENABLED".into(), "FALSE".into());
+        }
+    }
+    let mut report = check_inner(
+        &board,
+        options.limit.clamp(1, 50_000),
+        Some(cancel.clone()),
+        &mut |_| {},
+    );
+    report.cancel = None;
+    (!cancel.load(Ordering::Relaxed)).then_some(report)
+}
+/// Read-only profiling entry point; time is never part of rule evaluation.
+pub fn check_profiled(
+    board: &Board,
+    options: &CheckOptions,
+) -> (Report, Vec<(&'static str, std::time::Duration)>) {
+    let trace = std::env::var_os("PCBCRAFT_DRC_TRACE").is_some();
+    let mut started = std::time::Instant::now();
+    let mut phases = Vec::new();
+    let mut filtered = board.clone();
+    for rule in &mut filtered.rules {
+        if options.excluded.contains(text(rule, "RULEKIND")) {
+            rule.insert("ENABLED".into(), "FALSE".into());
+        }
+    }
+    phases.push(("snapshot", started.elapsed()));
+    started = std::time::Instant::now();
+    let report = check_inner(
+        &filtered,
+        options.limit.clamp(1, 50_000),
+        None,
+        &mut |name| {
+            if trace {
+                eprintln!(
+                    "DRC {name}: {:.3} ms",
+                    started.elapsed().as_secs_f64() * 1000.
+                );
+            }
+            phases.push((name, started.elapsed()));
+            started = std::time::Instant::now();
+        },
+    );
+    (report, phases)
 }
 impl Report {
+    fn stopped(&mut self) -> bool {
+        // One excess finding establishes truncation; an exactly-full complete
+        // report keeps its existing complete status.
+        self.truncated
+            || self
+                .cancel
+                .as_ref()
+                .is_some_and(|c| c.load(Ordering::Relaxed))
+    }
     /// Standalone, escaped report of this snapshot. No external assets or scripts.
     pub fn html(&self, board: &Board, document: &str) -> String {
         use std::fmt::Write;
@@ -141,14 +220,29 @@ impl Report {
 /// Geometry is evaluated per physical copper layer, independent of display visibility.
 /// Polygon tessellation is shared with copper connectivity. Limits are explicit.
 pub fn check(board: &Board) -> Report {
-    check_inner(board, 5000)
+    check_inner(board, 5000, None, &mut |_| {})
 }
-fn check_inner(board: &Board, limit: usize) -> Report {
+fn check_inner(
+    board: &Board,
+    limit: usize,
+    cancel: Option<Arc<AtomicBool>>,
+    phase: &mut dyn FnMut(&'static str),
+) -> Report {
+    let rules = Rules::with_cancel(board, cancel.clone());
     let mut out = Report {
         limit,
+        cancel,
         ..Default::default()
     };
     for r in board.rules.iter().filter(|r| enabled(r)) {
+        if text(r, "RULEKIND") == "UnRoutedNet"
+            && text(r, "CHECKBADCONNECTIONS").eq_ignore_ascii_case("TRUE")
+        {
+            out.diagnostics.insert(format!(
+                "{}: poor/incomplete contact verification (CHECKBADCONNECTIONS) is not checked",
+                text(r, "NAME")
+            ));
+        }
         if text(r, "RULEKIND") == "PolygonConnect"
             && let Err(e) = super::polygon::validate_connection(r)
         {
@@ -168,8 +262,12 @@ fn check_inner(board: &Board, limit: usize) -> Report {
         }
     }
     for item in &board.items {
+        if out.stopped() {
+            phase("item_rules");
+            return out;
+        }
         if item.drill_size() > 0 {
-            match resolve(board, "LayerPairs", item, None) {
+            match rules.resolve("LayerPairs", item, None) {
                 Ok(Some((n, r))) => match layer_pairs_violation(board, item, r) {
                     Ok(Some(message)) => out.add(n, r, message, &[item], MULTI_LAYER),
                     Err(e) => {
@@ -184,7 +282,13 @@ fn check_inner(board: &Board, limit: usize) -> Report {
             }
         }
         for kind in ["Width", "RoutingLayers", "RoutingVias"] {
-            match route_violation(board, item, kind) {
+            if !route_rule_applicable(item, kind) {
+                continue;
+            }
+            match rules
+                .resolve(kind, item, None)
+                .and_then(|rule| route_violation_resolved(item, kind, rule))
+            {
                 Ok(Some((n, message))) => out.add(n, &board.rules[n], message, &[item], item.layer),
                 Err(e) => {
                     out.diagnostics.insert(e);
@@ -193,7 +297,7 @@ fn check_inner(board: &Board, limit: usize) -> Report {
             }
         }
         if item.drill_size() > 0 {
-            match resolve(board, "HoleSize", item, None) {
+            match rules.resolve("HoleSize", item, None) {
                 Ok(Some((n, r))) => match hole_size_violation(board, item, r) {
                     Ok(Some(message)) => out.add(n, r, message, &[item], item.layer),
                     Err(e) => {
@@ -208,11 +312,32 @@ fn check_inner(board: &Board, limit: usize) -> Report {
             }
         }
     }
+    phase("item_rules");
     let outline = polygon(&board.outline_points(256));
+    let prepared_outline = geo::PreparedGeometry::from(&outline);
+    let outline_edges = rstar::RTree::bulk_load(
+        outline
+            .exterior()
+            .lines_iter()
+            .map(rstar::primitives::CachedEnvelope::new)
+            .collect(),
+    );
+    let mut annular = std::collections::HashMap::<usize, Vec<(geo::MultiPolygon<f64>, f64)>>::new();
+    let cutouts: Vec<_> = board
+        .items
+        .iter()
+        .filter(|i| {
+            matches!(i.shape, Shape::Region { cutout: true, .. })
+                && text(&i.properties, "ISBOARDCUTOUT") == "TRUE"
+        })
+        .collect();
+    let edge_checks = rules.active("MinimumAnnularRing")
+        || rules.active("BoardOutlineClearance")
+        || (!cutouts.is_empty() && rules.active("Clearance"));
     for layer in board
         .layers
         .iter()
-        .filter(|l| l.copper || matches!(l.id, TOP_OVERLAY | BOTTOM_OVERLAY))
+        .filter(|l| edge_checks && (l.copper || matches!(l.id, TOP_OVERLAY | BOTTOM_OVERLAY)))
     {
         for item in board.items.iter().filter(|i| {
             pcb_polygon::on_layer(board, i, layer.id)
@@ -222,24 +347,41 @@ fn check_inner(board: &Board, limit: usize) -> Report {
                     Shape::Text { .. } | Shape::Region { cutout: true, .. }
                 )
         }) {
+            if out.stopped() {
+                phase("outline_annular");
+                return out;
+            }
             let copper = pcb_polygon::copper(item, layer.id);
             if copper.0.is_empty() {
                 continue;
             }
             if item.drill_size() > 0 && !matches!(item.shape, Shape::Pad { plated: false, .. }) {
-                match resolve(board, "MinimumAnnularRing", item, None) {
+                match rules.resolve("MinimumAnnularRing", item, None) {
                     Ok(Some((n, r))) => match dimension(r, "MINIMUMRING") {
                         Ok(required) => {
-                            let drill = polygon(&item.drill_outline());
-                            let actual = if copper.contains(&drill) {
-                                copper
-                                    .0
-                                    .iter()
-                                    .map(|p| Euclidean.distance(p.exterior(), drill.exterior()))
-                                    .fold(f64::INFINITY, f64::min)
-                                    * 1e6
+                            let lands = annular.entry(item as *const Item as usize).or_default();
+                            let actual = if let Some(actual) =
+                                circular_annular_ring_nm(item, layer.id)
+                            {
+                                actual
+                            } else if let Some((_, actual)) =
+                                lands.iter().find(|(shape, _)| *shape == copper)
+                            {
+                                *actual
                             } else {
-                                0.0
+                                let drill = polygon(&item.drill_outline());
+                                let actual = if copper.contains(&drill) {
+                                    copper
+                                        .0
+                                        .iter()
+                                        .map(|p| Euclidean.distance(p.exterior(), drill.exterior()))
+                                        .fold(f64::INFINITY, f64::min)
+                                        * 1e6
+                                } else {
+                                    0.0
+                                };
+                                lands.push((copper.clone(), actual));
+                                actual
                             };
                             if actual + 2.0 < required as f64 {
                                 out.add(
@@ -266,13 +408,39 @@ fn check_inner(board: &Board, limit: usize) -> Report {
                 }
             }
             if outline.exterior().0.len() >= 4 {
-                match resolve(board, "BoardOutlineClearance", item, None) {
+                match rules.resolve("BoardOutlineClearance", item, None) {
                     Ok(Some((n, r))) => match gap_objects(r, object_kind(item), "OutlineEdge") {
-                        Ok(required) => {
-                            let outside = !copper.0.iter().all(|p| outline.contains(p));
-                            let distance = (Euclidean.distance(&copper, outline.exterior()) * 1e6)
-                                .round() as i64;
-                            if required > 0 && (outside || distance + 2 < required) {
+                        Ok(required) if required > 0 => {
+                            // No outline edge in the expanded box proves that
+                            // no contour crosses an edge or violates this gap.
+                            // Classify each island by one point in that case.
+                            let far = copper.bounding_rect().is_some_and(|bounds| {
+                                let gap = required as f64 / 1e6;
+                                let envelope = rstar::AABB::from_corners(
+                                    geo::Point::new(bounds.min().x - gap, bounds.min().y - gap),
+                                    geo::Point::new(bounds.max().x + gap, bounds.max().y + gap),
+                                );
+                                outline_edges
+                                    .locate_in_envelope_intersecting(&envelope)
+                                    .next()
+                                    .is_none()
+                            });
+                            let outside = !copper.0.iter().all(|p| {
+                                if far {
+                                    p.exterior().0.first().is_some_and(|p| outline.contains(p))
+                                } else {
+                                    prepared_outline.relate(p).is_contains()
+                                }
+                            });
+                            let distance = if outside {
+                                0
+                            } else if far {
+                                required
+                            } else {
+                                (Euclidean.distance(&copper, outline.exterior()) * 1e6).round()
+                                    as i64
+                            };
+                            if outside || distance + 2 < required {
                                 out.add(
                                     n,
                                     r,
@@ -293,6 +461,7 @@ fn check_inner(board: &Board, limit: usize) -> Report {
                         Err(e) => {
                             out.diagnostics.insert(e);
                         }
+                        _ => {}
                     },
                     Err(e) => {
                         out.diagnostics.insert(e);
@@ -300,10 +469,11 @@ fn check_inner(board: &Board, limit: usize) -> Report {
                     _ => {}
                 }
             }
-            for cutout in board.items.iter().filter(|i| {
-                matches!(i.shape, Shape::Region { cutout: true, .. })
-                    && text(&i.properties, "ISBOARDCUTOUT") == "TRUE"
-            }) {
+            for cutout in &cutouts {
+                if out.stopped() {
+                    phase("outline_annular");
+                    return out;
+                }
                 match cutout_rule(board, item, cutout) {
                     Ok(Some((n, r, required))) if required > 0 => {
                         let distance = (Euclidean
@@ -332,7 +502,12 @@ fn check_inner(board: &Board, limit: usize) -> Report {
             }
         }
     }
+    phase("outline_annular");
     for p in &board.polygon_pours {
+        if out.stopped() {
+            phase("pour_status");
+            return out;
+        }
         let mut item = Item::new(
             p.layer,
             p.net,
@@ -344,7 +519,7 @@ fn check_inner(board: &Board, limit: usize) -> Report {
         );
         item.polygon = Some(p.index);
         item.id = p.id;
-        match resolve(board, "UnpouredPolygon", &item, None) {
+        match rules.resolve("UnpouredPolygon", &item, None) {
             Ok(Some((n, r))) => {
                 if (p.shelved && text(r, "ALLOWSHELVED") != "TRUE")
                     || (!p.shelved && board.pours_stale && text(r, "ALLOWUNPOURED") != "TRUE")
@@ -372,6 +547,7 @@ fn check_inner(board: &Board, limit: usize) -> Report {
             _ => {}
         }
     }
+    phase("pour_status");
     let mut max_gap = 0i64;
     for r in board
         .rules
@@ -386,7 +562,11 @@ fn check_inner(board: &Board, limit: usize) -> Report {
         }
     }
     let mut pairs = 0usize;
-    'layers: for layer in board.layers.iter().filter(|l| l.copper) {
+    'layers: for layer in board
+        .layers
+        .iter()
+        .filter(|l| l.copper && (rules.active("Clearance") || rules.active("ShortCircuit")))
+    {
         let mut items: Vec<_> = board
             .items
             .iter()
@@ -403,16 +583,25 @@ fn check_inner(board: &Board, limit: usize) -> Report {
                     && !(board.pours_stale && i.polygon.is_some())
             })
             .collect();
-        items.sort_by_key(|i| i.bounds().min.x);
-        let geometry: Vec<_> = items
-            .iter()
-            .map(|i| pcb_polygon::copper(i, layer.id))
-            .collect();
+        items.sort_by_cached_key(|i| i.bounds().min.x);
+        let gaps = rules.clearance_bounds(&items);
+        let boxes: Vec<_> = items.iter().map(|i| i.bounds()).collect();
+        let nets: Vec<_> = items.iter().map(|i| board.item_net(i)).collect();
+        let geometry: Vec<std::cell::OnceCell<prepared_geometry::Geometry>> =
+            items.iter().map(|_| std::cell::OnceCell::new()).collect();
         for (a, i) in items.iter().enumerate() {
-            let bounds = i.bounds().expanded(max_gap);
+            if out.stopped() {
+                phase("copper_pairs");
+                return out;
+            }
+            let bounds = boxes[a].expanded(gaps.as_ref().map_or(max_gap, |g| g[a]));
             for b in a + 1..items.len() {
+                if out.stopped() {
+                    phase("copper_pairs");
+                    return out;
+                }
                 let j = items[b];
-                let other = j.bounds();
+                let other = boxes[b];
                 if other.min.x > bounds.max.x {
                     break;
                 }
@@ -426,39 +615,72 @@ fn check_inner(board: &Board, limit: usize) -> Report {
                         .insert("Pair budget reached; DRC is incomplete".into());
                     break 'layers;
                 }
-                if geometry[a].0.is_empty() || geometry[b].0.is_empty() {
+                let first = geometry[a].get_or_init(|| {
+                    prepared_geometry::Geometry::new(pcb_polygon::copper(i, layer.id))
+                });
+                let second = geometry[b].get_or_init(|| {
+                    prepared_geometry::Geometry::new(pcb_polygon::copper(j, layer.id))
+                });
+                if first.shape.0.is_empty() || second.shape.0.is_empty() {
                     continue;
                 }
-                let distance =
-                    (Euclidean.distance(&geometry[a], &geometry[b]) * 1e6).round() as i64;
-                if (i.net.is_none() || i.net != j.net) && geometry[a].intersects(&geometry[b]) {
-                    match resolve(board, "ShortCircuit", i, Some(j)) {
-                        Ok(Some((n, r))) if text(r, "ALLOWED") != "TRUE" => out.add(
-                            n,
-                            r,
-                            "Copper objects on different nets intersect".into(),
-                            &[i, j],
-                            layer.id,
-                        ),
+                let intersects = (nets[a].is_none() || nets[a] != nets[b])
+                    && rules.active("ShortCircuit")
+                    && first.intersects(second);
+                if intersects {
+                    match rules.resolve("ShortCircuit", i, Some(j)) {
+                        Ok(Some((n, r)))
+                            if text(r, "ALLOWED") != "TRUE" && !net_tie_pair(board, i, j) =>
+                        {
+                            out.add(
+                                n,
+                                r,
+                                "Copper objects on different nets intersect".into(),
+                                &[i, j],
+                                layer.id,
+                            )
+                        }
                         Err(e) => {
                             out.diagnostics.insert(e);
                         }
                         _ => {}
                     }
                 }
-                match resolve(board, "Clearance", i, Some(j)) {
-                    Ok(Some((n, r))) => match clearance(board, i, j) {
-                        Ok(Some(required)) if distance + 2 < required => out.add(
-                            n,
-                            r,
-                            format!(
-                                "Clearance {:.6} mm < {:.6} mm",
-                                distance as f64 / 1e6,
-                                required as f64 / 1e6
-                            ),
-                            &[i, j],
-                            layer.id,
-                        ),
+                if out.stopped() {
+                    phase("copper_pairs");
+                    return out;
+                }
+                match rules.resolve("Clearance", i, Some(j)) {
+                    Ok(Some((n, r))) => match rules.clearance(n, r, i, j) {
+                        Ok(required) if required > 2 => {
+                            let distance = if intersects {
+                                0
+                            } else {
+                                let Some(distance) =
+                                    first.distance_within(second, required as f64 / 1e6)
+                                else {
+                                    continue;
+                                };
+                                (distance * 1e6).round() as i64
+                            };
+                            // AD 24.4.1 copper probes accept a 48.26 nm deficit
+                            // but report 50.8 nm (19/20 native coordinate units).
+                            // This measured 50 nm margin is electrical only:
+                            // solder-mask slivers report even a 2.54 nm deficit.
+                            if distance + 50 < required {
+                                out.add(
+                                    n,
+                                    r,
+                                    format!(
+                                        "Clearance {:.6} mm < {:.6} mm",
+                                        distance as f64 / 1e6,
+                                        required as f64 / 1e6
+                                    ),
+                                    &[i, j],
+                                    layer.id,
+                                );
+                            }
+                        }
                         Err(e) => {
                             out.diagnostics.insert(e);
                         }
@@ -472,15 +694,34 @@ fn check_inner(board: &Board, limit: usize) -> Report {
             }
         }
     }
-    holes::check_holes(board, &mut out, &mut pairs);
+    phase("copper_pairs");
+    if out.stopped() {
+        return out;
+    }
+    holes::check_holes_with_rules(board, &rules, &mut out, &mut pairs);
+    phase("holes");
+    if out.stopped() {
+        return out;
+    }
     if board
         .rules
         .iter()
         .any(|r| enabled(r) && text(r, "RULEKIND") == "UnRoutedNet")
     {
-        for c in pcb_connectivity::connections(board) {
+        let Some(connections) = pcb_connectivity::connections_cancellable(board, &|| {
+            out.cancel
+                .as_ref()
+                .is_some_and(|c| c.load(Ordering::Relaxed))
+        }) else {
+            return out;
+        };
+        for c in connections {
+            if out.stopped() {
+                phase("connectivity");
+                return out;
+            }
             let item = probe(TOP, Some(c.net), c.start, 1);
-            match resolve(board, "UnRoutedNet", &item, None) {
+            match rules.resolve("UnRoutedNet", &item, None) {
                 Ok(Some((n, r))) => {
                     let previous = out.violations.len();
                     out.add(
@@ -503,7 +744,12 @@ fn check_inner(board: &Board, limit: usize) -> Report {
             }
         }
     }
-    mask::check_masks(board, &mut out);
+    phase("connectivity");
+    if out.stopped() {
+        return out;
+    }
+    mask::check_masks_with_rules(board, &rules, &mut out);
+    phase("masks");
     if board.pours_stale {
         out.diagnostics
             .insert("Polygon pours are stale; repour before relying on DRC".into());

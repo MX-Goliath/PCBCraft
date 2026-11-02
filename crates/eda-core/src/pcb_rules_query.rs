@@ -21,7 +21,11 @@ fn quoted(s: &str) -> Option<(String, &str)> {
 }
 
 pub(super) fn component_parameter_comparison(board: &Board, item: &Item, s: &str) -> Option<bool> {
-    let (name, tail) = quoted(&s["CompParameterValue(".len()..])?;
+    let (function, args) = s.split_once('(')?;
+    if !function.trim().eq_ignore_ascii_case("CompParameterValue") {
+        return None;
+    }
+    let (name, tail) = quoted(args)?;
     let tail = tail.trim_start().strip_prefix(')')?.trim_start();
     let (op, tail) = if let Some(tail) = tail.strip_prefix("<>") {
         ("<>", tail)
@@ -61,9 +65,24 @@ pub(super) fn component_parameter_comparison(board: &Board, item: &Item, s: &str
     })
 }
 
-pub(super) fn field_comparison(item: &Item, s: &str) -> Option<bool> {
-    let (field, value) = s.split_once('=')?;
-    let (value, rest) = quoted(value)?;
+pub(super) fn field_comparison(board: &Board, item: &Item, s: &str) -> Option<bool> {
+    let end = s.find(|c: char| !c.is_ascii_alphanumeric() && c != '_')?;
+    let (field, tail) = s.split_at(end);
+    let tail = tail.trim_start();
+    let (op, tail) = if let Some(tail) = tail.strip_prefix("<>") {
+        ("<>", tail)
+    } else if let Some(tail) = tail.strip_prefix('=') {
+        ("=", tail)
+    } else if tail
+        .get(..4)
+        .is_some_and(|s| s.eq_ignore_ascii_case("Like"))
+        && tail[4..].starts_with(char::is_whitespace)
+    {
+        ("LIKE", &tail[4..])
+    } else {
+        return None;
+    };
+    let (value, rest) = quoted(tail)?;
     if !rest.trim().is_empty() {
         return None;
     }
@@ -73,9 +92,85 @@ pub(super) fn field_comparison(item: &Item, s: &str) -> Option<bool> {
             Shape::Pad { name, .. } => name,
             _ => return Some(false),
         },
+        "LAYER" => {
+            let matched = layer_matches(board, item.layer, &value);
+            return (op != "LIKE").then_some(if op == "<>" { !matched } else { matched });
+        }
+        "DRILLTYPE" => match &item.shape {
+            Shape::Pad { .. } => item
+                .properties
+                .get("DRILLTYPE")
+                .map_or("Drilled", String::as_str),
+            _ => return Some(op == "<>"),
+        },
         _ => return None,
     };
-    Some(actual.eq_ignore_ascii_case(&value))
+    Some(match op {
+        "LIKE" => like(actual, &value),
+        "<>" => !actual.eq_ignore_ascii_case(&value),
+        _ => actual.eq_ignore_ascii_case(&value),
+    })
+}
+
+/// Find a comparison outside parentheses and quoted strings. Operators in names,
+/// escaped quotes and nested function arguments must never split the query.
+pub(super) fn boolean_comparison(s: &str) -> Option<(&str, bool)> {
+    let mut level = 0i32;
+    let mut quoted = false;
+    for (n, c) in s.char_indices() {
+        if c == '\'' {
+            quoted = !quoted;
+        }
+        if quoted {
+            continue;
+        }
+        match c {
+            '(' => level += 1,
+            ')' => level -= 1,
+            '=' | '<' if level == 0 => {
+                let (tail, negate) = if c == '=' {
+                    (&s[n + 1..], false)
+                } else {
+                    (s[n..].strip_prefix("<>")?, true)
+                };
+                let tail = tail.trim();
+                let value = tail
+                    .strip_prefix('\'')
+                    .and_then(|s| s.strip_suffix('\''))
+                    .unwrap_or(tail);
+                let value = if value.eq_ignore_ascii_case("True") {
+                    true
+                } else if value.eq_ignore_ascii_case("False") {
+                    false
+                } else {
+                    return None;
+                };
+                return Some((s[..n].trim(), value != negate));
+            }
+            _ => {}
+        }
+        if level < 0 {
+            return None;
+        }
+    }
+    None
+}
+
+pub(super) fn differential_pair(board: &Board, item: &Item, pattern: &str) -> bool {
+    board
+        .differential_pairs
+        .iter()
+        .any(|pair| like(text(pair, "NAME"), pattern) && pair_contains(board, item, pair))
+}
+
+pub(super) fn pair_contains(board: &Board, item: &Item, pair: &Fields) -> bool {
+    let Some(net) = board.item_net(item) else {
+        return false;
+    };
+    let name = board.net_name(Some(net));
+    ["POSITIVENETNAME", "NEGATIVENETNAME"]
+        .iter()
+        .any(|key| !text(pair, key).is_empty() && text(pair, key).eq_ignore_ascii_case(name))
 }
 
 pub(super) fn like(value: &str, pattern: &str) -> bool {

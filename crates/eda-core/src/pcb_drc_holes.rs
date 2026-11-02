@@ -2,17 +2,26 @@
 use super::*;
 use geo::BoundingRect;
 
+#[cfg(test)]
 pub(super) fn check_holes(board: &Board, out: &mut Report, pairs: &mut usize) {
-    let rules: Vec<_> = board
+    check_holes_with_rules(board, &Rules::new(board), out, pairs);
+}
+pub(super) fn check_holes_with_rules(
+    board: &Board,
+    rules: &Rules<'_>,
+    out: &mut Report,
+    pairs: &mut usize,
+) {
+    let active_rules: Vec<_> = board
         .rules
         .iter()
         .filter(|r| enabled(r) && text(r, "RULEKIND") == "HoleToHoleClearance")
         .collect();
-    if rules.is_empty() {
+    if active_rules.is_empty() {
         return;
     }
     let mut max_gap = 0.0_f64;
-    for r in rules {
+    for r in active_rules {
         match dimension(r, "GAP") {
             Ok(gap) => max_gap = max_gap.max(gap as f64 / 1e6),
             Err(e) => {
@@ -35,7 +44,13 @@ pub(super) fn check_holes(board: &Board, out: &mut Report, pairs: &mut usize) {
         .collect();
     holes.sort_by(|a, b| a.2.min().x.total_cmp(&b.2.min().x));
     for (a, (i, shape, bounds)) in holes.iter().enumerate() {
+        if out.stopped() {
+            return;
+        }
         for (j, other, other_bounds) in &holes[a + 1..] {
+            if out.stopped() {
+                return;
+            }
             if other_bounds.min().x > bounds.max().x + max_gap {
                 break;
             }
@@ -51,7 +66,7 @@ pub(super) fn check_holes(board: &Board, out: &mut Report, pairs: &mut usize) {
                     .insert("Pair budget reached; hole DRC is incomplete".into());
                 return;
             }
-            match resolve(board, "HoleToHoleClearance", i, Some(j)) {
+            match rules.resolve("HoleToHoleClearance", i, Some(j)) {
                 Ok(Some((n, r))) => match dimension(r, "GAP") {
                     Ok(required) => {
                         let distance = (Euclidean.distance(shape, other) * 1e6).round() as i64;

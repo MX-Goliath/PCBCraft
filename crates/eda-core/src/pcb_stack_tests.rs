@@ -150,6 +150,45 @@ fn invalid_stack_edit_is_atomic_and_legacy_size_edits_stay_in_sync() {
     );
 }
 #[test]
+fn rounded_mask_expansion_offsets_corner_radius_instead_of_reusing_percentage() {
+    let b = board();
+    let mut p = pad();
+    p.set_pad_geometry(
+        TOP,
+        PadGeometry {
+            size: Point::mm(1, 2),
+            shape: PadShape::RoundedRectangle,
+            corner_percent: 40,
+            offset: Point::default(),
+        },
+    );
+    let mut masks = MaskSettings::for_item(&p);
+    masks.solder[0].mode = MaskMode::Manual;
+    for expansion in [100_000, -100_000, -250_000] {
+        masks.solder[0].expansion = expansion;
+        p.masks = Some(Box::new(masks.clone()));
+        let points = p.mask_outline(&b, MaskKind::Solder, false).unwrap();
+        // Positive X corner starts at the top of its vertical straight edge.
+        // r = max(0, 0.2 mm + expansion), so this junction stays at Y=0.8 mm
+        // until the corner becomes square under a large negative expansion.
+        let expected_radius = (200_000 + expansion).max(0);
+        assert_eq!(
+            points[0],
+            Point {
+                x: 500_000 + expansion,
+                y: 1_000_000 + expansion - expected_radius,
+            }
+        );
+        assert_eq!(
+            Bounds::points(&points).max,
+            Point {
+                x: 500_000 + expansion,
+                y: 1_000_000 + expansion,
+            }
+        );
+    }
+}
+#[test]
 fn mask_priority_scope_manual_override_and_tenting() {
     let mut b = board();
     let mut p = pad();

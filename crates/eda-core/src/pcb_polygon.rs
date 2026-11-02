@@ -232,6 +232,21 @@ pub fn pad_outline_radius(
     shape: PadShape,
     corner_percent: u8,
 ) -> Vec<Point> {
+    pad_outline_corner_radius(
+        position,
+        size,
+        angle,
+        shape,
+        size.x.min(size.y) as f64 * corner_percent.min(100) as f64 / 200.0,
+    )
+}
+pub(crate) fn pad_outline_corner_radius(
+    position: Point,
+    size: Point,
+    angle: f64,
+    shape: PadShape,
+    corner_radius: f64,
+) -> Vec<Point> {
     let w = size.x as f64;
     let h = size.y as f64;
     let mut p = Vec::new();
@@ -251,12 +266,11 @@ pub fn pad_outline_radius(
             ]);
         }
         PadShape::Round | PadShape::RoundedRectangle => {
-            let r = w.min(h)
-                * if shape == PadShape::Round {
-                    0.5
-                } else {
-                    corner_percent.min(100) as f64 / 200.0
-                };
+            let r = if shape == PadShape::Round {
+                w.min(h) * 0.5
+            } else {
+                corner_radius.clamp(0.0, w.min(h) * 0.5)
+            };
             for (cx, cy, a) in [
                 (w / 2.0 - r, h / 2.0 - r, 0.0),
                 (-w / 2.0 + r, h / 2.0 - r, 90.0),

@@ -4,13 +4,19 @@ use eda_geom::Point;
 use uuid::Uuid;
 #[path = "pcb_drc.rs"]
 mod drc;
-pub use drc::{CheckOptions, Report, Violation, check, check_with_options};
+pub use drc::{
+    CheckOptions, Report, Violation, check, check_owned_cancellable, check_profiled,
+    check_with_options,
+};
 #[path = "pcb_rules_holes.rs"]
 mod holes;
 pub use holes::{hole_percent_limits, hole_size_violation};
 #[path = "pcb_rules_layer_pairs.rs"]
 mod layer_pairs;
 pub use layer_pairs::layer_pairs_violation;
+#[cfg(test)]
+#[path = "pcb_rules_compat_tests.rs"]
+mod compatibility_tests;
 #[path = "pcb_rules_query.rs"]
 mod membership;
 #[path = "pcb_rules_polygon.rs"]
@@ -130,6 +136,10 @@ pub fn resolve<'a>(
         } else {
             text(r, "SCOPE2EXPRESSION")
         };
+        let evaluate = |item: &Item, expression: &str, key: &str| {
+            query(board, item, expression)
+                .map_err(|error| format!("{} ({}), {key}: {error}", text(r, "NAME"), kind))
+        };
         let matches = if let Some(b) = b {
             let (a_net, b_net) = (board.item_net(a), board.item_net(b));
             match text(r, "NETSCOPE") {
@@ -137,10 +147,11 @@ pub fn resolve<'a>(
                 "SameNet" if a_net.is_none() || a_net != b_net => continue,
                 _ => {}
             }
-            (query(board, a, first)? && query(board, b, second)?)
-                || (query(board, b, first)? && query(board, a, second)?)
+            (evaluate(a, first, "SCOPE1EXPRESSION")? && evaluate(b, second, "SCOPE2EXPRESSION")?)
+                || (evaluate(b, first, "SCOPE1EXPRESSION")?
+                    && evaluate(a, second, "SCOPE2EXPRESSION")?)
         } else {
-            query(board, a, first)?
+            evaluate(a, first, "SCOPE1EXPRESSION")?
         };
         if matches {
             return Ok(Some((index, r)));
@@ -148,7 +159,7 @@ pub fn resolve<'a>(
     }
     Ok(None)
 }
-pub fn object_kind(i: &Item) -> &str {
+pub fn object_kind(i: &Item) -> &'static str {
     if i.polygon.is_some() {
         return "Poly";
     }
@@ -187,15 +198,59 @@ pub fn clearance(board: &Board, a: &Item, b: &Item) -> Result<Option<i64>, Strin
     let Some((_, r)) = resolve(board, "Clearance", a, Some(b))? else {
         return Ok(None);
     };
+    if net_tie_pair(board, a, b) {
+        return Ok(Some(0));
+    }
+    clearance_for_rule(r, a, b).map(Some)
+}
+/// Only copper belonging to the same declared net-tie footprint is exempt.
+/// Nearby board copper and other footprints still obey electrical constraints.
+fn net_tie_pair(board: &Board, a: &Item, b: &Item) -> bool {
+    a.component.is_some()
+        && a.component == b.component
+        && board.components.iter().any(|component| {
+            Some(component.index) == a.component
+                && matches!(
+                    component
+                        .properties
+                        .get("COMPONENTKINDVERSION2")
+                        .or_else(|| component.properties.get("COMPONENTKIND"))
+                        .map(|s| s.trim()),
+                    Some("3" | "4")
+                )
+        })
+}
+/// Native circular land/drill dimensions are exact; rendering tessellation must
+/// not reduce an annular ring that is exactly at its manufacturing limit.
+fn circular_annular_ring_nm(item: &Item, layer: u16) -> Option<f64> {
+    let hole = item.drill_size();
+    let land = item.pad_geometry(layer)?;
+    if hole <= 0
+        || land.shape != PadShape::Round
+        || land.size.x != land.size.y
+        || item
+            .pad_stack
+            .as_ref()
+            .is_some_and(|s| s.drill_shape != DrillShape::Round)
+    {
+        return None;
+    }
+    Some(
+        ((land.size.x as f64 - hole as f64) / 2.
+            - (land.offset.x as f64).hypot(land.offset.y as f64))
+        .max(0.),
+    )
+}
+fn clearance_for_rule(r: &Fields, a: &Item, b: &Item) -> Result<i64, String> {
     if text(r, "IGNOREPADTOPADCLEARANCEINFOOTPRINT") == "TRUE"
         && a.component.is_some()
         && a.component == b.component
         && matches!(a.shape, Shape::Pad { .. })
         && matches!(b.shape, Shape::Pad { .. })
     {
-        return Ok(Some(0));
+        return Ok(0);
     }
-    gap(r, a, b).map(Some)
+    gap(r, a, b)
 }
 /// Cutouts use the stricter electrical Region clearance and board-edge constraint.
 pub fn cutout_clearance(board: &Board, item: &Item, cutout: &Item) -> Result<Option<i64>, String> {
@@ -309,21 +364,30 @@ fn route_violation(
     item: &Item,
     kind: &str,
 ) -> Result<Option<(usize, String)>, String> {
+    if !route_rule_applicable(item, kind) {
+        return Ok(None);
+    }
+    route_violation_resolved(item, kind, resolve(board, kind, item, None)?)
+}
+fn route_rule_applicable(item: &Item, kind: &str) -> bool {
     if item.keepout
         || item.polygon.is_some()
         || (!copper_layer(item.layer) && item.layer != MULTI_LAYER)
     {
-        return Ok(None);
+        return false;
     }
-    let applicable = match item.shape {
+    match item.shape {
         Shape::Track { .. } | Shape::Arc { .. } => matches!(kind, "Width" | "RoutingLayers"),
         Shape::Via { .. } => kind == "RoutingVias",
         _ => false,
-    };
-    if !applicable {
-        return Ok(None);
     }
-    let Some((n, r)) = resolve(board, kind, item, None)? else {
+}
+fn route_violation_resolved(
+    item: &Item,
+    kind: &str,
+    resolved: Option<(usize, &Fields)>,
+) -> Result<Option<(usize, String)>, String> {
+    let Some((n, r)) = resolved else {
         return Ok(None);
     };
     let message = match (&item.shape, kind) {
@@ -571,10 +635,15 @@ pub(crate) fn scope(board: &Board, item: &Item, s: &str, depth: usize) -> Option
         }
     }
     let upper = s.to_ascii_uppercase();
-    for op in ["OR", "AND"] {
+    for operators in [&["||"][..], &["&&"][..], &["OR", "XOR"][..], &["AND"][..]] {
         let mut level = 0;
         let mut quoted = false;
+        let mut terms = Vec::new();
+        let mut start = 0;
         for (n, c) in s.char_indices() {
+            if n < start {
+                continue;
+            }
             if c == '\'' {
                 quoted = !quoted;
             }
@@ -588,29 +657,53 @@ pub(crate) fn scope(board: &Board, item: &Item, s: &str, depth: usize) -> Option
             }
             let boundary = |c: char| !c.is_alphanumeric() && c != '_';
             if level == 0
-                && upper[n..].starts_with(op)
-                && s[..n].chars().next_back().is_none_or(boundary)
-                && s[n + op.len()..].chars().next().is_none_or(boundary)
+                && let Some(op) = operators.iter().find(|op| {
+                    upper[n..].starts_with(**op)
+                        && (op.starts_with(['|', '&'])
+                            || (s[..n].chars().next_back().is_none_or(boundary)
+                                && s[n + op.len()..].chars().next().is_none_or(boundary)))
+                })
             {
-                let a = scope(board, item, &s[..n], depth + 1);
-                let b = scope(board, item, &s[n + op.len()..], depth + 1);
-                return a
-                    .zip(b)
-                    .map(|(a, b)| if op == "AND" { a && b } else { a || b });
+                terms.push((&s[start..n], *op));
+                start = n + op.len();
             }
         }
+        if !terms.is_empty() {
+            let mut result = scope(board, item, terms[0].0, depth + 1)?;
+            for (index, (_, operator)) in terms.iter().enumerate() {
+                let term = terms.get(index + 1).map_or(&s[start..], |(term, _)| *term);
+                let next = scope(board, item, term, depth + 1)?;
+                result = match *operator {
+                    "AND" | "&&" => result && next,
+                    "XOR" => result ^ next,
+                    _ => result || next,
+                };
+            }
+            return Some(result);
+        }
     }
-    if upper.starts_with("NOT ") {
-        return scope(board, item, &s[4..], depth + 1).map(|v| !v);
-    }
-    if upper.starts_with("NOT(") {
+    if upper.starts_with("NOT")
+        && s[3..]
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_whitespace() || c == '(')
+    {
         return scope(board, item, &s[3..], depth + 1).map(|v| !v);
     }
-    if upper.starts_with("COMPPARAMETERVALUE(") {
+    if let Some(tail) = s.strip_prefix('!') {
+        return scope(board, item, tail, depth + 1).map(|v| !v);
+    }
+    if upper.starts_with("COMPPARAMETERVALUE") {
         return membership::component_parameter_comparison(board, item, s);
     }
     if upper.starts_with("OBJECTKIND") || upper.starts_with("NAME") {
-        return membership::field_comparison(item, s);
+        return membership::field_comparison(board, item, s);
+    }
+    if upper.starts_with("LAYER") || upper.starts_with("DRILLTYPE") {
+        return membership::field_comparison(board, item, s);
+    }
+    if let Some((left, expected)) = membership::boolean_comparison(s) {
+        return scope(board, item, left, depth + 1).map(|actual| actual == expected);
     }
     match upper.as_str() {
         "ALL" | "TRUE" => return Some(true),
@@ -620,15 +713,46 @@ pub(crate) fn scope(board: &Board, item: &Item, s: &str, depth: usize) -> Option
         "ISTRACK" => return Some(matches!(item.shape, Shape::Track { .. })),
         "ISARC" => return Some(matches!(item.shape, Shape::Arc { .. })),
         "ONCOPPER" => return Some(copper_layer(item.layer) || item.layer == MULTI_LAYER),
-        "ONTOP" => return Some(item.layer == TOP),
-        "ONBOTTOM" => return Some(item.layer == BOTTOM),
+        "ONTOPLAYER" => return Some(item.layer == TOP),
+        "ONBOTTOMLAYER" => return Some(item.layer == BOTTOM),
+        "ONTOP" => return Some(matches!(item.layer, TOP | TOP_OVERLAY | 35 | 37)),
+        "ONBOTTOM" => return Some(matches!(item.layer, BOTTOM | BOTTOM_OVERLAY | 36 | 38)),
+        "ONMID" => return Some((2..=31).contains(&item.layer)),
+        "ONSILKSCREEN" => return Some(matches!(item.layer, TOP_OVERLAY | BOTTOM_OVERLAY)),
+        "ONMULTILAYER" => return Some(item.layer == MULTI_LAYER),
+        "KEEPOUT" | "ISKEEPOUT" => return Some(item.keepout),
+        "ISCOMMENT" | "ISDESIGNATOR" => {
+            return Some(
+                matches!(item.shape, Shape::Text { .. })
+                    && text(&item.properties, &upper[2..]).eq_ignore_ascii_case("TRUE"),
+            );
+        }
+        "PADISPLATED" => return Some(matches!(item.shape, Shape::Pad { plated: true, .. })),
+        "HASROUNDHOLE" | "HASSLOTHOLE" | "HASSQUAREHOLE" => {
+            let expected = match upper.as_str() {
+                "HASSLOTHOLE" => DrillShape::Slot,
+                "HASSQUAREHOLE" => DrillShape::Square,
+                _ => DrillShape::Round,
+            };
+            return Some(
+                item.drill_size() > 0
+                    && item
+                        .pad_stack
+                        .as_ref()
+                        .map_or(DrillShape::Round, |s| s.drill_shape)
+                        == expected,
+            );
+        }
+        "INANYDIFFERENTIALPAIR" => return Some(membership::differential_pair(board, item, "*")),
         "ISFILL" => return Some(matches!(item.shape, Shape::Fill { .. })),
         "ISREGION" => return Some(matches!(item.shape, Shape::Region { .. })),
         "ISPOLYGON" => return Some(item.polygon.is_some()),
         "INPOLY" | "INPOLYGON" => {
             return Some(item.polygon.is_some() && (1..=32).contains(&item.layer));
         }
-        "ISTHRUPAD" => return Some(matches!(item.shape,Shape::Pad {hole,..} if hole>0)),
+        "ISTHRUPAD" | "ISTHRUPIN" => {
+            return Some(matches!(item.shape,Shape::Pad {hole,..} if hole>0));
+        }
         "ISSMDPAD" => return Some(matches!(item.shape, Shape::Pad { hole: 0, .. })),
         _ => {}
     }
@@ -637,6 +761,9 @@ pub(crate) fn scope(board: &Board, item: &Item, s: &str, depth: usize) -> Option
         "INCOMPONENT",
         "HASFOOTPRINT",
         "HASPAD",
+        "HASFOOTPRINTPAD",
+        "INDIFFERENTIALPAIR",
+        "INDIFFERENTIALPAIRCLASS",
         "ONLAYER",
         "INPADCLASS",
         "INNETCLASS",
@@ -646,27 +773,50 @@ pub(crate) fn scope(board: &Board, item: &Item, s: &str, depth: usize) -> Option
         "INNAMEDPOLYGON",
         "ISNAMEDPOLYGON",
     ] {
-        if upper.starts_with(&format!("{name}(")) && upper.ends_with(')') {
-            let raw = s[name.len() + 1..s.len() - 1].trim();
+        if upper.starts_with(name)
+            && s[name.len()..].trim_start().starts_with('(')
+            && upper.ends_with(')')
+        {
+            let raw = s[name.len()..]
+                .trim_start()
+                .strip_prefix('(')?
+                .strip_suffix(')')?
+                .trim();
             let mut values = Vec::new();
             let mut chars = raw.chars().peekable();
             loop {
                 while chars.peek().is_some_and(|c| c.is_whitespace()) {
                     chars.next();
                 }
-                if chars.next() != Some('\'') {
-                    return None;
-                }
                 let mut value = String::new();
-                loop {
-                    match chars.next() {
-                        Some('\'') if chars.peek() == Some(&'\'') => {
-                            chars.next();
-                            value.push('\'');
+                if chars.peek() != Some(&'\'') {
+                    // Legacy native rules also store a bare pad identifier in
+                    // HasFootprintPad's second argument (e.g. 25 or TAB).
+                    // Accept only a literal token, never an arbitrary expression.
+                    if name != "HASFOOTPRINTPAD" || values.len() != 1 {
+                        return None;
+                    }
+                    while chars
+                        .peek()
+                        .is_some_and(|c| c.is_ascii_alphanumeric() || *c == '_')
+                    {
+                        value.push(chars.next()?);
+                    }
+                    if value.is_empty() {
+                        return None;
+                    }
+                } else {
+                    chars.next();
+                    loop {
+                        match chars.next() {
+                            Some('\'') if chars.peek() == Some(&'\'') => {
+                                chars.next();
+                                value.push('\'');
+                            }
+                            Some('\'') => break,
+                            Some(c) => value.push(c),
+                            None => return None,
                         }
-                        Some('\'') => break,
-                        Some(c) => value.push(c),
-                        None => return None,
                     }
                 }
                 values.push(value);
@@ -678,6 +828,45 @@ pub(crate) fn scope(board: &Board, item: &Item, s: &str, depth: usize) -> Option
                     Some(',') => {}
                     _ => return None,
                 }
+            }
+            if name == "HASFOOTPRINTPAD" {
+                let [footprint, pad_name] = values.as_slice() else {
+                    return None;
+                };
+                return Some(if let Shape::Pad { name, .. } = &item.shape {
+                    item.component
+                        .and_then(|index| board.components.iter().find(|c| c.index == index))
+                        .is_some_and(|c| {
+                            (footprint.is_empty() || membership::like(&c.footprint, footprint))
+                                && membership::like(name, pad_name)
+                        })
+                } else {
+                    false
+                });
+            }
+            if name == "INDIFFERENTIALPAIRCLASS" {
+                return Some(board.classes.iter().any(|class| {
+                    text(class, "KIND") == "6"
+                        && values
+                            .iter()
+                            .any(|value| text(class, "NAME").eq_ignore_ascii_case(value))
+                        && if text(class, "SUPERCLASS").eq_ignore_ascii_case("TRUE") {
+                            membership::differential_pair(board, item, "*")
+                        } else {
+                            class.iter().any(|(key, value)| {
+                                key.strip_prefix("MEMBER")
+                                    .or_else(|| key.strip_prefix('M'))
+                                    .is_some_and(|suffix| {
+                                        !suffix.is_empty()
+                                            && suffix.bytes().all(|b| b.is_ascii_digit())
+                                    })
+                                    && board.differential_pairs.iter().any(|pair| {
+                                        text(pair, "NAME").eq_ignore_ascii_case(value)
+                                            && membership::pair_contains(board, item, pair)
+                                    })
+                            })
+                        }
+                }));
             }
             if matches!(name, "INLAYERCLASS" | "WITHINROOM") {
                 let mut result = false;
@@ -698,6 +887,7 @@ pub(crate) fn scope(board: &Board, item: &Item, s: &str, depth: usize) -> Option
                     "INNET" => board
                         .net_name(board.item_net(item))
                         .eq_ignore_ascii_case(value),
+                    "INDIFFERENTIALPAIR" => membership::differential_pair(board, item, value),
                     "INCOMPONENT" => {
                         component.is_some_and(|c| c.designator.eq_ignore_ascii_case(value))
                     }

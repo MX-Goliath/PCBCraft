@@ -301,6 +301,12 @@ impl Item {
         if self.layer != MULTI_LAYER && self.layer != layer {
             return Ok(vec![]);
         }
+        // Expansion offsets the copper perimeter. Keeping the original corner
+        // percentage after enlarging the box makes rounded corners too square.
+        let corner_radius = g.size.x.min(g.size.y) as f64 * g.corner_percent.min(100) as f64
+            / 200.0
+            * (1.0 + resolved.percentage / 100.0)
+            + resolved.expansion as f64;
         for n in [&mut g.size.x, &mut g.size.y] {
             *n = (*n as f64 * (1.0 + resolved.percentage / 100.0) + 2.0 * resolved.expansion as f64)
                 .round() as i64;
@@ -319,12 +325,12 @@ impl Item {
         } else {
             0.0
         };
-        let local = crate::pcb_polygon::pad_outline_radius(
+        let local = crate::pcb_polygon::pad_outline_corner_radius(
             g.offset,
             g.size,
             0.0,
             g.shape,
-            g.corner_percent,
+            corner_radius,
         );
         local
             .into_iter()

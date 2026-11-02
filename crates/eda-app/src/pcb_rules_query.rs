@@ -9,6 +9,11 @@ const PREDICATES: &[(&str, &str)] = &[
     ("Associated with Footprint", "HasFootprint"),
     ("Belongs to Component Class", "InComponentClass"),
     ("Belongs to Net Class", "InNetClass"),
+    ("Belongs to Differential Pair", "InDifferentialPair"),
+    (
+        "Belongs to Differential Pair Class",
+        "InDifferentialPairClass",
+    ),
     ("Belongs to Pad Class", "InPadClass"),
     ("Exists on Layer", "OnLayer"),
     ("Belongs to Polygon", "InNamedPolygon"),
@@ -28,6 +33,12 @@ const OBJECTS: &[&str] = &[
     "OnCopper",
     "OnTop",
     "OnBottom",
+    "OnTopLayer",
+    "OnBottomLayer",
+    "OnMid",
+    "OnSilkscreen",
+    "OnMultiLayer",
+    "Keepout",
 ];
 
 pub(super) struct QueryDraft {
@@ -76,6 +87,11 @@ impl QueryDraft {
 pub(super) fn values(board: &Board, function: &str) -> Vec<String> {
     let mut values: Vec<String> = match function {
         "InNet" => board.nets.iter().map(|n| n.name.clone()).collect(),
+        "InDifferentialPair" => board
+            .differential_pairs
+            .iter()
+            .map(|p| text(p, "NAME").into())
+            .collect(),
         "InComponent" => board
             .components
             .iter()
@@ -89,10 +105,11 @@ pub(super) fn values(board: &Board, function: &str) -> Vec<String> {
         "OnLayer" => board.layers.iter().map(|l| l.name.clone()).collect(),
         "InNamedPolygon" => board.polygon_pours.iter().map(|p| p.name.clone()).collect(),
         "ObjectKind" => OBJECTS.iter().map(|s| (*s).into()).collect(),
-        other @ ("InNetClass" | "InComponentClass" | "InPadClass") => {
+        other @ ("InNetClass" | "InComponentClass" | "InPadClass" | "InDifferentialPairClass") => {
             let kind = match other {
                 "InNetClass" => "0",
                 "InComponentClass" => "1",
+                "InDifferentialPairClass" => "6",
                 _ => "3",
             };
             board
@@ -214,10 +231,6 @@ fn builder(ui: &mut egui::Ui, q: &mut QueryDraft, board: &Board) {
                                             q.selected = i;
                                         }
                                     }
-                                    ui.add_enabled(
-                                        false,
-                                        egui::Button::new("Belongs to Differential Pair Class"),
-                                    );
                                 });
                             if let Some((function, value)) = q.terms.get_mut(i) {
                                 egui::ComboBox::from_id_salt("condition_value")

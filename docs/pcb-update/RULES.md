@@ -350,3 +350,167 @@ source save. One live instance is retained after sequential build restarts.
 Final Windows rebuild was re-observed with the corrected left-aligned label and
 16 px checkbox. The sole running PCBCraft instance is left on the unchanged
 ReferenceA LayerPairs rule for review. Outer-dialog metric differences remain open.
+
+## 2026-11-02 — native scope expressions and routing startup
+
+Read-only inventory covered 21 native PCB documents. ReferenceD, ReferenceE and ReferenceC each
+reproduced a different startup failure: InDifferentialPair, OnTopLayer and
+HasFootprintPad respectively. These were evaluator gaps; no source rule was
+disabled or replaced. Repeated ReferenceD and ReferenceE probes now pass route preview, place,
+finish and exact Undo, while source hashes remain unchanged. Final validation
+and portable GUI results are recorded in PLAN.md.
+
+Supported additions:
+
+- HasFootprintPad matches only owned pads using the parent footprint and pad
+  identifier, with wildcards, escaped quotes and the documented empty-footprint
+  wildcard. Native legacy records with a bare second-argument identifier are
+  accepted as literal names; arbitrary expressions in that position are refused.
+- InDifferentialPair and InAnyDifferentialPair follow both native net names;
+  InDifferentialPairClass uses Classes6 KIND=6 and actual pair membership.
+- OnTopLayer/OnBottomLayer, OnMid, OnSilkscreen and OnMultiLayer; OnTop/OnBottom
+  cover their side's copper, overlay, paste and solder layers. Layer string
+  comparison, Keepout and comment/designator predicates are recognized.
+- IsThruPin, PadIsPlated, HasRoundHole/HasSlotHole/HasSquareHole and pad DrillType;
+  Name Like and string inequality, explicit Boolean/Boolean_String comparisons.
+- Whitespace between function names and `(`, whitespace after Not, `&&`, `||`,
+  `!`, Xor and long flat Boolean chains. Nested depth and expression size remain
+  bounded, and unsupported branches cannot disappear behind true/false constants.
+
+Errors from rule resolution identify the rule, constraint kind and Scope field.
+The query builder offers supported differential pair/class values. The read-only
+`pcb_rules_profile INPUT --audit-queries` reports failing expressions across the
+actual primitives; `--pairs` inventories pair metadata. The native routing probe
+accepts `--net NAME`, retains exact model Undo verification and checks source
+bytes directly instead of assuming that independent imports have identical IDs.
+
+This is bounded query compatibility, not the complete Altium language. Numeric
+Height/CompPinCount/component package scopes, xSignals and the native annular
+expression `((PadXSize_AllLayers or PadYSize_AllLayers)> HoleDiameter)` remain
+unsupported. The numeric-OR meaning has not been confirmed; it is not replaced
+with a guessed minimum/maximum. Unsupported rule families remain explicitly
+unchecked, and unknown active routing scopes still stop the affected operation.
+
+Semantics references: [membership checks](https://www.altium.com/documentation/altium-designer/pcb/query-functions/membership-checks),
+[layer checks](https://www.altium.com/documentation/altium-designer/pcb/query-functions/layer-checks),
+[fields](https://www.altium.com/documentation/altium-designer/pcb/query-functions/fields),
+[query syntax](https://www.altium.com/documentation/altium-designer/query-language).
+These pages supplement the native scope/metadata evidence; version-specific
+pixel or complete query parity is not claimed.
+
+Final checks: fmt and strict workspace/all-target Clippy pass; 683 workspace
+tests pass and the one previously documented GPU dithering pixel test still
+fails (4 pixels vs tolerance 3). Native ReferenceD D_P, ReferenceE GND and ReferenceC ExampleOutput
+probes pass startup/preview/place/finish/exact Undo with unchanged sources.
+In the real extracted Windows portable, ReferenceE GND via routing builds and places
+a nonzero branch, and one Ctrl+Z removes it and restores the clean title. The
+research copy is closed without saving. The user's reported board is on another
+PC and was unavailable; it has not been verified by these checks.
+
+## 2026-11-02 - DRC performance and cancellation
+
+The core checker now prepares rule priority once per immutable check and memoizes
+scope results per actual item reference (including unsupported results), with a
+16 MiB scope-cache bound. Duplicate native IDs and synthetic probes cannot alias
+cached results. Clearance matrices are cached by rule/object kinds and the actual
+same-footprint pad exemption. No cache survives a document/settings/preview change.
+
+Copper bounds are sorted/cached once. The broad-phase gap is limited to rules in
+which the current item can participate, rather than the largest unrelated gap on
+the whole board. If a query or gap cannot be established, the conservative original
+search remains. In ReferenceE, a 9.55 mm test-point/nonplated-pad rule previously expanded
+the search for all 41,409 items. Geometry distances use reusable segment indexes
+for complex pours, with explicit containment, holes, islands and rounded messages.
+Board edges use one spatial index and prepared containment; annular calculations
+are reused only for exactly identical land geometry on the same item's layers.
+Board cutouts are collected once rather than scanned over all items for each item.
+
+Mask groups use a spatial index while retaining union/source order. Silk/mask
+checks consider nearby apertures, clip exposed copper once per pad/side, and keep
+exhaustive query diagnostics when scopes/data cannot be safely pruned. Connectivity
+skips intersections between nodes already joined into one electrical island.
+
+The configured finding limit now stops further work after the first excess finding
+establishes truncation. The first N findings retain their order. An exactly-full
+complete report stays complete. A truncated report can omit later-phase diagnostics
+and never means that unvisited checks passed. Pair budgets and unsupported checks
+remain explicit; fewer unrelated candidates also avoid premature pair-budget stops.
+
+Online checks wait 500 ms after the last revision/preview/settings change. One job
+per document is retained until it exits. Obsolete work, online disable, manual
+preemption and closing a document set a cooperative cancellation flag. Cancelled
+reports are discarded, including racing completions. Manual runs bypass debounce.
+The owned worker snapshot avoids the previous second whole-board clone, and a
+stable completed online check no longer requests periodic redraws. Cancellation
+is cooperative between geometry operations, not inside third-party boolean calls.
+
+`cargo run -p eda-app --example pcb_drc_profile -- INPUT --snapshot SNAPSHOT.json`
+creates a read-only, ID-stable benchmark input, omitting meshes/native archive bytes.
+`... SNAPSHOT.json --limit 500 --output RESULT.json` records ordered full findings,
+diagnostics, truncation and per-phase times; `--online` excludes UnRoutedNet.
+`PCBCRAFT_DRC_TRACE=1` prints phase timings. Prepared inputs bypass native upgrades,
+and buffered deserialization is outside the measured DRC interval. Source projects
+are never rewritten. Final measurements and Windows GUI/check results are in
+PLAN.md and the dated DRC verification artifact in dist/.
+
+## 2026-11-02 - comparison with Altium Designer 24.4.1
+
+The previous-engine regression comparisons above are optimization checks, not
+evidence of equivalence to Altium. A byte-identical research copy of ReferenceERevision1
+(SHA256 redacted-source-sha256)
+was checked in the installed Altium 24.4.1 with Stop when = 50,000. Batch checks
+were inspected in its dialog; the native report lists Clearance, Short-Circuit,
+Un-Routed Net, Minimum Annular Ring and both mask families as processed. Two
+complete runs reported zero violations and zero health issues, in 10 and 8 seconds.
+No native source was saved during these observations.
+
+Confirmed independent-engine corrections:
+
+- Circular annular rings use the exact land/hole dimensions and drill offset,
+  instead of subtracting the radii of rendering polygons. The native 700001 nm
+  land / 299999 nm hole has a 200001 nm ring; 5920 layer findings were false.
+- Copper pairs use effective inherited polygon nets. Read-only native outlines
+  retain net identity from archived polygon fields, even if their contour cannot
+  enter the editable polygon model. An editable polygon, including No Net, and
+  an explicit primitive net take precedence over archived data.
+- Electrical pad connectivity uses filled lands and plated barrels. Subtracting
+  drills incorrectly disconnected concentric connector/test pads. Polygon holes
+  and nonplated interlayer separation remain part of connectivity.
+- Rounded mask expansion offsets the corner radius by the expansion distance;
+  retaining the copper corner percentage after enlarging the box distorted the
+  aperture. This geometry is shared with mask display/export.
+- Electrical checks exempt copper pairs owned by the same declared Net Tie
+  footprint (component kinds 3/4), including native kind-version precedence.
+  Copper outside that footprint continues to be checked.
+
+Altium's CHECKBADCONNECTIONS option also asks for poor/incomplete contact
+verification. Island connectivity alone does not implement it; enabled requests
+now appear explicitly under unchecked conditions. A zero-finding report with
+unchecked conditions is not a complete Altium-equivalent DRC pass.
+
+Reference semantics were cross-checked against Altium's
+[electrical rules](https://www.altium.com/documentation/altium-designer/pcb/design-rule-types/electrical),
+[manufacturing rules](https://www.altium.com/documentation/altium-designer/pcb/design-rule-types/manufacturing),
+and [net tie component behavior](https://www.altium.com/documentation/altium-designer/pcb/placing-components).
+The live installed 24.4.1 observations take precedence over newer documentation.
+Independent native probe copies are used to measure boundary behavior; changing
+all geometry comparisons to a common tolerance would hide real mask violations.
+
+Complete boundary-probe runs on independent ReferenceA-based copies show a copper
+clearance deficit of 19 native units (48.26 nm) accepted and 20 units (50.8 nm)
+reported. Electrical copper-pair DRC therefore uses a measured 50 nm comparison
+margin. The raw rule value, routing constraint, annular ring, outline/hole and
+mask comparisons are unchanged. A complete combined probe report has 1368
+findings, including unrelated original-copy findings; its isolated parallel-track
+cases establish this boundary. The earlier limit-500 report was truncated and
+cannot establish negative controls. Native-grid quantization must be included
+when comparing authored probe dimensions with their reimported coordinates.
+
+Manual mask primitives and rounded free-pad probes still report a one-unit
+(2.54 nm) mask deficit in Altium. The electrical margin must not be applied to
+mask slivers. After the confirmed corrections and electrical boundary change,
+ReferenceE has 76 PCBCraft findings versus zero in Altium: 75 mask slivers with 3-5 nm
+deficits and one 0.15 mm same-net via-to-pad clearance on Mid-Layer 2 under a
+0.2 mm rule. These are unresolved differences, not accepted violations or a
+verified Altium-equivalent pass. A separate native copy containing eight
+translated ReferenceE mask pairs is prepared for isolation of those discrepancies.

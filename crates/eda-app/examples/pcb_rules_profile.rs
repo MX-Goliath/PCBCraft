@@ -69,6 +69,61 @@ fn main() -> Result<(), String> {
     }
     let board = document.pcb.ok_or("Not a PCB")?;
     let args: Vec<_> = std::env::args().collect();
+    if args.iter().any(|a| a == "--pairs") {
+        println!(
+            "{}",
+            serde_json::json!({
+                "pairs":board.differential_pairs,
+            "classes":board.classes.iter().filter(|c| eda_core::pcb_rules::text(c,"KIND") == "6").collect::<Vec<_>>(),
+            })
+        );
+        return Ok(());
+    }
+    if args.iter().any(|a| a == "--audit-queries") {
+        let mut scopes =
+            std::collections::BTreeMap::<String, std::collections::BTreeSet<String>>::new();
+        for rule in board
+            .rules
+            .iter()
+            .filter(|r| eda_core::pcb_rules::enabled(r))
+        {
+            for key in ["SCOPE1EXPRESSION", "SCOPE2EXPRESSION"] {
+                let expression = eda_core::pcb_rules::text(rule, key);
+                if !expression.trim().is_empty() {
+                    scopes.entry(expression.into()).or_default().insert(format!(
+                        "{}: {} ({key})",
+                        eda_core::pcb_rules::text(rule, "RULEKIND"),
+                        eda_core::pcb_rules::text(rule, "NAME"),
+                    ));
+                }
+            }
+        }
+        let probe = eda_core::pcb_rules::probe(
+            eda_core::pcb::TOP,
+            None,
+            eda_geom::Point::default(),
+            200_000,
+        );
+        let mut unsupported = Vec::new();
+        for (expression, rules) in &scopes {
+            if let Some(error) = std::iter::once(&probe)
+                .chain(board.items.iter())
+                .find_map(|item| eda_core::pcb_rules::query(&board, item, expression).err())
+            {
+                unsupported.push(serde_json::json!({
+                    "expression": expression, "error": error, "rules": rules,
+                }));
+            }
+        }
+        println!(
+            "{}",
+            serde_json::json!({
+                "items":board.items.len(), "expressions":scopes.len(),
+                "unsupported":unsupported, "source_written":false,
+            })
+        );
+        return Ok(());
+    }
     if args.iter().any(|a| a == "--stack") {
         for (key, value) in &board.properties {
             if key.contains("VIA") || key.contains("DRILL") || key.contains("LAYERPAIR") {

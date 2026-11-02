@@ -2404,3 +2404,153 @@ Cause, implementation and validation: docs/pcb-update/INTERACTIVE_ROUTING.md.
   redacted-source-sha256.
   Sibling controls-verification.json and windows-portable-2026-11-02-controls-tests.log
   record the checks and known failure. Original dated portable archive preserved.
+
+### 2026-11-02 — imported PCB query failures blocking routing
+
+- Audited enabled scope expressions in 21 native PCB files available on this
+  machine, read-only. Reproduced RouteSession startup failures on ReferenceD
+  (InDifferentialPair), ReferenceE (OnTopLayer), and ReferenceC (HasFootprintPad). Native
+  original file hashes are retained in .tools/query-routes-before.json.
+- Added exact owned-pad footprint/name matching, differential pair membership
+  from POSITIVENETNAME/NEGATIVENETNAME and native class KIND=6, explicit copper
+  layer predicates, side/silkscreen/mid-layer predicates, hole shape/plating and
+  DrillType scopes, Name Like/inequality, boolean-string comparisons, function
+  whitespace, symbolic logical operators, XOR and flat long boolean chains.
+  Existing OnTop/OnBottom now include their associated overlay/paste/solder
+  layers, as documented by Altium. Unknown predicates remain errors.
+- Rule resolution errors now identify rule name, kind and SCOPE1/2EXPRESSION.
+  No rules are disabled, no generic fallback replaces an unknown scope, and
+  imported native records are not rewritten by evaluation. Builder exposes
+  the newly supported differential-pair/class choices.
+- Six regressions cover scopes, native legacy literal pad identifiers, strict
+  unknown rejection, layer/side distinctions and route preview/place/finish plus
+  exact History Undo. The read-only profile tools gain --audit-queries, --pairs
+  and --net. Source byte equality replaces a reimport equality check in the
+  routing probe; exact loaded-model Undo remains independently asserted.
+- Initial repeated audits: routing-related query errors removed from ReferenceD, ReferenceE,
+  ReferenceC and ReferenceF. ReferenceG retains the ambiguous numeric-OR annular scope
+  ((PadXSize_AllLayers or PadYSize_AllLayers)> HoleDiameter); no guessed numeric
+  semantics are installed. Height/CompPinCount/component package predicates and
+  unsupported constraint families remain outside the implemented evaluator.
+- Final workspace, native routing and Windows portable GUI results follow.
+- User clarified that the reported project is on another PC and unavailable
+  here. Local reproduction is evidence for the exercised scopes, not a claim
+  that the absent board has been tested.
+- Final native probes PASS on ReferenceD (29,362 items, D_P), ReferenceE (41,409 items, GND)
+  and ReferenceC (27,202 items, ExampleOutput): startup, nonzero preview, place, finish,
+  exact Undo and unchanged source bytes/hashes. Existing STEP-import warnings
+  remain on ReferenceD/ReferenceE; they do not originate in query evaluation. Results:
+  .tools/query-routes-final.json. Audit before/after:
+  .tools/query-audit-before.json and .tools/query-audit-after.json.
+- Windows strict Clippy/all-targets PASS. Final workspace tests: 683 PASS,
+  one unchanged pre-existing GPU dithering pixel comparison FAIL (Rgba8Unorm,
+  frame 13, dither=true, difference 4 vs tolerance 3). App 153, core 279, geom 1,
+  IO 139 all PASS; renderer 111 PASS / 1 FAIL. No tolerance/test was weakened.
+  Full log: .tools/query-compat-tests-final.log. Portable GUI results follow.
+- Final release portable GUI PASS on an authored byte-identical ReferenceE copy:
+  Fit Board, select/zoom CAN1-H area, Ctrl+W, GND via, nonzero route preview,
+  place, Escape finish. GND length changes 435.467 -> 436.452 mm. One Ctrl+Z
+  removes the branch and restores the clean document title. Closed without
+  saving; original and research-copy SHA256 remain unchanged. An automatic
+  repour status appeared briefly after finish; Undo restored the original view.
+- Portable launched from TEMP with Windows-only PATH, writes Data/app.ron,
+  and passes ZIP CRC/executable-manifest/no-test-state checks. Delivery:
+  dist/PCBCraft-0.1.0-windows-x64-portable-2026-11-02-query-fix.zip,
+  13,817,186 bytes, SHA256
+  redacted-source-sha256.
+  Sibling query-fix-verification.json and windows-portable-2026-11-02-query-fix-tests.log
+  record the results. The controls portable archive is preserved separately.
+
+### 2026-11-02 - slow batch and online DRC
+
+- Reproduced severe latency on read-only ReferenceE (41,409 items), ReferenceD (29,362),
+  ReferenceC (27,202), and ReferenceA (982). Kept a separately built pre-optimization checker
+  using the same query evaluator and stable serialized IDs for comparison.
+  Initial unbuffered JSON loading was separated from measured DRC time; later
+  measurements use direct buffered snapshots and time only checking.
+- Prepared priority/scope/matrix caches, scoped per-item broad-phase gaps,
+  cached bounds and complex-pour segment indexes, prepared board edges and
+  identical per-item/layer annular reuse. Removed per-item full-board cutout scans.
+  Spatial mask merging retains original merge/source order; exposed pad clipping
+  is cached and far silk pairs do not consume the check budget. Unknown scopes
+  keep conservative diagnostic evaluation. Connectivity skips already-joined nodes.
+- Honor configured finding limits with ordered-prefix results and explicit
+  truncation; exactly-N complete checks retain complete status. Later diagnostic
+  phases can be unvisited only when the report is explicitly incomplete.
+- Online checks now debounce the last edit/preview/settings change, cancel stale
+  work/manual preemption/document closure, never overlap two jobs for a document,
+  discard cancelled/racing results, avoid double cloning, and stop idle polling.
+- Regressions cover priority/scope/error equivalence, duplicate IDs/probes,
+  exact all-pairs copper/matrix/footprint behavior and report prefixes, exact
+  segment-index distances with holes/islands, exhaustive silk mask/exposed copper,
+  distant-pair budget preservation, concave/convex outlines, rare large-gap scopes,
+  mid-check cancellation, stable online revisions and manual preemption/closure.
+- Final timing/equivalence, workspace and portable GUI results follow.
+- Optimization checkpoint before the subsequent Altium correctness comparison.
+  These counts/timings and the following portable hash describe that checkpoint.
+- Uncontended dev-optimized timings, excluding load, median of three
+  at limit 500: ReferenceA batch 0.154 s / online 0.134 s; ReferenceE batch 0.381 s / online 0.387 s; ReferenceD batch 1.280 s / online 1.265 s; ReferenceC batch 0.594 s / online 0.586 s.
+- Complete single passes at limit 50,000 all finish without truncation: ReferenceA batch 0.146 s / online 0.126 s; ReferenceE batch 8.802 s / online 6.655 s; ReferenceD batch 12.897 s / online 8.240 s; ReferenceC batch 8.137 s / online 6.707 s.
+- Full original ReferenceA report is identical (277 batch / 226 online); original
+  1.105/1.060 s vs new median 0.154/0.134 s. Exact prior-engine comparison
+  also passes on 1/16 native ReferenceE/ReferenceD/ReferenceC samples in both modes. New full
+  ReferenceD (30,847 findings) and ReferenceC (5,055) exactly match the intermediate
+  exhaustive-geometry reports; original large-board jobs exceeded 180 s
+  except ReferenceC online at 129.086 s (old work continued after report cap).
+- Final Windows workspace: app 155, core 288, geom 1, IO 139 and renderer
+  111 PASS; one unchanged renderer GPU dithering comparison FAIL (frame 13,
+  Rgba8Unorm, 4 vs tolerance 3). Total 694 PASS / 1 FAIL. Fmt/strict Clippy PASS.
+- Extracted release portable GUI PASS on the authored unchanged ReferenceE copy:
+  Windows-only PATH/TEMP launch, Fit Board, online markers, manual 500 findings
+  (43 unchecked, incomplete) and full 10,871 findings (44 unchecked, complete).
+  Title stays clean; no native Save. Closed the test instance. ZIP CRC, EXE
+  manifest hash and absent archived smoke state PASS; Data/app.ron is created.
+- Delivery: dist/PCBCraft-0.1.0-windows-x64-portable-2026-11-02-drc-fix.zip,
+  13,859,894 bytes, SHA256 redacted-source-sha256.
+  Prior query/controls archives preserved. Dated verification JSON and interactive
+  timing HTML are included separately in dist/. The reference checker retained
+  the shared connectivity root-skip optimization; measured DRC-loop comparisons
+  are conservative for that part. Linux GUI/performance was not exercised.
+
+### 2026-11-02 - Altium comparison and electrical boundary checkpoint
+
+- The optimization checkpoint above predates intentional correctness changes.
+  On the byte-identical ReferenceE research copy, Altium 24.4.1 completes with zero
+  violations twice (10 s and 8 s, Stop when 50,000). Source SHA256 remains
+  redacted-source-sha256.
+- Corrected circular annular-ring measurement, effective polygon nets including
+  read-only outlines, filled-land electrical connectivity, rounded mask offsets
+  and owned Net Tie copper. Poor-contact CHECKBADCONNECTIONS is explicitly
+  unchecked rather than treated as satisfied by island connectivity.
+- Independent native probes: complete combined report has 1368 findings,
+  including unrelated ReferenceA-copy findings. The isolated copper pairs accept
+  48.26 nm deficit and report 50.8 nm. Electrical copper-pair DRC now uses a
+  measured 50 nm margin. Mask probes report a 2.54 nm deficit; mask, annular,
+  outline/hole comparisons and routing rule values were not relaxed.
+- Same-board ReferenceE findings fall from 10871 to 76, without truncation. Remaining
+  differences: 75 mask slivers at 3-5 nm deficit, one 0.15 mm internal same-net
+  via-pad pair against a 0.2 mm rule. Altium has zero; parity remains incomplete.
+  A separate drc-reference-e-mask-isolated.PcbDoc contains eight translated ReferenceE mask
+  pairs. Its native run is awaiting user assistance: capture became black and
+  refreshed activation returned "failed to activate captured window". The
+  preceding combined full run was launched successfully by Computer Use.
+- Fresh idle dev-optimized full limit-50,000 batch/online DRC times, excluding
+  import/deserialization and scheduling delay, single sequential passes:
+  ReferenceA 0.136/0.124 s (93/42 findings, 21 unchecked);
+  ReferenceE 7.781/6.029 s (76/76, 45/44 unchecked);
+  ReferenceD 11.070/7.244 s (15525/15514, 17 unchecked);
+  ReferenceC 7.569/6.237 s (61/61, 27/26 unchecked). No report is truncated.
+  Other boards have not been compared with native Altium DRC; these counts
+  establish timing only, not correctness of every finding. Native source hashes
+  and the ReferenceE copy all remain unchanged.
+- Fmt and strict workspace/all-target Clippy PASS. Workspace: app 155, core 295,
+  geom 1, IO 139, renderer 111 PASS; same existing GPU frame-13 dithering FAIL
+  (Rgba8Unorm, 4 differing pixels vs tolerance 3). Total 701 PASS / 1 FAIL.
+- Updated release portable ZIP/import/dependency/license/CRC/manifest checks
+  PASS. Archive has empty Data and no smoke state. Current binary has not been
+  rechecked in a visible GUI while Computer Use activation is unavailable; the
+  earlier scheduler/UI smoke observation above is historical, not this binary.
+  dist/PCBCraft-0.1.0-windows-x64-portable-2026-11-02-drc-fix.zip,
+  13,856,945 bytes, SHA256
+  redacted-source-sha256.
+  This is a reviewable checkpoint, not completion of the Altium parity stage.

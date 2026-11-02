@@ -8,8 +8,9 @@ fn main() -> Result<(), String> {
     let path = PathBuf::from(
         std::env::args_os()
             .nth(1)
-            .ok_or("Usage: pcb_route_profile INPUT.PcbDoc")?,
+            .ok_or("Usage: pcb_route_profile INPUT.PcbDoc [--net NAME] [--at X Y]")?,
     );
+    let original_bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
     let doc = eda_io::load(&path)?;
     let board = doc.pcb.as_ref().ok_or("Not a PCB")?;
     let show_rules = std::env::args_os().any(|arg| arg == "--rules");
@@ -41,6 +42,11 @@ fn main() -> Result<(), String> {
             })
         })
         .transpose()?;
+    let net_name = args
+        .iter()
+        .position(|a| a == "--net")
+        .map(|index| args.get(index + 1).ok_or("--net requires a net name"))
+        .transpose()?;
     let pad = if let Some(at) = at {
         let hit = eda_core::pcb_route::target(board, at, TOP, 2_000)
             .ok_or("No routing target at --at")?;
@@ -49,7 +55,14 @@ fn main() -> Result<(), String> {
         board
             .items
             .iter()
-            .find(|i| i.net.is_some() && i.layer == TOP && matches!(i.shape, Shape::Pad { .. }))
+            .find(|i| {
+                i.net.is_some()
+                    && i.layer == TOP
+                    && matches!(i.shape, Shape::Pad { .. })
+                    && net_name.is_none_or(|name| {
+                        board.net_name(board.item_net(i)).eq_ignore_ascii_case(name)
+                    })
+            })
             .ok_or("No pad")?
     };
     let start = Instant::now();
@@ -136,6 +149,11 @@ fn main() -> Result<(), String> {
         "preview_place_finish_undo_ms={:.2} end={best:?}; source not written",
         start.elapsed().as_secs_f64() * 1000.
     );
-    assert_eq!(doc, eda_io::load(&path)?);
+    // Undo is checked against the exact loaded model above. Verify the source
+    // directly: reimport may assign new IDs to native records without identities.
+    assert_eq!(
+        original_bytes,
+        std::fs::read(&path).map_err(|e| e.to_string())?
+    );
     Ok(())
 }
