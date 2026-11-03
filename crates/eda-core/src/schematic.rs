@@ -539,6 +539,19 @@ impl Schematic {
             }
         }
         let component_ids = ids.clone();
+        let owners: std::collections::HashMap<_, _> = self
+            .primitives
+            .iter()
+            .filter(|p| {
+                matches!(
+                    p.kind,
+                    SchPrimitiveKind::SheetSymbol { .. }
+                        | SchPrimitiveKind::ParameterSet { .. }
+                        | SchPrimitiveKind::HarnessConnector { .. }
+                )
+            })
+            .map(|p| (p.id, p))
+            .collect();
         for p in self.primitives.iter().chain(&self.parameter_objects) {
             let font_valid = match &p.kind {
                 SchPrimitiveKind::Text { font, .. }
@@ -675,17 +688,7 @@ impl Schematic {
                 ));
             }
             if let Some(parent) = p.presentation.parent {
-                if p.component.is_some()
-                    || !self.primitives.iter().any(|p| {
-                        p.id == parent
-                            && matches!(
-                                p.kind,
-                                SchPrimitiveKind::SheetSymbol { .. }
-                                    | SchPrimitiveKind::ParameterSet { .. }
-                                    | SchPrimitiveKind::HarnessConnector { .. }
-                            )
-                    })
-                {
+                if p.component.is_some() || !owners.contains_key(&parent) {
                     return Err("Invalid Sheet Symbol owner".into());
                 }
             } else if matches!(
@@ -695,8 +698,8 @@ impl Schematic {
                 return Err("Sheet Entry requires a Sheet Symbol owner".into());
             }
             if let SchPrimitiveKind::HarnessEntry { position, side, .. } = p.kind {
-                let parent = self
-                    .primitive(p.presentation.parent.ok_or("Missing Harness Connector")?)
+                let parent = owners
+                    .get(&p.presentation.parent.ok_or("Missing Harness Connector")?)
                     .ok_or("Missing Harness Connector")?;
                 if let SchPrimitiveKind::HarnessConnector { a, b, .. } = parent.kind {
                     let on_edge = match side {
@@ -721,5 +724,15 @@ impl Schematic {
             .iter()
             .chain(&self.parameter_objects)
             .find(|p| p.id == id)
+    }
+
+    /// Transaction-local index; public scene vectors remain freely editable.
+    /// Do not retain it across edits or history swaps.
+    pub(crate) fn primitive_index(&self) -> std::collections::HashMap<Uuid, &SchPrimitive> {
+        self.primitives
+            .iter()
+            .chain(&self.parameter_objects)
+            .map(|p| (p.id, p))
+            .collect()
     }
 }

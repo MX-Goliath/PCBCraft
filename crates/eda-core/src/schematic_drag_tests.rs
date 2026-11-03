@@ -1,6 +1,23 @@
 use super::*;
 
 #[test]
+fn spatial_drag_keeps_shared_one_vertex_wire_endpoints_fixed() {
+    let (mut doc, id, at, _) = fixture();
+    let a = add_wire(&mut doc, vec![at]);
+    let b = add_wire(&mut doc, vec![at]);
+    let delta = Point::mm(5, 5);
+    let next = preview(&doc, &command(vec![id], 0, delta)).unwrap();
+    assert_eq!(path(&next, a), &[at]);
+    assert_eq!(path(&next, b), &[at]);
+    let to = transform_point(at, Point::default(), 0, delta).unwrap();
+    assert!(next.schematic.as_ref().unwrap().primitives.iter().any(|p| {
+        p.id != a
+            && p.id != b
+            && wire(p).is_some_and(|path| path.first() == Some(&at) && path.last() == Some(&to))
+    }));
+}
+
+#[test]
 fn port_far_end_connects_snaps_and_drags_without_using_io_direction() {
     for style in [0, 4] {
         for io_type in 0..4 {

@@ -276,11 +276,6 @@ impl Scene<'_> {
         );
         let scale = size / TEXT_LAYOUT_SIZE;
         let justification = justification.min(8);
-        let justification = if orientation % 4 >= 2 {
-            8 - justification
-        } else {
-            justification
-        };
         let h = justification % 3;
         let v = (justification / 3).min(2);
         let anchor = Align2([
@@ -295,12 +290,10 @@ impl Scene<'_> {
                 _ => egui::Align::Max,
             },
         ]);
-        // Altium text remains readable at 180/270: those orientations alter the anchor.
-        let angle = if orientation % 2 == 1 {
-            -std::f32::consts::FRAC_PI_2
-        } else {
-            0.0
-        };
+        // Document angles are counterclockwise; screen Y points down. Preserve
+        // both the text orientation and its local anchor (Altium's Display
+        // Strings As Rotated mode), including upside-down/left-reading text.
+        let angle = -((orientation % 4) as f32) * std::f32::consts::FRAC_PI_2;
         let offset = anchor.anchor_size(Pos2::ZERO, galley.size()).min.to_vec2();
         let rotated = egui::emath::Rot2::from_angle(angle) * offset;
         let mut shape = TextShape::new(rotated.to_pos2(), galley, c).with_angle(angle);
@@ -404,6 +397,9 @@ impl Scene<'_> {
         bounds
     }
     fn primitive(&self, p: &SchPrimitive, pointer: Option<Pos2>) -> (Rect, bool) {
+        if p.presentation.hidden {
+            return (Rect::NOTHING, false);
+        }
         let bundle_terminal = !p.presentation.harness_type.is_empty()
             && matches!(p.kind, K::Port { .. } | K::SheetEntry { .. });
         let c = color(if bundle_terminal {
@@ -584,12 +580,14 @@ impl Scene<'_> {
                 }
                 let mut bounds =
                     Rect::from_two_pos(a - across * size * 0.5, b + d * size + across * size * 0.5);
-                if !label.is_empty() && !pair {
+                // Small/Tiny directives are just markers. Their stored label is
+                // still editable metadata, not another visible parameter.
+                if *style == 0 && !label.is_empty() && !pair {
                     bounds = bounds.union(self.label(
                         b + d * size * 0.75,
                         label,
                         self.schematic.map_or(0, |s| s.sheet.system_font),
-                        orientation % 2,
+                        *orientation,
                         3,
                         c,
                     ));
@@ -2505,6 +2503,104 @@ mod tests {
             })
             .collect();
         (points, rows)
+    }
+
+    #[test]
+    fn text_rotation_matches_document_geometry_for_every_angle_and_anchor() {
+        let ctx = text_context(1.5);
+        for justification in 0..9 {
+            let (reference, _) = rendered_text(&ctx, 12., 0, justification, false);
+            for turns in 0..4 {
+                let (actual, _) = rendered_text(&ctx, 12., turns, justification, false);
+                assert_eq!(reference.len(), actual.len());
+                for (p, q) in reference.iter().zip(actual) {
+                    let (x, y) = (p[0] - 10., p[1] - 25.);
+                    let (x, y) = match turns {
+                        0 => (x, y),
+                        1 => (-y, x),
+                        2 => (-x, -y),
+                        _ => (y, -x),
+                    };
+                    assert!(
+                        (q[0] - (10. + x)).abs() < 0.0002 && (q[1] - (25. + y)).abs() < 0.0002,
+                        "turns={turns}, anchor={justification}: {p:?} -> {q:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn tiny_parameter_sets_omit_the_label_and_hidden_children_never_paint_or_hit() {
+        let ctx = text_context(1.);
+        let camera = Camera::default();
+        for style in 0..2 {
+            for orientation in 0..4 {
+                let mut schematic = Schematic::blank();
+                let parent = eda_core::schematic_directives::primitive(K::ParameterSet {
+                    position: Point::mm(10, 10),
+                    orientation,
+                    name: "Parameter Set".into(),
+                    style,
+                    parameters: std::collections::BTreeMap::from([
+                        ("ClassName".into(), "SecretClass".into()),
+                        ("Visible".into(), "VisibleValue".into()),
+                    ]),
+                    rules: vec![],
+                });
+                let hidden = eda_core::schematic_simulation::parameter(
+                    parent.id,
+                    "ClassName",
+                    "SecretClass",
+                    Point::mm(12, 12),
+                    0,
+                    true,
+                );
+                let visible = eda_core::schematic_simulation::parameter(
+                    parent.id,
+                    "Visible",
+                    "VisibleValue",
+                    Point::mm(15, 15),
+                    0,
+                    false,
+                );
+                schematic.primitives = vec![parent, visible];
+                schematic.parameter_objects.push(hidden);
+                let output = ctx.run(egui::RawInput::default(), |ctx| {
+                    let scene = Scene {
+                        painter: ctx.layer_painter(egui::LayerId::background()),
+                        camera: &camera,
+                        rect: Rect::from_min_size(Pos2::ZERO, Vec2::splat(600.)),
+                        schematic: Some(&schematic),
+                        document_id: Uuid::nil(),
+                        library_preview: false,
+                    };
+                    for p in schematic
+                        .primitives
+                        .iter()
+                        .chain(&schematic.parameter_objects)
+                    {
+                        let (bounds, hit) =
+                            scene.primitive(p, Some(scene.screen(Point::mm(12, 12))));
+                        if p.presentation.hidden {
+                            assert_eq!(bounds, Rect::NOTHING);
+                            assert!(!hit);
+                        }
+                    }
+                });
+                let texts: Vec<_> = output
+                    .shapes
+                    .iter()
+                    .filter_map(|s| match &s.shape {
+                        Shape::Text(t) => Some(t.galley.job.text.as_str()),
+                        _ => None,
+                    })
+                    .collect();
+                assert!(texts.contains(&"VisibleValue"));
+                assert!(!texts.contains(&"SecretClass"));
+                assert_eq!(texts.contains(&"Parameter Set"), style == 0);
+            }
+        }
     }
 
     #[test]

@@ -249,26 +249,27 @@ fn connected_transform_inner(
     if !pivot.valid() || !delta.valid() {
         return Err("Invalid drag coordinates".into());
     }
-    let mut selected = Fragment {
-        fonts: s.fonts.clone(),
-        images: s.images.clone(),
-        ..Default::default()
-    };
-    let mut seen = BTreeSet::new();
-    for id in ids {
-        let f = extract(s, *id)?;
-        for c in f.components {
-            if seen.insert(c.id) {
-                selected.components.push(c);
-            }
-        }
-        for p in f.primitives {
-            if seen.insert(p.id) {
-                selected.primitives.push(p);
-            }
-        }
-    }
+    let mut selected = extract_many(s, ids)?;
+    selected.images = s.images.clone();
+    let seen: BTreeSet<_> = selected
+        .components
+        .iter()
+        .map(|c| c.id)
+        .chain(selected.primitives.iter().map(|p| p.id))
+        .collect();
     let mut moved = BTreeMap::<Node, (Point, Uuid)>::new();
+    let attachments: Vec<_> = s
+        .primitives
+        .iter()
+        .filter(|p| !seen.contains(&p.id))
+        .flat_map(|p| {
+            pin_ends(p).chain(
+                wire(p)
+                    .into_iter()
+                    .flat_map(|path| path.first().into_iter().chain(path.last()).copied()),
+            )
+        })
+        .collect();
     for p in &selected.primitives {
         for at in pin_ends(p) {
             let to = transform_point(at, pivot, turns, delta)?;
@@ -279,22 +280,12 @@ fn connected_transform_inner(
         if let Some(path) = wire(p) {
             // Explicitly selected wires move rigidly with the group. Their bends,
             // endpoints and existing attachments drive the unselected neighbours.
-            let attachments = s
-                .primitives
-                .iter()
-                .filter(|p| !seen.contains(&p.id))
-                .flat_map(|p| {
-                    let mut nodes: Vec<_> = pin_ends(p).collect();
-                    if let Some(path) = wire(p) {
-                        nodes.extend(path.first().into_iter().chain(path.last()).copied());
-                    }
-                    nodes
-                });
-            for at in path
-                .iter()
-                .copied()
-                .chain(attachments.filter(|at| path.windows(2).any(|e| at.on_segment(e[0], e[1]))))
-            {
+            for at in path.iter().copied().chain(
+                attachments
+                    .iter()
+                    .copied()
+                    .filter(|at| path.windows(2).any(|e| at.on_segment(e[0], e[1]))),
+            ) {
                 let to = transform_point(at, pivot, turns, delta)?;
                 if to != at {
                     moved.insert(key(at), (to, p.id));
@@ -320,26 +311,55 @@ fn connected_transform_inner(
     }
     // Multiple wire branches sharing a moving terminal keep their common node fixed.
     // Stretch a single stem from that node instead of splitting the branch apart.
+    let wires: Vec<_> = s
+        .primitives
+        .iter()
+        .filter_map(|p| wire(p).map(|path| (p, path)))
+        .collect();
+    let wire_index = super::wire_edit::index_wires(wires.iter().map(|(_, path)| *path));
+    // Imported one-vertex wires have endpoints but no indexed edge.
+    let mut isolated_ends = BTreeMap::<Node, usize>::new();
+    for (_, path) in &wires {
+        if let [at] = *path {
+            *isolated_ends.entry(key(*at)).or_default() += 1;
+        }
+    }
+    let selected_wires = super::wire_edit::index_wires(selected.primitives.iter().filter_map(wire));
+    let selected_junctions: BTreeSet<_> = selected
+        .primitives
+        .iter()
+        .filter_map(|p| {
+            if let K::Junction { position, .. } = p.kind {
+                Some(key(position))
+            } else {
+                None
+            }
+        })
+        .collect();
     for node in moved.keys() {
         let at = point(*node);
-        let branches = s
-            .primitives
-            .iter()
-            .filter_map(wire)
-            .map(|path| {
+        let bounds = rstar::AABB::from_point([at.x, at.y]);
+        let containing: BTreeSet<_> = wire_index
+            .locate_in_envelope_intersecting(&bounds)
+            .filter(|e| at.on_segment(e.a, e.b))
+            .map(|e| e.wire)
+            .collect();
+        let branches = containing
+            .into_iter()
+            .map(|i| {
+                let path = wires[i].1;
                 if path.first() == Some(&at) || path.last() == Some(&at) {
                     1
-                } else if path.windows(2).any(|e| at.on_segment(e[0], e[1])) {
-                    2
                 } else {
-                    0
+                    2
                 }
             })
-            .sum::<usize>();
-        let explicit_junction = selected.primitives.iter().any(|p| {
-            matches!(p.kind, K::Junction { position, .. } if key(position) == *node)
-                || wire(p).is_some_and(|path| path.windows(2).any(|e| at.on_segment(e[0], e[1])))
-        });
+            .sum::<usize>()
+            + isolated_ends.get(node).copied().unwrap_or(0);
+        let explicit_junction = selected_junctions.contains(node)
+            || selected_wires
+                .locate_in_envelope_intersecting(&bounds)
+                .any(|e| at.on_segment(e.a, e.b));
         if branches > 1 && !explicit_junction {
             fixed.insert(*node);
         }
@@ -372,6 +392,15 @@ pub(super) fn stretch_wires(
             );
         }
     }
+    let anchor_index = rstar::RTree::bulk_load(anchors.iter().map(|n| [n.0, n.1]).collect());
+    let moving_index = rstar::RTree::bulk_load(
+        moved
+            .keys()
+            .filter(|n| !fixed.contains(n))
+            .map(|n| [n.0, n.1])
+            .collect(),
+    );
+    let occupied = s.primitive_index();
     for p in &s.primitives {
         if seen.contains(&p.id) {
             continue;
@@ -382,17 +411,18 @@ pub(super) fn stretch_wires(
         if path.len() < 2 {
             continue;
         }
-        if !moved.keys().any(|n| {
-            !fixed.contains(n) && path.windows(2).any(|e| point(*n).on_segment(e[0], e[1]))
+        if !path.windows(2).any(|e| {
+            moving_index
+                .locate_in_envelope_intersecting(&edge_bounds(e))
+                .any(|n| Point { x: n[0], y: n[1] }.on_segment(e[0], e[1]))
         }) {
             continue;
         }
         let mut split = vec![path[0]];
         for e in path.windows(2) {
-            let mut interior: Vec<_> = anchors
-                .iter()
-                .copied()
-                .map(point)
+            let mut interior: Vec<_> = anchor_index
+                .locate_in_envelope_intersecting(&edge_bounds(e))
+                .map(|n| Point { x: n[0], y: n[1] })
                 .filter(|at| *at != e[0] && *at != e[1] && at.on_segment(e[0], e[1]))
                 .collect();
             interior.sort_by_key(|at| {
@@ -474,7 +504,7 @@ pub(super) fn stretch_wires(
         let mut salt = 0u32;
         loop {
             p.id = Uuid::new_v5(owner, format!("drag-stem:{node:?}:{salt}").as_bytes());
-            if s.primitive(p.id).is_none() {
+            if !occupied.contains_key(&p.id) {
                 break;
             }
             salt += 1;
@@ -501,4 +531,11 @@ pub(super) fn stretch_wires(
         result.primitives.push(p);
     }
     Ok(())
+}
+
+fn edge_bounds(e: &[Point]) -> rstar::AABB<[i64; 2]> {
+    rstar::AABB::from_corners(
+        [e[0].x.min(e[1].x), e[0].y.min(e[1].y)],
+        [e[0].x.max(e[1].x), e[0].y.max(e[1].y)],
+    )
 }

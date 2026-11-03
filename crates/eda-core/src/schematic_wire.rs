@@ -3,6 +3,46 @@ use super::drag::{clean, key, pin_ends, point, reroute, stretch_wires, wire};
 use super::*;
 use std::collections::{BTreeMap, BTreeSet};
 
+/// Conservative integer bounds only prune candidates; electrical predicates
+/// below still use exact document geometry (no floating point snapping).
+pub(super) struct IndexedWireEdge {
+    pub wire: usize,
+    pub edge: usize,
+    pub a: Point,
+    pub b: Point,
+}
+
+impl rstar::RTreeObject for IndexedWireEdge {
+    type Envelope = rstar::AABB<[i64; 2]>;
+
+    fn envelope(&self) -> Self::Envelope {
+        rstar::AABB::from_corners(
+            [self.a.x.min(self.b.x), self.a.y.min(self.b.y)],
+            [self.a.x.max(self.b.x), self.a.y.max(self.b.y)],
+        )
+    }
+}
+
+pub(super) fn index_wires<'a>(
+    paths: impl Iterator<Item = &'a [Point]>,
+) -> rstar::RTree<IndexedWireEdge> {
+    rstar::RTree::bulk_load(
+        paths
+            .enumerate()
+            .flat_map(|(wire, path)| {
+                path.windows(2)
+                    .enumerate()
+                    .map(move |(edge, e)| IndexedWireEdge {
+                        wire,
+                        edge,
+                        a: e[0],
+                        b: e[1],
+                    })
+            })
+            .collect(),
+    )
+}
+
 #[cfg(test)]
 #[path = "schematic_wire_tests.rs"]
 mod tests;
@@ -95,28 +135,34 @@ pub fn junctions<'a>(primitives: impl Iterator<Item = &'a SchPrimitive>) -> Vec<
         );
     }
     let mut dots = Vec::new();
+    let index = index_wires(wires.iter().map(|(_, path)| *path));
     for node in candidates.difference(&manual) {
         let at = point(*node);
         let mut rays = BTreeSet::new();
         let mut color = None;
-        for (p, path) in &wires {
-            for e in path.windows(2).filter(|e| at.on_segment(e[0], e[1])) {
-                color = Some(p.color);
-                for end in e {
-                    let (dx, dy) = (end.x - at.x, end.y - at.y);
-                    if dx != 0 || dy != 0 {
-                        let mut a = dx.unsigned_abs();
-                        let mut b = dy.unsigned_abs();
-                        while b != 0 {
-                            (a, b) = (b, a % b);
-                        }
-                        rays.insert((dx / a as i64, dy / a as i64));
+        let envelope = rstar::AABB::from_point([at.x, at.y]);
+        for e in index
+            .locate_in_envelope_intersecting(&envelope)
+            .filter(|e| at.on_segment(e.a, e.b))
+        {
+            // Preserve the original last-wire colour, independent of tree order.
+            if color.is_none_or(|(wire, _)| e.wire >= wire) {
+                color = Some((e.wire, wires[e.wire].0.color));
+            }
+            for end in [e.a, e.b] {
+                let (dx, dy) = (end.x - at.x, end.y - at.y);
+                if dx != 0 || dy != 0 {
+                    let mut a = dx.unsigned_abs();
+                    let mut b = dy.unsigned_abs();
+                    while b != 0 {
+                        (a, b) = (b, a % b);
                     }
+                    rays.insert((dx / a as i64, dy / a as i64));
                 }
             }
         }
         if rays.len() >= 3 || (rays.len() >= 2 && terminals.contains(node)) {
-            dots.push((at, color.unwrap()));
+            dots.push((at, color.unwrap().1));
         }
     }
     dots

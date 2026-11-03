@@ -162,6 +162,7 @@ pub fn preview(doc: &Document, edit: &Edit) -> Result<Document, String> {
 }
 
 fn refresh_hierarchy(s: &mut Schematic, before: &Schematic) -> Result<(), String> {
+    let previous = before.primitive_index();
     let symbols: Vec<_> = s
         .primitives
         .iter()
@@ -181,7 +182,7 @@ fn refresh_hierarchy(s: &mut Schematic, before: &Schematic) -> Result<(), String
         if a.x >= b.x || a.y <= b.y {
             return Err("Sheet Symbol width and height must be positive".into());
         }
-        let old = before.primitive(symbol.id);
+        let old = previous.get(&symbol.id).copied();
         let old_rect = old.and_then(|p| {
             if let K::SheetSymbol { a, b, .. } = p.kind {
                 Some((a, b))
@@ -194,7 +195,7 @@ fn refresh_hierarchy(s: &mut Schematic, before: &Schematic) -> Result<(), String
             .iter_mut()
             .filter(|p| p.presentation.parent == Some(symbol.id))
         {
-            let previous = before.primitive(child.id);
+            let previous = previous.get(&child.id).copied();
             let unchanged = previous == Some(child);
             let geometry_unchanged = previous.is_some_and(|p| match (&p.kind, &child.kind) {
                 (
@@ -399,27 +400,55 @@ fn referenced_images<'a>(
 }
 
 fn apply_drag_patch(s: &mut Schematic, patch: Fragment) -> Result<(), String> {
+    let components: std::collections::HashMap<_, _> = s
+        .components
+        .iter()
+        .enumerate()
+        .map(|(i, c)| (c.id, i))
+        .collect();
     for component in patch.components {
         let id = component.id;
-        *s.components
-            .iter_mut()
-            .find(|c| c.id == id)
-            .ok_or("Missing drag component")? = component;
+        let index = *components.get(&id).ok_or("Missing drag component")?;
+        s.components[index] = component;
     }
+    let mut primitives: std::collections::HashMap<_, _> = s
+        .primitives
+        .iter()
+        .enumerate()
+        .map(|(i, p)| (p.id, (false, i)))
+        .chain(
+            s.parameter_objects
+                .iter()
+                .enumerate()
+                .map(|(i, p)| (p.id, (true, i))),
+        )
+        .collect();
+    let mut removed = std::collections::HashSet::new();
     for primitive in patch.primitives {
         if matches!(&primitive.kind, K::Polyline { points, electrical, .. } if electrical == "Wire" && points.len() < 2)
         {
-            s.primitives.retain(|p| p.id != primitive.id);
-        } else if let Some(old) = s
-            .primitives
-            .iter_mut()
-            .chain(&mut s.parameter_objects)
-            .find(|p| p.id == primitive.id)
-        {
-            *old = primitive;
+            if let Some(&(false, index)) = primitives.get(&primitive.id) {
+                primitives.remove(&primitive.id);
+                removed.insert(index);
+            }
+        } else if let Some(&(parameter, index)) = primitives.get(&primitive.id) {
+            if parameter {
+                s.parameter_objects[index] = primitive;
+            } else {
+                s.primitives[index] = primitive;
+            }
         } else {
+            primitives.insert(primitive.id, (false, s.primitives.len()));
             s.primitives.push(primitive);
         }
+    }
+    if !removed.is_empty() {
+        let mut index = 0;
+        s.primitives.retain(|_| {
+            let keep = !removed.contains(&index);
+            index += 1;
+            keep
+        });
     }
     Ok(())
 }
@@ -812,6 +841,7 @@ fn apply(s: &mut Schematic, size: &mut Point, edit: &Edit, depth: usize) -> Resu
 }
 
 fn refresh_directive_parameters(s: &mut Schematic, before: &Schematic) -> Result<(), String> {
+    let previous = before.primitive_index();
     // Native parameter children retain their presentation, while the typed fields
     // supply compilation/ECO. Reconcile child edits without overwriting an
     // explicit edit of the typed directive itself.
@@ -834,7 +864,7 @@ fn refresh_directive_parameters(s: &mut Schematic, before: &Schematic) -> Result
         .map(|p| (p.id, children(before, p.id), children(s, p.id)))
         .collect();
     for (id, old_children, new_children) in child_changes {
-        let old = before.primitive(id);
+        let old = previous.get(&id).copied();
         let p = s.primitives.iter_mut().find(|p| p.id == id).unwrap();
         let K::ParameterSet {
             parameters, rules, ..
@@ -895,7 +925,7 @@ fn refresh_directive_parameters(s: &mut Schematic, before: &Schematic) -> Result
             orientation,
             ..
         } = p.kind
-            && let Some(old) = before.primitive(p.id)
+            && let Some(old) = previous.get(&p.id)
             && let K::ParameterSet {
                 position: from,
                 orientation: turns,
@@ -964,7 +994,7 @@ fn refresh_directive_parameters(s: &mut Schematic, before: &Schematic) -> Result
     rule_positions.clear();
     for p in s.primitives.iter_mut().chain(&mut s.parameter_objects) {
         if let Some((pivot, turns, delta)) = p.presentation.parent.and_then(|id| moves.get(&id))
-            && before.primitive(p.id).is_some_and(|old| old.kind == p.kind)
+            && previous.get(&p.id).is_some_and(|old| old.kind == p.kind)
         {
             transform_primitive(p, *pivot, *turns, *delta)?;
         }
@@ -1075,14 +1105,14 @@ fn refresh_parameters(s: &mut Schematic) {
             c.comment = parameter_text(value, &c.parameters, &s.sheet.parameters);
         }
     }
+    let components: std::collections::HashMap<_, _> =
+        s.components.iter().map(|c| (c.id, c)).collect();
     for p in s.primitives.iter_mut().chain(&mut s.parameter_objects) {
         let Some(raw) = &p.presentation.raw_text else {
             continue;
         };
         if let K::Text { text, .. } = &mut p.kind {
-            let c = p
-                .component
-                .and_then(|id| s.components.iter().find(|c| c.id == id));
+            let c = p.component.and_then(|id| components.get(&id).copied());
             *text = if p.text_role == Some(TextRole::Designator) {
                 c.map_or_else(|| raw.clone(), |c| c.designator.clone())
             } else {
@@ -1258,31 +1288,33 @@ pub fn anchor(s: &Schematic, id: Uuid) -> Option<Point> {
         .iter()
         .find(|c| c.id == id)
         .map(|c| c.position)
-        .or_else(|| {
-            s.primitive(id).and_then(|p| match &p.kind {
-                K::Blanket { points, .. } => points.first().copied(),
-                K::CompileMask { a, .. } => Some(*a),
-                K::ParameterSet { position, .. } => Some(*position),
-                K::Polyline { points, .. } => points.first().copied(),
-                K::Bezier { points } => Some(points[0]),
-                K::Rectangle { a, .. }
-                | K::HarnessConnector { a, .. }
-                | K::SheetSymbol { a, .. }
-                | K::TextFrame { a, .. }
-                | K::Image { a, .. }
-                | K::Unsupported { a, .. } => Some(*a),
-                K::Arc { centre, .. } => Some(*centre),
-                K::Text { position, .. }
-                | K::HarnessEntry { position, .. }
-                | K::SheetEntry { position, .. }
-                | K::Pin { position, .. }
-                | K::PowerPort { position, .. }
-                | K::Port { position, .. }
-                | K::Junction { position, .. }
-                | K::NoErc { position }
-                | K::Ieee { position, .. } => Some(*position),
-            })
-        })
+        .or_else(|| s.primitive(id).and_then(primitive_anchor))
+}
+
+pub(super) fn primitive_anchor(p: &SchPrimitive) -> Option<Point> {
+    match &p.kind {
+        K::Blanket { points, .. } => points.first().copied(),
+        K::CompileMask { a, .. } => Some(*a),
+        K::ParameterSet { position, .. } => Some(*position),
+        K::Polyline { points, .. } => points.first().copied(),
+        K::Bezier { points } => Some(points[0]),
+        K::Rectangle { a, .. }
+        | K::HarnessConnector { a, .. }
+        | K::SheetSymbol { a, .. }
+        | K::TextFrame { a, .. }
+        | K::Image { a, .. }
+        | K::Unsupported { a, .. } => Some(*a),
+        K::Arc { centre, .. } => Some(*centre),
+        K::Text { position, .. }
+        | K::HarnessEntry { position, .. }
+        | K::SheetEntry { position, .. }
+        | K::Pin { position, .. }
+        | K::PowerPort { position, .. }
+        | K::Port { position, .. }
+        | K::Junction { position, .. }
+        | K::NoErc { position }
+        | K::Ieee { position, .. } => Some(*position),
+    }
 }
 
 pub fn extract(s: &Schematic, id: Uuid) -> Result<Fragment, String> {
@@ -1303,6 +1335,62 @@ pub fn extract(s: &Schematic, id: Uuid) -> Result<Fragment, String> {
             .cloned()
             .collect(),
     };
+    finish_extract(s, &mut f);
+    if f.components.is_empty() && f.primitives.is_empty() {
+        return Err("Nothing selected".into());
+    }
+    Ok(f)
+}
+
+/// Preserve selection order and native child order without rescanning the whole
+/// sheet for every selected component (including its hidden parameter objects).
+pub(super) fn extract_many(s: &Schematic, ids: &[Uuid]) -> Result<Fragment, String> {
+    if let [id] = ids {
+        return extract(s, *id);
+    }
+    let wanted: std::collections::HashSet<_> = ids.iter().copied().collect();
+    let components: std::collections::HashMap<_, _> =
+        s.components.iter().map(|c| (c.id, c)).collect();
+    let mut children = std::collections::HashMap::<_, Vec<_>>::new();
+    for p in s.primitives.iter().chain(&s.parameter_objects) {
+        for id in [Some(p.id), p.component, p.presentation.parent]
+            .into_iter()
+            .flatten()
+        {
+            if wanted.contains(&id) {
+                children.entry(id).or_default().push(p);
+            }
+        }
+    }
+    let mut result = Fragment {
+        fonts: s.fonts.clone(),
+        ..Default::default()
+    };
+    let mut seen = std::collections::HashSet::new();
+    for id in ids {
+        let component = components.get(id);
+        let primitives = children.get(id);
+        if component.is_none() && primitives.is_none() {
+            return Err("Nothing selected".into());
+        }
+        if let Some(c) = component
+            && seen.insert(c.id)
+        {
+            result.components.push((**c).clone());
+        }
+        if let Some(primitives) = primitives {
+            for p in primitives {
+                if seen.insert(p.id) {
+                    result.primitives.push((**p).clone());
+                }
+            }
+        }
+    }
+    finish_extract(s, &mut result);
+    Ok(result)
+}
+
+fn finish_extract(s: &Schematic, f: &mut Fragment) {
     for p in &mut f.primitives {
         if p.text_role.is_none()
             && let Some(r) = s.records.get(p.source_index as usize)
@@ -1320,9 +1408,6 @@ pub fn extract(s: &Schematic, id: Uuid) -> Result<Fragment, String> {
             };
         }
     }
-    if f.components.is_empty() && f.primitives.is_empty() {
-        return Err("Nothing selected".into());
-    }
     let needed = referenced_images(f.primitives.iter());
     if !needed.is_empty() {
         f.images = if needed.len() == s.images.len()
@@ -1339,7 +1424,6 @@ pub fn extract(s: &Schematic, id: Uuid) -> Result<Fragment, String> {
             )
         };
     }
-    Ok(f)
 }
 
 pub(crate) fn remap_fonts(kind: &mut K, map: &[usize]) -> Result<(), String> {

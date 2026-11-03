@@ -4,6 +4,151 @@ use eda_core::schematic_edit::{self, Edit};
 const ASCII: &[u8] = include_bytes!("../../../fixtures/schematic/minimal.SchDoc");
 
 #[test]
+fn omitted_text_justification_is_independent_of_rotation() {
+    let mut text = ASCII.to_vec();
+    for orientation in 0..4 {
+        text.extend(format!("\n|RECORD=4|OWNERINDEX=0|LOCATION.X=400|LOCATION.Y=400|FONTID=1|TEXT=DefaultAnchor{orientation}|ORIENTATION={orientation}\n|RECORD=41|OWNERINDEX=0|LOCATION.X=500|LOCATION.Y=400|FONTID=1|NAME=ExplicitAnchor{orientation}|TEXT=Value|ORIENTATION={orientation}|JUSTIFICATION=8\n").as_bytes());
+    }
+    for bytes in [text.clone(), binary(&text)] {
+        let doc = import_schematic(&bytes, "Anchors.SchDoc").unwrap();
+        for p in &doc.schematic.as_ref().unwrap().primitives {
+            if let K::Text {
+                text,
+                justification,
+                ..
+            } = &p.kind
+            {
+                if text.starts_with("DefaultAnchor") {
+                    assert_eq!(*justification, 0);
+                } else if p.presentation.name.starts_with("ExplicitAnchor") {
+                    assert_eq!(*justification, 8);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn hidden_directive_parameters_keep_visibility_through_rotation_history_and_native_save() {
+    use eda_core::schematic_edit::Request;
+    // Same Small marker / hidden ClassName combination as the reported sheet.
+    let text = [ASCII, b"\n|RECORD=43|OWNERPARTID=-1|LOCATION.X=400|LOCATION.Y=400|ORIENTATION=1|NAME=Parameter Set|STYLE=1\n"].concat();
+    let owner_index = import_schematic(&text, "Hidden.SchDoc")
+        .unwrap()
+        .schematic
+        .unwrap()
+        .records
+        .len()
+        - 1;
+    let children = format!(
+        "|RECORD=41|OWNERINDEX={owner_index}|OWNERPARTID=-1|LOCATION.X=398|LOCATION.Y=390|FONTID=1|ISHIDDEN=T|NAME=ClassName|TEXT=ExamplePowerClass\n|RECORD=41|OWNERINDEX={owner_index}|OWNERPARTID=-1|LOCATION.X=410|LOCATION.Y=400|FONTID=1|NAME=Visible|TEXT=Shown\n"
+    );
+    let text = [text, children.into_bytes()].concat();
+    for bytes in [text.clone(), binary(&text)] {
+        let original = import_schematic(&bytes, "Hidden.SchDoc").unwrap();
+        let s = original.schematic.as_ref().unwrap();
+        let parent = s
+            .primitives
+            .iter()
+            .find(|p| matches!(p.kind, K::ParameterSet { .. }))
+            .unwrap();
+        let parent_id = parent.id;
+        let hidden = s
+            .primitives
+            .iter()
+            .chain(&s.parameter_objects)
+            .find(|p| {
+                p.presentation.parent == Some(parent_id) && p.presentation.name == "ClassName"
+            })
+            .unwrap();
+        assert!(hidden.presentation.hidden);
+        let hidden_id = hidden.id;
+        let mut doc = original.clone();
+        let mut history = eda_core::History::default();
+        for turn in 1..=4 {
+            history
+                .schematic_edit(
+                    &mut doc,
+                    Request {
+                        document: original.id,
+                        expected_revision: history.revision,
+                        edit: Edit::Transform {
+                            id: parent_id,
+                            pivot: Point::mm(10, 10),
+                            quarter_turns: 1,
+                            delta: Point::default(),
+                        },
+                    },
+                )
+                .unwrap();
+            let s = doc.schematic.as_ref().unwrap();
+            assert!(s.primitive(hidden_id).unwrap().presentation.hidden);
+            let copied = schematic_edit::extract(s, parent_id).unwrap();
+            assert!(
+                copied
+                    .primitives
+                    .iter()
+                    .find(|p| p.id == hidden_id)
+                    .unwrap()
+                    .presentation
+                    .hidden
+            );
+            let saved = serialize(&doc).unwrap();
+            let reopened = import_schematic(&saved, "Hidden.SchDoc").unwrap();
+            let s = reopened.schematic.as_ref().unwrap();
+            let hidden = s
+                .primitives
+                .iter()
+                .chain(&s.parameter_objects)
+                .find(|p| p.presentation.name == "ClassName")
+                .unwrap();
+            assert!(hidden.presentation.hidden, "turn={turn}");
+            assert!(matches!(hidden.kind, K::Text { orientation, .. } if orientation == turn % 4));
+            let shown = s
+                .primitives
+                .iter()
+                .find(|p| p.presentation.name == "Visible")
+                .unwrap();
+            assert!(!shown.presentation.hidden);
+            // Copy/paste must retain visibility as well as typed parameter values.
+            let duplicate = copied
+                .fresh_copy()
+                .transformed(Point::default(), 0, Point::mm(50, 0))
+                .unwrap();
+            let duplicate = edit(&doc, Edit::Insert(duplicate));
+            assert_eq!(
+                duplicate
+                    .schematic
+                    .as_ref()
+                    .unwrap()
+                    .primitives
+                    .iter()
+                    .chain(&duplicate.schematic.as_ref().unwrap().parameter_objects)
+                    .filter(|p| p.presentation.name == "ClassName" && p.presentation.hidden)
+                    .count(),
+                2
+            );
+        }
+        for _ in 0..4 {
+            history.undo(&mut doc);
+        }
+        assert_eq!(doc, original);
+        for _ in 0..4 {
+            history.redo(&mut doc);
+        }
+        assert!(
+            doc.schematic
+                .as_ref()
+                .unwrap()
+                .primitive(hidden_id)
+                .unwrap()
+                .presentation
+                .hidden
+        );
+    }
+}
+
+#[test]
 fn new_native_sheet_saves_geometry_and_sheet_settings() {
     let doc = super::super::new_schematic("Sheet1.SchDoc").unwrap();
     let mut sheet = doc.schematic.as_ref().unwrap().sheet.clone();

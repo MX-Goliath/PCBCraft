@@ -2593,3 +2593,106 @@ Cause, implementation and validation: docs/pcb-update/INTERACTIVE_ROUTING.md.
   writing, complete multipart/Repeat/channel behavior, UID repair, reports,
   other assembly outputs and exact UI parity remain unfinished. No new portable
   release was requested or built for this checkpoint.
+
+### 2026-11-03 - schematic editing latency
+
+- User reported severe lag during schematic editing. Initial read-only CPU
+  diagnostic on ReferenceCControl.SchDoc (125 components, 2162 scene
+  primitives, 3476 parameter objects) measured Move/Drag/wire previews at
+  112.638/171.288/172.268 ms. These are diagnostic means of five operations,
+  not native window latency or a release benchmark.
+- Removed repeated document-wide identity searches from preview differences,
+  patch application, owner validation, parameter expansion and hierarchy/
+  directive reconciliation. Added exact-integer R-tree candidate pruning for
+  derived junctions and the changed-wire overlap closure. Existing exact
+  geometric predicates, stable wire colour/order and unrelated native overlaps
+  remain authoritative.
+- A wider probe exposed remaining group Move latency (35/56 ms on Con/Pow).
+  Added indexed selection roots and grouped extraction, shared with connected
+  Drag. Selection/child ordering, hidden parameters, native text roles and image
+  filtering are checked against independent single-object extraction results.
+- All-component connected Drag then exposed a separate 171/220 ms Con/Pow
+  path. Added spatial branch/moving-point/anchor queries, shared attachment
+  collection and indexed stem-ID checks. Cleanup now rejects unrelated tips
+  before cloning paths/styles. One-vertex imported wire branch semantics have
+  a dedicated regression; existing exact overlap/topology tests remain active.
+- Added a bounded revision/document/command preview cache. Unchanged previews
+  stop scheduling frames; eventless follow-up paints no longer recreate UUIDs
+  for placement tools. Core validation, atomic commits and Undo/Redo remain in
+  the edit path. No Altium project/source file was changed.
+- Added exhaustive junction-reference, transitive overlap/history, cached
+  Undo/Redo/document isolation and real egui stationary Move/Place scheduling
+  regressions. The read-only schematic_edit_profile example covers common
+  editing operations and CPU frame tessellation; methodology and limitations
+  are in docs/schematic-performance.md.
+- Real-window verification attempted with the bundled Computer Use skill.
+  Both list_windows and refreshed list_apps returned "Computer Use native pipe
+  is unavailable: failed to connect native pipe ... (os error 2)". No current
+  Windows visual/interaction success is claimed; Linux runtime is unverified.
+- User interrupted after the parallel rebuild exhausted memory. No compiler or
+  linker processes remained on inspection. PowerShell cleanup was rejected by
+  automatic policy; standard `cargo clean --profile dev` succeeded and removed
+  29.1 GiB of generated artifacts. Source projects and release outputs retained.
+  Added `.cargo/config.toml` with one build job to bound compiler/linker
+  concurrency on this 16 GB machine; subsequent verification runs serially.
+- Serial dev app/probe build PASS after cleanup (cold dependencies: 32m 07s).
+  Repeated read-only CPU corpus with no competing compiler: Con Move/Drag/wire
+  11.030/12.224/8.633 ms; all-component group Move/Drag 21.683/39.271 ms.
+  Pow (211 components, 5643 parameters) Move/Drag/wire 16.127/18.592/15.485 ms;
+  all-component group Move/Drag 32.721/57.935 ms. Large connected group edits
+  remain more expensive than single edits; no universal 60 fps claim. Updated
+  raw report includes all operations; all four input SHA-256 values unchanged.
+- Final validation: cargo fmt --all -- --check PASS; strict workspace/all-target
+  Clippy PASS on the final Rust sources (before the interrupted parallel test
+  build; subsequent changes only configure build jobs/document results).
+  Serial cargo test --workspace --jobs 1 -- --test-threads=1: app 160, core 303,
+  geom 1, IO 141, renderer 111 PASS; total 716 PASS / 1 existing FAIL. All new
+  schematic regressions PASS, including the one-vertex wire branch case.
+  Unchanged PCB GPU routing test still reports Rgba8Unorm frame 13, dither=true,
+  4 pixels different vs tolerance 3 at pcb_route_gpu_tests.rs:235. Full command
+  therefore exits 101; no tolerance relaxed or unrelated renderer code changed.
+  JSON/feature-ID validation and git diff --check PASS. New executable is
+  target/debug/pcbcraft.exe; 42.72 GiB free disk after the serial rebuild/tests.
+
+### 2026-11-03 - hidden Parameter Set fields and text rotation
+
+- User clarified that previously hidden data is appearing around Parameter Sets,
+  and that text/parameter rotation seems reversed. Read the current PCBCraft
+  ReferenceJ window without editing its unsaved document. Read-only native source
+  audit found Small STYLE=1 Parameter Sets with ISHIDDEN=T ClassName=ExamplePowerClass.
+- Follow-up clarification isolated the unwanted output to the literal parent
+  label "Parameter Set", not the hidden ClassName values. The Small marker
+  label fix directly addresses that reported case; child visibility is retained.
+- The importer already retains the hidden child flag. The renderer nevertheless
+  emitted the parent's stored "Parameter Set" label for Small markers. Small
+  markers now omit that label; Large markers retain it. A primitive-level
+  visibility guard prevents hidden fields from generating ink, bounds or hits.
+- Read-only local Altium 24 configuration audit found DisplayStringAsRotated=1.
+  PCBCraft previously forced orientations 180/270 back to right-reading 0/90
+  and inverted justification. Text now uses all four document angles with the
+  same local anchor; screen-space angles negate document angles because Y is
+  downward. Large directive labels use the full orientation too.
+- Removed the corresponding importer workaround which substituted Top Right
+  for an omitted JUSTIFICATION at 180/270. Missing native enums now retain the
+  zero Bottom Left anchor independently of the angle; explicit anchors survive.
+- Added tessellated-glyph rotation checks against independent document-space
+  rotation for all four angles and nine anchors; marker/hidden-field paint and
+  hit checks; ASCII/CFB hidden-child rotation, copy, save/reopen and History
+  coverage. Official references: Altium schematic/directives and
+  preferences/schematic (Display Strings As Rotated). Exact new AD24 window
+  comparison remains unverified: launch did not expose a targetable window.
+  The two background X2 processes created by these failed attempts were stopped
+  to release memory. Existing user PCBCraft session was left running.
+- Validation: fmt PASS; strict workspace/all-target Clippy PASS; serial workspace
+  tests 720 PASS / 1 existing PCB GPU routing FAIL (Rgba8Unorm, frame 13,
+  dither=true, 4 pixels vs tolerance 3). All four new regressions PASS.
+  Dev app build PASS; updated target/debug/pcbcraft.exe. To build without closing
+  the user's dirty ReferenceJ session, its running executable/hardlink were retained
+  as pcbcraft-before-parameter-text.exe; the standard executable path now holds
+  the new build. No user document was closed or saved.
+- Launched a separate portable QA executable under .tools/parameter-text-qa.
+  First capture was black, activation reported "failed to activate captured
+  window"; fresh selection/capture showed the Windows lock screen. Stopped UI
+  input as required by Computer Use and requested desktop unlock. Current new
+  window behavior remains unverified until the desktop is available. No current
+  AD24 visual parity or Linux GUI success is claimed.

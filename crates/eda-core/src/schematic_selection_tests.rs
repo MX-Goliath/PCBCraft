@@ -17,10 +17,138 @@ fn add(s: &mut Schematic, points: &[(i64, i64)]) -> Uuid {
 fn document() -> Document {
     Document::new(DocumentKind::Schematic, "Group editing")
 }
+
+#[test]
+fn grouped_extraction_preserves_order_hidden_parameters_images_and_native_text_roles() {
+    let mut s = Schematic::blank();
+    let mut ids = Vec::new();
+    for (name, x) in [("R1", 10), ("R2", 30)] {
+        let f = place(Placement::Resistor, Point::mm(x, 10), 0, name, "10k", 0).unwrap();
+        ids.push(f.components[0].id);
+        s.components.extend(f.components);
+        s.primitives.extend(f.primitives);
+    }
+    let mut parameter = s
+        .primitives
+        .iter()
+        .find(|p| p.component == Some(ids[0]) && matches!(p.kind, K::Text { .. }))
+        .unwrap()
+        .clone();
+    parameter.id = Uuid::new_v4();
+    parameter.source_index = 0;
+    parameter.text_role = None;
+    parameter.presentation.hidden = true;
+    let parameter_id = parameter.id;
+    s.parameter_objects.push(parameter);
+    s.records = std::sync::Arc::new(vec![crate::schematic::SourceRecord {
+        index: 0,
+        stream: "FileHeader".into(),
+        record_type: 34,
+        fields: Default::default(),
+    }]);
+    let image = primitive(
+        K::Image {
+            a: Point::mm(1, 1),
+            b: Point::mm(2, 2),
+            filename: "selected.png".into(),
+            keep_aspect: true,
+            embedded: true,
+        },
+        Some(ids[0]),
+    );
+    let image_id = image.id;
+    s.primitives.push(image);
+    s.images = std::sync::Arc::new(BTreeMap::from([
+        ("selected.png".into(), "selected bytes".into()),
+        ("unused.png".into(), "unused bytes".into()),
+    ]));
+    let selection = [ids[1], parameter_id, ids[0], image_id, ids[1]];
+    let actual = extract_many(&s, &selection).unwrap();
+    let mut expected = Fragment {
+        fonts: s.fonts.clone(),
+        ..Default::default()
+    };
+    let mut seen = BTreeSet::new();
+    for id in selection {
+        let part = extract(&s, id).unwrap();
+        expected
+            .components
+            .extend(part.components.into_iter().filter(|c| seen.insert(c.id)));
+        expected
+            .primitives
+            .extend(part.primitives.into_iter().filter(|p| seen.insert(p.id)));
+        std::sync::Arc::make_mut(&mut expected.images)
+            .extend(part.images.iter().map(|(k, v)| (k.clone(), v.clone())));
+    }
+    assert_eq!(actual, expected);
+    assert_eq!(
+        actual.components.iter().map(|c| c.id).collect::<Vec<_>>(),
+        vec![ids[1], ids[0]]
+    );
+    let hidden = actual
+        .primitives
+        .iter()
+        .find(|p| p.id == parameter_id)
+        .unwrap();
+    assert!(hidden.presentation.hidden);
+    assert_eq!(hidden.text_role, Some(TextRole::Designator));
+    assert_eq!(actual.images.len(), 1);
+    assert!(actual.images.contains_key("selected.png"));
+    assert!(extract_many(&s, &[ids[0], Uuid::new_v4()]).is_err());
+}
 fn path(d: &Document, id: Uuid) -> Vec<Point> {
     wire(d.schematic.as_ref().unwrap().primitive(id).unwrap())
         .unwrap()
         .to_vec()
+}
+
+#[test]
+fn indexed_overlap_follows_transitive_chain_and_preserves_remote_duplicates() {
+    for (dx, dy) in [(1, 0), (0, 1), (1, 1), (-1, 1)] {
+        let mut d = document();
+        let s = d.schematic.as_mut().unwrap();
+        for (a, b) in [(-20, 0), (-5, 15), (10, 30)] {
+            add(s, &[(a * dx, a * dy), (b * dx, b * dy)]);
+        }
+        let remote = add(s, &[(100, 100), (110, 110), (100, 100)]);
+        let incoming = primitive(
+            K::Polyline {
+                points: vec![Point::mm(25 * dx, 25 * dy), Point::mm(40 * dx, 40 * dy)],
+                electrical: "Wire".into(),
+                closed: false,
+            },
+            None,
+        );
+        let command = Edit::Insert(Fragment {
+            primitives: vec![incoming],
+            ..Default::default()
+        });
+        let before = d.clone();
+        let shown = preview(&d, &command).unwrap();
+        let s = shown.schematic.as_ref().unwrap();
+        assert_eq!(s.primitives.len(), 2);
+        assert_eq!(
+            wire(&s.primitives[0]).unwrap(),
+            &[Point::mm(-20 * dx, -20 * dy), Point::mm(40 * dx, 40 * dy)]
+        );
+        assert_eq!(path(&shown, remote), path(&before, remote));
+        let mut history = History::default();
+        history
+            .schematic_edit(
+                &mut d,
+                Request {
+                    document: before.id,
+                    expected_revision: 0,
+                    edit: command,
+                },
+            )
+            .unwrap();
+        assert_eq!(d, shown);
+        history.undo(&mut d);
+        assert_eq!(d, before);
+        history.redo(&mut d);
+        assert_eq!(d, shown);
+    }
 }
 fn tx(selection: Selection, connected: bool) -> Edit {
     Edit::TransformSelection {

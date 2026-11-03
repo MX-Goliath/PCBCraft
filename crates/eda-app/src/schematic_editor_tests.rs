@@ -2,6 +2,235 @@ use super::*;
 use eda_render::SchematicInput;
 
 #[test]
+fn consumed_space_updates_stationary_placement_preview() {
+    let mut app = app();
+    let ctx = egui::Context::default();
+    app.start_schematic_tool(Placement::Resistor);
+    let point = Some(Point::mm(40, 10));
+    let _ = ctx.run(
+        egui::RawInput {
+            focused: true,
+            ..Default::default()
+        },
+        |ctx| {
+            app.schematic_input(
+                0,
+                SchematicInput {
+                    point,
+                    ..Default::default()
+                },
+                ctx,
+            );
+        },
+    );
+    let orientation = |app: &PcbCraft| {
+        app.documents[0]
+            .view
+            .sch_preview
+            .as_ref()
+            .unwrap()
+            .primitives
+            .iter()
+            .find_map(|p| {
+                if let K::Pin { orientation, .. } = p.kind {
+                    Some(orientation)
+                } else {
+                    None
+                }
+            })
+            .unwrap()
+    };
+    let before = orientation(&app);
+    let _ = ctx.run(
+        egui::RawInput {
+            focused: true,
+            events: vec![egui::Event::Key {
+                key: Key::Space,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+            ..Default::default()
+        },
+        |ctx| {
+            assert!(app.schematic_shortcuts(ctx));
+            assert!(ctx.input(|i| i.events.is_empty()));
+            app.schematic_input(
+                0,
+                SchematicInput {
+                    point,
+                    ..Default::default()
+                },
+                ctx,
+            );
+        },
+    );
+    assert_eq!(orientation(&app), (before + 1) % 4);
+    assert_eq!(app.documents[0].history.revision, 0);
+}
+
+#[test]
+fn preview_cache_tracks_history_undo_redo_document_and_failed_commands() {
+    let mut doc = Document::new(DocumentKind::Schematic, "Preview");
+    let mut history = History::default();
+    let object = edit::primitive(
+        K::Rectangle {
+            a: Point::mm(10, 10),
+            b: Point::mm(20, 20),
+            radius: Point::default(),
+        },
+        None,
+    );
+    let id = object.id;
+    doc.schematic.as_mut().unwrap().primitives.push(object);
+    let command = Edit::Transform {
+        id,
+        pivot: Point::default(),
+        quarter_turns: 0,
+        delta: Point::mm(2, 0),
+    };
+    let mut cache = PreviewCache::default();
+    let initial = cache.fragment(&doc, history.revision, &command).unwrap();
+    assert_eq!(
+        cache.fragment(&doc, history.revision, &command).unwrap(),
+        initial
+    );
+    let document = doc.id;
+    history
+        .schematic_edit(
+            &mut doc,
+            Request {
+                document,
+                expected_revision: 0,
+                edit: command.clone(),
+            },
+        )
+        .unwrap();
+    let moved = cache.fragment(&doc, history.revision, &command).unwrap();
+    assert_ne!(moved, initial);
+    history.undo(&mut doc);
+    assert_eq!(
+        cache.fragment(&doc, history.revision, &command).unwrap(),
+        initial
+    );
+    history.redo(&mut doc);
+    assert_eq!(
+        cache.fragment(&doc, history.revision, &command).unwrap(),
+        moved
+    );
+    let other = Document::new(DocumentKind::Schematic, "Other");
+    assert!(cache.fragment(&other, history.revision, &command).is_err());
+    assert_eq!(
+        cache.fragment(&doc, history.revision, &command).unwrap(),
+        moved
+    );
+}
+
+#[test]
+fn stationary_move_preview_stops_requesting_frames_but_updates_and_commits_on_input() {
+    let mut app = app();
+    let p = edit::primitive(
+        K::Rectangle {
+            a: Point::mm(10, 10),
+            b: Point::mm(20, 20),
+            radius: Point::default(),
+        },
+        None,
+    );
+    let id = p.id;
+    let d = &mut app.documents[0];
+    d.model.schematic.as_mut().unwrap().sheet.snap_nm = 1_000_000;
+    d.model.schematic.as_mut().unwrap().primitives.push(p);
+    d.sch_editor.tool = Tool::Move {
+        fragment: edit::extract(d.model.schematic.as_ref().unwrap(), id).unwrap(),
+        reflected: false,
+        selection: Selection {
+            ids: vec![id],
+            segments: vec![],
+        },
+        connected: false,
+        anchor: Point::mm(10, 10),
+        turns: 0,
+        revision: 0,
+        drag: false,
+    };
+    d.view.sch_tool_active = true;
+    let original = d.model.clone();
+    let ctx = egui::Context::default();
+    let mut frame = |at, clicked| {
+        ctx.run(
+            egui::RawInput {
+                focused: true,
+                ..Default::default()
+            },
+            |ctx| {
+                app.schematic_input(
+                    0,
+                    SchematicInput {
+                        point: Some(at),
+                        clicked,
+                        ..Default::default()
+                    },
+                    ctx,
+                );
+            },
+        )
+    };
+    frame(Point::mm(25, 10), false);
+    // egui's initial font/layout pass may request one extra frame.
+    frame(Point::mm(25, 10), false);
+    let idle = frame(Point::mm(25, 10), false);
+    assert!(
+        idle.viewport_output[&egui::ViewportId::ROOT].repaint_delay > std::time::Duration::ZERO
+    );
+    let changed = frame(Point::mm(30, 10), false);
+    assert_eq!(
+        changed.viewport_output[&egui::ViewportId::ROOT].repaint_delay,
+        std::time::Duration::ZERO
+    );
+    frame(Point::mm(30, 10), true);
+    let d = &mut app.documents[0];
+    assert_eq!(d.history.revision, 1);
+    assert!(d.view.sch_preview.is_none());
+    assert!(
+        matches!(d.model.schematic.as_ref().unwrap().primitive(id).unwrap().kind, K::Rectangle { a, .. } if a == Point::mm(30, 10))
+    );
+    d.history.undo(&mut d.model);
+    assert_eq!(d.model, original);
+
+    // Placement allocates fresh UUIDs. Its follow-up paint must settle too,
+    // rather than keeping itself alive by comparing unequal preview identities.
+    app.start_schematic_tool(Placement::Resistor);
+    for frame in 0..3 {
+        let output = ctx.run(
+            egui::RawInput {
+                focused: true,
+                ..Default::default()
+            },
+            |ctx| {
+                app.schematic_input(
+                    0,
+                    SchematicInput {
+                        point: Some(Point::mm(40, 10)),
+                        ..Default::default()
+                    },
+                    ctx,
+                );
+            },
+        );
+        if frame == 2 {
+            assert!(
+                output.viewport_output[&egui::ViewportId::ROOT].repaint_delay
+                    > std::time::Duration::ZERO
+            );
+        }
+    }
+    assert!(app.documents[0].view.sch_preview.is_some());
+    assert_eq!(app.documents[0].history.revision, 2);
+}
+
+#[test]
 fn alt_mouse_move_constrains_the_committed_transform_and_remains_one_undo() {
     let mut app = app();
     let p = edit::primitive(

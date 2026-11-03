@@ -45,52 +45,46 @@ fn compatible(a: &SchPrimitive, b: &SchPrimitive) -> bool {
 }
 
 pub(super) fn optimize(s: &mut Schematic, before: &Schematic) {
-    let wires: Vec<_> = s
-        .primitives
-        .iter()
-        .filter(|p| eligible(p))
-        .cloned()
-        .collect();
+    let before_primitives = before.primitive_index();
+    let wires: Vec<_> = s.primitives.iter().filter(|p| eligible(p)).collect();
     let dirty: BTreeSet<_> = wires
         .iter()
-        .filter(|p| before.primitive(p.id) != Some(*p))
-        .map(|p| p.id)
+        .enumerate()
+        .filter(|(_, p)| before_primitives.get(&p.id).copied() != Some(**p))
+        .map(|(i, _)| i)
         .collect();
     if dirty.is_empty() {
         return;
     }
     // The closure is limited to overlapping wires affected by this transaction.
     // Merely opening/importing or changing a component label does not rewrite nets.
-    let mut links = BTreeMap::<Uuid, BTreeSet<Uuid>>::new();
-    for (i, a) in wires.iter().enumerate() {
-        for b in &wires[i..] {
-            if a.id != b.id && !compatible(a, b) {
-                continue;
-            }
-            let pa = wire(a).unwrap();
-            let pb = wire(b).unwrap();
-            let same_wire = a.id == b.id;
-            let intersects = pa.windows(2).enumerate().any(|(i, a)| {
-                pb.windows(2)
-                    .enumerate()
-                    .any(|(j, b)| (i != j || !same_wire) && overlap(a, b))
-            });
-            if intersects {
-                links.entry(a.id).or_default().insert(b.id);
-                links.entry(b.id).or_default().insert(a.id);
-            }
-        }
-    }
+    let index = super::wire_edit::index_wires(wires.iter().map(|p| wire(p).unwrap()));
     let mut affected = BTreeSet::new();
-    let mut queue: Vec<_> = dirty
-        .into_iter()
-        .filter(|id| links.contains_key(id))
-        .collect();
-    while let Some(id) = queue.pop() {
-        if affected.insert(id)
-            && let Some(neighbours) = links.get(&id)
-        {
-            queue.extend(neighbours);
+    let mut visited = BTreeSet::new();
+    let mut queue: Vec<_> = dirty.into_iter().collect();
+    while let Some(i) = queue.pop() {
+        if !visited.insert(i) {
+            continue;
+        }
+        let a = wires[i];
+        for (edge, e) in wire(a).unwrap().windows(2).enumerate() {
+            let bounds = rstar::AABB::from_corners(
+                [e[0].x.min(e[1].x), e[0].y.min(e[1].y)],
+                [e[0].x.max(e[1].x), e[0].y.max(e[1].y)],
+            );
+            for candidate in index.locate_in_envelope_intersecting(&bounds) {
+                let b = wires[candidate.wire];
+                if (i != candidate.wire || edge != candidate.edge)
+                    && overlap(e, &[candidate.a, candidate.b])
+                    && (i == candidate.wire || compatible(a, b))
+                {
+                    affected.insert(a.id);
+                    affected.insert(b.id);
+                    if !visited.contains(&candidate.wire) {
+                        queue.push(candidate.wire);
+                    }
+                }
+            }
         }
     }
     if affected.is_empty() {
@@ -108,7 +102,7 @@ pub(super) fn optimize(s: &mut Schematic, before: &Schematic) {
         .map(|p| p.id)
         .collect();
     let mut ordered: Vec<_> = wires.iter().filter(|p| affected.contains(&p.id)).collect();
-    ordered.sort_by_key(|p| before.primitive(p.id).is_none());
+    ordered.sort_by_key(|p| !before_primitives.contains_key(&p.id));
     let mut kept: Vec<(Uuid, SchPrimitive)> = Vec::new();
     for p in ordered {
         let mut runs: Vec<Vec<Point>> = Vec::new();
@@ -117,8 +111,10 @@ pub(super) fn optimize(s: &mut Schematic, before: &Schematic) {
         for e in wire(p).unwrap().windows(2) {
             let coverage: Vec<_> = kept
                 .iter()
-                .filter(|(_, old)| compatible(p, old))
-                .flat_map(|(_, p)| wire(p).unwrap().windows(2).map(|e| [e[0], e[1]]))
+                .flat_map(|(_, old)| wire(old).unwrap().windows(2).map(move |e| (old, e)))
+                .filter(|(_, old)| collinear(e[0], e[1], old[0]) && collinear(e[0], e[1], old[1]))
+                .filter(|(old, _)| compatible(p, old))
+                .map(|(_, e)| [e[0], e[1]])
                 .chain(own_coverage.iter().copied())
                 .filter(|old| collinear(e[0], e[1], old[0]) && collinear(e[0], e[1], old[1]))
                 .collect();
@@ -176,23 +172,25 @@ pub(super) fn optimize(s: &mut Schematic, before: &Schematic) {
         let mut joined = false;
         'pairs: for i in 0..kept.len() {
             for j in i + 1..kept.len() {
-                if !compatible(&kept[i].1, &kept[j].1) {
-                    continue;
-                }
                 let pa = wire(&kept[i].1).unwrap();
                 let pb = wire(&kept[j].1).unwrap();
                 for reverse_a in [false, true] {
                     for reverse_b in [false, true] {
-                        let mut a = pa.to_vec();
-                        let mut b = pb.to_vec();
-                        if reverse_a {
-                            a.reverse();
-                        }
-                        if reverse_b {
-                            b.reverse();
-                        }
-                        let at = *a.last().unwrap();
-                        if at != b[0] || nodes.contains(&at) || !collinear(a[a.len() - 2], at, b[1])
+                        // Reject unrelated tips before cloning geometry or styles.
+                        let (at, previous) = if reverse_a {
+                            (pa[0], pa[1])
+                        } else {
+                            (pa[pa.len() - 1], pa[pa.len() - 2])
+                        };
+                        let (start, next) = if reverse_b {
+                            (pb[pb.len() - 1], pb[pb.len() - 2])
+                        } else {
+                            (pb[0], pb[1])
+                        };
+                        if at != start
+                            || nodes.contains(&at)
+                            || !collinear(previous, at, next)
+                            || !compatible(&kept[i].1, &kept[j].1)
                         {
                             continue;
                         }
@@ -205,6 +203,14 @@ pub(super) fn optimize(s: &mut Schematic, before: &Schematic) {
                                     .any(|e| at.on_segment(e[0], e[1]))
                         }) {
                             continue;
+                        }
+                        let mut a = pa.to_vec();
+                        let mut b = pb.to_vec();
+                        if reverse_a {
+                            a.reverse();
+                        }
+                        if reverse_b {
+                            b.reverse();
                         }
                         a.extend(b.into_iter().skip(1));
                         clean(&mut a);

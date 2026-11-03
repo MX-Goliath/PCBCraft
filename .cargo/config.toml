@@ -1,0 +1,3 @@
+[build]
+# Avoid concurrent compiler/linker peaks exhausting memory on 16 GB machines.
+jobs = 1

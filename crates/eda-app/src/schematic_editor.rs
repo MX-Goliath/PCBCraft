@@ -63,6 +63,8 @@ pub(super) struct Editor {
     pub directive: Option<eda_core::schematic::SchPrimitive>,
     pub designator: String,
     pointer: Option<Point>,
+    preview_cache: PreviewCache,
+    preview_revision: u64,
     pub(super) harness_width: i64,
     pub(super) harness_color: u32,
     pub(super) paused: bool,
@@ -77,6 +79,33 @@ pub(super) struct Editor {
     pub(super) predefined_auto: bool,
     pub(super) predefined_sort: bool,
     pub(super) predefined_filter: String,
+}
+
+/// Repaint and camera/UI changes must not rerun a validated document edit.
+/// History revisions also invalidate this cache after Undo/Redo.
+#[derive(Default)]
+struct PreviewCache {
+    entry: Option<(Uuid, u64, Edit, Result<Fragment, String>)>,
+}
+
+impl PreviewCache {
+    fn fragment(
+        &mut self,
+        document: &Document,
+        revision: u64,
+        command: &Edit,
+    ) -> Result<Fragment, String> {
+        if let Some((id, old_revision, old_command, result)) = &self.entry
+            && *id == document.id
+            && *old_revision == revision
+            && old_command == command
+        {
+            return result.clone();
+        }
+        let result = edit::preview_fragment(document, command);
+        self.entry = Some((document.id, revision, command.clone(), result.clone()));
+        result
+    }
 }
 
 #[derive(Default)]
@@ -155,6 +184,7 @@ impl Editor {
         self.bar.interaction.is_some() || self.hierarchy_pick || !matches!(self.tool, Tool::Select)
     }
     pub fn cancel(&mut self, view: &mut View) {
+        self.preview_cache.entry = None;
         self.bar.interaction = None;
         self.hierarchy_pick = false;
         self.tool = Tool::Select;
@@ -1168,6 +1198,22 @@ impl PcbCraft {
             }
         };
         let point = input.point.map(snap);
+        // The follow-up frame paints the preview computed on the input frame.
+        // Placement tools allocate fresh identities, so comparing their output
+        // alone would otherwise schedule another frame forever while idle.
+        if point == doc.sch_editor.pointer
+            && doc.view.sch_preview.is_some()
+            && doc.sch_editor.preview_revision == doc.history.revision
+            && !input.clicked
+            && !input.secondary_clicked
+            && !input.drag_started
+            && !input.drag_stopped
+            // Shortcuts consume processed events before this function runs.
+            // Raw events must still invalidate a stationary preview on Space/X/Y.
+            && ctx.input(|i| i.raw.events.is_empty())
+        {
+            return;
+        }
         if point.is_some() {
             doc.sch_editor.pointer = point;
         }
@@ -1420,7 +1466,11 @@ impl PcbCraft {
                         handle: *handle,
                         delta,
                     };
-                    match edit::preview_fragment(&doc.model, &edit) {
+                    match doc.sch_editor.preview_cache.fragment(
+                        &doc.model,
+                        doc.history.revision,
+                        &edit,
+                    ) {
                         Ok(fragment) => {
                             preview = Some(fragment);
                             if (input.clicked && !*drag) || (input.drag_stopped && *drag) {
@@ -1511,7 +1561,11 @@ impl PcbCraft {
                             id: *id,
                             value: Box::new(value),
                         };
-                        if let Ok(f) = edit::preview_fragment(&doc.model, &edit) {
+                        if let Ok(f) = doc.sch_editor.preview_cache.fragment(
+                            &doc.model,
+                            doc.history.revision,
+                            &edit,
+                        ) {
                             preview = Some(f);
                         }
                         if input.drag_stopped {
@@ -1843,7 +1897,11 @@ impl PcbCraft {
                         fragment.primitives[0].width_nm = doc.sch_editor.harness_width;
                         fragment.primitives[0].color = doc.sch_editor.harness_color;
                     }
-                    match edit::preview_fragment(&doc.model, &Edit::Insert(fragment)) {
+                    match doc.sch_editor.preview_cache.fragment(
+                        &doc.model,
+                        doc.history.revision,
+                        &Edit::Insert(fragment),
+                    ) {
                         Ok(f) => preview = Some(f),
                         Err(e) => error = Some(e),
                     }
@@ -1910,7 +1968,10 @@ impl PcbCraft {
                         })
                     };
                     match edit.and_then(|edit| {
-                        edit::preview_fragment(&doc.model, &edit).map(|f| (edit, f))
+                        doc.sch_editor
+                            .preview_cache
+                            .fragment(&doc.model, doc.history.revision, &edit)
+                            .map(|f| (edit, f))
                     }) {
                         Ok((edit, f)) => {
                             if (input.clicked && !*drag) || (input.drag_stopped && *drag) {
@@ -2011,9 +2072,12 @@ impl PcbCraft {
             }
         }
         if finish {
+            if doc.view.sch_preview.is_some() {
+                ctx.request_repaint();
+            }
             doc.sch_editor.cancel(&mut doc.view);
         } else {
-            doc.view.sch_preview = preview.map(|fragment| {
+            let next_preview = preview.map(|fragment| {
                 let mut s = Schematic::blank();
                 s.fonts = if fragment.fonts.is_empty() {
                     doc.model.schematic.as_ref().unwrap().fonts.clone()
@@ -2027,12 +2091,14 @@ impl PcbCraft {
                 }
                 s
             });
+            if doc.view.sch_preview != next_preview {
+                doc.view.sch_preview = next_preview;
+                ctx.request_repaint();
+            }
+            doc.sch_editor.preview_revision = doc.history.revision;
         }
         if let Some(e) = error {
             self.message(true, e);
-        }
-        if self.documents[index].sch_editor.active() {
-            ctx.request_repaint();
         }
     }
 }

@@ -239,3 +239,111 @@ fn derived_junctions_cover_t_pin_and_overlap_without_connecting_bare_x_crossings
     assert!(connection_at(s, Point::mm(7, 10)));
     assert!(!connection_at(s, Point::mm(7, 11)));
 }
+
+#[test]
+fn indexed_junctions_match_exhaustive_geometry_and_last_wire_color() {
+    let mut s = Schematic::blank();
+    // Crossings, T branches, diagonals, reversed/zero edges, negative coordinates
+    // and overlapping colours. The reference inspects every wire at every node.
+    for y in -8..8 {
+        for x in -8..8 {
+            let id = add(&mut s, &[(x * 5, y * 5), (x * 5 + 10, y * 5)]);
+            s.primitives.iter_mut().find(|p| p.id == id).unwrap().color = (x + 8) as u32;
+            add(&mut s, &[(x * 5, y * 5), (x * 5, y * 5 + 10)]);
+            add(
+                &mut s,
+                &[(x * 5 + 10, y * 5 + 10), (x * 5, y * 5), (x * 5, y * 5)],
+            );
+        }
+    }
+    s.primitives.push(primitive(
+        K::Junction {
+            position: Point::default(),
+            radius_nm: 254_000,
+        },
+        None,
+    ));
+    s.primitives.last_mut().unwrap().presentation.hidden = true;
+    s.primitives.push(primitive(
+        K::Junction {
+            position: Point::mm(5, 5),
+            radius_nm: 254_000,
+        },
+        None,
+    ));
+    s.primitives.push(primitive(
+        K::PowerPort {
+            position: Point::mm(3, 0),
+            orientation: 0,
+            style: 2,
+            text: "GND".into(),
+            show_name: false,
+            font: 0,
+            cross_sheet: false,
+        },
+        None,
+    ));
+    for p in s.primitives.iter_mut().step_by(17) {
+        p.presentation.hidden = true;
+    }
+    let visible: Vec<_> = s
+        .primitives
+        .iter()
+        .filter(|p| !p.presentation.hidden)
+        .collect();
+    let mut nodes = BTreeSet::new();
+    let mut manual = BTreeSet::new();
+    let mut terminals = BTreeSet::new();
+    for p in &visible {
+        if let K::Junction { position, .. } = p.kind {
+            manual.insert(key(position));
+        } else {
+            for at in pin_ends(p) {
+                nodes.insert(key(at));
+                if !matches!(p.kind, K::Text { .. }) {
+                    terminals.insert(key(at));
+                }
+            }
+        }
+        if let Some(path) = wire(p) {
+            nodes.extend(
+                path.first()
+                    .into_iter()
+                    .chain(path.last())
+                    .copied()
+                    .map(key),
+            );
+        }
+    }
+    let expected: Vec<_> = nodes
+        .difference(&manual)
+        .filter_map(|node| {
+            let at = point(*node);
+            let mut rays = BTreeSet::new();
+            let mut color = 0;
+            for p in &visible {
+                if let Some(path) = wire(p) {
+                    for e in path.windows(2).filter(|e| at.on_segment(e[0], e[1])) {
+                        color = p.color;
+                        for end in e {
+                            let dx = end.x - at.x;
+                            let dy = end.y - at.y;
+                            let (mut a, mut b) = (dx.unsigned_abs(), dy.unsigned_abs());
+                            if a == 0 && b == 0 {
+                                continue;
+                            }
+                            while b != 0 {
+                                (a, b) = (b, a % b);
+                            }
+                            rays.insert((dx / a as i64, dy / a as i64));
+                        }
+                    }
+                }
+            }
+            (rays.len() >= 3 || (rays.len() >= 2 && terminals.contains(node)))
+                .then_some((at, color))
+        })
+        .collect();
+    assert!(!expected.is_empty());
+    assert_eq!(junctions(s.primitives.iter()), expected);
+}

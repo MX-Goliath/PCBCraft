@@ -26,15 +26,24 @@ pub struct WireSegment {
 }
 
 fn roots(s: &Schematic, selection: &Selection) -> Result<Selection, String> {
+    let primitives = s.primitive_index();
+    let components: std::collections::HashSet<_> = s.components.iter().map(|c| c.id).collect();
+    let selected: std::collections::HashSet<_> = selection.ids.iter().copied().collect();
     let mut ids = Vec::new();
     let mut seen = BTreeSet::new();
     for id in &selection.ids {
-        if anchor(s, *id).is_none() {
+        if !components.contains(id)
+            && primitives
+                .get(id)
+                .and_then(|p| primitive_anchor(p))
+                .is_none()
+        {
             return Err("Selected object no longer exists".into());
         }
-        if s.primitive(*id)
+        if primitives
+            .get(id)
             .and_then(|p| p.component.or(p.presentation.parent))
-            .is_some_and(|id| selection.ids.contains(&id))
+            .is_some_and(|id| selected.contains(&id))
         {
             continue;
         }
@@ -202,28 +211,7 @@ fn parts(s: &Schematic, selection: &Selection) -> Parts {
 
 pub fn extract_selection(s: &Schematic, selection: &Selection) -> Result<Fragment, String> {
     let selection = roots(s, selection)?;
-    let mut result = Fragment {
-        fonts: s.fonts.clone(),
-        ..Default::default()
-    };
-    let mut seen = BTreeSet::new();
-    for id in &selection.ids {
-        let f = extract(s, *id)?;
-        for c in f.components {
-            if seen.insert(c.id) {
-                result.components.push(c);
-            }
-        }
-        for p in f.primitives {
-            if seen.insert(p.id) {
-                result.primitives.push(p);
-            }
-        }
-        if !f.images.is_empty() {
-            std::sync::Arc::make_mut(&mut result.images)
-                .extend(f.images.iter().map(|(k, v)| (k.clone(), v.clone())));
-        }
-    }
+    let mut result = extract_many(s, &selection.ids)?;
     for (_, chosen, _) in parts(s, &selection) {
         result.primitives.extend(chosen);
     }
@@ -280,6 +268,12 @@ pub fn preview_fragment(doc: &Document, command: &Edit) -> Result<Fragment, Stri
     let next = preview(doc, command)?;
     let old = doc.schematic.as_ref().ok_or("Schematic unavailable")?;
     let s = next.schematic.as_ref().unwrap();
+    // A preview runs on pointer movement. Resolve identities once instead of
+    // scanning both full scenes for every object (including hidden parameters).
+    let old_primitives = old.primitive_index();
+    let next_primitives = s.primitive_index();
+    let old_components: std::collections::HashMap<_, _> =
+        old.components.iter().map(|c| (c.id, c)).collect();
     let mut result = Fragment {
         fonts: s.fonts.clone(),
         images: s.images.clone(),
@@ -288,21 +282,21 @@ pub fn preview_fragment(doc: &Document, command: &Edit) -> Result<Fragment, Stri
     result.components.extend(
         s.components
             .iter()
-            .filter(|c| old.components.iter().find(|p| p.id == c.id) != Some(*c))
+            .filter(|c| old_components.get(&c.id).copied() != Some(*c))
             .cloned(),
     );
     result.primitives.extend(
         s.primitives
             .iter()
             .chain(&s.parameter_objects)
-            .filter(|p| old.primitive(p.id) != Some(*p))
+            .filter(|p| old_primitives.get(&p.id).copied() != Some(*p))
             .cloned(),
     );
     for p in old
         .primitives
         .iter()
         .chain(&old.parameter_objects)
-        .filter(|p| s.primitive(p.id).is_none())
+        .filter(|p| !next_primitives.contains_key(&p.id))
     {
         let mut removed = p.clone();
         removed.kind = K::Polyline {

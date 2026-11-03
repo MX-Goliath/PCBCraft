@@ -1611,13 +1611,10 @@ fn primitive_kind(
             if text.is_empty() && r.record_type != 41 {
                 return Ok(None);
             }
-            let justification = if f.contains_key("JUSTIFICATION") {
-                f.n("JUSTIFICATION") as u32
-            } else if orientation >= 2 {
-                8
-            } else {
-                0
-            };
+            // Omitted enum fields use the native zero value (Bottom Left).
+            // Reading direction is a display preference, not a different
+            // document anchor for 180/270-degree strings.
+            let justification = f.n("JUSTIFICATION") as u32;
             let position = if [28, 209].contains(&r.record_type) {
                 Point {
                     x: a.x,
