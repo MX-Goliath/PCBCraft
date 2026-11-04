@@ -13,7 +13,13 @@ impl PcbCraft {
             self.file_dialog
                 .clone()
                 .set_title(if copy { "Save Copy As" } else { "Save As" });
-        if doc.model.pcb.is_some() {
+        if doc.model.library.is_some() {
+            dialog = if doc.model.kind == DocumentKind::Board {
+                dialog.add_filter("PCB Library", &["PcbLib"])
+            } else {
+                dialog.add_filter("Schematic Library", &["SchLib"])
+            };
+        } else if doc.model.pcb.is_some() {
             dialog = dialog.add_filter("PCB Binary File", &["PcbDoc"]);
         } else if native {
             dialog = dialog.add_filter("Schematic Document", &["SchDoc"]);
@@ -54,6 +60,19 @@ impl PcbCraft {
         let Some(doc) = self.documents.get_mut(index) else {
             return false;
         };
+        if doc.model.library.is_some()
+            && !path.extension().is_some_and(|e| {
+                ["SchLib", "PcbLib", "json"]
+                    .iter()
+                    .any(|s| e.eq_ignore_ascii_case(s))
+            })
+        {
+            self.message(
+                true,
+                "Choose a .SchLib, .PcbLib or .pcbcraft.json destination for a library",
+            );
+            return false;
+        }
         if doc.model.pcb.is_some()
             && let Err(e) = pcb_editor::prepare_save(doc)
         {
@@ -61,7 +80,7 @@ impl PcbCraft {
             return false;
         }
         if !path.extension().is_some_and(|e| {
-            ["SchDoc", "PcbDoc", "json"]
+            ["SchDoc", "PcbDoc", "SchLib", "PcbLib", "json"]
                 .iter()
                 .any(|s| e.eq_ignore_ascii_case(s))
         }) {

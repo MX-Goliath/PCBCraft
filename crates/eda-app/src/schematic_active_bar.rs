@@ -8,7 +8,7 @@ use eda_core::{
 use eda_geom::Point;
 use egui::{Pos2, Rect, Sense, Stroke, Vec2};
 #[path = "schematic_active_bar_icons.rs"]
-mod icons;
+pub(super) mod icons;
 #[path = "schematic_resources.rs"]
 mod resources;
 #[cfg(test)]

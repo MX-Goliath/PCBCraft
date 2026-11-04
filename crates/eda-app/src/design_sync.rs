@@ -270,7 +270,26 @@ impl PcbCraft {
         );
         let mut library_footprints = vec![];
         let mut library_warnings = vec![];
+        // Open authored libraries take precedence over their last saved copy.
+        // This also makes unsaved libraries immediately usable by ECO.
+        for d in &self.documents {
+            if d.model.library.is_some() && d.model.kind == DocumentKind::Board {
+                for member in eda_core::library_edit::members(&d.model) {
+                    library_footprints.push(eda_core::design_sync::Footprint::from_library_board(
+                        member.pcb.as_ref().unwrap().clone(),
+                    )?);
+                }
+            }
+        }
         let mut visited = std::collections::HashSet::new();
+        for d in &self.documents {
+            if d.model.library.is_some()
+                && d.model.kind == DocumentKind::Board
+                && let Some(path) = &d.path
+            {
+                visited.insert(path.canonicalize().unwrap_or_else(|_| path.clone()));
+            }
+        }
         for path in library_paths {
             let path = path.canonicalize().unwrap_or(path);
             if !visited.insert(path.clone()) {

@@ -19,7 +19,7 @@ pub fn import(bytes: &[u8], name: &str) -> Result<Library, String> {
     let mut file = cfb::CompoundFile::open(Cursor::new(bytes.to_vec()))
         .map_err(|e| format!("Invalid library CFB: {e}"))?;
     if file.is_stream("FileHeader") {
-        return schlib(file, name);
+        return schlib(file, name, None);
     }
     let paths: Vec<_> = file
         .walk()
@@ -64,7 +64,7 @@ pub fn import(bytes: &[u8], name: &str) -> Result<Library, String> {
         }
         let inner = cfb::CompoundFile::open(Cursor::new(decoded))
             .map_err(|e| format!("Invalid embedded SchLib: {e}"))?;
-        let library = schlib(inner, name)?;
+        let library = schlib(inner, name, None)?;
         result.symbols.extend(library.symbols);
         result.warnings.extend(library.warnings);
     }
@@ -141,7 +141,27 @@ fn auxiliary(file: &mut Compound, path: &Path) -> Result<BTreeMap<usize, Vec<u8>
     Ok(values)
 }
 
-fn schlib(mut file: Compound, name: &str) -> Result<Library, String> {
+/// Retain complete decoded source records for native library authoring.
+pub(crate) fn editable(bytes: &[u8], name: &str) -> Result<Vec<Document>, String> {
+    if bytes.len() > MAX_FILE {
+        return Err("Library exceeds import limit".into());
+    }
+    let file = cfb::CompoundFile::open(Cursor::new(bytes.to_vec())).map_err(|e| e.to_string())?;
+    let mut members = vec![];
+    let library = schlib(file, name, Some(&mut members))?;
+    if !library.warnings.is_empty() {
+        return Err(format!(
+            "Library cannot be edited without losing unsupported data: {}",
+            library.warnings.join("; ")
+        ));
+    }
+    Ok(members)
+}
+fn schlib(
+    mut file: Compound,
+    name: &str,
+    mut editable: Option<&mut Vec<Document>>,
+) -> Result<Library, String> {
     let header_bytes = stream(&mut file, Path::new("FileHeader"))?;
     let mut header_blocks = vec![];
     framed("Library header", &header_bytes, &mut header_blocks)?;
@@ -318,7 +338,7 @@ fn schlib(mut file: Compound, name: &str) -> Result<Library, String> {
                 records[1]
                     .fields
                     .insert("DISPLAYMODE".into(), mode.to_string());
-                let doc = build_document(
+                let mut doc = build_document(
                     &symbol.name,
                     id,
                     records.clone(),
@@ -338,6 +358,12 @@ fn schlib(mut file: Compound, name: &str) -> Result<Library, String> {
                     display_mode: mode,
                     fragment,
                 });
+                if let Some(out) = editable.as_deref_mut() {
+                    let s = doc.schematic.as_mut().unwrap();
+                    s.sheet.border = false;
+                    s.sheet.title_block = false;
+                    out.push(doc);
+                }
             }
         }
         library.symbols.push(symbol);

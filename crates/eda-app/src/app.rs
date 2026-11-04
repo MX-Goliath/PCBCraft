@@ -29,6 +29,8 @@ mod file_menu;
 mod file_save;
 #[path = "layer_stack.rs"]
 mod layer_stack;
+#[path = "library_editor.rs"]
+mod library_editor;
 #[path = "pcb_3d.rs"]
 mod pcb_3d;
 #[path = "pcb_editor.rs"]
@@ -114,7 +116,10 @@ impl OpenDocument {
         {
             return dirty;
         }
-        let dirty = self.saved.as_ref() != Some(&self.model);
+        let dirty = self
+            .saved
+            .as_ref()
+            .is_none_or(|s| !eda_core::library_edit::same_contents(s, &self.model));
         self.content_dirty.set(Some((self.history.revision, dirty)));
         dirty
     }
@@ -190,6 +195,7 @@ fn default_altium_folder(relative: &str) -> Option<PathBuf> {
 
 #[derive(Clone, Copy)]
 enum Command {
+    Library(library_editor::Action),
     Variants,
     ValidateProject,
     ValidationMessage(bool),
@@ -247,6 +253,7 @@ struct PadEdit {
 }
 
 pub struct PcbCraft {
+    library_editor: library_editor::State,
     variants: variants::State,
     file_state: file_menu::State,
     sheet_sync: schematic_sync::State,
@@ -316,6 +323,7 @@ impl PcbCraft {
             settings.grid_nm = 1_000_000;
         }
         let mut app = Self {
+            library_editor: Default::default(),
             variants: Default::default(),
             file_state: Default::default(),
             sheet_sync: Default::default(),
@@ -440,7 +448,7 @@ impl PcbCraft {
             self.open_group(path);
             return;
         }
-        if matches!(extension.as_str(), "schlib" | "intlib" | "pcblib") {
+        if matches!(extension.as_str(), "intlib") {
             self.import_library(path, true);
             return;
         }
@@ -634,6 +642,7 @@ impl PcbCraft {
             || self.design_sync.is_some()
             || self.sheet_sync.busy()
             || self.file_state.modal()
+            || self.library_editor.modal()
             || self.variants.dialog.is_some()
         {
             self.message(true, "Close the active dialog before another command");
@@ -643,10 +652,26 @@ impl PcbCraft {
             self.layer_stack_command(command);
             return;
         }
+        if matches!(
+            command,
+            Command::Save
+                | Command::SaveAs
+                | Command::SaveAll
+                | Command::Close
+                | Command::Quit
+                | Command::NewBoard
+                | Command::NewSchematic
+                | Command::Open
+        ) && let Err(error) = self.commit_library_properties()
+        {
+            self.message(true, error);
+            return;
+        }
         if !matches!(command, Command::CrossProbe | Command::Fit) {
             self.cross_probe.enabled = false;
         }
         match command {
+            Command::Library(action) => self.library_command(action),
             Command::Variants => self.open_variants(),
             Command::File(action) => self.file_command(action, ctx),
             Command::SynchronizeEntries(selected) => self.start_sheet_sync(selected),
@@ -873,6 +898,10 @@ impl PcbCraft {
     }
 
     fn menus(&mut self, ctx: &egui::Context) {
+        if self.library_active() {
+            self.library_menus(ctx);
+            return;
+        }
         if self.layer_stack_active() {
             self.layer_stack_menus(ctx);
             return;
@@ -1104,6 +1133,13 @@ impl PcbCraft {
                         ] {
                             ui.menu_button(label, |ui| {
                                 if label == "Tools" {
+                                    self.action(
+                                        ui,
+                                        "Make Library from Document…",
+                                        "",
+                                        Command::Library(library_editor::Action::FromDocument),
+                                        true,
+                                    );
                                     if schematic {
                                         self.action(
                                             ui,
@@ -1609,6 +1645,7 @@ impl PcbCraft {
                 ui.spacing_mut().item_spacing.y = 0.0;
                 self.document_tabs(ui);
                 if let Some(index) = self.active {
+                    self.library_model_table(ui, index);
                     if self.documents[index].model.kind == DocumentKind::Board {
                         self.pcb_layer_bar(ui, index);
                     }
@@ -1673,10 +1710,12 @@ impl PcbCraft {
                     if self.documents[index].model.kind == DocumentKind::Schematic {
                         self.schematic_harness_overlay(ctx, canvas, index);
                     }
-                    if !self.documents[index].view.pcb.three_d.enabled {
+                    if !self.documents[index].view.pcb.three_d.enabled
+                        && !self.library_editor.modal()
+                    {
                         if self.documents[index].sch_editor.compiled_path.is_some() {
                             self.variant_active_bar(ctx, canvas, index);
-                        } else {
+                        } else if !self.library_active_bar(ctx, canvas) {
                             self.active_bar(ctx, canvas);
                         }
                     }
@@ -1911,6 +1950,7 @@ impl PcbCraft {
         }
         if self.annotation.is_some()
             || self.file_state.modal()
+            || self.library_editor.modal()
             || self.variants.dialog.is_some()
             || self.design_sync.is_some()
             || self.layer_stack_active()
@@ -2049,6 +2089,7 @@ impl eframe::App for PcbCraft {
         }
         self.library_dialog(ctx);
         self.workspace(ctx);
+        self.library_editor_dialogs(ctx);
         self.finish_schematic_interaction();
         self.finish_pcb_interaction(ctx);
         self.finish_library_drag(ctx);

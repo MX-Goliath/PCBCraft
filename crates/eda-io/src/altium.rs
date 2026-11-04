@@ -295,7 +295,13 @@ pub fn load_project(path: &Path) -> Result<Project, String> {
             && exists
             && let Ok(doc) = crate::load(&path)
         {
-            kind = if doc.kind == DocumentKind::Schematic {
+            kind = if doc.library.is_some() {
+                if doc.kind == DocumentKind::Schematic {
+                    "schlib"
+                } else {
+                    "pcblib"
+                }
+            } else if doc.kind == DocumentKind::Schematic {
                 "schdoc"
             } else {
                 "pcbdoc"
@@ -971,8 +977,20 @@ fn component_owner(records: &[SourceRecord], index: usize) -> Option<usize> {
 }
 
 fn is_visible(records: &[SourceRecord], index: usize, show_template: bool) -> bool {
+    in_active_variant(records, index, show_template, false)
+}
+fn in_active_variant(
+    records: &[SourceRecord],
+    index: usize,
+    show_template: bool,
+    hidden: bool,
+) -> bool {
     let f = &records[index].fields;
-    if f.yes("ISHIDDEN") || f.yes("IGNOREONLOAD") {
+    if (!hidden
+        && (f.yes("ISHIDDEN")
+            || records[index].record_type == 2 && f.n("PINCONGLOMERATE") & 4 != 0))
+        || f.yes("IGNOREONLOAD")
+    {
         return false;
     }
     let mut i = index;
@@ -1066,21 +1084,52 @@ fn build_document(
                 .entry(component_index)
                 .or_default()
                 .push(eda_core::schematic::ComponentModel {
-                    parameters: records
-                        .iter()
-                        .filter(|p| {
-                            p.record_type == 41
-                                && records.get(owner(&p.fields)).is_some_and(|list| {
-                                    list.record_type == 48 && owner(&list.fields) == index
-                                })
-                        })
-                        .map(|p| {
-                            (
-                                p.fields.text("NAME"),
-                                p.fields.text("TEXT").replace("~1", "\n"),
-                            )
-                        })
-                        .collect(),
+                    parameters: {
+                        let mut values: BTreeMap<String, String> = records
+                            .iter()
+                            .filter(|p| {
+                                p.record_type == 41
+                                    && records.get(owner(&p.fields)).is_some_and(|list| {
+                                        list.record_type == 48 && owner(&list.fields) == index
+                                    })
+                            })
+                            .map(|p| {
+                                (
+                                    p.fields.text("NAME"),
+                                    p.fields.text("TEXT").replace("~1", "\n"),
+                                )
+                            })
+                            .collect();
+                        if r.fields.text("MODELTYPE").eq_ignore_ascii_case("PCBLIB") {
+                            if !r.fields.text("MODELDATAFILE0").is_empty() {
+                                values.insert("LIBRARY".into(), r.fields.text("MODELDATAFILE0"));
+                            }
+                            for map in records.iter().filter(|p| {
+                                p.record_type == 47
+                                    && records.get(owner(&p.fields)).is_some_and(|list| {
+                                        list.record_type == 46 && owner(&list.fields) == index
+                                    })
+                            }) {
+                                let count = map.fields.n("DESIMPCOUNT");
+                                if !(1..=1024).contains(&count) {
+                                    return Err("Invalid footprint pin-map count".into());
+                                }
+                                let pin = map.fields.text("DESINTF");
+                                let pads: Vec<_> = (0..count)
+                                    .map(|n| map.fields.text(&format!("DESIMP{n}")))
+                                    .collect();
+                                if pin.is_empty()
+                                    || pads.iter().any(String::is_empty)
+                                    || values
+                                        .insert(format!("PINMAP:{pin}"), pads.join(","))
+                                        .is_some()
+                                {
+                                    return Err("Invalid or duplicate footprint pin map".into());
+                                }
+                            }
+                        }
+                        values
+                    },
                     name: r.fields.text("MODELNAME"),
                     kind: r.fields.text("MODELTYPE"),
                     current: r.fields.yes("ISCURRENT"),
@@ -1221,8 +1270,10 @@ fn build_document(
                 || records
                     .get(owner(&r.fields))
                     .is_some_and(|p| matches!(p.record_type, 1 | 43 | 210)));
+        let hidden_symbol_object = matches!(r.record_type, 2 | 34)
+            && in_active_variant(&records, index, show_template, true);
         if (r.stream != "FileHeader" && !matches!(r.record_type, 215..=218 | 225))
-            || (!visible && !hidden_parameter && r.record_type != 217)
+            || (!visible && !hidden_parameter && !hidden_symbol_object && r.record_type != 217)
         {
             continue;
         }
@@ -1331,6 +1382,7 @@ fn build_document(
                 kind,
             };
             if visible
+                || hidden_symbol_object
                 || r.record_type == 217
                 || r.record_type == 41
                     && records

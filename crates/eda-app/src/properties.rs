@@ -142,6 +142,9 @@ fn field(ui: &mut egui::Ui, value: &mut f64) -> bool {
 
 impl PcbCraft {
     pub(super) fn properties(&mut self, ui: &mut egui::Ui) {
+        if self.library_properties(ui) {
+            return;
+        }
         if self.pcb_properties(ui) {
             return;
         }

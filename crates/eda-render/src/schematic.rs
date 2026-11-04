@@ -1601,7 +1601,7 @@ fn paint_mode(
         view.grid = sheet.grid_visible;
         view.grid_nm = sheet.grid_nm;
     }
-    let board = Rect::from_two_pos(
+    let mut board = Rect::from_two_pos(
         scene.screen(Point {
             x: 0,
             y: doc.size.y,
@@ -1611,9 +1611,69 @@ fn paint_mode(
             y: 0,
         }),
     );
+    let library = doc.library.is_some();
+    if library {
+        board = rect;
+    }
     let background = sheet.map_or(Color32::from_rgb(255, 252, 248), |s| color(s.background));
     painter.rect_filled(board, 0.0, background);
-    if view.grid && sheet.is_none_or(|s| s.grid_visible) {
+    if library {
+        if view.grid {
+            let mut step = view.grid_nm as f64 / 1e6;
+            while step * view.camera.pixels_per_mm < 8. {
+                step *= 10.;
+            }
+            let min = view.camera.world_mm(rect.left_bottom(), rect);
+            let max = view.camera.world_mm(rect.right_top(), rect);
+            for x in (min[0] / step).floor() as i64..=(max[0] / step).ceil() as i64 {
+                let x = view
+                    .camera
+                    .screen(
+                        Point {
+                            x: (x as f64 * step * 1e6) as i64,
+                            y: 0,
+                        },
+                        rect,
+                    )
+                    .x;
+                painter.line_segment(
+                    [Pos2::new(x, rect.top()), Pos2::new(x, rect.bottom())],
+                    Stroke::new(0.4, Color32::from_gray(238)),
+                );
+            }
+            for y in (min[1] / step).floor() as i64..=(max[1] / step).ceil() as i64 {
+                let y = view
+                    .camera
+                    .screen(
+                        Point {
+                            x: 0,
+                            y: (y as f64 * step * 1e6) as i64,
+                        },
+                        rect,
+                    )
+                    .y;
+                painter.line_segment(
+                    [Pos2::new(rect.left(), y), Pos2::new(rect.right(), y)],
+                    Stroke::new(0.4, Color32::from_gray(238)),
+                );
+            }
+        }
+        let origin = scene.screen(Point::default());
+        painter.line_segment(
+            [
+                Pos2::new(origin.x, rect.top()),
+                Pos2::new(origin.x, rect.bottom()),
+            ],
+            Stroke::new(0.7, Color32::BLACK),
+        );
+        painter.line_segment(
+            [
+                Pos2::new(rect.left(), origin.y),
+                Pos2::new(rect.right(), origin.y),
+            ],
+            Stroke::new(0.7, Color32::BLACK),
+        );
+    } else if view.grid && sheet.is_none_or(|s| s.grid_visible) {
         let mut step = sheet.map_or(view.grid_nm, |s| s.grid_nm) as f64 / 1e6;
         while step * view.camera.pixels_per_mm < 5.0 {
             step *= 10.0;
@@ -1926,7 +1986,8 @@ fn paint_mode(
             if is_hit && view.sch_filters[category] {
                 let parameter = category == 5 || category == 6;
                 hit = Some(
-                    if parameter
+                    if library
+                        || parameter
                         || (matches!(primitive.kind, K::Pin { .. })
                             && (view.cross_probe || modifiers.ctrl || modifiers.alt))
                     {
@@ -1937,7 +1998,8 @@ fn paint_mode(
                 );
             }
         }
-        if hit.is_none()
+        if !library
+            && hit.is_none()
             && view.sch_filters[0]
             && let Some(pointer) = hit_pointer
         {

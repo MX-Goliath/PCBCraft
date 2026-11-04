@@ -302,6 +302,17 @@ pub struct Footprint {
     board: pcb::Board,
 }
 impl Footprint {
+    pub fn board(&self) -> &pcb::Board {
+        &self.board
+    }
+    /// Library definitions may intentionally have no pads while being authored.
+    pub fn from_library_board(board: pcb::Board) -> Result<Self, String> {
+        board.validate()?;
+        if board.components.len() != 1 {
+            return Err("A footprint needs exactly one component".into());
+        }
+        Ok(Self { board })
+    }
     pub fn library_source(&self) -> Option<&str> {
         field(
             &self.board.components[0].properties,
@@ -1181,10 +1192,41 @@ fn net_changes(
     links: &HashMap<(Uuid, Uuid), Uuid>,
     doc: &Document,
 ) {
+    let model_maps: HashMap<_, _> = p
+        .snapshots
+        .iter()
+        .flat_map(|d| {
+            d.schematic.iter().flat_map(move |s| {
+                s.components
+                    .iter()
+                    .map(move |c| ((d.id, c.id), c.settings.models.clone()))
+            })
+        })
+        .collect();
+    let mapped = |sheet: Uuid, component: Uuid, number: &str| -> Vec<String> {
+        let value = model_maps
+            .get(&(sheet, component))
+            .and_then(|models| {
+                models
+                    .iter()
+                    .find(|m| m.current && m.kind.eq_ignore_ascii_case("PCBLIB"))
+            })
+            .and_then(|m| m.parameters.get(&format!("PINMAP:{number}")));
+        value.map_or_else(
+            || vec![number.to_uppercase()],
+            |s| s.split(',').map(|s| s.trim().to_uppercase()).collect(),
+        )
+    };
     let mut protected: HashSet<_> = nets
         .unresolved_pins
         .iter()
-        .filter_map(|(sheet, c, pin)| links.get(&(*sheet, *c)).map(|id| (*id, pin.clone())))
+        .flat_map(|(sheet, c, pin)| {
+            links.get(&(*sheet, *c)).into_iter().flat_map(|id| {
+                mapped(*sheet, *c, pin)
+                    .into_iter()
+                    .map(move |pad| (*id, pad))
+            })
+        })
         .collect();
     let protected_nets: HashSet<_> = b
         .items
@@ -1215,10 +1257,25 @@ fn net_changes(
     let mut desired: BTreeMap<(Uuid, String), Option<String>> = BTreeMap::new();
     for pin in &nets.pins {
         if let Some(&id) = links.get(&(pin.sheet, pin.component)) {
-            if protected.contains(&(id, pin.number.to_uppercase())) {
-                continue;
+            for pad in mapped(pin.sheet, pin.component, &pin.number) {
+                if protected.contains(&(id, pad.clone())) {
+                    continue;
+                }
+                if let Some(old) = desired.insert((id, pad.clone()), pin.net.clone())
+                    && old != pin.net
+                {
+                    p.push(
+                        "Connectivity",
+                        "Compare",
+                        format!("{} pad {pad}", pin.designator),
+                        doc.name.clone(),
+                        Operation::Unsupported(
+                            "Pin map connects one physical pad to different logical nets".into(),
+                        ),
+                    );
+                    return;
+                }
             }
-            desired.insert((id, pin.number.to_uppercase()), pin.net.clone());
         }
     }
     for item in &b.items {
@@ -1393,7 +1450,8 @@ fn net_changes(
             for pin in &pins {
                 let id = links.get(&(pin.sheet, pin.component));
                 let c = b.components.iter().find(|c| Some(&c.id) == id);
-                let pads:Vec<_>=b.items.iter().filter(|i|c.is_some_and(|c|i.component==Some(c.index)) && matches!(&i.shape,pcb::Shape::Pad{name,..} if name.eq_ignore_ascii_case(&pin.number))).collect();
+                let numbers = mapped(pin.sheet, pin.component, &pin.number);
+                let pads:Vec<_>=b.items.iter().filter(|i|c.is_some_and(|c|i.component==Some(c.index)) && matches!(&i.shape,pcb::Shape::Pad{name,..} if numbers.iter().any(|n| name.eq_ignore_ascii_case(n)))).collect();
                 if pads.is_empty() {
                     missing = true;
                 }

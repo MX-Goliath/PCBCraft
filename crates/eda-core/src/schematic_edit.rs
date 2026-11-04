@@ -157,6 +157,7 @@ pub fn preview(doc: &Document, edit: &Edit) -> Result<Document, String> {
     if s != doc.schematic.as_ref().unwrap() && s.source.is_some() {
         s.source_modified = true;
     }
+    crate::library_edit::own_new_geometry(&mut next);
     next.validate()?;
     Ok(next)
 }

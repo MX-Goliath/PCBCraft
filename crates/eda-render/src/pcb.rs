@@ -31,6 +31,7 @@ mod text;
 pub use navigation::{CursorStyle, FitTarget, NavigationOptions};
 #[derive(Clone, Default)]
 pub struct BoardView {
+    pub library: bool,
     pub three_d: crate::pcb_3d::State,
     pub initialized: bool,
     pub selected: Vec<Uuid>,
@@ -467,6 +468,11 @@ fn dim(c: Color32, alpha: u8) -> Color32 {
 }
 pub fn canvas(ui: &mut egui::Ui, b: &Board, view: &mut View) -> CanvasOutput {
     view.pcb.initialize(b);
+    if view.pcb.library {
+        view.pcb.component_selection = false;
+        view.pcb.display.background = Color32::from_rgb(109, 106, 105);
+        view.pcb.display.background_end = view.pcb.display.background;
+    }
     if view.pcb.three_d.enabled {
         return crate::pcb_3d::canvas(ui, b, view);
     }

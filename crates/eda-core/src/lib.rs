@@ -3,6 +3,7 @@ pub mod assembly_variants;
 pub mod cross_probe;
 pub mod design_sync;
 pub mod library;
+pub mod library_edit;
 pub mod pcb;
 pub mod pcb_3d;
 pub mod pcb_arrange;
@@ -98,6 +99,10 @@ pub struct Track {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Document {
+    /// The active library member uses the normal editable scene; other members
+    /// live here. There is never a second copy of the active geometry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub library: Option<library_edit::Book>,
     pub schema_version: u32,
     pub id: Uuid,
     pub name: String,
@@ -114,6 +119,7 @@ pub struct Document {
 impl Document {
     pub fn new(kind: DocumentKind, name: impl Into<String>) -> Self {
         Self {
+            library: None,
             schema_version: 1,
             id: Uuid::new_v4(),
             name: name.into(),
@@ -165,6 +171,9 @@ impl Document {
     }
 
     pub fn validate(&self) -> Result<(), String> {
+        if let Some(book) = &self.library {
+            library_edit::validate(self, book)?;
+        }
         if self.schema_version != 1 {
             return Err(format!(
                 "Unsupported document version: {}",

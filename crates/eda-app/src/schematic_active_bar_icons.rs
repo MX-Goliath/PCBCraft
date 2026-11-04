@@ -1,7 +1,8 @@
 //! Original vector drawings of the observed toolbar symbols, in a 22-point grid.
 use egui::{Color32, Pos2, Rect, Shape, Stroke};
 #[derive(Clone, Copy, Debug)]
-pub(super) enum Glyph {
+pub(in crate::app) enum Glyph {
+    Pin,
     Filter,
     Move,
     Select,
@@ -46,7 +47,7 @@ pub(super) enum Glyph {
     Graphic,
     PowerPreset(u8),
 }
-pub(super) fn paint(p: &egui::Painter, r: Rect, g: Glyph, enabled: bool) {
+pub(in crate::app) fn paint(p: &egui::Painter, r: Rect, g: Glyph, enabled: bool) {
     let ink = |c: Color32| if enabled { c } else { Color32::from_gray(95) };
     let blue = ink(Color32::from_rgb(101, 149, 205));
     let pale = ink(Color32::from_rgb(184, 213, 245));
@@ -73,6 +74,11 @@ pub(super) fn paint(p: &egui::Painter, r: Rect, g: Glyph, enabled: bool) {
         ));
     };
     match g {
+        Glyph::Pin => {
+            line((1., 11.), (14., 11.), blue, 1.4);
+            line((14., 6.), (14., 16.), gold, 2.);
+            line((17., 8.), (17., 14.), gold, 1.);
+        }
         Glyph::Alignment(n) => {
             let cyan = ink(Color32::from_rgb(155, 211, 231));
             if n == 8 {

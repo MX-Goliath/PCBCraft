@@ -4,6 +4,9 @@ pub mod altium_pcb;
 #[cfg(test)]
 mod altium_tests;
 #[cfg(test)]
+mod library_document_tests;
+pub mod library_documents;
+#[cfg(test)]
 mod library_tests;
 pub mod project_files;
 pub mod project_variants;
@@ -15,6 +18,13 @@ pub mod schematic_reuse;
 use std::{io::Write, path::Path};
 
 pub fn load(path: &Path) -> Result<Document, String> {
+    if path.extension().is_some_and(|e| {
+        ["SchLib", "PcbLib"]
+            .iter()
+            .any(|s| e.eq_ignore_ascii_case(s))
+    }) {
+        return library_documents::load(path);
+    }
     if path
         .extension()
         .is_some_and(|e| e.eq_ignore_ascii_case("SchDoc"))
@@ -44,6 +54,22 @@ pub fn load(path: &Path) -> Result<Document, String> {
 }
 
 pub fn save(path: &Path, doc: &Document) -> Result<(), String> {
+    if path.extension().is_some_and(|e| {
+        ["SchLib", "PcbLib"]
+            .iter()
+            .any(|s| e.eq_ignore_ascii_case(s))
+    }) {
+        return library_documents::save(path, doc);
+    }
+    if doc.library.is_some()
+        && path.extension().is_some_and(|e| {
+            ["SchDoc", "PcbDoc"]
+                .iter()
+                .any(|s| e.eq_ignore_ascii_case(s))
+        })
+    {
+        return Err("Save a library as SchLib/PcbLib or PCBCraft JSON; exporting one member as a document is a separate operation".into());
+    }
     if path
         .extension()
         .is_some_and(|e| e.eq_ignore_ascii_case("SchDoc"))

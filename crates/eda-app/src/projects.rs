@@ -274,6 +274,9 @@ impl PcbCraft {
     }
 
     pub(super) fn projects(&mut self, ctx: &egui::Context) {
+        if self.library_panel(ctx) {
+            return;
+        }
         // eframe can run a zero-sized startup pass. Do not persist a collapsed
         // panel width before the real native window dimensions arrive.
         if ctx.available_rect().width() < 600.0 || ctx.available_rect().height() < 100.0 {
@@ -897,6 +900,7 @@ mod tests {
     #[test]
     fn startup_sizing_does_not_collapse_projects_or_change_width_between_editors() {
         let mut app = PcbCraft {
+            library_editor: Default::default(),
             variants: Default::default(),
             file_state: Default::default(),
             sheet_sync: Default::default(),

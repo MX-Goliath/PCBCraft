@@ -1688,6 +1688,25 @@ fn input(
                 if i.clicked {
                     commit(doc, next)?;
                     doc.view.pcb.set_preview(None);
+                    if doc.model.library.is_some()
+                        && ed.tool == Tool::Pad
+                        && let Some(start) = ed
+                            .pad_name
+                            .parse::<u32>()
+                            .ok()
+                            .and_then(|n| n.checked_add(1))
+                        && let Some(name) = (start..=u32::MAX).map(|n| n.to_string()).find(|n| {
+                            !doc.model
+                                .pcb
+                                .as_ref()
+                                .unwrap()
+                                .items
+                                .iter()
+                                .any(|i| matches!(&i.shape,Shape::Pad{name,..}if name==n))
+                        })
+                    {
+                        ed.pad_name = name;
+                    }
                     if matches!(ed.tool, Tool::Fill | Tool::Circle | Tool::Line) {
                         ed.start = (ed.tool == Tool::Line).then_some(p);
                     }
@@ -2503,7 +2522,15 @@ impl PcbCraft {
                     ("Solid Region", "", Tool::Region),
                     ("Arc (centre, start, end)", "P, A", Tool::Arc),
                 ] {
-                    self.action(ui, name, shortcut, Command::Pcb(Action::Tool(tool)), true);
+                    let enabled = !self.library_active()
+                        || !matches!(tool, Tool::Polygon | Tool::PolygonCutout);
+                    self.action(
+                        ui,
+                        name,
+                        shortcut,
+                        Command::Pcb(Action::Tool(tool)),
+                        enabled,
+                    );
                 }
             }
             "Route" => {
@@ -2752,6 +2779,30 @@ mod tests {
 #[cfg(test)]
 mod controller_tests {
     use super::*;
+    #[test]
+    fn library_pad_placement_owns_geometry_increments_numbers_and_undoes_once() {
+        let mut d = OpenDocument::new(
+            eda_core::library_edit::new(DocumentKind::Board, "Parts.PcbLib"),
+            None,
+        );
+        let mut ed = Editor::default();
+        ed.set_tool(Tool::Pad, &mut d.view);
+        let ctx = egui::Context::default();
+        for x in [-2, 2] {
+            input(&mut d, &mut ed, &mut None, click(x, 0), &ctx).unwrap();
+        }
+        let b = d.model.pcb.as_ref().unwrap();
+        assert_eq!(b.items.len(), 2);
+        for (item, number) in b.items.iter().zip(["1", "2"]) {
+            assert_eq!(item.component, Some(0));
+            assert!(matches!(&item.shape,Shape::Pad{name,..}if name==number));
+        }
+        assert_eq!(ed.pad_name, "3");
+        assert_eq!(d.history.revision, 2);
+        d.history.undo(&mut d.model);
+        assert_eq!(d.model.pcb.as_ref().unwrap().items.len(), 1);
+        d.model.validate().unwrap();
+    }
     fn footprint_doc() -> (OpenDocument, Uuid) {
         let mut d = doc();
         let board = d.model.pcb.as_mut().unwrap();

@@ -177,13 +177,51 @@ fn footprint(
     props.insert("LAYER".into(), "TOP".into());
     props.insert("SOURCEFOOTPRINTLIBRARY".into(), library.into());
     let c = component(props, ns, 0)?;
-    let id = c.id;
     let mut board = Board {
         properties: properties.clone(),
         components: vec![c],
         models: models.models.clone(),
         ..Board::default()
     };
+    board.components[0].parameters = Some(Fields::new());
+    if let Some(data) = source.get(&format!("{prefix}/PrimitiveParameters")) {
+        let groups = u32_at(data, 0)?;
+        let records = property_records(&data[4..], 0)?;
+        let mut n = 0;
+        let mut actual = 0;
+        while n < records.len() {
+            let h = &records[n];
+            let count = h
+                .text("COUNT")
+                .parse::<usize>()
+                .map_err(|_| "Invalid footprint parameter count")?;
+            let end = n
+                .checked_add(1)
+                .and_then(|n| n.checked_add(count))
+                .filter(|end| *end <= records.len())
+                .ok_or("Truncated footprint parameters")?;
+            if h.text("PRIMITIVEID") == "NoObject#0"
+                && h.text("APPURTENANCE") == "Footprint"
+                && h.text("VARIANTGUID") == "Footprint"
+            {
+                let params = board.components[0].parameters.as_mut().unwrap();
+                for r in &records[n + 1..end] {
+                    let name = r.text("NAME");
+                    if name.is_empty() || params.keys().any(|k| k.eq_ignore_ascii_case(&name)) {
+                        return Err("Empty or duplicate footprint parameter".into());
+                    }
+                    params.insert(name, r.text("VALUE"));
+                }
+            } else if count > 0 {
+                return Err("Unrepresented footprint parameter namespace; native library remains available read-only".into());
+            }
+            actual += 1;
+            n = end;
+        }
+        if actual != groups {
+            return Err("Footprint parameter group count mismatch".into());
+        }
+    }
     let mut wide = BTreeMap::new();
     if let Some(data) = source.get(&format!("{prefix}/WideStrings")) {
         // Native PcbLib uses a property block here, unlike WideStrings6/Data.
@@ -263,7 +301,7 @@ fn footprint(
     }
     finish(&mut board)?;
     board.validate()?;
-    Footprint::from_board(&board, id)
+    Footprint::from_library_board(board)
 }
 
 #[cfg(test)]

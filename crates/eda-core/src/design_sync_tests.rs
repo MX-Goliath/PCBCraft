@@ -110,6 +110,41 @@ fn identical_documents_produce_no_changes() {
 }
 
 #[test]
+fn explicit_library_pin_map_assigns_one_logical_net_to_multiple_different_pads() {
+    let (mut s, mut b) = fixture();
+    s.schematic.as_mut().unwrap().components[0].settings.models[0]
+        .parameters
+        .insert("PINMAP:1".into(), "A,B".into());
+    let board = b.pcb.as_mut().unwrap();
+    if let pcb::Shape::Pad { name, .. } = &mut board.items[0].shape {
+        *name = "A".into();
+    }
+    board.items[0].net = None;
+    let mut extra = board.items[0].clone();
+    extra.id = Uuid::new_v4();
+    if let pcb::Shape::Pad { name, position, .. } = &mut extra.shape {
+        *name = "B".into();
+        position.y += 1_000_000;
+    }
+    board.items.push(extra);
+    let mut p = plan(&s, &b, Direction::ToPcb);
+    let prepared = p.validate(&[&s, &b]).unwrap();
+    let actual = prepared
+        .documents
+        .iter()
+        .find_map(|d| d.pcb.as_ref())
+        .unwrap();
+    for name in ["A", "B"] {
+        let pad = actual
+            .items
+            .iter()
+            .find(|i| matches!(&i.shape,pcb::Shape::Pad{name:n,..} if n==name))
+            .unwrap();
+        assert_eq!(actual.net_name(pad.net), "N1");
+    }
+}
+
+#[test]
 fn duplicate_document_identity_is_rejected_before_any_transaction() {
     let (mut s, b) = fixture();
     s.id = b.id;

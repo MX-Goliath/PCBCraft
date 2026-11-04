@@ -309,7 +309,14 @@ impl PcbCraft {
                 self.file_item(ui, label, "", None, None, false);
             }
             separator(ui);
-            self.file_item(ui, "Library…", "", Some(Icon::Folder), None, false);
+            self.file_item(
+                ui,
+                "Library…",
+                "",
+                Some(Icon::Folder),
+                Some(Command::Library(library_editor::Action::New)),
+                true,
+            );
             submenu(ui, "Script", true, |ui| {
                 for label in ["Script Project", "Script Unit", "Script Form"] {
                     self.file_item(ui, label, "", None, None, false);

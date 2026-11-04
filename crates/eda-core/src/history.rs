@@ -32,6 +32,20 @@ impl Default for History {
 }
 
 impl History {
+    pub fn select_library_member(
+        &mut self,
+        doc: &mut Document,
+        index: usize,
+    ) -> Result<bool, String> {
+        if index == 0 {
+            return Ok(false);
+        }
+        let next = crate::library_edit::preview(doc, &crate::library_edit::Edit::Select(index))?;
+        *doc = next;
+        self.current_bytes = None;
+        self.revision += 1;
+        Ok(true)
+    }
     /// Saving under a new filename changes file metadata in every snapshot;
     /// Undo must continue to address the same document and destination.
     pub fn rename_file(&mut self, current: &mut Document, name: String) -> Result<(), String> {
@@ -88,10 +102,11 @@ impl History {
             self.retained_bytes = self.retained_bytes.saturating_sub(oldest.bytes);
         }
     }
-    pub fn commit(&mut self, current: &mut Document, next: Document) -> Result<bool, String> {
+    pub fn commit(&mut self, current: &mut Document, mut next: Document) -> Result<bool, String> {
         if current.id != next.id || current.kind != next.kind {
             return Err("An edit cannot replace document identity or kind".into());
         }
+        crate::library_edit::own_new_geometry(&mut next);
         next.validate()?;
         if *current == next {
             return Ok(false);
@@ -124,6 +139,7 @@ impl History {
             return Err("Not a PCB document".into());
         }
         let next = Document {
+            library: current.library.clone(),
             schema_version: current.schema_version,
             id: current.id,
             name: current.name.clone(),

@@ -579,12 +579,13 @@ fn hierarchy_changes(
                     f,
                     "PINCONGLOMERATE",
                     ((if f.contains_key("PINCONGLOMERATE") {
-                        f.n("PINCONGLOMERATE") as u32 & !27
+                        f.n("PINCONGLOMERATE") as u32 & !31
                     } else {
                         32
                     }) + orientation
                         + if *show_name { 8 } else { 0 }
-                        + if *show_number { 16 } else { 0 })
+                        + if *show_number { 16 } else { 0 }
+                        + if p.presentation.hidden { 4 } else { 0 })
                     .to_string(),
                 );
                 set(f, "NAME", name.clone());
@@ -934,6 +935,26 @@ fn models(
             last = Some(r.index);
             used.insert(r.index);
             set(patch.record(r.index)?, "ISCURRENT", boolean(model.current));
+            if model.kind.eq_ignore_ascii_case("PCBLIB") {
+                let before = old
+                    .settings
+                    .models
+                    .iter()
+                    .find(|m| m.name == model.name && m.kind == model.kind)
+                    .unwrap();
+                if before.parameters != model.parameters {
+                    if let Some(path) = model.parameters.get("LIBRARY") {
+                        set(patch.record(r.index)?, "MODELDATAFILE0", path.clone());
+                    }
+                    for child in source.records.iter().filter(|c| {
+                        matches!(c.record_type, 46 | 48)
+                            && c.fields.n("OWNERINDEX") == r.index as i64
+                    }) {
+                        patch.remove_tree(child.index as usize);
+                    }
+                    write_model_children(patch, source, r.index, model)?;
+                }
+            }
         } else {
             let list = source.records.iter().find(|r| {
                 r.record_type == 44 && r.fields.n("OWNERINDEX") == old.source_index as i64
@@ -971,15 +992,10 @@ fn models(
                 .into(),
             );
             set(f, "UNIQUEID", uid);
-            patch.add(46, model_index);
-            let parameter_owner = patch.add(48, model_index);
-            parameters(
-                patch,
-                source,
-                parameter_owner,
-                &Fields::new(),
-                &model.parameters,
-            )?;
+            if let Some(path) = model.parameters.get("LIBRARY") {
+                set(f, "MODELDATAFILE0", path.clone());
+            }
+            write_model_children(patch, source, model_index, model)?;
         }
     }
     for r in originals {
@@ -988,6 +1004,43 @@ fn models(
         }
     }
     Ok(())
+}
+
+fn write_model_children(
+    patch: &mut Patch,
+    source: &Schematic,
+    model_index: u32,
+    model: &eda_core::schematic::ComponentModel,
+) -> Result<(), String> {
+    let map = patch.add(46, model_index);
+    if model.kind.eq_ignore_ascii_case("PCBLIB") {
+        for (key, value) in &model.parameters {
+            if let Some(pin) = key.strip_prefix("PINMAP:") {
+                let pads: Vec<_> = value.split(',').map(str::trim).collect();
+                if pin.is_empty() || pads.is_empty() || pads.iter().any(|p| p.is_empty()) {
+                    return Err("Invalid pin-to-pad map".into());
+                }
+                patch.add(47, map);
+                let f = patch.added.last_mut().unwrap();
+                set(f, "DESINTF", pin.into());
+                set(f, "DESIMPCOUNT", pads.len().to_string());
+                for (n, pad) in pads.iter().enumerate() {
+                    set(f, &format!("DESIMP{n}"), (*pad).into());
+                }
+            }
+        }
+    }
+    let values = model
+        .parameters
+        .iter()
+        .filter(|(k, _)| {
+            !model.kind.eq_ignore_ascii_case("PCBLIB")
+                || k.as_str() != "LIBRARY" && !k.starts_with("PINMAP:")
+        })
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    let parameter_owner = patch.add(48, model_index);
+    parameters(patch, source, parameter_owner, &Fields::new(), &values)
 }
 
 fn changes(original: &Document, doc: &Document) -> Result<Patch, String> {
@@ -1282,6 +1335,105 @@ fn changes(original: &Document, doc: &Document) -> Result<Patch, String> {
         models(&mut patch, source, &blank, c)?;
     }
     Ok(patch)
+}
+
+/// Reuse the schematic property encoder for authored library definitions.
+/// Library owner indices are zero based, with the component at record zero.
+pub(crate) fn library_records(scene: &Schematic) -> Result<Vec<Fields>, String> {
+    if scene
+        .records
+        .iter()
+        .any(|r| !matches!(r.record_type,1|2|4..=8|10..=14|28|31|34|41|44..=48|209))
+    {
+        return Err("The source library has unrepresented record types; keep its complete source and edits in PCBCraft JSON".into());
+    }
+    let mut original = Document::new(DocumentKind::Schematic, "library");
+    original.id = scene
+        .components
+        .first()
+        .ok_or("Missing library component")?
+        .id;
+    original.schematic.as_mut().unwrap().sheet = scene.sheet.clone();
+    original.schematic.as_mut().unwrap().fonts = scene.fonts.clone();
+    let mut target = original.clone();
+    let mut s = scene.clone();
+    s.source = None;
+    s.records = Default::default();
+    s.source_modified = false;
+    for c in &mut s.components {
+        c.source_index = eda_core::schematic_edit::AUTHORED;
+    }
+    for p in s.primitives.iter_mut().chain(&mut s.parameter_objects) {
+        p.source_index = eda_core::schematic_edit::AUTHORED;
+        if !matches!(
+            p.kind,
+            K::Pin { .. }
+                | K::Polyline { .. }
+                | K::Rectangle { .. }
+                | K::Arc { .. }
+                | K::Bezier { .. }
+                | K::Text { .. }
+                | K::TextFrame { .. }
+        ) {
+            return Err("Native library export does not support this graphic; keep the complete library in PCBCraft JSON".into());
+        }
+    }
+    target.schematic = Some(s);
+    let mut patch = changes(&original, &target)?;
+    // Preserve unknown properties on represented source objects. Rebuild known
+    // ownership and geometry fields, and retain each original native UniqueID.
+    for (index, id) in &patch.authored {
+        let source = scene
+            .components
+            .iter()
+            .find(|c| c.id == *id)
+            .map(|c| c.source_index)
+            .or_else(|| scene.primitive(*id).map(|p| p.source_index));
+        if let Some(fields) = source
+            .and_then(|n| scene.records.get(n as usize))
+            .map(|r| &r.fields)
+        {
+            let mut merged = fields.clone();
+            merged.extend(std::mem::take(&mut patch.added[*index as usize]));
+            if let Some(uid) = fields.get("UNIQUEID") {
+                merged.insert("UNIQUEID".into(), uid.clone());
+            }
+            patch.added[*index as usize] = merged;
+        }
+        if scene.primitive(*id).is_some_and(|p| {
+            matches!(
+                p.text_role,
+                Some(
+                    eda_core::schematic::TextRole::Designator
+                        | eda_core::schematic::TextRole::Comment
+                )
+            )
+        }) {
+            patch.added[*index as usize].insert("OWNERPARTID".into(), "-1".into());
+            patch.added[*index as usize].remove("OWNERPARTDISPLAYMODE");
+        }
+    }
+    for fields in &mut patch.added {
+        if fields.n("RECORD") == 45
+            && let Some(old) = scene.records.iter().find(|r| {
+                r.record_type == 45
+                    && r.fields.text("MODELNAME") == fields.text("MODELNAME")
+                    && r.fields.text("MODELTYPE") == fields.text("MODELTYPE")
+            })
+        {
+            let mut merged = old.fields.clone();
+            merged.extend(std::mem::take(fields));
+            if let Some(uid) = old.fields.get("UNIQUEID") {
+                merged.insert("UNIQUEID".into(), uid.clone());
+            }
+            *fields = merged;
+        }
+    }
+    Ok(patch.added)
+}
+
+pub(crate) fn library_property_bytes(fields: &Fields) -> Result<Vec<u8>, String> {
+    properties(&[], &Fields::new(), fields, WINDOWS_1252)
 }
 
 fn properties(

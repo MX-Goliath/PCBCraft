@@ -56,6 +56,12 @@ impl Camera {
         if !rect.is_finite() || rect.width() <= 120.0 || rect.height() <= 120.0 {
             return;
         }
+        if doc.library.is_some() {
+            self.centre_mm = [0., 0.];
+            self.pixels_per_mm = (rect.width().min(rect.height()) as f64 / 70.).clamp(0.05, 500.);
+            self.fitted = true;
+            return;
+        }
         let width = doc.size.x as f64 / 1e6;
         let height = doc.size.y as f64 / 1e6;
         self.centre_mm = [width / 2.0, height / 2.0];
@@ -331,6 +337,10 @@ pub struct SchematicInput {
 
 pub fn canvas(ui: &mut egui::Ui, doc: &Document, view: &mut View) -> CanvasOutput {
     if let Some(board) = &doc.pcb {
+        view.pcb.library = doc.library.is_some();
+        if view.pcb.library && !view.camera.fitted {
+            view.camera.fit(doc, ui.available_rect_before_wrap());
+        }
         return pcb::canvas(ui, board, view);
     }
     let (rect, response) = ui.allocate_exact_size(ui.available_size(), Sense::click_and_drag());

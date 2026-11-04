@@ -2944,3 +2944,68 @@ Cause, implementation and validation: docs/pcb-update/INTERACTIVE_ROUTING.md.
   with no Via; right-click ends picking. No native PCB research file was saved
   or modified on disk. The sole final PCBCraft GUI remains open on the synthetic
   selection fixture; other test GUI instances were closed before replacement.
+
+## 2026-11-04 — File-based component and library authoring
+
+- Continued the original full library scope; this remains a partial checkpoint.
+  Implemented checked library member/variant, metadata, pin and model commands
+  in eda-core, independent of GUI/GPU. Active definitions reuse existing drawing
+  and footprint editors, atomic validation and bounded Undo/Redo. Navigation is
+  not a content edit. New geometry acquires its definition owner.
+- Added SchLib/PcbLib tabs, File > New > Library, SCH/PCB Library panels, schematic
+  model table, footprint primitive list/preview, pin placement, metadata/parameter
+  properties, explicit pin/pad links, Make Available, placement and extraction
+  from documents. Native-only unsupported commands remain disabled. Properties
+  flush before Save and library navigation; no-op inspection remains clean.
+- Independent native SchLib/PcbLib writers, safe backups and IntLib compilation
+  now exist. Original native containers travel in JSON; unchanged library output
+  is byte-identical. Modified unsupported auxiliary/reference data refuses native
+  save before destination replacement. Scope/remaining gaps are recorded in
+  docs/interface/library-authoring.md and docs/features.json.
+- Computer Use reference: new synthetic SchLib/PcbLib only. Observed New Library,
+  library panels, long-name SectionKeys, Model Map records 46/47 and footprint
+  PrimitiveParameters namespaces. No original user project was edited or saved.
+- Windows GUI: sole previous user session was closed without saving Controller
+  under the user's explicit permission. Launched a single test build. Created a
+  SchLib, placed a pin, checked Undo/Redo and saved GuiCreated.SchLib. Altium opened
+  it and recognized the symbol/pin/electrical type. Current Rust native PcbLib
+  opened in Altium with both pads, names and 2 mm sizes. Closed that test PCBCraft
+  instance before replacing its executable; no second GUI was launched.
+- Native interop investigation: missing Library/Data KIND/VERSION/BOARDVERSION
+  caused Altium to reject PcbLib. Source-only IntLib extracted an empty package.
+  Added Version.Txt, LibCrossRef.Txt and Parameters   .bin; native compilation of
+  an isolated synthetic LibPkg established local Windows source identities and
+  outer CFB V3 as further requirements. Corrected diagnostic V3 container extracted
+  both source libraries successfully. Final production export verification is
+  pending the current clean rebuild.
+- First workspace run after the authoring additions compiled all targets/examples
+  in 15m 23s. App/core tests passed; one new IO assertion failed because native PCB
+  coordinates round to 2.54 nm and uniform pad stacks import as explicit layers.
+  Replaced exact structural equality with bounded coordinate/stack semantics.
+  Strict all-target Clippy passed before the latest UI persistence fixes. Final
+  serialized gates and production GUI/native verification are still in progress.
+
+- Final native production check PASS: generated production-final/Authoring.IntLib
+  directly from the current Rust writer, without binary patches. Altium Extract
+  created a package containing both source libraries; opening its SchLib shows
+  PCBCraft_Test, U?, pins 1/2 and a resolved TEST_2PAD model with footprint preview.
+  Shared Designator/Comment omit OwnerPartDisplayMode (its native byte field does
+  not accept -1). The final writer now matches that observed representation.
+- GUI PCB authoring PASS: New Library dialog is centered at approximately
+  700 x 550, with the active bar hidden behind it. Created a PcbLib, placed a pad,
+  inspected counts/primitive preview, ended placement and saved GuiFootprint.PcbLib.
+  Corrected empty-list shrinking and the preview background after this inspection.
+  Added automatic numeric pad numbering and a controller ownership/Undo regression.
+- Final automated gates PASS: fmt check, strict workspace/all-target Clippy, all
+  753 workspace tests (172 app, 318 core, 1 geometry, 148 IO, 114 render), zero
+  failures. Last incremental test compilation took 2m 24s. Final build and Linux
+  cross-check are running; latest executable window verification follows them.
+- Final executable build PASS (2m 20s); final Linux GNU all-target type check
+  PASS (5m 39s). Linux GUI execution and visual comparison remain unverified.
+  Computer Use on the final executable: both native libraries open cleanly;
+  PCB list retains its reserved height, lists two numbered pads and shows their
+  preview; SchLib displays the symbol and persisted TEST_2PAD/Authoring.PcbLib
+  link. Edit Model exposes the open footprint in Browse and the pin-map field;
+  closing the dialog leaves the document clean. One PCBCraft GUI remains open
+  on the synthetic SchLib/PcbLib pair; the generated Controller example was
+  discarded under the user's permission. Full Altium parity remains incomplete.

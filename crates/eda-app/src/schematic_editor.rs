@@ -873,6 +873,17 @@ impl PcbCraft {
         if self.documents[i].sch_editor.compiled_path.is_some() {
             return false;
         }
+        if self.documents[i].model.library.is_some()
+            && self.documents[i].sch_editor.place_prefix.is_some()
+        {
+            if ctx.input_mut(|input| input.consume_key(egui::Modifiers::NONE, Key::P)) {
+                self.documents[i].sch_editor.place_prefix = None;
+                self.library_command(super::library_editor::Action::Pin);
+            } else if ctx.input_mut(|input| input.consume_key(egui::Modifiers::NONE, Key::Escape)) {
+                self.documents[i].sch_editor.place_prefix = None;
+            }
+            return true;
+        }
         if !self.documents[i].sch_editor.active() && self.selection_shortcuts(ctx) {
             return true;
         }
@@ -2015,6 +2026,13 @@ impl PcbCraft {
                         preview = None;
                     }
                     if is_place {
+                        if let Some(template) = &mut doc.sch_editor.directive
+                            && let K::Pin { number, .. } = &mut template.kind
+                            && let Ok(value) = number.parse::<u32>()
+                            && let Some(value) = value.checked_add(1)
+                        {
+                            *number = value.to_string();
+                        }
                         if let Tool::Place { revision, .. }
                         | Tool::Area { revision, .. }
                         | Tool::Connector { revision, .. }
