@@ -2713,3 +2713,60 @@ Cause, implementation and validation: docs/pcb-update/INTERACTIVE_ROUTING.md.
   input as required by Computer Use and requested desktop unlock. Current new
   window behavior remains unverified until the desktop is available. No current
   AD24 visual parity or Linux GUI success is claimed.
+
+
+## 2026-11-04 - Run DRC / live AD24 continuation
+
+- User requested continued Run DRC implementation with Computer Use comparison.
+  Altium Enterprise 24.4.1.13 eventually exposed its main window after the user
+  started it. Original projects and their unsaved documents were left intact;
+  native experiments used ignored ReferenceB copies and independent probes.
+- Full observations and rejected hypotheses: docs/pcb-update/DRC_COMPARISON.md.
+  Native baseline is two violations versus initial 26 PCBCraft findings. Native
+  mask-8/mask-17, Standard-component, Any Net, polygon-gap, collinear-midpoint and
+  straight-edge ordinary-region controls were actually opened and run. Stop
+  limit 10000 was not reached. A global 1 micrometre edge tolerance is disproved.
+- Implemented shared exclusion of retained compatibility/body records from DRC,
+  object-specific keepout clearance, native Track/Arc/Fill restriction masks and
+  the corrected Arc modern-layer offset. Different Nets now excludes two No Net
+  copper objects, while physical routing/pour obstacles keep their scoped gaps.
+  Mechanical cutouts and keepouts continue to constrain unassigned copper.
+- Text glyph/board-edge geometry is explicitly unchecked. Native extended text
+  location and rectangle fields were investigated; no guessed font/baseline
+  formula or blanket polygon tolerance was added to force equal result counts.
+- Checker uses the observed 771 x 700 outer dimensions and a shorter body on
+  small viewports; configuration-only rules are excluded, Return Path remains
+  disabled, headers sort, Online/Batch have independent Used On / All On / All Off
+  actions. Live QA identified label interception of the context menu; the menu
+  is now attached to label responses, checkbox alignment and tree gutters fixed.
+- Built a separate portable QA executable and opened the same source copy.
+  Real window: native-sized checker and successful Run DRC, three violations /
+  29 unchecked conditions. Matching keepout gap is 0.172657 mm. The two polygon
+  edge findings and missing native text finding remain unresolved; full matching
+  errors, native docked report/Message presentation, typography/icons and Linux
+  GUI parity are not claimed.
+- Existing live PCBCraft session was retained without closing/saving documents;
+  its executable was retained under target/debug before rebuilding the standard
+  path. QA data and captures remain ignored. No private project enters Git.
+- Validation in progress: the first complete workspace attempt found two routing
+  regressions from No Net rule selection and an obsolete exhaustive-test unwrap.
+  Physical obstacle resolution and the independent reference loop were corrected;
+  final checks and latest-menu GUI verification follow below.
+- Final portable QA build: confirmed the checker at 771 x 700 in the real window,
+  corrected tree gutters, centered checkboxes and the six-entry context menu.
+  Online All Off clears Online while leaving Batch intact; Online Used On restores
+  the checks with enabled definitions. Running Batch again completes with three
+  violations / 29 unchecked conditions. The source document remains clean.
+- Re-ran native DRC on the unchanged source copy: two violations, zero warnings.
+  Original and local source copy remain byte-identical after all observations.
+- Privacy follow-up: two newly generated local orchestration checkpoint commits
+  had non-anonymous author metadata. Anonymized those local refs, expired obsolete
+  reflogs/objects; reachable-history scan passes again. Main history is unchanged.
+- Final validation: cargo fmt --all -- --check PASS; cargo clippy --workspace
+  --all-targets -- -D warnings PASS (38.48 s); cargo test --workspace PASS,
+  727 tests / zero failures (160 app, 308 core, 1 geometry, 144 IO, 114 render),
+  including the previously intermittent GPU routing test. Full test build/run
+  completed in approximately six minutes. Dev application build PASS (5m 47s).
+  git diff --check and privacy scans, including reachable history and the new
+  comparison document, PASS. Native text/polygon parity and unsupported rule
+  coverage remain open; this validation does not establish complete DRC parity.

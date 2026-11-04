@@ -1,6 +1,269 @@
 use super::*;
 
 #[test]
+fn copper_text_cannot_silently_pass_an_implemented_board_outline_check() {
+    let mut board = Board {
+        items: vec![Item::new(
+            TOP,
+            None,
+            Shape::Text {
+                position: Point::mm(2, 1),
+                text: "BOARD_LABEL".into(),
+                height: 1_100_000,
+                stroke: 200_000,
+                rotation: 0.,
+                mirrored: false,
+                font: "Arial".into(),
+            },
+        )],
+        rules: vec![default_rule("BoardOutlineClearance")],
+        ..Default::default()
+    };
+    // AD24's stroke text uses a baseline distinct from the Properties location.
+    // Conservative display bounds cannot prove an outline clearance pass.
+    let report = check(&board);
+    assert!(report.violations.is_empty());
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .any(|d| d.contains("text board-outline"))
+    );
+    board.rules[0].insert("SCOPE1EXPRESSION".into(), "IsPad".into());
+    assert!(check(&board).diagnostics.is_empty());
+    board.rules[0].insert("SCOPE1EXPRESSION".into(), "All".into());
+    board.rules[0].insert("ENABLED".into(), "FALSE".into());
+    assert!(check(&board).diagnostics.is_empty());
+}
+
+#[test]
+fn different_nets_does_not_compare_two_unassigned_objects_but_any_net_does() {
+    let mut board = Board {
+        items: vec![track(TOP, None, 0, 0), track(TOP, None, 0, 0)],
+        rules: vec![default_rule("Clearance")],
+        ..Default::default()
+    };
+    board.rules[0].insert("NETSCOPE".into(), "DifferentNets".into());
+    assert!(check(&board).violations.is_empty());
+    board.rules[0].insert("NETSCOPE".into(), "AnyNet".into());
+    assert_eq!(check(&board).violations.len(), 1);
+    board.rules[0].insert("NETSCOPE".into(), "DifferentNets".into());
+    board.items[1].net = Some(0);
+    assert_eq!(check(&board).violations.len(), 1);
+    board.items[0].net = Some(0);
+    assert!(check(&board).violations.is_empty());
+    board.items[1].net = Some(1);
+    assert_eq!(check(&board).violations.len(), 1);
+    board.items[0].net = None;
+    board.items[1].net = None;
+    board.items[0].keepout = true;
+    assert_eq!(check(&board).violations.len(), 1);
+    board.items[0].keepout = false;
+    board.items[0].shape = Shape::Region {
+        contour: vec![
+            Point::mm(-1, -1),
+            Point::mm(1, -1),
+            Point::mm(1, 1),
+            Point::mm(-1, 1),
+        ],
+        holes: vec![],
+        cutout: true,
+    };
+    board.items[0]
+        .properties
+        .insert("ISBOARDCUTOUT".into(), "TRUE".into());
+    assert_eq!(
+        check(&board).violations.len(),
+        1,
+        "A mechanical cutout also constrains No Net copper"
+    );
+}
+
+#[test]
+fn keepout_restrictions_respect_smd_bit_layers_and_compatibility_records() {
+    let mut keepout = Item::new(
+        BOTTOM,
+        None,
+        Shape::Region {
+            contour: vec![
+                Point::mm(0, 0),
+                Point::mm(1, 0),
+                Point::mm(1, 1),
+                Point::mm(0, 1),
+            ],
+            holes: vec![],
+            cutout: false,
+        },
+    );
+    keepout.keepout = true;
+    let pad = Item::new(
+        BOTTOM,
+        Some(0),
+        Shape::Pad {
+            position: Point::mm(1, 0),
+            size: Point {
+                x: 600_000,
+                y: 600_000,
+            },
+            rotation: 0.,
+            shape: PadShape::Round,
+            hole: 0,
+            plated: true,
+            name: "1".into(),
+            bottom_size: None,
+            middle_size: None,
+        },
+    );
+    let mut board = Board {
+        items: vec![keepout, pad],
+        rules: vec![default_rule("Clearance"), default_rule("ShortCircuit")],
+        ..Default::default()
+    };
+    // AD 24.4.1: the same native keepout reports its SMD clearance with
+    // masks 25 and 8, and does not report it with mask 17.
+    for (mask, expected) in [("25", 1), ("8", 1), ("17", 0), ("0", 0)] {
+        board.items[0]
+            .properties
+            .insert("KEEPOUTRESTRICTIONS".into(), mask.into());
+        let report = check(&board);
+        assert_eq!(report.violations.len(), expected, "mask {mask}");
+        assert!(report.violations.iter().all(|v| v.kind == "Clearance"));
+        assert!(!report.truncated);
+    }
+    board.items[0]
+        .properties
+        .insert("KEEPOUTRESTRICTIONS".into(), "8".into());
+    board.items[0].layer = TOP;
+    assert!(check(&board).violations.is_empty());
+    board.items[0].layer = KEEP_OUT;
+    assert_eq!(check(&board).violations.len(), 1);
+    let mut shadow = board.items[0].clone();
+    shadow.id = Uuid::new_v4();
+    shadow
+        .properties
+        .insert("PCBCRAFT_LEGACY_REGION_DUPLICATE".into(), "TRUE".into());
+    board.items.push(shadow);
+    assert_eq!(check(&board).violations.len(), 1);
+    board.items[0]
+        .properties
+        .insert("KEEPOUTRESTRICTIONS".into(), "invalid".into());
+    let report = check(&board);
+    assert!(report.violations.is_empty());
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .any(|d| d.contains("Keepout restriction mask"))
+    );
+}
+
+#[test]
+fn import_shadow_geometry_does_not_duplicate_board_edge_violations() {
+    let region = Item::new(
+        TOP,
+        Some(0),
+        Shape::Region {
+            contour: vec![
+                Point {
+                    x: 100_000,
+                    y: 1_000_000,
+                },
+                Point {
+                    x: 500_000,
+                    y: 1_000_000,
+                },
+                Point {
+                    x: 500_000,
+                    y: 2_000_000,
+                },
+                Point {
+                    x: 100_000,
+                    y: 2_000_000,
+                },
+            ],
+            holes: vec![],
+            cutout: false,
+        },
+    );
+    let mut board = Board {
+        rules: vec![default_rule("BoardOutlineClearance")],
+        items: vec![region.clone()],
+        outline: [(0, 0), (10, 0), (10, 10), (0, 10)]
+            .into_iter()
+            .map(|(x, y)| ContourVertex {
+                position: Point::mm(x, y),
+                arc: None,
+            })
+            .collect(),
+        ..Default::default()
+    };
+    board.rules[0].insert("GAP".into(), "0.3mm".into());
+    let expected = keys(&check(&board));
+    assert_eq!(expected.len(), 1);
+    for marker in [
+        "PCBCRAFT_LEGACY_REGION_DUPLICATE",
+        "PCBCRAFT_BODY_PROJECTION",
+    ] {
+        let mut shadow = region.clone();
+        shadow.id = Uuid::new_v4();
+        shadow.properties.insert(marker.into(), "TRUE".into());
+        board.items.push(shadow);
+    }
+    let before = board.clone();
+    assert_eq!(keys(&check(&board)), expected);
+    assert_eq!(
+        board, before,
+        "DRC must retain native compatibility records"
+    );
+    // Unmarked coincident primitives remain separate real objects.
+    let mut independent = region;
+    independent.id = Uuid::new_v4();
+    board.items.push(independent);
+    assert_eq!(check(&board).violations.len(), 2);
+}
+
+#[test]
+fn import_shadow_apertures_cannot_bridge_real_mask_slivers() {
+    let opening = |x, width| {
+        Item::new(
+            37,
+            None,
+            Shape::Region {
+                contour: vec![
+                    Point { x, y: 0 },
+                    Point { x: x + width, y: 0 },
+                    Point {
+                        x: x + width,
+                        y: 1_000_000,
+                    },
+                    Point { x, y: 1_000_000 },
+                ],
+                holes: vec![],
+                cutout: false,
+            },
+        )
+    };
+    let mut board = Board {
+        rules: vec![default_rule("MinimumSolderMaskSliver")],
+        items: vec![opening(0, 1_000_000), opening(1_050_000, 1_000_000)],
+        ..Default::default()
+    };
+    let expected = keys(&check(&board));
+    assert_eq!(expected.len(), 1);
+    let mut shadow = opening(0, 2_050_000);
+    shadow
+        .properties
+        .insert("PCBCRAFT_LEGACY_REGION_DUPLICATE".into(), "TRUE".into());
+    board.items.push(shadow);
+    assert_eq!(keys(&check(&board)), expected);
+    board.items.last_mut().unwrap().properties.clear();
+    assert!(
+        check(&board).violations.is_empty(),
+        "A real manual bridge joins the openings"
+    );
+}
+
+#[test]
 fn measured_electrical_boundary_does_not_relax_solder_mask_checks() {
     // AD 24.4.1, complete native DRC runs on independent parallel-track
     // fixtures: 19 native units (48.26 nm) pass; 20 (50.8 nm) fail.
@@ -349,7 +612,9 @@ fn copper_pairs_match_exhaustive_geometry_with_matrix_net_scopes_and_footprint_e
                     TOP,
                 );
             }
-            let (n, r) = resolve(&board, "Clearance", i, Some(j)).unwrap().unwrap();
+            let Some((n, r)) = resolve(&board, "Clearance", i, Some(j)).unwrap() else {
+                continue;
+            };
             let required = clearance(&board, i, j).unwrap().unwrap();
             let distance = (Euclidean.distance(&first, &second) * 1e6).round() as i64;
             if distance + 50 < required {

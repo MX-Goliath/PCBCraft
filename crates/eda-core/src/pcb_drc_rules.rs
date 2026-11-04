@@ -214,11 +214,8 @@ impl<'a> Rules<'a> {
                 })
             };
             let matched = if let Some(b) = b {
-                let (a_net, b_net) = (self.board.item_net(a), self.board.item_net(b));
-                match text(rule, "NETSCOPE") {
-                    "DifferentNets" if a_net.is_some() && a_net == b_net => continue,
-                    "SameNet" if a_net.is_none() || a_net != b_net => continue,
-                    _ => {}
+                if !net_scope_matches(self.board, text(rule, "NETSCOPE"), a, b, false) {
+                    continue;
                 }
                 (evaluate(a, first, "SCOPE1EXPRESSION")?
                     && evaluate(b, second, "SCOPE2EXPRESSION")?)

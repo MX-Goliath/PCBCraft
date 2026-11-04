@@ -118,6 +118,39 @@ pub fn resolve<'a>(
     a: &Item,
     b: Option<&Item>,
 ) -> Result<Option<(usize, &'a Fields)>, String> {
+    resolve_with_obstacles(board, kind, a, b, false)
+}
+fn net_scope_matches(
+    board: &Board,
+    scope: &str,
+    a: &Item,
+    b: &Item,
+    physical_obstacles: bool,
+) -> bool {
+    let (a_net, b_net) = (board.item_net(a), board.item_net(b));
+    let obstacle = |item: &Item| {
+        item.keepout
+            || (matches!(item.shape, Shape::Region { cutout: true, .. })
+                && text(&item.properties, "ISBOARDCUTOUT") == "TRUE")
+    };
+    match scope {
+        // Batch DRC does not compare two No Net copper objects under
+        // Different Nets. Physical placement must still avoid their scoped
+        // obstacles; mechanical keepouts/cutouts never have an electrical net.
+        "DifferentNets" => {
+            a_net != b_net || (physical_obstacles && a_net.is_none()) || obstacle(a) || obstacle(b)
+        }
+        "SameNet" => a_net.is_some() && a_net == b_net,
+        _ => true,
+    }
+}
+fn resolve_with_obstacles<'a>(
+    board: &'a Board,
+    kind: &str,
+    a: &Item,
+    b: Option<&Item>,
+    physical_obstacles: bool,
+) -> Result<Option<(usize, &'a Fields)>, String> {
     let mut rules: Vec<_> = board
         .rules
         .iter()
@@ -141,11 +174,8 @@ pub fn resolve<'a>(
                 .map_err(|error| format!("{} ({}), {key}: {error}", text(r, "NAME"), kind))
         };
         let matches = if let Some(b) = b {
-            let (a_net, b_net) = (board.item_net(a), board.item_net(b));
-            match text(r, "NETSCOPE") {
-                "DifferentNets" if a_net.is_some() && a_net == b_net => continue,
-                "SameNet" if a_net.is_none() || a_net != b_net => continue,
-                _ => {}
+            if !net_scope_matches(board, text(r, "NETSCOPE"), a, b, physical_obstacles) {
+                continue;
             }
             (evaluate(a, first, "SCOPE1EXPRESSION")? && evaluate(b, second, "SCOPE2EXPRESSION")?)
                 || (evaluate(b, first, "SCOPE1EXPRESSION")?
@@ -195,7 +225,20 @@ pub fn gap_objects(r: &Fields, a: &str, b: &str) -> Result<i64, String> {
     dimension(r, "GAP")
 }
 pub fn clearance(board: &Board, a: &Item, b: &Item) -> Result<Option<i64>, String> {
-    let Some((_, r)) = resolve(board, "Clearance", a, Some(b))? else {
+    clearance_with_obstacles(board, a, b, false)
+}
+/// Routing and pour generation cannot merge unrelated unassigned copper.
+pub(crate) fn obstacle_clearance(board: &Board, a: &Item, b: &Item) -> Result<Option<i64>, String> {
+    clearance_with_obstacles(board, a, b, true)
+}
+fn clearance_with_obstacles(
+    board: &Board,
+    a: &Item,
+    b: &Item,
+    physical_obstacles: bool,
+) -> Result<Option<i64>, String> {
+    let Some((_, r)) = resolve_with_obstacles(board, "Clearance", a, Some(b), physical_obstacles)?
+    else {
         return Ok(None);
     };
     if net_tie_pair(board, a, b) {

@@ -221,7 +221,7 @@ impl Obstacles {
                 gap: if text_is_board_cutout(i) {
                     crate::pcb_rules::cutout_clearance(board, probe, i)
                 } else {
-                    crate::pcb_rules::clearance(board, probe, i)
+                    crate::pcb_rules::obstacle_clearance(board, probe, i)
                 },
                 copper: match i.shape {
                     Shape::Track { start, end, width } => Geometry::Track(
@@ -405,7 +405,7 @@ impl Obstacles {
                     if text_is_board_cutout(item) {
                         crate::pcb_rules::cutout_clearance(board, probe, item)
                     } else {
-                        crate::pcb_rules::clearance(board, probe, item)
+                        crate::pcb_rules::obstacle_clearance(board, probe, item)
                     }
                 } else {
                     crate::pcb_rules::resolve(board, "BoardOutlineClearance", probe, None).and_then(

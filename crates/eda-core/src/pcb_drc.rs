@@ -222,6 +222,33 @@ impl Report {
 pub fn check(board: &Board) -> Report {
     check_inner(board, 5000, None, &mut |_| {})
 }
+// Native compatibility records and body projections are retained for lossless
+// persistence/display, but do not describe additional manufactured copper.
+fn checkable_item(item: &Item) -> bool {
+    !item.properties.contains_key("PCBCRAFT_BODY_PROJECTION")
+        && text(&item.properties, "PCBCRAFT_LEGACY_REGION_DUPLICATE") != "TRUE"
+}
+// Object-specific keepouts are clearance obstacles, not electrical copper.
+fn keepout_restricts(keepout: &Item, item: &Item) -> Result<bool, String> {
+    let mask = match keepout.properties.get("KEEPOUTRESTRICTIONS") {
+        Some(value) => value
+            .parse::<u8>()
+            .ok()
+            .filter(|v| *v <= 31)
+            .ok_or_else(|| {
+                "Keepout restriction mask is invalid; clearance is not fully checked".to_owned()
+            })?,
+        None => 31, // Legacy unrestricted keepout.
+    };
+    let bit = match item.shape {
+        Shape::Via { .. } => 1,
+        Shape::Track { .. } | Shape::Arc { .. } => 2,
+        Shape::Pad { hole: 0, .. } => 8,
+        Shape::Pad { .. } => 16,
+        _ => 4,
+    };
+    Ok(mask & bit != 0)
+}
 fn check_inner(
     board: &Board,
     limit: usize,
@@ -261,10 +288,48 @@ fn check_inner(
             ));
         }
     }
-    for item in &board.items {
+    for item in board.items.iter().filter(|i| checkable_item(i)) {
         if out.stopped() {
             phase("item_rules");
             return out;
+        }
+        if item.keepout {
+            if rules.active("Clearance")
+                && let Err(error) = keepout_restricts(item, item)
+            {
+                out.diagnostics.insert(error);
+            }
+            continue;
+        }
+        if matches!(item.shape, Shape::Text { .. }) {
+            if rules.active("Clearance")
+                && board.layers.iter().any(|l| l.copper && l.id == item.layer)
+            {
+                out.diagnostics
+                    .insert("Clearance: copper text glyph geometry is not checked".into());
+            }
+            if board.layers.iter().any(|l| {
+                (l.copper || matches!(l.id, TOP_OVERLAY | BOTTOM_OVERLAY)) && l.id == item.layer
+            }) {
+                match rules.resolve("BoardOutlineClearance", item, None) {
+                    Ok(Some((_, rule))) => match gap_objects(rule, "Text", "OutlineEdge") {
+                        Ok(gap) if gap > 0 => {
+                            out.diagnostics.insert(format!(
+                                "{}: text board-outline geometry is not checked",
+                                text(rule, "NAME")
+                            ));
+                        }
+                        Err(error) => {
+                            out.diagnostics.insert(error);
+                        }
+                        _ => {}
+                    },
+                    Err(error) => {
+                        out.diagnostics.insert(error);
+                    }
+                    _ => {}
+                }
+            }
         }
         if item.drill_size() > 0 {
             match rules.resolve("LayerPairs", item, None) {
@@ -327,7 +392,8 @@ fn check_inner(
         .items
         .iter()
         .filter(|i| {
-            matches!(i.shape, Shape::Region { cutout: true, .. })
+            checkable_item(i)
+                && matches!(i.shape, Shape::Region { cutout: true, .. })
                 && text(&i.properties, "ISBOARDCUTOUT") == "TRUE"
         })
         .collect();
@@ -340,7 +406,8 @@ fn check_inner(
         .filter(|l| edge_checks && (l.copper || matches!(l.id, TOP_OVERLAY | BOTTOM_OVERLAY)))
     {
         for item in board.items.iter().filter(|i| {
-            pcb_polygon::on_layer(board, i, layer.id)
+            checkable_item(i)
+                && pcb_polygon::on_layer(board, i, layer.id)
                 && !i.keepout
                 && !matches!(
                     i.shape,
@@ -571,15 +638,14 @@ fn check_inner(
             .items
             .iter()
             .filter(|i| {
-                !i.keepout
+                checkable_item(i)
                     && !i.is_drill_only()
                     && !matches!(
                         i.shape,
                         Shape::Text { .. } | Shape::Region { cutout: true, .. }
                     )
-                    && pcb_polygon::on_layer(board, i, layer.id)
-                    && !i.properties.contains_key("PCBCRAFT_BODY_PROJECTION")
-                    && text(&i.properties, "PCBCRAFT_LEGACY_REGION_DUPLICATE") != "TRUE"
+                    && (pcb_polygon::on_layer(board, i, layer.id)
+                        || (i.keepout && i.layer == KEEP_OUT))
                     && !(board.pours_stale && i.polygon.is_some())
             })
             .collect();
@@ -608,6 +674,20 @@ fn check_inner(
                 if other.max.y < bounds.min.y || other.min.y > bounds.max.y {
                     continue;
                 }
+                if i.keepout || j.keepout {
+                    if i.keepout && j.keepout {
+                        continue;
+                    }
+                    let (keepout, copper) = if i.keepout { (*i, j) } else { (j, *i) };
+                    match keepout_restricts(keepout, copper) {
+                        Ok(true) => {}
+                        Ok(false) => continue,
+                        Err(error) => {
+                            out.diagnostics.insert(error);
+                            continue;
+                        }
+                    }
+                }
                 pairs += 1;
                 if pairs > 2_000_000 {
                     out.truncated = true;
@@ -624,7 +704,9 @@ fn check_inner(
                 if first.shape.0.is_empty() || second.shape.0.is_empty() {
                     continue;
                 }
-                let intersects = (nets[a].is_none() || nets[a] != nets[b])
+                let intersects = !i.keepout
+                    && !j.keepout
+                    && (nets[a].is_none() || nets[a] != nets[b])
                     && rules.active("ShortCircuit")
                     && first.intersects(second);
                 if intersects {

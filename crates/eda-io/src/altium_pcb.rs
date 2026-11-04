@@ -894,7 +894,7 @@ fn primitive(family: &str, p: &[u8]) -> Result<Item> {
     let mut i = common(p, shape)?;
     let modern_offset = match family {
         "Tracks6" => Some(41),
-        "Arcs6" => Some(56),
+        "Arcs6" => Some(52),
         "Fills6" => Some(42),
         _ => None,
     };
@@ -903,6 +903,18 @@ fn primitive(family: &str, p: &[u8]) -> Result<Item> {
         && let Some(layer) = native_layer(u32_at(p, at)?)
     {
         i.layer = layer;
+    }
+    if i.keepout {
+        let restriction_offset = match family {
+            "Tracks6" => Some(45),
+            "Arcs6" => Some(56),
+            "Fills6" => Some(46),
+            _ => None,
+        };
+        if let Some(at) = restriction_offset.filter(|at| p.len() >= at + 4) {
+            i.properties
+                .insert("KEEPOUTRESTRICTIONS".into(), u32_at(p, at)?.to_string());
+        }
     }
     if family == "Vias6" {
         stack_io::read_via(&mut i, p)?;

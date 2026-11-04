@@ -643,7 +643,7 @@ pub fn repour(board: &Board) -> Result<Board, String> {
                             material = material.difference(&thermals(item, settings, &geom))
                         }
                         Connection::None => {
-                            let gap = crate::pcb_rules::clearance(board, &probe, item)?
+                            let gap = crate::pcb_rules::obstacle_clearance(board, &probe, item)?
                                 .unwrap_or(p.clearance);
                             material = material.difference(&geom.buffer(gap as f64 / 1e6))
                         }
@@ -652,8 +652,8 @@ pub fn repour(board: &Board) -> Result<Board, String> {
                     anchors = anchors.union(&geom);
                 }
             } else {
-                let clearance =
-                    crate::pcb_rules::clearance(board, &probe, item)?.unwrap_or(p.clearance);
+                let clearance = crate::pcb_rules::obstacle_clearance(board, &probe, item)?
+                    .unwrap_or(p.clearance);
                 material = material.difference(&geom.buffer(clearance as f64 / 1e6));
             }
         }
@@ -674,7 +674,7 @@ pub fn repour(board: &Board) -> Result<Board, String> {
                     },
                 );
                 other_probe.polygon = Some(other.index);
-                let clearance = crate::pcb_rules::clearance(board, &probe, &other_probe)?
+                let clearance = crate::pcb_rules::obstacle_clearance(board, &probe, &other_probe)?
                     .unwrap_or(p.clearance.max(other.clearance));
                 material = material.difference(&geom.buffer(clearance as f64 / 1e6));
             }

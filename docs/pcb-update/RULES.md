@@ -514,3 +514,8 @@ deficits and one 0.15 mm same-net via-to-pad clearance on Mid-Layer 2 under a
 0.2 mm rule. These are unresolved differences, not accepted violations or a
 verified Altium-equivalent pass. A separate native copy containing eight
 translated ReferenceE mask pairs is prepared for isolation of those discrepancies.
+
+
+The 2026-11-04 ReferenceB continuation, native controls, corrected keepout/No Net
+handling and remaining polygon/text discrepancies are recorded in
+[DRC_COMPARISON.md](DRC_COMPARISON.md). Full DRC equivalence remains unfinished.

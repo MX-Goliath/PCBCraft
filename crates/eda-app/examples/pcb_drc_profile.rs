@@ -2,6 +2,17 @@
 //! Explicit probe flags can author a separate, non-overwriting comparison copy.
 use eda_core::pcb_rules::{self as rules, CheckOptions};
 use std::{collections::BTreeSet, path::PathBuf, time::Instant};
+#[derive(serde::Deserialize)]
+struct ProbePatch {
+    #[serde(default)]
+    components: Vec<(u32, eda_core::pcb::Fields)>,
+    #[serde(default)]
+    items: Vec<(eda_core::pcb::SourceRecord, eda_core::pcb::Fields)>,
+    #[serde(default)]
+    shapes: Vec<(eda_core::pcb::SourceRecord, eda_core::pcb::Shape)>,
+    #[serde(default)]
+    rules: Vec<(usize, eda_core::pcb::Fields)>,
+}
 fn main() -> Result<(), String> {
     let args: Vec<_> = std::env::args_os().collect();
     let path = PathBuf::from(
@@ -19,6 +30,46 @@ fn main() -> Result<(), String> {
     } else {
         eda_io::load(&path)?
     };
+    if let Some(pair) = args.windows(2).find(|p| p[0] == "--probe-patch") {
+        let patch: ProbePatch =
+            serde_json::from_slice(&std::fs::read(&pair[1]).map_err(|e| e.to_string())?)
+                .map_err(|e| e.to_string())?;
+        let board = document.pcb.as_mut().ok_or("Not a PCB")?;
+        for (index, values) in patch.components {
+            board
+                .components
+                .iter_mut()
+                .find(|c| c.index == index)
+                .ok_or("Probe component index not found")?
+                .properties
+                .extend(values);
+        }
+        for (source, values) in patch.items {
+            board
+                .items
+                .iter_mut()
+                .find(|i| i.source.as_ref() == Some(&source))
+                .ok_or("Probe source record not found")?
+                .properties
+                .extend(values);
+        }
+        for (source, shape) in patch.shapes {
+            board
+                .items
+                .iter_mut()
+                .find(|i| i.source.as_ref() == Some(&source))
+                .ok_or("Probe shape source record not found")?
+                .shape = shape;
+        }
+        for (index, values) in patch.rules {
+            board
+                .rules
+                .get_mut(index)
+                .ok_or("Probe rule index not found")?
+                .extend(values);
+        }
+        board.validate()?;
+    }
     if let Some(pair) = args.windows(2).find(|p| p[0] == "--append-probe") {
         let probe: eda_core::Document =
             serde_json::from_slice(&std::fs::read(&pair[1]).map_err(|e| e.to_string())?)

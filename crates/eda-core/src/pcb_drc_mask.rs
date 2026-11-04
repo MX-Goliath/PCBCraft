@@ -38,7 +38,11 @@ pub(super) fn check_masks_with_rules(board: &Board, rules: &Rules<'_>, out: &mut
         let mask_layer = if bottom { 38 } else { 37 };
         let silk_layer = if bottom { BOTTOM_OVERLAY } else { TOP_OVERLAY };
         let mut openings = Vec::new();
-        for item in board.items.iter().filter(|i| !i.keepout) {
+        for item in board
+            .items
+            .iter()
+            .filter(|i| checkable_item(i) && !i.keepout)
+        {
             if out.stopped() {
                 return;
             }
@@ -228,7 +232,7 @@ pub(super) fn check_masks_with_rules(board: &Board, rules: &Rules<'_>, out: &mut
                     board
                         .items
                         .iter()
-                        .filter(|i| i.layer == silk_layer && !i.keepout),
+                        .filter(|i| checkable_item(i) && i.layer == silk_layer && !i.keepout),
                 )
                 .collect();
             let prune = max_gap.is_ok()
@@ -244,7 +248,7 @@ pub(super) fn check_masks_with_rules(board: &Board, rules: &Rules<'_>, out: &mut
             for item in board
                 .items
                 .iter()
-                .filter(|i| i.layer == silk_layer && !i.keepout)
+                .filter(|i| checkable_item(i) && i.layer == silk_layer && !i.keepout)
             {
                 if out.stopped() {
                     return;

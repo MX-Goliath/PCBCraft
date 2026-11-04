@@ -510,7 +510,7 @@ fn modified_frame(
     {
         let at = match stream {
             "Tracks6" => Some(41),
-            "Arcs6" => Some(56),
+            "Arcs6" => Some(52),
             "Fills6" => Some(42),
             "Texts6" => Some(226),
             _ => None,
@@ -533,6 +533,30 @@ fn modified_frame(
     common_patch(b, item)?;
     if old.is_some_and(|old| old.layer == item.layer) {
         b[0] = legacy_layer;
+    }
+    if item.keepout {
+        let at = match stream {
+            "Tracks6" => Some(45),
+            "Arcs6" => Some(56),
+            "Fills6" => Some(46),
+            _ => None,
+        };
+        if let Some(at) = at {
+            let mask = item
+                .properties
+                .get("KEEPOUTRESTRICTIONS")
+                .map_or("31", String::as_str)
+                .parse::<u32>()
+                .ok()
+                .filter(|v| *v <= 31)
+                .ok_or("Invalid keepout restrictions")?;
+            // A new legacy primitive needs the modern extension to express
+            // object-specific restrictions; never drop them silently.
+            if b.len() < at + 4 {
+                b.resize(at + 4, 0);
+            }
+            put(b, at, &mask.to_le_bytes())?;
+        }
     }
     if !geometry_changed {
         return Ok(f);
@@ -2086,6 +2110,16 @@ fn equivalent_item(a: &Item, b: &Item) -> bool {
     {
         return false;
     }
+    if a.keepout {
+        let mask = |item: &Item| {
+            item.properties
+                .get("KEEPOUTRESTRICTIONS")
+                .map_or(Ok(31u32), |v| v.parse())
+        };
+        if mask(a) != mask(b) {
+            return false;
+        }
+    }
     match (&a.shape, &b.shape) {
         (
             Shape::Track {
@@ -2448,6 +2482,48 @@ pub fn save(path: &Path, doc: &Document, format: Format) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn native_keepout_masks_roundtrip_without_overwriting_modern_arc_layer() {
+        for (family, length, layer_at, mask_at) in [
+            ("Tracks6", 49, 41, 45),
+            ("Arcs6", 60, 52, 56),
+            ("Fills6", 50, 42, 46),
+        ] {
+            let mut raw = new_common(length);
+            raw[0] = 72;
+            raw[2] |= 2;
+            put(&mut raw, layer_at, &0x01000001u32.to_le_bytes()).unwrap();
+            put(&mut raw, mask_at, &24u32.to_le_bytes()).unwrap();
+            let old = primitive(family, &raw).unwrap();
+            assert_eq!(old.layer, TOP);
+            assert_eq!(old.properties.text("KEEPOUTRESTRICTIONS"), "24");
+            let mut item = old.clone();
+            item.properties
+                .insert("KEEPOUTRESTRICTIONS".into(), "8".into());
+            let original = Frame {
+                tag: if family == "Tracks6" {
+                    4
+                } else if family == "Arcs6" {
+                    1
+                } else {
+                    6
+                },
+                blocks: vec![raw],
+                flags: vec![0],
+            };
+            let changed = modified_frame(&item, Some(&old), Some(&original), family, 0).unwrap();
+            assert_eq!(u32_at(&changed.blocks[0], layer_at).unwrap(), 0x01000001);
+            let imported = primitive(family, &changed.blocks[0]).unwrap();
+            assert_eq!(imported.layer, TOP);
+            assert_eq!(imported.properties.text("KEEPOUTRESTRICTIONS"), "8");
+            assert_eq!(imported.shape, item.shape);
+            assert!(!equivalent_item(&old, &imported));
+            item.properties.remove("KEEPOUTRESTRICTIONS");
+            let legacy = modified_frame(&item, None, None, family, 0).unwrap();
+            let imported = primitive(family, &legacy.blocks[0]).unwrap();
+            assert_eq!(imported.properties.text("KEEPOUTRESTRICTIONS"), "31");
+        }
+    }
     #[test]
     fn native_unicode_rule_comments_are_canonical_and_old_shadows_cannot_override_edits() {
         let raw = b"|COMMENT=legacy|UNICODE=EXISTS|UNICODE__COMMENT=1056,1072,1079,1084,1077,1088|OPAQUE=keep\0";

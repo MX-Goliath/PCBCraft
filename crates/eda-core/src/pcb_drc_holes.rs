@@ -36,7 +36,7 @@ pub(super) fn check_holes_with_rules(
     let mut holes: Vec<_> = board
         .items
         .iter()
-        .filter(|i| i.drill_size() > 0)
+        .filter(|i| checkable_item(i) && i.drill_size() > 0)
         .filter_map(|item| {
             let shape = polygon(&item.drill_outline());
             shape.bounding_rect().map(|bounds| (item, shape, bounds))

@@ -50,6 +50,7 @@ pub(super) struct State {
     pub(super) settings: CheckSettings,
     pub setup: Option<CheckSettings>,
     settings_page: String,
+    check_sort: (usize, bool),
     generation: u64,
     observed: Option<Version>,
     changed_at: Instant,
@@ -144,6 +145,7 @@ impl Default for State {
             settings: CheckSettings::default(),
             setup: None,
             settings_page: "Report Options".into(),
+            check_sort: (0, false),
             generation: 0,
             observed: None,
             changed_at: Instant::now(),
@@ -231,6 +233,56 @@ fn category(kind: &str) -> &str {
     }
 }
 
+// Configuration-only rule pages are absent from AD24's checker table.
+fn checkable_kind(kind: &str) -> bool {
+    !matches!(category(kind), "Mask" | "Plane")
+        && !matches!(
+            kind,
+            "RoutingTopology"
+                | "RoutingPriority"
+                | "RoutingCorners"
+                | "FanoutControl"
+                | "AcuteAngle"
+                | "ComponentOrientations"
+                | "NetsToIgnore"
+        )
+}
+fn checker_quick_actions(ui: &mut egui::Ui, board: &Board, draft: &mut CheckSettings) {
+    for online in [true, false] {
+        if !online {
+            ui.separator();
+        }
+        for action in ["Used On", "All On", "All Off"] {
+            let label = format!("{} DRC - {action}", if online { "Online" } else { "Batch" });
+            if ui.button(label).clicked() {
+                let excluded = if online {
+                    &mut draft.online_excluded
+                } else {
+                    &mut draft.batch_excluded
+                };
+                for (_, _, kind) in CATALOG
+                    .iter()
+                    .filter(|(_, _, k)| checkable_kind(k) && rules::supported(k))
+                {
+                    if online && *kind == "UnRoutedNet" {
+                        continue;
+                    }
+                    let enable = action != "All Off"
+                        && board.rules.iter().any(|rule| {
+                            text(rule, "RULEKIND") == *kind
+                                && (action == "All On" || rules::enabled(rule))
+                        });
+                    if enable {
+                        excluded.remove(*kind);
+                    } else {
+                        excluded.insert((*kind).into());
+                    }
+                }
+                ui.close();
+            }
+        }
+    }
+}
 fn disabled_check(ui: &mut egui::Ui, label: &str, value: bool) {
     let mut checked = value;
     ui.add_enabled(false, egui::Checkbox::new(&mut checked, label))
@@ -243,19 +295,21 @@ fn checker_settings(doc: &OpenDocument, ctx: &egui::Context, state: &mut State) 
     let mut save = false;
     let mut cancel = ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
     let mut run = false;
-    egui::Window::new("Design Rule Checker [mm]").id(egui::Id::new(("drc_setup_v2",doc.session_id))).title_bar(false).fixed_size([752.0,684.0]).resizable(false).collapsible(false)
-        .movable(false).current_pos(widgets::position(ctx,egui::Id::new(("drc_setup_v2",doc.session_id)),ctx.screen_rect().center()-egui::vec2(384.0,350.0)))
+    let body_height = (ctx.screen_rect().height() - 80.0).clamp(200.0, 628.0);
+    egui::Window::new("Design Rule Checker [mm]").id(egui::Id::new(("drc_setup_v2",doc.session_id))).title_bar(false).fixed_size([755.0,body_height + 56.0]).resizable(false).collapsible(false)
+        .movable(false).current_pos(widgets::position(ctx,egui::Id::new(("drc_setup_v2",doc.session_id)),ctx.screen_rect().center()-egui::vec2(385.5,(body_height + 72.0) / 2.0)))
         .frame(egui::Frame::new().fill(Color32::from_gray(76)).inner_margin(7.0).stroke(egui::Stroke::new(1.0,widgets::LINE))).show(ctx,|ui|{
-            widgets::style(ui);cancel|=widgets::title(ui,"Design Rule Checker [mm]");
-            let(body,_)=ui.allocate_exact_size(egui::vec2(ui.available_width(),613.0),egui::Sense::hover());ui.painter().rect_filled(body,0.0,widgets::BG);
-            let left=egui::Rect::from_min_size(body.min+egui::vec2(15.0,15.0),egui::vec2(181.0,590.0));
+            widgets::style(ui);ui.spacing_mut().item_spacing.y=0.0;cancel|=widgets::title(ui,"Design Rule Checker [mm]");
+            let(body,_)=ui.allocate_exact_size(egui::vec2(ui.available_width(),body_height),egui::Sense::hover());ui.painter().rect_filled(body,0.0,widgets::BG);
+            let left=egui::Rect::from_min_size(body.min+egui::vec2(19.0,17.0),egui::vec2(181.0,body_height-34.0));
             widgets::child(ui, egui::UiBuilder::new().max_rect(left),|ui|{
-                for label in ["Report Options","Rules To Check"]{let(click,_,_)=widgets::tree_row(ui,label,label,0,"Manufacturing",state.settings_page==label,None);
+                for label in ["Report Options","Rules To Check"]{let click=widgets::checker_tree_row(ui,label,label,0,"Manufacturing",state.settings_page==label);
 if click{state.settings_page=label.into();}}
-                for cat in CATEGORIES.iter().filter(|c|!matches!(**c,"Mask"|"Plane")){let(click,_,_)=widgets::tree_row(ui,cat,cat,1,cat,state.settings_page==*cat,None);
+                for cat in CATEGORIES.iter().filter(|c|!matches!(**c,"Mask"|"Plane")){let click=widgets::checker_tree_row(ui,cat,cat,1,cat,state.settings_page==*cat);
 if click{state.settings_page=(*cat).into();}}
             });
-            let right=egui::Rect::from_min_max(body.min+egui::vec2(209.0,15.0),body.max-egui::vec2(18.0,8.0));
+            let report_options=state.settings_page=="Report Options";
+            let right=egui::Rect::from_min_max(body.min+egui::vec2(if report_options {219.0} else {211.0},17.0),body.max-egui::vec2(if report_options {26.0} else {18.0},19.0));
             widgets::child(ui, egui::UiBuilder::new().max_rect(right),|ui|{
                 if state.settings_page=="Report Options"{
                     widgets::section(ui,"DRC Report Options");ui.add_space(11.0);
@@ -275,26 +329,29 @@ if click{state.settings_page=(*cat).into();}}
                     });
                 }else{
                     let board=doc.model.pcb.as_ref().unwrap();
-                    let mut kinds:Vec<String>=CATALOG.iter().filter(|(cat,_,_)|!matches!(*cat,"Mask"|"Plane")&&(state.settings_page=="Rules To Check"||state.settings_page==*cat)).map(|(_,_,k)|(*k).into()).collect();
+                    let mut kinds:Vec<String>=CATALOG.iter().filter(|(cat,_,k)|checkable_kind(k)&&(state.settings_page=="Rules To Check"||state.settings_page==*cat)).map(|(_,_,k)|(*k).into()).collect();
                     for r in &board.rules{let k=text(r,"RULEKIND");
-if !matches!(category(k),"Mask"|"Plane")&&(state.settings_page=="Rules To Check"||state.settings_page==category(k))&&!kinds.iter().any(|v|v==k){kinds.push(k.into());}}
-                    kinds.sort_by_key(|k|name(k).to_owned());
-                    let widths=[right.width()*0.38,right.width()*0.38,right.width()*0.13,right.width()*0.11];
+if checkable_kind(k)&&(state.settings_page=="Rules To Check"||state.settings_page==category(k))&&!kinds.iter().any(|v|v==k){kinds.push(k.into());}}
+                    kinds.sort_by_key(|k| match state.check_sort.0 {1=>format!("{} {}",category(k),name(k)),2=>format!("{} {}",draft.online_excluded.contains(k),name(k)),3=>format!("{} {}",draft.batch_excluded.contains(k),name(k)),_=>name(k).to_owned()});
+                    if state.check_sort.1{kinds.reverse();}
+                    let table_width=right.width()-17.0;let widths=[table_width*0.375,table_width*0.375,table_width*0.125,table_width*0.125];
                     egui::Frame::new().fill(Color32::from_gray(58)).stroke(egui::Stroke::new(1.0,widgets::LINE)).show(ui,|ui|{
-                        widgets::table_header(ui,&widths,&["Rule","Category","Online","Batch"]);
-                        egui::ScrollArea::vertical().id_salt("check_types").max_height(570.0).auto_shrink([false,false]).show(ui,|ui|{ui.spacing_mut().item_spacing.y=0.0;ui.set_min_height(570.0);
+                        let header=widgets::table_header(ui,&widths,&["Rule","Category","Online","Batch"]);
+                        let mut x=header.left();for (column,width) in widths.iter().enumerate(){let rect=egui::Rect::from_min_size(egui::pos2(x,header.top()),egui::vec2(*width,header.height()));if ui.interact(rect,ui.id().with(("check_sort",column)),egui::Sense::click()).clicked(){state.check_sort=if state.check_sort.0==column{(column,!state.check_sort.1)}else{(column,false)};}x+=width;}
+                        egui::ScrollArea::vertical().id_salt("check_types").max_height((right.height()-22.0).max(0.0)).auto_shrink([false,false]).show(ui,|ui|{ui.spacing_mut().item_spacing.y=0.0;ui.set_min_height((right.height()-22.0).max(0.0));
                             for kind in kinds{let available=rules::supported(&kind)&&board.rules.iter().any(|r|text(r,"RULEKIND")==kind);
-                                let(rect,response)=ui.allocate_exact_size(egui::vec2(right.width(),21.3),egui::Sense::click());let mut x=rect.left();
-                                response.context_menu(|ui|{for (label,value) in [("Enable All",true),("Disable All",false)]{if ui.button(label).clicked(){for(_,_,k)in CATALOG.iter().filter(|(_,_,k)|rules::supported(k)){for excluded in [&mut draft.online_excluded,&mut draft.batch_excluded]{if value{excluded.remove(*k);}else{excluded.insert((*k).into());}}}ui.close();}}});
-                                for(col,w)in widths.iter().enumerate(){let cell=egui::Rect::from_min_size(egui::pos2(x,rect.top()),egui::vec2(*w,21.3));widgets::cell(ui,cell,|ui|{if col<2{if col==0{let(icon,_)=ui.allocate_exact_size(egui::vec2(17.0,17.0),egui::Sense::hover());widgets::icon(ui.painter(),icon,category(&kind));}ui.add(egui::Label::new(if col==0{name(&kind)}else{category(&kind)}).truncate());}else{let online=col==2;
+                                let(rect,response)=ui.allocate_exact_size(egui::vec2(table_width,22.0),egui::Sense::click());let mut x=rect.left();
+                                response.context_menu(|ui|checker_quick_actions(ui,board,&mut draft));
+                                for(col,w)in widths.iter().enumerate(){let cell=egui::Rect::from_min_size(egui::pos2(x,rect.top()),egui::vec2(*w,22.0));widgets::cell(ui,cell,|ui|{if col<2{if col==0{let(icon,_)=ui.allocate_exact_size(egui::vec2(17.0,17.0),egui::Sense::hover());widgets::icon(ui.painter(),icon,category(&kind));}ui.add(egui::Label::new(if col==0{name(&kind)}else{category(&kind)}).truncate().sense(egui::Sense::click())).context_menu(|ui|checker_quick_actions(ui,board,&mut draft));}else{let online=col==2;
 if online&&kind=="UnRoutedNet"{return;}let excluded=if online{&mut draft.online_excluded}else{&mut draft.batch_excluded};let mut checked=available&&!excluded.contains(&kind);
+ui.add_space(((cell.width()-20.0)/2.0-3.0).max(0.0));
 if ui.add_enabled(available,egui::Checkbox::without_text(&mut checked)).on_hover_text(if available{""}else{"This check is not implemented or has no rule"}).changed(){if checked{excluded.remove(&kind);}else{excluded.insert(kind.clone());}}}});x+=w;}
                             }
                         });
                     });
                 }
             });
-            ui.add_space(4.0);ui.horizontal(|ui|{
+            ui.add_space(8.0);ui.horizontal(|ui|{
                 if ui.add_sized([158.0,25.0],egui::Button::new("Run Design Rule Check…")).clicked(){save=true;run=true;}
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center),|ui|{if ui.add_sized([74.0,25.0],egui::Button::new("Cancel")).clicked(){cancel=true;}
 if ui.add_sized([74.0,25.0],egui::Button::new("OK")).clicked(){save=true;}});
@@ -3035,6 +3092,25 @@ mod tests {
         let rect = ctx
             .memory(|m| m.area_rect(egui::Id::new(("drc_setup_v2", doc.session_id))))
             .unwrap();
-        assert!(rect.width() <= 850.0 && rect.height() <= 750.0, "{rect:?}");
+        assert!(
+            (rect.width() - 771.0).abs() <= 1.0 && (rect.height() - 700.0).abs() <= 1.0,
+            "{rect:?}"
+        );
+        // The native-sized dialog must retain its footer on a smaller viewport.
+        let small_ctx = egui::Context::default();
+        let small_input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1000.0, 650.0),
+            )),
+            ..Default::default()
+        };
+        for _ in 0..2 {
+            let _ = small_ctx.run(small_input.clone(), |ctx| show(&mut doc, ctx));
+        }
+        let rect = small_ctx
+            .memory(|m| m.area_rect(egui::Id::new(("drc_setup_v2", doc.session_id))))
+            .unwrap();
+        assert!(rect.top() >= 0.0 && rect.bottom() <= 650.0, "{rect:?}");
     }
 }

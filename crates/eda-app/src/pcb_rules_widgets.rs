@@ -87,6 +87,7 @@ pub(super) const CATALOG: &[(&str, &str, &str)] = &[
     ),
     ("High Speed", "Parallel Segment", "ParallelSegment"),
     ("High Speed", "Length", "Length"),
+    ("High Speed", "Return Path", "ReturnPath"),
     ("High Speed", "Matched Lengths", "MatchedLengths"),
     (
         "High Speed",
@@ -374,12 +375,42 @@ pub(super) fn tree_row(
     selected: bool,
     branch: Option<bool>,
 ) -> (bool, bool, egui::Response) {
-    let (r, response) = ui.allocate_exact_size(vec2(ui.available_width(), 21.3), Sense::click());
+    tree_row_impl(ui, id, label, level, cat, selected, (branch, true))
+}
+
+pub(super) fn checker_tree_row(
+    ui: &mut egui::Ui,
+    id: &str,
+    label: &str,
+    level: usize,
+    cat: &str,
+    selected: bool,
+) -> bool {
+    tree_row_impl(ui, id, label, level, cat, selected, (None, false)).0
+}
+
+fn tree_row_impl(
+    ui: &mut egui::Ui,
+    id: &str,
+    label: &str,
+    level: usize,
+    cat: &str,
+    selected: bool,
+    branch_gutter: (Option<bool>, bool),
+) -> (bool, bool, egui::Response) {
+    let (branch, reserve_gutter) = branch_gutter;
+    let (r, response) = ui.allocate_exact_size(
+        vec2(
+            ui.available_width(),
+            if reserve_gutter { 21.3 } else { 21.0 },
+        ),
+        Sense::click(),
+    );
     if selected {
         ui.painter()
             .rect_filled(r, 0.0, ui.visuals().selection.bg_fill);
     }
-    let x = r.left() + 4.0 + level as f32 * 20.0;
+    let x = r.left() + 4.0 + level as f32 * 20.0 - if reserve_gutter { 0.0 } else { 18.0 };
     let arrow = Rect::from_center_size(pos2(x + 6.0, r.center().y), vec2(14.0, 19.0));
     let toggle = branch.is_some()
         && ui
