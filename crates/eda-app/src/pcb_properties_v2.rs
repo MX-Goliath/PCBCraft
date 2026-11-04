@@ -1657,7 +1657,10 @@ fn interactive(
         return;
     }
     properties::section(ui, "Properties", |ui| {
-        if matches!(ed.tool, Tool::Route | Tool::Arc) {
+        if matches!(
+            ed.tool,
+            Tool::Route | Tool::Arc | Tool::Line | Tool::Circle | Tool::Rectangle
+        ) {
             numeric_row(ui, "Width", &mut ed.width, units);
         }
         if matches!(ed.tool, Tool::Via | Tool::Route) {
@@ -1679,7 +1682,26 @@ fn interactive(
             text_row(ui, "Text", &mut ed.text);
             numeric_row(ui, "Height", &mut ed.text_height, units);
         }
-        ui.add_enabled_ui(ed.route_session.is_none(), |ui| {
+        if ed.keepout {
+            ui.label("Keepout Restrictions");
+            for (bit, label) in [
+                (1, "Vias"),
+                (2, "Tracks"),
+                (4, "Copper"),
+                (8, "SMD Pads"),
+                (16, "Through-Hole Pads"),
+            ] {
+                let mut value = ed.keepout_mask & bit != 0;
+                if ui.checkbox(&mut value, label).changed() {
+                    if value {
+                        ed.keepout_mask |= bit;
+                    } else {
+                        ed.keepout_mask &= !bit;
+                    }
+                }
+            }
+        }
+        ui.add_enabled_ui(ed.route_session.is_none() && !ed.keepout, |ui| {
             net(ui, board, &mut ed.net);
         });
         if ed.route_session.is_some() && ui.button("Finish route").clicked() {
@@ -1765,6 +1787,10 @@ pub(super) fn show(app: &mut PcbCraft, ui: &mut egui::Ui) -> bool {
             Tool::Region => "Region",
             Tool::Polygon => "Polygon Pour",
             Tool::Arc => "Arc",
+            Tool::Line => "Track",
+            Tool::Circle => "Arc",
+            Tool::Rectangle => "Rectangle",
+            Tool::PourCutout => "Polygon Pour Cutout",
             _ => "Board",
         }
     } else if selected.len() > 1 {

@@ -60,19 +60,7 @@ pub enum Icon {
     Maximize,
     Search,
     Filter,
-    Select,
-    Track,
-    MultiRoute,
-    Magnet,
-    Crosshair,
-    Fill,
-    Via,
     LibraryComponent,
-    Polygon,
-    Text,
-    Line,
-    Dimension,
-    Chart,
     Chip,
 }
 
@@ -326,66 +314,6 @@ pub fn draw_icon(p: &egui::Painter, rect: egui::Rect, icon: Icon, enabled: bool)
                 Stroke::NONE,
             ));
         }
-        Icon::Select => {
-            p.add(egui::Shape::convex_polygon(
-                vec![
-                    point(3.0, 1.0),
-                    point(13.0, 9.0),
-                    point(8.0, 10.0),
-                    point(5.0, 15.0),
-                ],
-                c,
-                Stroke::new(1.0, FIELD),
-            ));
-        }
-        Icon::Track | Icon::Line => {
-            p.line(
-                vec![
-                    point(1.0, 14.0),
-                    point(6.0, 14.0),
-                    point(12.0, 3.0),
-                    point(15.0, 3.0),
-                ],
-                Stroke::new(2.0, blue),
-            );
-        }
-        Icon::Magnet => {
-            p.line(
-                vec![
-                    point(3.0, 2.0),
-                    point(3.0, 10.0),
-                    point(6.0, 13.0),
-                    point(10.0, 13.0),
-                    point(13.0, 10.0),
-                    point(13.0, 2.0),
-                ],
-                Stroke::new(3.0, Color32::from_rgb(203, 103, 113)),
-            );
-            line((3.0, 1.0), (3.0, 5.0), blue);
-            line((13.0, 1.0), (13.0, 5.0), blue);
-        }
-        Icon::Crosshair => {
-            line((8.0, 0.0), (8.0, 16.0), blue);
-            line((0.0, 8.0), (16.0, 8.0), blue);
-            p.circle_stroke(rect.center(), 3.0, Stroke::new(1.0, yellow));
-        }
-        Icon::MultiRoute => {
-            for offset in [0.0, 5.0, 10.0] {
-                p.circle_stroke(point(offset + 2.0, 12.0), 1.5, Stroke::new(1.2, yellow));
-                line((offset + 2.0, 10.0), (offset + 5.0, 3.0), yellow);
-            }
-        }
-        Icon::Fill => {
-            p.rect_filled(
-                egui::Rect::from_min_max(point(1.0, 4.0), point(15.0, 13.0)),
-                0.0,
-                blue,
-            );
-        }
-        Icon::Via => {
-            p.circle_filled(rect.center(), 6.0, yellow);
-            p.circle_filled(rect.center(), 2.0, FIELD);
-        }
         Icon::Chip | Icon::LibraryComponent => {
             let body = if matches!(icon, Icon::LibraryComponent) {
                 yellow
@@ -400,42 +328,6 @@ pub fn draw_icon(p: &egui::Painter, rect: egui::Rect, icon: Icon, enabled: bool)
             for y in [4.0, 8.0, 12.0] {
                 line((0.0, y), (4.0, y), c);
                 line((12.0, y), (16.0, y), c);
-            }
-        }
-        Icon::Polygon => {
-            p.add(egui::Shape::convex_polygon(
-                vec![
-                    point(1.0, 5.0),
-                    point(10.0, 1.0),
-                    point(15.0, 8.0),
-                    point(12.0, 15.0),
-                    point(2.0, 13.0),
-                ],
-                blue,
-                Stroke::new(1.0, c),
-            ));
-        }
-        Icon::Text => {
-            p.text(
-                rect.center(),
-                egui::Align2::CENTER_CENTER,
-                "A",
-                FontId::proportional(18.0),
-                blue,
-            );
-        }
-        Icon::Dimension => {
-            line((1.0, 3.0), (1.0, 15.0), yellow);
-            line((15.0, 3.0), (15.0, 15.0), yellow);
-            line((1.0, 8.0), (15.0, 8.0), blue);
-        }
-        Icon::Chart => {
-            for (x, h) in [(2.0, 5.0), (6.0, 11.0), (10.0, 8.0)] {
-                p.rect_filled(
-                    egui::Rect::from_min_max(point(x, 15.0 - h), point(x + 3.0, 15.0)),
-                    0.0,
-                    blue,
-                );
             }
         }
     }

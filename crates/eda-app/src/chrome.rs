@@ -3,14 +3,8 @@ use theme::{Icon, icon_button};
 
 impl PcbCraft {
     pub(super) fn title_bar(&mut self, ctx: &egui::Context) {
-        let height = if self
-            .active
-            .is_some_and(|i| self.documents[i].model.kind == DocumentKind::Schematic)
-        {
-            23.
-        } else {
-            31.
-        };
+        // AD24 keeps the same title strip in both document editors.
+        let height = 23.;
         let title = self
             .active
             .map(|i| {
@@ -142,98 +136,7 @@ impl PcbCraft {
             self.schematic_active_bar(ctx, canvas);
             return;
         }
-        egui::Area::new(egui::Id::new("active_bar"))
-            .fixed_pos(egui::pos2(canvas.center().x - 237.0, canvas.top() + 7.0))
-            .show(ctx, |ui| {
-                egui::Frame::NONE
-                    .fill(theme::PANEL)
-                    .inner_margin(4)
-                    .corner_radius(2)
-                    .show(ui, |ui| {
-                        ui.spacing_mut().item_spacing.x = 9.0;
-                        ui.horizontal(|ui| {
-                            let tools: &[(Icon, &str, Option<Command>)] = &[
-                                (Icon::Filter, "Selection Filter", None),
-                                (Icon::Magnet, "Object Snap", None),
-                                (Icon::Crosshair, "Set Origin", None),
-                                (
-                                    Icon::Select,
-                                    "Select / Cancel",
-                                    Some(Command::Pcb(pcb_editor::Action::Tool(
-                                        pcb_editor::Tool::Select,
-                                    ))),
-                                ),
-                                (Icon::Chart, "Measure", None),
-                                (Icon::Chip, "Component", None),
-                                (
-                                    Icon::Track,
-                                    "Interactive Routing (Ctrl+W)",
-                                    Some(Command::Pcb(pcb_editor::Action::Tool(
-                                        pcb_editor::Tool::Route,
-                                    ))),
-                                ),
-                                (Icon::MultiRoute, "Interactive Multi-Routing", None),
-                                (
-                                    Icon::Via,
-                                    "Place Via (P, V)",
-                                    Some(Command::Pcb(pcb_editor::Action::Tool(
-                                        pcb_editor::Tool::Via,
-                                    ))),
-                                ),
-                                (
-                                    Icon::Fill,
-                                    "Place Fill (P, F)",
-                                    Some(Command::Pcb(pcb_editor::Action::Tool(
-                                        pcb_editor::Tool::Fill,
-                                    ))),
-                                ),
-                                (
-                                    Icon::Polygon,
-                                    "Polygon Pour (P, G)",
-                                    Some(Command::Pcb(pcb_editor::Action::Tool(
-                                        pcb_editor::Tool::Polygon,
-                                    ))),
-                                ),
-                                (Icon::Dimension, "Dimension", None),
-                                (
-                                    Icon::Text,
-                                    "Place String (P, S)",
-                                    Some(Command::Pcb(pcb_editor::Action::Tool(
-                                        pcb_editor::Tool::Text,
-                                    ))),
-                                ),
-                                (Icon::Line, "Place Line", None),
-                            ];
-                            for &(icon, tip, command) in tools {
-                                let needs_selection = matches!(
-                                    command,
-                                    Some(Command::SchEdit(SchAction::Move | SchAction::Rotate))
-                                );
-                                let enabled = command.is_some()
-                                    && (!needs_selection
-                                        || self.active.is_some_and(|i| {
-                                            self.documents[i].view.selected.is_some()
-                                        }));
-                                let selected = match command {
-                                    Some(Command::Pcb(pcb_editor::Action::Tool(tool))) => {
-                                        self.active.is_some_and(|i| {
-                                            self.documents[i].pcb_editor.tool == tool
-                                                && tool != pcb_editor::Tool::Select
-                                        })
-                                    }
-                                    _ => false,
-                                };
-                                if icon_button(ui, icon, selected, enabled)
-                                    .on_hover_text(tip)
-                                    .clicked()
-                                    && let Some(command) = command
-                                {
-                                    self.command = Some(command);
-                                }
-                            }
-                        });
-                    });
-            });
+        self.pcb_active_bar(ctx, canvas);
         self.routing_pause(ctx, canvas);
     }
 

@@ -4,9 +4,12 @@ use eda_core::pcb::{self, Board, Bounds, ContourVertex, Edit, Item, PadShape, Sh
 use eda_core::{
     pcb_polygon::{self, Connection, Polygon},
     pcb_route::{self, Conflict, Corner, RouteSession},
+    pcb_selection::ConnectionSelection,
     pcb_tools::{self, Handle},
 };
 use eda_geom::Point;
+#[path = "pcb_active_bar.rs"]
+pub(super) mod active_bar;
 #[path = "pcb_pours.rs"]
 mod pours;
 #[path = "pcb_properties_v2.rs"]
@@ -29,6 +32,10 @@ pub(super) enum Tool {
     Polygon,
     PolygonCutout,
     Arc,
+    Line,
+    Circle,
+    Rectangle,
+    PourCutout,
     Outline,
     Move,
     Drag,
@@ -119,6 +126,11 @@ struct TabSelection {
     stage: u8,
 }
 pub(super) struct Editor {
+    pub(super) bar: active_bar::State,
+    keepout: bool,
+    keepout_mask: u8,
+    arc_mode: pcb_tools::ArcPlacement,
+    arc_clockwise: bool,
     pub tool: Tool,
     start: Option<Point>,
     points: Vec<Point>,
@@ -146,7 +158,7 @@ pub(super) struct Editor {
     gesture: Option<Gesture>,
     gesture_preview: Option<(Point, u64)>,
     tool_base: Option<(Board, u64)>,
-    selection_pick: Option<bool>,
+    selection_pick: Option<ConnectionSelection>,
     tab_selection: Option<TabSelection>,
     draft: Option<Draft>,
     sequence: Option<(Key, f64)>,
@@ -164,6 +176,19 @@ pub(super) struct Editor {
     rules: rules_ui::State,
 }
 impl Editor {
+    pub(super) fn selection_status(&self) -> Option<&'static str> {
+        self.bar.instruction().or_else(|| {
+            self.selection_pick.map(|mode| match mode {
+                ConnectionSelection::Net => "Select a Net",
+                ConnectionSelection::Copper => "Select Copper",
+                ConnectionSelection::Physical => "Choose object",
+                ConnectionSelection::PhysicalOnLayer => "Choose object",
+                ConnectionSelection::ComponentConnections | ConnectionSelection::ComponentNets => {
+                    "Choose component"
+                }
+            })
+        })
+    }
     pub(super) fn routing_paused(&self) -> bool {
         self.tool == Tool::Route && self.paused
     }
@@ -217,6 +242,11 @@ impl Editor {
 impl Default for Editor {
     fn default() -> Self {
         Self {
+            bar: Default::default(),
+            keepout: false,
+            keepout_mask: 31,
+            arc_mode: Default::default(),
+            arc_clockwise: false,
             tool: Tool::Select,
             start: None,
             points: vec![],
@@ -268,6 +298,10 @@ impl Default for Editor {
 }
 impl Editor {
     pub(super) fn cancel(&mut self, view: &mut eda_render::View) {
+        self.keepout = false;
+        self.arc_mode = Default::default();
+        self.arc_clockwise = false;
+        self.bar.cancel_interaction();
         self.route_session = None;
         self.last_error = None;
         self.tool = Tool::Select;
@@ -675,25 +709,20 @@ fn placement(ed: &Editor, point: Point, layer: u16) -> Option<Item> {
             end: point,
             rotation: ed.rotation,
         },
+        Tool::Circle if ed.start.is_some_and(|c| c != point) => Shape::Arc {
+            centre: ed.start?,
+            radius: pcb::distance_sq(ed.start?, point).sqrt().round() as i64,
+            start_angle: 0.,
+            end_angle: 360.,
+            width: ed.width,
+        },
+        Tool::Line if ed.start.is_some_and(|c| c != point) => Shape::Track {
+            start: ed.start?,
+            end: point,
+            width: ed.width,
+        },
         Tool::Arc => {
-            if ed.points.len() < 2 {
-                return None;
-            }
-            let c = ed.points[0];
-            let a = ed.points[1];
-            let radius = pcb::distance_sq(c, a).sqrt().round() as i64;
-            if radius < 1 {
-                return None;
-            }
-            Shape::Arc {
-                centre: c,
-                radius,
-                start_angle: ((a.y - c.y) as f64).atan2((a.x - c.x) as f64).to_degrees(),
-                end_angle: ((point.y - c.y) as f64)
-                    .atan2((point.x - c.x) as f64)
-                    .to_degrees(),
-                width: ed.width,
-            }
+            pcb_tools::placement_arc(ed.arc_mode, &ed.points, point, ed.width, ed.arc_clockwise)?
         }
         Tool::Region => {
             let mut points = ed.points.clone();
@@ -711,7 +740,7 @@ fn placement(ed: &Editor, point: Point, layer: u16) -> Option<Item> {
         }
         _ => return None,
     };
-    Some(Item::new(
+    let mut item = Item::new(
         if ed.tool == Tool::Via || (ed.tool == Tool::Pad && ed.pad_hole > 0) {
             pcb::MULTI_LAYER
         } else {
@@ -719,7 +748,17 @@ fn placement(ed: &Editor, point: Point, layer: u16) -> Option<Item> {
         },
         ed.net,
         shape,
-    ))
+    );
+    apply_placement_flags(ed, &mut item);
+    Some(item)
+}
+fn apply_placement_flags(ed: &Editor, item: &mut Item) {
+    if ed.keepout {
+        item.keepout = true;
+        item.net = None;
+        item.properties
+            .insert("KEEPOUTRESTRICTIONS".into(), ed.keepout_mask.to_string());
+    }
 }
 fn finish_polygon(doc: &mut OpenDocument, ed: &mut Editor) -> Result<(), String> {
     pcb_polygon::validate_ring(&ed.points)?;
@@ -766,15 +805,17 @@ fn finish_polygon(doc: &mut OpenDocument, ed: &mut Editor) -> Result<(), String>
             selected = Some(id);
         }
         _ => {
-            next = next.edited(Edit::Insert(vec![Item::new(
+            let mut item = Item::new(
                 doc.view.pcb.active_layer,
                 ed.net,
                 Shape::Region {
                     contour: ed.points.clone(),
                     holes: vec![],
-                    cutout: false,
+                    cutout: ed.tool == Tool::PourCutout,
                 },
-            )]))?
+            );
+            apply_placement_flags(ed, &mut item);
+            next = next.edited(Edit::Insert(vec![item]))?
         }
     }
     next.pours_stale |= !next.polygon_pours.is_empty();
@@ -794,6 +835,9 @@ fn input(
     i: Input,
     ctx: &egui::Context,
 ) -> Result<(), String> {
+    if active_bar::input(doc, ed, &i, ctx)? {
+        return Ok(());
+    }
     if i.cancelled {
         ed.cancel_pointer(&mut doc.view);
         return Ok(());
@@ -814,21 +858,29 @@ fn input(
         ctx.request_repaint();
     }
     let modifiers = i.modifiers.unwrap_or_else(|| ctx.input(|s| s.modifiers));
-    if ed.tool == Tool::Select && ed.selection_pick.is_some() {
+    if ed.tool == Tool::Select
+        && let Some(mode) = ed.selection_pick
+    {
         if i.secondary_clicked {
             ed.selection_pick = None;
+            doc.view.pcb.tool_active = false;
             return Ok(());
         }
         if i.clicked
             && let Some(id) = i.hit
+            && mode.accepts(doc.model.pcb.as_ref().unwrap(), id)
         {
             let board = doc.model.pcb.as_ref().ok_or("Not a PCB document")?;
-            doc.view.pcb.selected = if ed.selection_pick == Some(true) {
-                eda_core::pcb_selection::net_objects(board, &[id])
-            } else {
-                eda_core::pcb_selection::connected(board, &[id], None, false)
-            };
-            ed.selection_pick = None;
+            doc.view.pcb.selected = eda_core::pcb_selection::connection_selection(
+                board,
+                id,
+                mode,
+                doc.view.pcb.active_layer,
+            );
+            if matches!(mode, ConnectionSelection::Net | ConnectionSelection::Copper) {
+                ed.selection_pick = None;
+                doc.view.pcb.tool_active = false;
+            }
         }
         return Ok(());
     }
@@ -850,7 +902,7 @@ fn input(
         }
         if matches!(
             ed.tool,
-            Tool::Region | Tool::Outline | Tool::Polygon | Tool::PolygonCutout
+            Tool::Region | Tool::Outline | Tool::Polygon | Tool::PolygonCutout | Tool::PourCutout
         ) && ed.points.len() >= 3
         {
             return finish_polygon(doc, ed);
@@ -1557,7 +1609,7 @@ fn input(
                 ed.route_session = Some(route);
             }
         }
-        Tool::Region | Tool::Outline | Tool::Polygon | Tool::PolygonCutout => {
+        Tool::Region | Tool::Outline | Tool::Polygon | Tool::PolygonCutout | Tool::PourCutout => {
             if i.double_clicked && ed.points.len() >= 3 {
                 return finish_polygon(doc, ed);
             }
@@ -1593,7 +1645,7 @@ fn input(
             }
         }
         Tool::Arc => {
-            if ed.points.len() < 2 {
+            if ed.points.len() < ed.arc_mode.anchors() {
                 if i.clicked {
                     ed.points.push(p);
                 }
@@ -1608,7 +1660,24 @@ fn input(
                 }
             }
         }
-        Tool::Fill if ed.start.is_none() => {
+        Tool::Rectangle => {
+            if let Some(a) = ed.start {
+                if a.x != p.x && a.y != p.y {
+                    let items = eda_core::pcb_arrange::rectangle(layer, a, p, ed.width);
+                    let next = board.edited(Edit::Insert(items))?;
+                    if i.clicked {
+                        commit(doc, next)?;
+                        ed.start = None;
+                        doc.view.pcb.set_preview(None);
+                    } else {
+                        doc.view.pcb.set_preview(Some(next));
+                    }
+                }
+            } else if i.clicked {
+                ed.start = Some(p);
+            }
+        }
+        Tool::Fill | Tool::Line | Tool::Circle if ed.start.is_none() => {
             if i.clicked {
                 ed.start = Some(p);
             }
@@ -1619,8 +1688,8 @@ fn input(
                 if i.clicked {
                     commit(doc, next)?;
                     doc.view.pcb.set_preview(None);
-                    if ed.tool == Tool::Fill {
-                        ed.start = None;
+                    if matches!(ed.tool, Tool::Fill | Tool::Circle | Tool::Line) {
+                        ed.start = (ed.tool == Tool::Line).then_some(p);
                     }
                 } else {
                     doc.view.pcb.set_preview(Some(next));
@@ -1847,7 +1916,12 @@ impl PcbCraft {
                     }
                 }
                 Action::SelectCopper | Action::SelectNet => {
-                    ed.selection_pick = Some(matches!(action, Action::SelectNet));
+                    ed.selection_pick = Some(if matches!(action, Action::SelectNet) {
+                        ConnectionSelection::Net
+                    } else {
+                        ConnectionSelection::Copper
+                    });
+                    doc.view.pcb.tool_active = true;
                 }
                 Action::SelectBoard => {
                     let board = doc.model.pcb.as_ref().unwrap();
@@ -2053,6 +2127,27 @@ impl PcbCraft {
         if self.documents[index].model.pcb.is_none() {
             return false;
         }
+        if self.pcb_bar_shortcuts(index, ctx) {
+            return true;
+        }
+        if self.documents[index].pcb_editor.tool != Tool::Select
+            && !self.documents[index].pcb_editor.paused
+            && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Enter))
+        {
+            let point = self.documents[index].pcb_editor.last_point;
+            self.pcb_input(
+                index,
+                Input {
+                    point,
+                    raw_point: point,
+                    clicked: true,
+                    hovered: true,
+                    ..Default::default()
+                },
+                ctx,
+            );
+            return true;
+        }
         if self.documents[index].pcb_editor.rules_open() {
             return true;
         }
@@ -2198,6 +2293,18 @@ impl PcbCraft {
                 return;
             }
             if input.consume_key(egui::Modifiers::NONE, Key::Escape) {
+                if matches!(
+                    doc.pcb_editor.tool,
+                    Tool::Line | Tool::Circle | Tool::Rectangle | Tool::Fill | Tool::Arc
+                ) && (doc.pcb_editor.start.is_some() || !doc.pcb_editor.points.is_empty())
+                {
+                    doc.pcb_editor.start = None;
+                    doc.pcb_editor.points.clear();
+                    doc.view.pcb.set_preview(None);
+                    doc.view.pcb.draft_outline.clear();
+                    handled = true;
+                    return;
+                }
                 if doc.pcb_editor.tool == Tool::Route && doc.pcb_editor.paused {
                     doc.pcb_editor.paused = false;
                     handled = true;
@@ -2285,6 +2392,8 @@ impl PcbCraft {
             if input.consume_key(shift, Key::Space) {
                 if let Some(Gesture::Move { rotation, .. }) = &mut doc.pcb_editor.gesture {
                     *rotation -= 90.0;
+                } else if doc.pcb_editor.tool == Tool::Arc {
+                    doc.pcb_editor.arc_clockwise = !doc.pcb_editor.arc_clockwise;
                 } else if doc.pcb_editor.tool == Tool::Route {
                     doc.pcb_editor.corner_mode = (doc.pcb_editor.corner_mode + 1) % 3;
                 } else if doc.pcb_editor.tool == Tool::Select {
@@ -2298,6 +2407,8 @@ impl PcbCraft {
             if input.consume_key(egui::Modifiers::NONE, Key::Space) {
                 if let Some(Gesture::Move { rotation, .. }) = &mut doc.pcb_editor.gesture {
                     *rotation += 90.0;
+                } else if doc.pcb_editor.tool == Tool::Arc {
+                    doc.pcb_editor.arc_clockwise = !doc.pcb_editor.arc_clockwise;
                 } else if doc.pcb_editor.tool == Tool::Route {
                     doc.pcb_editor.diagonal_first = !doc.pcb_editor.diagonal_first;
                 } else if doc.pcb_editor.tool == Tool::Select {

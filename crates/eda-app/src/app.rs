@@ -143,6 +143,7 @@ struct Settings {
     grid_nm: i64,
     right_messages: bool,
     pcb_navigation: eda_render::pcb::NavigationOptions,
+    pcb_active_bar_last: [usize; 14],
     pcb_drc: std::collections::BTreeMap<PathBuf, pcb_editor::CheckSettings>,
     active_variants: std::collections::BTreeMap<PathBuf, Option<String>>,
     variant_style: eda_core::assembly_variants::DisplayStyle,
@@ -172,6 +173,7 @@ impl Default for Settings {
             grid_nm: 1_000_000,
             right_messages: false,
             pcb_navigation: Default::default(),
+            pcb_active_bar_last: [0; 14],
             pcb_drc: Default::default(),
             active_variants: Default::default(),
             variant_style: Default::default(),
@@ -1289,6 +1291,13 @@ impl PcbCraft {
                         .small()
                         .color(MUTED),
                     );
+                    if let Some(status) = self
+                        .active
+                        .and_then(|i| self.documents[i].pcb_editor.selection_status())
+                    {
+                        ui.separator();
+                        ui.label(RichText::new(status).size(11.0));
+                    }
                     if self.cross_probe.enabled {
                         ui.separator();
                         ui.label(RichText::new("Cross Probe · Esc exits").strong())
@@ -1910,6 +1919,13 @@ impl PcbCraft {
                 .active
                 .is_some_and(|i| self.documents[i].view.pcb.configuration_modal_open())
         {
+            return;
+        }
+        if let Some(index) = self.active
+            && self.documents[index].model.pcb.is_some()
+            && self.documents[index].pcb_editor.bar.popup_open()
+        {
+            self.pcb_bar_shortcuts(index, ctx);
             return;
         }
         if ctx.wants_keyboard_input() {

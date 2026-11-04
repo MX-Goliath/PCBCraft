@@ -839,52 +839,66 @@ impl Board {
                 translation,
                 angle,
             } => {
-                if !angle.is_finite() {
-                    return Err("Invalid rotation".into());
-                }
-                let ids = self.resolve_selection(&selection);
-                if self.selection_locked(&selection, &ids) {
-                    return Err("Selection contains locked objects".into());
-                }
-                for item in next.items.iter_mut().filter(|i| ids.contains(&i.id)) {
-                    let bottom = item
-                        .component
-                        .and_then(|i| self.components.iter().find(|c| c.index == i))
-                        .is_some_and(|c| c.layer == BOTTOM);
-                    transform_item(item, pivot, translation, angle, bottom)?;
-                }
-                for poly in next
-                    .polygon_pours
-                    .iter_mut()
-                    .filter(|p| selection.contains(&p.id))
-                {
-                    for v in &mut poly.contour {
-                        v.position = transform_point(v.position, pivot, translation, angle)?;
-                        if let Some(a) = &mut v.arc {
-                            a.centre = transform_point(a.centre, pivot, translation, angle)?;
-                            a.start_angle += angle;
-                            a.end_angle += angle;
-                        }
-                    }
-                    for hole in &mut poly.holes {
-                        for p in hole {
-                            *p = transform_point(*p, pivot, translation, angle)?;
-                        }
-                    }
-                }
-                for c in next
-                    .components
-                    .iter_mut()
-                    .filter(|c| selection.contains(&c.id))
-                {
-                    c.position = transform_point(c.position, pivot, translation, angle)?;
-                    c.rotation = (c.rotation + angle).rem_euclid(360.0);
-                }
+                next.transform_unvalidated(&selection, pivot, translation, angle)?;
             }
         }
         next.pours_stale |= copper_changed && !next.polygon_pours.is_empty();
         next.validate()?;
         Ok(next)
+    }
+    /// Internal batch-transform helper. The caller owns a copy and must validate
+    /// its entire result before publication; locking and native model transforms
+    /// are identical to the ordinary Transform edit.
+    pub(crate) fn transform_unvalidated(
+        &mut self,
+        selection: &[Uuid],
+        pivot: Point,
+        translation: Point,
+        angle: f64,
+    ) -> Result<(), String> {
+        if !angle.is_finite() {
+            return Err("Invalid rotation".into());
+        }
+        let ids = self.resolve_selection(selection);
+        if self.selection_locked(selection, &ids) {
+            return Err("Selection contains locked objects".into());
+        }
+        for item in self.items.iter_mut().filter(|i| ids.contains(&i.id)) {
+            let bottom = item
+                .component
+                .and_then(|i| self.components.iter().find(|c| c.index == i))
+                .is_some_and(|c| c.layer == BOTTOM);
+            transform_item(item, pivot, translation, angle, bottom)?;
+        }
+        for poly in self
+            .polygon_pours
+            .iter_mut()
+            .filter(|p| selection.contains(&p.id))
+        {
+            for v in &mut poly.contour {
+                v.position = transform_point(v.position, pivot, translation, angle)?;
+                if let Some(a) = &mut v.arc {
+                    a.centre = transform_point(a.centre, pivot, translation, angle)?;
+                    a.start_angle += angle;
+                    a.end_angle += angle;
+                }
+            }
+            for hole in &mut poly.holes {
+                for p in hole {
+                    *p = transform_point(*p, pivot, translation, angle)?;
+                }
+            }
+        }
+        for c in self
+            .components
+            .iter_mut()
+            .filter(|c| selection.contains(&c.id))
+        {
+            c.position = transform_point(c.position, pivot, translation, angle)?;
+            c.rotation = (c.rotation + angle).rem_euclid(360.0);
+        }
+        self.pours_stale |= !self.polygon_pours.is_empty();
+        Ok(())
     }
     /// Internal transaction helper. Callers must validate the whole result
     /// before publishing it; all replacement/locking restrictions remain here.

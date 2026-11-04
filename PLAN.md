@@ -2770,3 +2770,177 @@ Cause, implementation and validation: docs/pcb-update/INTERACTIVE_ROUTING.md.
   git diff --check and privacy scans, including reachable history and the new
   comparison document, PASS. Native text/polygon parity and unsupported rule
   coverage remain open; this validation does not establish complete DRC parity.
+
+## 2026-11-04 - PCB floating Active Bar
+
+- User clarified the requested upper PCB toolbar is the floating Active Bar.
+  Used the Computer Use skill to inspect all fourteen groups in the live
+  Altium Enterprise 24.4.1.13 window, including both filter palettes and all
+  command menus. Offset, Rotation Angle and Align Objects dialogs were opened
+  and cancelled. Original projects/documents were not saved or edited for this
+  research; native probes used an ignored research copy.
+- Observation, implementation, remaining limitations and primary documentation
+  links: docs/interface/pcb-active-bar.md. Catalog has 92 commands in twelve
+  command groups plus Selection Filter and Objects for snapping. Native row,
+  separator, menu and strip dimensions replace the placeholder PCB toolbar;
+  corrected title-strip height puts Active Bar at the observed y=82.
+- Implemented 53 available command workflows. The other 39 remain visibly
+  disabled, including advanced routing/tuning, dimensions and text frames.
+  This is a partial implementation, not completion of the entire target scope.
+  Original vector icons do not establish exact native raster parity. Linux,
+  3D/board-planning variants and equal-size/DPI acceptance remain unverified.
+- Added one-second hold/right-click menus, short-click last defaults saved in
+  settings, keyboard navigation/dismissal, filter and snap state shared with
+  Properties, and supported Custom / All On / All Off / Custom snap presets.
+  Unsupported snap categories, Guides/Axes and Rooms/Other remain disabled.
+- Pure core operations implement geometry-based region/lasso/touching selection,
+  primitive/component arrangement, equal edge-gap distribution, four-track
+  rectangles and center/edge/any-angle arc geometry. Keepout placements carry
+  real restrictions and no net. Polygon cutout placement creates a standalone
+  cutout region. All mutations validate and use document history.
+- Offset uses unit-aware fields and two-point measurement. Rotation asks for
+  the canvas pivot after angle acceptance. Align combines horizontal and vertical
+  choices in one Undo entry. Modal workflows reject stale revision snapshots.
+  Arrangement reuses the core transform on a private copy, avoiding cloning and
+  validating the entire board once per selected object.
+- Separate portable Windows QA build: observed filter 363 x 134 and snap palette
+  425 x 177. Pads switches both popup and Properties; the supported snap preset
+  cycle restores the original custom pattern. Ctrl+A selects nine demo objects;
+  Align Left + Top applies together, and one Ctrl+Z restores the whole board.
+  Native child clicks in filter/snap palettes through the capture helper dismissed
+  their popup; native switch/preset interaction was not accepted as verified.
+- Real-window QA found two layout issues: centered radio labels caused staggered
+  alignment controls, and a long command menu inherited a shorter palette's cached
+  height. Corrected left alignment/spacing and explicit per-menu dimensions with
+  separate scroll state. Added regressions before the final rebuild.
+- Initial strict all-target Clippy and fmt PASS. First Active Bar event suite
+  (four tests) PASS. A new regression covers combined Align history, stale dialogs
+  and native dialog dimensions; existing tests now cover settings-backed defaults
+  and palette-to-taller-menu growth. Final workspace gates/build/GUI follow below.
+- Privacy: scanned all seven new source/document files, zero findings. A newly
+  generated local orchestration checkpoint had non-anonymous author metadata;
+  anonymized that checkpoint ref and expired obsolete objects. Reachable-history
+  privacy scan passes. No personal project, local installation path or capture
+  is added to Git.
+- Final regression found the close control expanding the frame by seven pixels.
+  Title close now uses a margin-local interaction without changing content
+  layout. All three observed dialog dimensions pass exact-size checks. Implemented
+  Altium's undimmed modal background; inspected straight radio columns in the
+  previous build. Final background/radio-inset adjustments have automated checks
+  but were not recaptured after the user requested closing extra app instances.
+- Final full workspace tests PASS: 735 tests, zero failures (166 app, 310 core,
+  1 geometry, 144 IO, 114 render). Six Active Bar event/workflow regressions pass,
+  including measured offsets before acceptance and after one-step Undo. Initial
+  full compilation took 12m 09s; latest incremental test compilation 1m 13s.
+  Strict workspace/all-target Clippy PASS (7.68 s); fmt check PASS.
+- Latest real-window QA confirms Drawing Tools grows after the shorter snap
+  palette and shows all eight rows, while Keepout shrinks correctly afterward.
+  Rectangle inserts four tracks and one Undo removes the whole outline. Keepout
+  Fill displays five restrictions and disabled No Net, places and undoes. Offset
+  measures +8 / -4 mm from two canvas points, applies the shift only after OK,
+  and one Undo restores all nine demo objects. Align's corrected 310 x 240 frame
+  and straight radio columns were inspected. No user document was closed/saved.
+- Final dev build PASS (1m 10s). On user instruction, closed all five test GUI
+  instances, discarding only agent-created demo documents. Window inventory now
+  contains one PCBCraft instance: the original user session, retained with its
+  unsaved documents. Latest build remains on disk; the old user session was not
+  restarted. Recorded the single-GUI-instance rule in AGENTS.md. Future GUI QA
+  must safely replace that session rather than launch alongside it.
+
+
+## Active Bar continuation: reference alignment and connection selection
+
+- Observed through Computer Use in AD24 on independently authored fixtures:
+  Center H/V asks for a selected primitive, Center/Center asks separately for
+  both axes, cancelling the second keeps the first, and one Undo restores the
+  completed operation. Each Align dialog opens with No Change on both axes.
+  Increase Horizontal Spacing at a 5 mil grid leaves the leftmost fill fixed
+  and shifts the following fills by one/two steps. User projects were untouched.
+- Added four spacing commands and four physical/component selection commands
+  (61/92 available, 31 explicitly disabled). Centers now use actual chosen
+  references rather than the total bounding-box center. Confirmed axes survive
+  partial cancellation and commit together in one validated history operation.
+  Locked selected objects stay stationary; Move All Components Origin To Grid
+  excludes components with off-grid pad centers. Native HTML reports, independent
+  grid Step X/Y and maintain-spacing clearance solving remain unsupported.
+- Physical selection stops at component pads; free pads remain traversable.
+  Native synthetic probe reported five selected objects and highlighted the
+  entire route through an intermediate free pad; the per-object list was not
+  inspected. Single-layer and component selection result sets are supported by
+  official docs and core/controller tests, with full native comparison pending.
+  New selection pick modes remain active until cancellation; they do not edit
+  the board or history. Shorted-net and selection preference parity is unverified.
+- Added repeatable synthetic fixture author example. Source-free native binary
+  output did not load in AD24; preserving a native-created empty source container
+  while injecting our own fixture geometry worked. All native files/templates
+  remain ignored research artifacts; no private board data added to source.
+- Native capture failed twice with `window crop is outside captured monitor`
+  while opening Panels. Stopped native input after failed window recovery.
+- On explicit user instruction, closed the sole original PCBCraft session with
+  Discard Changes. Window inventory confirmed no PCBCraft instances remain.
+  The next GUI launch will therefore be the single new build, not a second copy.
+- Strict all-target Clippy passed before the final controller regression.
+  Core physical-boundary regression passed; full workspace gates are in progress.
+  Privacy scan passes for all eight new files and all 1851 reachable files/objects.
+  Anonymized one newly generated local checkpoint author/committer; no branch
+  commits were rewritten and no user project/capture was added to Git.
+
+- Recovered native capture by reading the open menu without images and
+  dismissing it with Escape. Single Layer selects one Top track; selecting the
+  Bottom track next replaces it with two Bottom tracks and the intervening free
+  pad, while Top remains active. Corrected seed-layer choice and free-pad results.
+  Component Connections prompts Choose component; the synthetic component pad
+  did not resolve its owner and opened Component Designator. Result-set parity
+  for component modes remains unverified; blank-canvas lookup is unsupported.
+- First complete workspace run passed (740 tests: 168 app, 313 core, 1 geom,
+  144 IO, 114 render). New controller regression and native single-layer findings
+  are included in the final serialized fmt/Clippy/tests/build run now in progress.
+
+- Native per-object verification completed through View > Panels > PCB List
+  (avoiding the capture failure from the bottom Panels menu). Selected-only
+  view confirms Pad/Track/Track on Bottom for Single Layer and Pad/Via/Track/
+  Track/Track for full Physical Connection. The earlier free-pad interpretation
+  is now verified by object kind and layer rather than selection count alone.
+  Closed the research panel and exited the interactive command afterward.
+
+- The final connection controller regression caught termination after a valid
+  seed and incorrect right-click cancellation. Corrected the two branches:
+  four new pick modes repeat after success, right-click always clears them;
+  existing Net/Copper commands retain their prior one-shot behavior. No model
+  changes were involved. Repeating the required complete gates after the fix.
+
+- Final automated gates after the controller fix: fmt check PASS, strict
+  workspace/all-target Clippy PASS (9.66 s), full workspace tests PASS: 741 tests
+  (169 app, 313 core, 1 geometry, 144 IO, 114 render), zero failures. Nine Active
+  Bar event/controller regressions pass, including repeat/cancel selection and
+  two-reference alignment. Incremental test compilation took 1m 51s.
+
+- First latest-build Windows QA: all Align spacing entries enabled, four maintain-
+  spacing entries disabled, 310 x 240 dialog with independent radio columns and
+  undimmed background. Confirmed first axis survives right-click cancellation
+  of the second and one Undo restores the three original fills.
+- Actual pointer QA exposed premature second-axis hover movement immediately
+  after the first reference click. Native reference alignment moves on click,
+  so removed the alignment hover transform and added an assertion that Y remains
+  unchanged while hovering the second reference. Closed this sole QA instance
+  before rebuilding; repeating gates and real-window reference picking.
+
+- Post-hover-fix gates PASS again: fmt, strict workspace/all-target Clippy
+  (9.12 s), all 741 tests (169/313/1/144/114). Test compile took 2m 47s.
+  Alignment reference hovering now leaves the unconfirmed axis stationary.
+  Existing Undo selection-clearing differs from native selection retention and
+  is explicitly recorded; this phase does not claim full interaction parity.
+
+- Final dev build PASS (2m 24s). Final real-window QA after the hover correction:
+  first reference leaves three fills vertically separated, second reference
+  applies only its axis and ends the command; one Undo restores all original
+  geometry. Increase Horizontal Spacing shifts the second/third fills by one/
+  two 0.127 mm grid steps and undoes as one operation. Short click successfully
+  repeats the settings-backed last Align group command after restart.
+- Final same-fixture Windows selection QA matches native result types:
+  Physical Connection reports Track 3 / Pad 1 / Via 1, remains active, then
+  selecting the second net replaces it with one Track. Right-click ends picking.
+  Single Layer on a Bottom track while Top is active reports Track 2 / Pad 1,
+  with no Via; right-click ends picking. No native PCB research file was saved
+  or modified on disk. The sole final PCBCraft GUI remains open on the synthetic
+  selection fixture; other test GUI instances were closed before replacement.

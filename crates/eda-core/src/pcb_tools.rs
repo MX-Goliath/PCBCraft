@@ -7,6 +7,76 @@ use crate::{
 use eda_geom::Point;
 use uuid::Uuid;
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ArcPlacement {
+    #[default]
+    CentreStartEnd,
+    CentreRadiusStartEnd,
+    Edge,
+    AnyAngle,
+}
+impl ArcPlacement {
+    pub fn anchors(self) -> usize {
+        match self {
+            Self::CentreRadiusStartEnd => 3,
+            Self::Edge => 1,
+            _ => 2,
+        }
+    }
+}
+pub fn placement_arc(
+    mode: ArcPlacement,
+    anchors: &[Point],
+    end: Point,
+    width: i64,
+    clockwise: bool,
+) -> Option<Shape> {
+    if anchors.len() < mode.anchors() {
+        return None;
+    }
+    let first = anchors[0];
+    let centre = match mode {
+        ArcPlacement::AnyAngle => anchors[1],
+        ArcPlacement::Edge => {
+            let sign = if clockwise { -1 } else { 1 };
+            Point {
+                x: (first.x + end.x - sign * (end.y - first.y)) / 2,
+                y: (first.y + end.y + sign * (end.x - first.x)) / 2,
+            }
+        }
+        _ => first,
+    };
+    let radius_point = match mode {
+        ArcPlacement::AnyAngle | ArcPlacement::Edge => first,
+        _ => anchors[1],
+    };
+    let radius = distance_sq(centre, radius_point).sqrt().round() as i64;
+    if radius < 1 {
+        return None;
+    }
+    let start = match mode {
+        ArcPlacement::CentreRadiusStartEnd => anchors[2],
+        _ => radius_point,
+    };
+    let angle = |p: Point| {
+        ((p.y - centre.y) as f64)
+            .atan2((p.x - centre.x) as f64)
+            .to_degrees()
+    };
+    let (a, b) = if clockwise {
+        (angle(end), angle(start))
+    } else {
+        (angle(start), angle(end))
+    };
+    Some(Shape::Arc {
+        centre,
+        radius,
+        start_angle: a,
+        end_angle: b,
+        width,
+    })
+}
+
 pub fn replace_polygon(board: &Board, polygon: Polygon) -> Result<Board, String> {
     polygon.validate()?;
     let mut next = board.clone();
