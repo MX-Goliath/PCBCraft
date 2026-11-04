@@ -1,0 +1,5 @@
+#!/bin/sh
+if command -v python >/dev/null 2>&1; then
+    exec python scripts/check_privacy.py
+fi
+exec python3 scripts/check_privacy.py

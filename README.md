@@ -142,6 +142,9 @@ Save / Save As импортированной схемы создаёт собс
 
 ## Проверки и план
 
+Личные проекты, пути и исходные отчёты не должны попадать в Git.
+Правила хранения и проверка перед коммитом: [приватность репозитория](docs/privacy.md).
+
 ```powershell
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings

@@ -25,7 +25,7 @@ def main() -> int:
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-    reports = (args.report_dir or root / "pcb-update-checks" / stamp).resolve()
+    reports = (args.report_dir or root / "target" / "pcb-update-checks" / stamp).resolve()
     reports.mkdir(parents=True, exist_ok=False)
     result: dict = {"created_utc": stamp, "project": str(root), "github_writes": 0,
                     "altium_oracle_tested": False, "gui_tested": False, "checks": [], "references": []}
