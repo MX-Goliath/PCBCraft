@@ -108,6 +108,44 @@ Implemented in this follow-up:
 - The variant_roundtrip example makes a separate native project/library copy for
   interoperability inspection. Current validation is recorded in PLAN.md.
 
+## Schematic appearance correction — 2026-11-07
+
+The previous checkpoint verified functionality but did not establish a visual
+match. Further live AD24.4.1 inspection exposed these specific differences:
+
+- Physical views mask the non-component electrical context. With No Variations,
+  component parameter strings are masked too; designators and symbol bodies stay
+  normally colored. Not-fitted symbols are automatically masked even when their
+  optional graphics are off. Modified parameter styling takes precedence.
+- Not-fitted crosses follow symbol/pin geometry, excluding parameter strings.
+  A remote package-code annotation must not enlarge or move the cross. Gray Box
+  and Mesh uses thin gray lines in both diagonal directions, not a red hatch.
+- The observed changed-parameter font is Times New Roman 10, bold italic, green.
+  Keeping the original GOST family and only changing italic was incorrect.
+- Library substitutions keep the sheet's parameter coordinates, visibility,
+  orientation and alignment. Values are resolved from alternate metadata and
+  compared with the original sheet strings before applying changed-text styling.
+- The physical Active Bar has five icon slots: Selection Filter, Select,
+  Toggle Fitted / Not Fitted, Choose Component Alternate Part, Edit Component
+  Variation. The former text dropdown/button strip was an invented layout.
+- Active Bar overlays the working area. Reserving a 26-pixel strip above the
+  schematic shifted the fitted page vertically; that extra strip is removed.
+
+These rules are implemented in the independent projection and GUI. Untouched
+old appearance defaults (including the earlier dim=false form) are upgraded;
+customized styles are retained. Parameter
+font family/size can now be set explicitly. The scene-dump example variant_scene
+exports logical/assembly JSON for diagnosis without editing the source sheet.
+The comparison also exposed verbatim Win32 prefixes in alternate-library links;
+the native serializer now normalizes those links as well as document paths.
+Exact rasterization, cross margins and all Active Bar interactions still require
+separate verification; implementation alone is not evidence of pixel parity.
+Final Windows QA confirmed the migrated style without manual changes (0.508mm,
+Times New Roman 10, Bold and Italic), masked context, C2 cross, C1 changed value,
+component picking/cancel/Undo and the corrected page center. Tests and remaining
+limits are recorded in PLAN.md. Full pixel identity across zoom levels/DPI is
+not claimed.
+
 ## Remaining parity gaps
 
 - Exact UI/DPI/icon/typographic parity, native resize/sort/cell-range/clipboard

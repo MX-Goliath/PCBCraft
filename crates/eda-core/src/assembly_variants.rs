@@ -507,6 +507,8 @@ pub struct DisplayStyle {
     pub parameter_italic: bool,
     pub parameter_bold: bool,
     pub parameter_suffix: String,
+    pub parameter_font_name: String,
+    pub parameter_height_nm: i64,
 }
 impl Default for DisplayStyle {
     fn default() -> Self {
@@ -514,15 +516,49 @@ impl Default for DisplayStyle {
             cross: true,
             dim: true,
             color: 255,
-            width_nm: 200_000,
+            width_nm: 508_000,
             mesh: false,
             not_fitted_text: String::new(),
             modify_parameters: true,
             parameter_color: 0x008000,
             parameter_italic: true,
-            parameter_bold: false,
+            parameter_bold: true,
             parameter_suffix: String::new(),
+            parameter_font_name: "Times New Roman".into(),
+            parameter_height_nm: 2_540_000,
         }
+    }
+}
+impl DisplayStyle {
+    /// Upgrade the previous untouched defaults; retain customized appearances.
+    pub fn upgrade_legacy_defaults(&mut self) {
+        let mut migrated = self.clone();
+        migrated.dim = true;
+        migrated.parameter_bold = true;
+        migrated.width_nm = 508_000;
+        if self.width_nm == 200_000 && migrated == Self::default() {
+            *self = Self::default();
+        }
+    }
+}
+
+fn parameter(p: &SchPrimitive) -> bool {
+    matches!(p.kind, SchPrimitiveKind::Text { .. })
+        && (p.text_role.is_some()
+            || p.presentation.record_type == 41
+            || !p.presentation.name.is_empty())
+}
+
+// The physical schematic masks electrical context and not-fitted symbols. This
+// is independent of whether the optional cross/mesh overlay is enabled.
+fn mask(p: &mut SchPrimitive) {
+    p.color = 0xc0c0c0;
+    p.fill = p.fill.map(|_| 0xe8e8e8);
+    p.presentation.text_color = Some(p.color);
+    match &mut p.kind {
+        SchPrimitiveKind::HarnessEntry { text_color, .. }
+        | SchPrimitiveKind::SheetEntry { text_color, .. } => *text_color = p.color,
+        _ => {}
     }
 }
 
@@ -535,8 +571,15 @@ pub fn project(
 ) -> Result<Document, String> {
     let mut d = document.clone();
     let s = d.schematic.as_mut().ok_or("Not a schematic")?;
-    let Some(v) = variant else { return Ok(d) };
     let base = s.clone();
+    for p in s.primitives.iter_mut().chain(&mut s.parameter_objects) {
+        if p.component.is_none()
+            || variant.is_none() && parameter(p) && p.text_role != Some(TextRole::Designator)
+        {
+            mask(p);
+        }
+    }
+    let Some(v) = variant else { return Ok(d) };
     for (key, value) in &v.parameters {
         assign(&mut s.sheet.parameters, key, value);
     }
@@ -553,12 +596,19 @@ pub fn project(
             let alt = alternate_for(&base, c, local)?;
             let font_offset = s.fonts.len();
             s.fonts.extend(alt.fonts.clone());
-            s.primitives.retain(|p| p.component != Some(c.id));
-            s.parameter_objects.retain(|p| p.component != Some(c.id));
+            // Library parameter coordinates/visibility are defaults for placing
+            // a new part. A variant preserves the sheet's existing annotations.
+            s.primitives
+                .retain(|p| p.component != Some(c.id) || parameter(p));
+            s.parameter_objects
+                .retain(|p| p.component != Some(c.id) || parameter(p));
             let font_map = (0..alt.fonts.len())
                 .map(|n| n + font_offset)
                 .collect::<Vec<_>>();
             for mut p in alt.primitives.clone() {
+                if parameter(&p) {
+                    continue;
+                }
                 edit::remap_fonts(&mut p.kind, &font_map)?;
                 s.primitives.push(p);
             }
@@ -584,6 +634,9 @@ pub fn project(
             .chain(&mut s.parameter_objects)
             .filter(|p| p.component == Some(c.id))
         {
+            if change.kind == 1 {
+                mask(p);
+            }
             if let SchPrimitiveKind::Text { text, font, .. } = &mut p.kind {
                 let name = if p.text_role == Some(TextRole::Comment) {
                     "Comment"
@@ -599,6 +652,21 @@ pub fn project(
                     .iter()
                     .find(|(k, _)| k.eq_ignore_ascii_case(name))
                     .map(|(_, v)| v.as_str())
+                    .or_else(|| {
+                        (change.kind == 2)
+                            .then(|| {
+                                if p.text_role == Some(TextRole::Comment) {
+                                    Some(target.comment.as_str())
+                                } else {
+                                    target
+                                        .parameters
+                                        .iter()
+                                        .find(|(k, _)| k.eq_ignore_ascii_case(name))
+                                        .map(|(_, v)| v.as_str())
+                                }
+                            })
+                            .flatten()
+                    })
                     .or(p.presentation.raw_text.as_deref())
                     .unwrap_or(text);
                 let next = parameter_text(raw, &target.parameters, &s.sheet.parameters);
@@ -607,9 +675,13 @@ pub fn project(
                 if changed && style.modify_parameters {
                     text.push_str(&style.parameter_suffix);
                     p.color = style.parameter_color;
+                    p.presentation.text_color = Some(style.parameter_color);
                     if let Some(mut f) = s.fonts.get(*font).cloned() {
                         f.italic = style.parameter_italic;
                         f.bold = style.parameter_bold;
+                        f.name = style.parameter_font_name.clone();
+                        f.height_nm = style.parameter_height_nm.clamp(254_000, 25_400_000);
+                        f.underline = false;
                         *font = s.fonts.iter().position(|old| old == &f).unwrap_or_else(|| {
                             s.fonts.push(f);
                             s.fonts.len() - 1
@@ -617,17 +689,15 @@ pub fn project(
                     }
                 }
             }
-            if change.kind == 1 && style.dim {
-                p.color = 0xa0a0a0;
-                p.fill = p.fill.map(|_| 0xe0e0e0);
-            }
         }
         if change.kind == 1 && (style.cross || style.mesh || !style.not_fitted_text.is_empty()) {
             let bounds = base
                 .primitives
                 .iter()
                 .filter(|p| {
-                    p.component == Some(c.id) && !p.presentation.hidden && p.text_role.is_none()
+                    p.component == Some(c.id)
+                        && !p.presentation.hidden
+                        && !matches!(p.kind, SchPrimitiveKind::Text { .. })
                 })
                 .filter_map(|p| crate::schematic_arrange::primitive_bounds(&base, p))
                 .fold(None::<crate::schematic_arrange::Bounds>, |b, p| {
@@ -642,43 +712,57 @@ pub fn project(
                         },
                     }))
                 });
-            if let Some(b) = bounds {
+            if let Some(mut b) = bounds {
+                let x_margin = (b.max.x - b.min.x) / 20;
+                let y_margin = (b.max.y - b.min.y) / 20;
+                b.min.x -= x_margin;
+                b.max.x += x_margin;
+                b.min.y -= y_margin;
+                b.max.y += y_margin;
                 let mut lines = vec![];
                 if style.cross {
-                    lines.extend([
-                        vec![b.min, b.max],
+                    lines.extend(
+                        [
+                            vec![b.min, b.max],
+                            vec![
+                                Point {
+                                    x: b.min.x,
+                                    y: b.max.y,
+                                },
+                                Point {
+                                    x: b.max.x,
+                                    y: b.min.y,
+                                },
+                            ],
+                        ]
+                        .map(|points| (points, style.color, style.width_nm, 0)),
+                    );
+                }
+                if style.mesh {
+                    lines.push((
                         vec![
-                            Point {
-                                x: b.min.x,
-                                y: b.max.y,
-                            },
+                            b.min,
                             Point {
                                 x: b.max.x,
                                 y: b.min.y,
                             },
+                            b.max,
+                            Point {
+                                x: b.min.x,
+                                y: b.max.y,
+                            },
+                            b.min,
                         ],
-                    ]);
-                }
-                if style.mesh {
-                    lines.push(vec![
-                        b.min,
-                        Point {
-                            x: b.max.x,
-                            y: b.min.y,
-                        },
-                        b.max,
-                        Point {
-                            x: b.min.x,
-                            y: b.max.y,
-                        },
-                        b.min,
-                    ]);
+                        0x808080,
+                        25_400,
+                        0,
+                    ));
                     let height = b.max.y - b.min.y;
                     let width = b.max.x - b.min.x;
-                    let step = 1_000_000.max((width + height) / 100);
+                    let step = 1_270_000.max((width + height) / 100);
                     let mut offset = step;
                     while offset < width + height {
-                        lines.push(vec![
+                        let points = vec![
                             Point {
                                 x: b.min.x + offset.min(width),
                                 y: b.min.y + (offset - width).max(0),
@@ -687,11 +771,20 @@ pub fn project(
                                 x: b.min.x + (offset - height).max(0),
                                 y: b.min.y + offset.min(height),
                             },
-                        ]);
+                        ];
+                        let reflected = points
+                            .iter()
+                            .map(|p| Point {
+                                x: b.min.x + b.max.x - p.x,
+                                y: p.y,
+                            })
+                            .collect();
+                        lines.push((points, 0x808080, 25_400, 0));
+                        lines.push((reflected, 0x808080, 25_400, 2));
                         offset += step;
                     }
                 }
-                for points in lines {
+                for (points, color, width, line_style) in lines {
                     let mut p = edit::primitive(
                         SchPrimitiveKind::Polyline {
                             points,
@@ -700,8 +793,9 @@ pub fn project(
                         },
                         Some(c.id),
                     );
-                    p.color = style.color;
-                    p.width_nm = style.width_nm;
+                    p.color = color;
+                    p.width_nm = width;
+                    p.line_style = line_style;
                     s.primitives.push(p);
                 }
                 if !style.not_fitted_text.is_empty() {

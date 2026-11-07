@@ -57,7 +57,7 @@ pub(super) fn artwork_dither(ctx: &Context) -> bool {
         true
     }
 }
-pub(super) struct Scene {
+pub(crate) struct Scene {
     meshes: Vec<Arc<Mesh>>,
     image: ColorImage,
     format: wgpu::TextureFormat,

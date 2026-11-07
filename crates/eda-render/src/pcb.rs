@@ -19,7 +19,7 @@ mod display;
 #[path = "pcb_geometry_cache.rs"]
 mod geometry;
 #[path = "pcb_gpu.rs"]
-mod gpu;
+pub(crate) mod gpu;
 #[path = "pcb_paint_cache.rs"]
 mod paint_cache;
 pub(crate) use gpu::format as gpu_format;
@@ -542,6 +542,13 @@ pub fn canvas(ui: &mut egui::Ui, b: &Board, view: &mut View) -> CanvasOutput {
             view.pcb.preview_generation,
         );
     }
+    if view.review_overlay {
+        let camera = view.camera.clone();
+        paint_board_base(&painter, &camera, view, rect);
+        paint_grid(&painter, view, rect);
+        paint_origin(&painter, scene, view, rect);
+        return CanvasOutput::default();
+    }
     let key = paint_cache::key(scene, view, ui.ctx());
     let mut artwork = std::mem::take(&mut view.pcb.paint_cache);
     if !artwork.valid(key) {
@@ -925,20 +932,9 @@ fn paint_route_items(
         }
     });
 }
-fn paint_scene(
-    painter: &egui::Painter,
-    scene: &Board,
-    camera: &Camera,
-    view: &mut View,
-    rect: Rect,
-    builder: &mut paint_cache::Builder,
-) {
-    let b = scene;
+fn paint_board_base(painter: &egui::Painter, camera: &Camera, view: &mut View, rect: Rect) {
     let outline = view.pcb.geometry.outline.clone();
-    if builder.group(painter, paint_cache::Group::Board, 0)
-        && outline.len() >= 3
-        && view.pcb.display.board_visible
-    {
+    if outline.len() >= 3 && view.pcb.display.board_visible {
         polygon(
             painter,
             camera,
@@ -961,6 +957,19 @@ fn paint_scene(
                 painter.line_segment([a, z], Stroke::new(1.0, view.pcb.display.board_line));
             }
         }
+    }
+}
+fn paint_scene(
+    painter: &egui::Painter,
+    scene: &Board,
+    camera: &Camera,
+    view: &mut View,
+    rect: Rect,
+    builder: &mut paint_cache::Builder,
+) {
+    let b = scene;
+    if builder.group(painter, paint_cache::Group::Board, 0) {
+        paint_board_base(painter, camera, view, rect);
     }
     builder.end_group(painter);
     builder.grid(painter);
@@ -1764,6 +1773,10 @@ fn polygon(
     }
     mesh.indices.extend(indices.iter().map(|v| *v as u32));
     p.add(egui::Shape::mesh(mesh));
+}
+
+pub(super) fn review_paint_key(view: &View, ctx: &egui::Context) -> u64 {
+    paint_cache::common_hash(view, ctx).finish()
 }
 
 pub(super) fn review_tint(

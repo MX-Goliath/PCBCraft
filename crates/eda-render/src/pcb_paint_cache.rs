@@ -675,7 +675,10 @@ impl Cache {
     }
 }
 
-fn common_hash(view: &View, ctx: &egui::Context) -> std::collections::hash_map::DefaultHasher {
+pub(super) fn common_hash(
+    view: &View,
+    ctx: &egui::Context,
+) -> std::collections::hash_map::DefaultHasher {
     let pcb = &view.pcb;
     let mut hash = std::collections::hash_map::DefaultHasher::new();
     (

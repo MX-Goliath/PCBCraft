@@ -874,7 +874,7 @@ fn drawing_style(ctx: &egui::Context, d: &mut Dialog) {
         ui.group(|ui| {
             ui.strong("Schematic Drawing Options");
             ui.label("Graphics drawn over components that are not fitted.");
-            ui.checkbox(&mut style.dim, "Mask Not Fitted Components");
+            ui.label("Not fitted components are automatically masked.");
             let mut graphics = style.cross || style.mesh;
             if ui.checkbox(&mut graphics, "Use Graphics").changed() {
                 style.cross = graphics;
@@ -922,6 +922,16 @@ fn drawing_style(ctx: &egui::Context, d: &mut Dialog) {
                     color_edit(ui, &mut style.parameter_color);
                 });
                 ui.horizontal(|ui| {
+                    ui.label("Font");
+                    ui.text_edit_singleline(&mut style.parameter_font_name);
+                    ui.label("Size");
+                    let mut points = style.parameter_height_nm as f64 / 254_000.;
+                    if ui
+                        .add(egui::DragValue::new(&mut points).range(1.0..=100.))
+                        .changed()
+                    {
+                        style.parameter_height_nm = (points * 254_000.).round() as i64;
+                    }
                     ui.checkbox(&mut style.parameter_italic, "Italic");
                     ui.checkbox(&mut style.parameter_bold, "Bold");
                 });

@@ -110,6 +110,10 @@ impl Camera {
 #[serde(default)]
 pub struct View {
     #[serde(skip)]
+    review_overlay: bool,
+    #[serde(skip)]
+    review_cache: document_diff::Cache,
+    #[serde(skip)]
     pub cross_probe: bool,
     #[serde(skip)]
     pub pcb: pcb::BoardView,
@@ -197,6 +201,8 @@ impl Default for SnapOptions {
 impl Default for View {
     fn default() -> Self {
         Self {
+            review_overlay: false,
+            review_cache: Default::default(),
             pcb: pcb::BoardView::default(),
             camera: Camera::default(),
             grid: true,
@@ -314,6 +320,7 @@ impl View {
     }
 }
 
+#[derive(Default)]
 pub struct CanvasOutput {
     pub cursor_mm: Option<[f64; 2]>,
     pub schematic_input: Option<SchematicInput>,

@@ -17,9 +17,19 @@ not observations of Altium's version-control implementation.
   Layer Stack Manager uses the same panel commands and tabs. Opening a working
   file or Git comparison returns to the document editor while retaining its
   pending stack draft in the Stackup tab.
-  The chosen Git project directory is persisted.
+  Git follows the active document's project automatically, including when first
+  opened. Loaded project membership takes precedence over a sheet's subdirectory;
+  free files use their own directory. Unsaved files belonging to a project use
+  that project; untitled free documents have no repository context. Home retains
+  the last browser, with the persisted folder used only as a startup fallback.
+  Revision tabs retain their original repository and project-directory scope,
+  including deleted files, so switching back to a diff restores its own project.
+  Each project retains its history/filter selection, commit draft and pending
+  Git job. A comparison finishing in another project's browser does not steal
+  focus; it opens when that project becomes active again.
 - The folder button accepts a directory or PrjPcb path, with an optional folder
-  browser and shortcuts for open projects. The tree contains
+  browser and shortcuts for open projects. This manual choice lasts until the
+  active document changes or Git is reopened through Panels. The tree contains
   SchDoc, PcbDoc, SchLib, PcbLib, PrjPcb and DsnWrk files under that directory.
   Ignored files and unsupported Altium types are excluded. A directory is the
   project boundary; two PrjPcb files in the same directory share that scope.
@@ -72,6 +82,16 @@ Ctrl+PageDown and V, F / V, D retain the ordinary document/board fit commands.
 Historical snapshots cannot be edited or saved over working documents. Editing
 commands and placement toolbars are disabled. PCB 3D shows the Before or After
 revision with the ordinary 3D viewer; the four-color overlay is a 2D comparison.
+
+Overlay artwork is cached per review view, with resident GPU buffers when available.
+Pan/zoom transforms cached geometry; zoom settling refines text and stroke sizes.
+Layer/display settings, semantic filters, revision or library-member changes and
+DPI/font changes invalidate the artwork. Change picking uses one canvas response
+and cached visible bounds rather than one widget and a board scan per change.
+The same cache serves SCH overlays; ordinary Before/After rendering remains native.
+The read-only `eda-app` example `diff_performance` reports root-comparison CPU frame
+times (including egui tessellation, excluding GPU/presentation) for supplied native
+files and `--synthetic-sch` (20,000 added schematic rectangles).
 
 Overlay uses red for removals, blue for translations, orange for parameter or
 geometry changes and green for additions. Unchanged artwork uses neutral gray,

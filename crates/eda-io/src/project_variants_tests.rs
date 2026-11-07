@@ -126,6 +126,7 @@ fn new_alternate_native_library_reopens_without_private_geometry_extension() {
             .starts_with(&[0xd0, 0xcf, 0x11, 0xe0])
     );
     let text = project_files::decode(&std::fs::read(&path).unwrap()).unwrap();
+    assert!(!text.contains("AltLibLink_LibraryIdentifier=\\\\?\\"));
     let native = text
         .lines()
         .filter(|l| !l.starts_with("PCBCraftAlternateData"))

@@ -23,6 +23,7 @@ pub(super) struct Review {
     page: usize,
     text: Option<(String, String)>,
     repository: PathBuf,
+    directory: PathBuf,
     displayed: Option<(usize, Mode)>,
     mode: Mode,
     visible: [bool; 4],
@@ -50,7 +51,7 @@ struct Job {
     receiver: mpsc::Receiver<Result<Output, String>>,
     label: String,
 }
-pub(super) struct State {
+pub(super) struct Browser {
     snapshot: Option<Snapshot>,
     directory: Option<PathBuf>,
     job: Option<Job>,
@@ -68,16 +69,13 @@ pub(super) struct State {
     message: String,
     feedback: Option<(bool, String)>,
     pending_review: Option<Review>,
-    pub(super) reviews: BTreeMap<Uuid, Review>,
     push_confirm: bool,
     push_remote: String,
     push_branch: String,
     choose_project: bool,
     directory_input: String,
-    change_query: String,
-    pub(super) details_open: bool,
 }
-impl Default for State {
+impl Default for Browser {
     fn default() -> Self {
         Self {
             snapshot: None,
@@ -97,20 +95,43 @@ impl Default for State {
             message: String::new(),
             feedback: None,
             pending_review: None,
-            reviews: BTreeMap::new(),
             push_confirm: false,
             push_remote: String::new(),
             push_branch: String::new(),
             choose_project: false,
             directory_input: String::new(),
-            change_query: String::new(),
-            details_open: false,
         }
     }
 }
+#[derive(Default)]
+pub(super) struct State {
+    browser: Browser,
+    browsers: BTreeMap<Option<PathBuf>, Browser>,
+    followed: Option<(Option<Uuid>, Option<PathBuf>)>,
+    pub(super) reviews: BTreeMap<Uuid, Review>,
+    change_query: String,
+    pub(super) details_open: bool,
+}
+impl std::ops::Deref for State {
+    type Target = Browser;
+    fn deref(&self) -> &Browser {
+        &self.browser
+    }
+}
+impl std::ops::DerefMut for State {
+    fn deref_mut(&mut self) -> &mut Browser {
+        &mut self.browser
+    }
+}
 impl State {
+    pub(super) fn follow_active_document(&mut self) {
+        self.followed = None;
+    }
     fn active_review_path(&self, id: Option<Uuid>) -> Option<String> {
         let review = self.reviews.get(&id?)?;
+        if self.directory.as_ref() != Some(&review.directory) {
+            return None;
+        }
         let same = if self.history {
             self.commit.as_ref().is_some_and(|c| {
                 c.id == review.result
@@ -125,6 +146,24 @@ impl State {
         };
         same.then(|| review.path.clone())
     }
+    fn activate(&mut self, ctx: &egui::Context, directory: Option<PathBuf>) {
+        if self.directory == directory {
+            return;
+        }
+        let browser = self.browsers.remove(&directory).unwrap_or_else(|| Browser {
+            directory: directory.clone(),
+            ..Browser::default()
+        });
+        let old = std::mem::replace(&mut self.browser, browser);
+        self.browsers.insert(old.directory.clone(), old);
+        if self.job.is_none()
+            && let Some(directory) = directory
+        {
+            self.refresh(ctx, directory);
+        }
+    }
+}
+impl Browser {
     fn start(
         &mut self,
         ctx: &egui::Context,
@@ -176,8 +215,6 @@ impl State {
                     Ok(Output::Files(files)) => self.files = files,
                     Ok(Output::Review(review)) => {
                         self.pending_review = Some(*review);
-
-                        self.change_query.clear();
                     }
                     Ok(Output::Done(message, snapshot)) => {
                         if message.starts_with("Created commit ") {
@@ -260,6 +297,7 @@ impl State {
                 buffer,
             )?;
             review.repository = repo.root.clone();
+            review.directory = repo.root.join(&repo.scope);
             Ok(Output::Review(Box::new(review)))
         });
     }
@@ -284,6 +322,19 @@ fn short(id: &str) -> &str {
     } else {
         id
     }
+}
+fn git_directory(path: &std::path::Path) -> PathBuf {
+    let directory = if path
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("PrjPcb") || e.eq_ignore_ascii_case("DsnWrk"))
+    {
+        path.parent().unwrap_or(path)
+    } else {
+        path
+    };
+    directory
+        .canonicalize()
+        .unwrap_or_else(|_| directory.to_path_buf())
 }
 fn scenes(mut document: Document) -> BTreeMap<String, Document> {
     if let Some(book) = document.library.take() {
@@ -364,6 +415,7 @@ fn review(
         page: 0,
         text,
         repository: PathBuf::new(),
+        directory: PathBuf::new(),
         displayed: None,
         mode: Mode::Overlay,
         visible: [true; 4],
@@ -530,29 +582,65 @@ impl PcbCraft {
         )
     }
     pub(super) fn poll_git(&mut self, ctx: &egui::Context) {
-        if self.settings.git && self.git.directory.is_none() {
-            let directory = self
-                .settings
-                .git_directory
-                .clone()
-                .or_else(|| {
-                    self.active
-                        .and_then(|i| self.documents[i].path.as_ref())
-                        .and_then(|p| p.parent().map(PathBuf::from))
-                })
-                .or_else(|| {
-                    self.projects
-                        .first()
-                        .and_then(|p| p.path.parent().map(PathBuf::from))
-                });
-            if let Some(directory) = directory {
-                self.git.refresh(ctx, directory);
+        if self.settings.git || !self.git.reviews.is_empty() {
+            let context = (
+                self.active.map(|i| self.documents[i].session_id),
+                self.active_git_directory(),
+            );
+            if self.git.followed.as_ref() != Some(&context) {
+                if context.0.is_some() {
+                    self.git.activate(ctx, context.1.clone());
+                } else if self.git.directory.is_none() {
+                    let directory = self
+                        .settings
+                        .git_directory
+                        .as_ref()
+                        .map(|p| git_directory(p));
+                    self.git.activate(ctx, directory);
+                }
+                self.git.followed = Some(context);
             }
         }
         self.git.poll(ctx);
+        for browser in self.git.browsers.values_mut() {
+            browser.poll(ctx);
+        }
         if let Some(review) = self.git.pending_review.take() {
+            self.git.change_query.clear();
             self.install_git_review(review);
         }
+    }
+    fn active_git_directory(&self) -> Option<PathBuf> {
+        let doc = self.documents.get(self.active?)?;
+        if let Some(review) = self.git.reviews.get(&doc.session_id) {
+            return Some(if review.directory.as_os_str().is_empty() {
+                review.repository.clone()
+            } else {
+                review.directory.clone()
+            });
+        }
+        let source = doc.source_path.as_ref().or(doc.path.as_ref());
+        let owns = |project: &&eda_io::altium::Project| {
+            doc.new_project.as_ref() == Some(&project.path)
+                || source.is_some_and(|path| {
+                    path == &project.path
+                        || project
+                            .documents
+                            .iter()
+                            .chain(&project.generated_documents)
+                            .any(|entry| &entry.path == path)
+                })
+        };
+        let project = self
+            .projects
+            .iter()
+            .filter(owns)
+            .find(|p| self.file_state.selected_project.as_ref() == Some(&p.path))
+            .or_else(|| self.projects.iter().find(owns));
+        project
+            .map(|p| git_directory(&p.path))
+            .or_else(|| doc.new_project.as_ref().map(|p| git_directory(p)))
+            .or_else(|| source.and_then(|p| p.parent()).map(git_directory))
     }
     pub(super) fn git_panel_content(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
@@ -569,9 +657,10 @@ impl PcbCraft {
                     .map(|p| p.to_string_lossy().replace('\\', "/"))
             })
             .collect();
-        let state = &mut self.git;
-        let active_review =
-            state.active_review_path(self.active.map(|i| self.documents[i].session_id));
+        let active_review = self
+            .git
+            .active_review_path(self.active.map(|i| self.documents[i].session_id));
+        let state = &mut self.git.browser;
         let busy = state.job.is_some();
         let mut open = None;
         let mut choose = false;
@@ -1022,15 +1111,10 @@ impl PcbCraft {
         self.git_push_dialog(ctx);
     }
     fn switch_git_repository(&mut self, ctx: &egui::Context, directory: PathBuf) {
+        let directory = git_directory(&directory);
         self.settings.git_directory = Some(directory.clone());
-        let reviews = std::mem::take(&mut self.git.reviews);
-        let details_open = self.git.details_open;
-        self.git = State {
-            reviews,
-            details_open,
-            ..State::default()
-        };
-        self.git.refresh(ctx, directory);
+        self.git.choose_project = false;
+        self.git.activate(ctx, Some(directory));
     }
     fn git_project_dialog(&mut self, ctx: &egui::Context) {
         if !self.git.choose_project {
@@ -1091,7 +1175,7 @@ impl PcbCraft {
         if !self.git.push_confirm {
             return;
         }
-        let Some(s) = &self.git.snapshot else {
+        let Some(s) = self.git.snapshot.clone() else {
             return;
         };
         let mut push = false;
@@ -1427,7 +1511,8 @@ impl PcbCraft {
                         Kind::Modified => 2,
                         Kind::Added => 3,
                     };
-                    review.visible[kind_index] && c.label.to_lowercase().contains(&query)
+                    review.visible[kind_index]
+                        && (query.is_empty() || c.label.to_lowercase().contains(&query))
                 })
                 .collect();
             ui.spacing_mut().item_spacing.y = 0.;
@@ -1957,6 +2042,156 @@ mod tests {
     use super::*;
     use eda_geom::Point;
     #[test]
+    fn follows_project_membership_source_paths_and_unsaved_project_documents() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        let project = root.join("Main.PrjPcb");
+        std::fs::write(
+            &project,
+            "[Design]\n[Document1]\nDocumentPath=Sheets/Child.SchDoc\n",
+        )
+        .unwrap();
+        let mut app = crate::app::schematic_editor::tests::app();
+        app.projects
+            .push(eda_io::altium::load_project(&project).unwrap());
+        app.documents[0].source_path = Some(root.join("Sheets/Child.SchDoc"));
+        assert_eq!(app.active_git_directory(), Some(root.clone()));
+        app.documents[0].source_path = None;
+        app.documents[0].new_project = Some(project);
+        assert_eq!(app.active_git_directory(), Some(root.clone()));
+        app.documents[0].new_project = None;
+        app.documents[0].path = Some(root.join("Loose/Other.PcbDoc"));
+        assert_eq!(app.active_git_directory(), Some(root.join("Loose")));
+        app.documents[0].path = None;
+        app.file_state.selected_project = Some(app.projects[0].path.clone());
+        assert_eq!(app.active_git_directory(), None);
+    }
+    fn context_snapshot(directory: &std::path::Path) -> Snapshot {
+        Snapshot {
+            repository: Repository {
+                root: directory.to_path_buf(),
+                scope: String::new(),
+            },
+            branch: "main".into(),
+            upstream: None,
+            ahead: 0,
+            behind: 0,
+            head: Some("baseline".into()),
+            files: vec![],
+            commits: vec![],
+            refs: vec![],
+            remotes: vec![],
+            operation: None,
+        }
+    }
+    #[test]
+    fn active_working_and_deleted_revision_tabs_restore_their_own_browser_and_jobs() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        let a = root.join("A");
+        let b = root.join("B");
+        let mut app = crate::app::schematic_editor::tests::app();
+        app.documents[0].path = Some(a.join("Same.SchDoc"));
+        app.add_document(
+            Document::new(DocumentKind::Schematic, "B"),
+            Some(b.join("Same.SchDoc")),
+        );
+        app.show_panel(Panel::Git);
+        app.settings.git_directory = Some(b.clone()); // stale persisted choice must lose to active A
+        app.active = Some(0);
+        let ctx = egui::Context::default();
+        app.poll_git(&ctx);
+        assert_eq!(app.git.directory, Some(a.clone()));
+        let (sender, receiver) = mpsc::channel();
+        app.git.job = Some(Job {
+            receiver,
+            label: "A operation".into(),
+        });
+        app.git.message = "Draft A".into();
+        app.git.query = "A filter".into();
+        app.active = Some(1);
+        app.poll_git(&ctx);
+        assert_eq!(app.git.directory, Some(b.clone()));
+        app.git.job = None;
+        app.git.snapshot = Some(context_snapshot(&b));
+        app.git.message = "Draft B".into();
+        sender
+            .send(Ok(Output::Snapshot(Box::new(context_snapshot(&a)))))
+            .unwrap();
+        app.poll_git(&ctx);
+        assert_eq!(app.git.snapshot.as_ref().unwrap().repository.root, b);
+        let mut comparison = fixture_review("A/Deleted.PcbDoc", "commit-a");
+        comparison.repository = root.clone();
+        comparison.directory = a.clone(); // scope inside one repo must not become repository root
+        app.install_git_review(comparison);
+        let id = app.documents[app.active.unwrap()].session_id;
+        let title = app.git_tab_title(id);
+        app.poll_git(&ctx);
+        assert_eq!(app.git.directory, Some(a.clone()));
+        assert_eq!(app.git.message, "Draft A");
+        assert_eq!(app.git.query, "A filter");
+        app.git.job = None;
+        assert_eq!(app.git.snapshot.as_ref().unwrap().repository.root, a);
+        app.active = Some(1);
+        app.poll_git(&ctx);
+        assert_eq!(app.git.message, "Draft B");
+        assert_eq!(app.git.directory, Some(b));
+        assert_eq!(app.git_tab_title(id), title);
+        assert_eq!(
+            app.git_working_path(id),
+            Some(root.join("A/Deleted.PcbDoc"))
+        );
+        app.active = Some(0);
+        app.poll_git(&ctx);
+        assert_eq!(app.git.directory, Some(a.clone()));
+        app.switch_git_repository(&ctx, root.join("B"));
+        app.show_panel(Panel::Git);
+        app.poll_git(&ctx);
+        assert_eq!(app.git.directory, Some(a));
+        app.documents[0].path = None;
+        app.poll_git(&ctx);
+        assert!(app.git.directory.is_none());
+        assert!(app.git.snapshot.is_none());
+    }
+    #[test]
+    fn late_comparison_does_not_activate_a_tab_in_another_project() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        let a = root.join("A");
+        let b = root.join("B");
+        let mut app = crate::app::schematic_editor::tests::app();
+        app.documents[0].path = Some(a.join("Review.PcbDoc"));
+        app.add_document(
+            Document::new(DocumentKind::Board, "B"),
+            Some(b.join("Review.PcbDoc")),
+        );
+        app.show_panel(Panel::Git);
+        let ctx = egui::Context::default();
+        app.active = Some(0);
+        app.poll_git(&ctx);
+        let (sender, receiver) = mpsc::channel();
+        app.git.job = Some(Job {
+            receiver,
+            label: "Comparing A".into(),
+        });
+        let mut comparison = fixture_review("A/Review.PcbDoc", "commit-a");
+        comparison.repository = root;
+        comparison.directory = a.clone();
+        sender
+            .send(Ok(Output::Review(Box::new(comparison))))
+            .unwrap();
+        app.active = Some(1);
+        app.poll_git(&ctx);
+        assert_eq!(app.active, Some(1));
+        assert_eq!(app.documents.len(), 2);
+        assert_eq!(app.git.directory, Some(b));
+        app.active = Some(0);
+        app.poll_git(&ctx);
+        assert_eq!(app.documents.len(), 3);
+        assert!(app.git_review_active());
+        assert_eq!(app.active_git_directory(), Some(a));
+    }
+    #[test]
     fn working_file_opens_beside_snapshot_and_reuses_unsaved_editor() {
         let directory = tempfile::tempdir().unwrap();
         let root = directory.path().canonicalize().unwrap();
@@ -1974,6 +2209,7 @@ mod tests {
             None,
         )
         .unwrap();
+        comparison.directory = root.clone();
         comparison.repository = root;
         app.install_git_review(comparison);
         let revision_index = app.active.unwrap();
@@ -2054,6 +2290,7 @@ mod tests {
             page: 0,
             text: None,
             repository: PathBuf::from("fixture"),
+            directory: PathBuf::from("fixture"),
             displayed: None,
             mode: Mode::Overlay,
             visible: [true; 4],

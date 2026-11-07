@@ -46,19 +46,18 @@ pub fn absolute(base: &Path, name: &str) -> PathBuf {
     path.canonicalize().unwrap_or(path)
 }
 
-fn reference(base: &Path, path: &Path) -> String {
-    // Rust canonicalization uses Windows verbatim paths. Native Altium project
-    // references require ordinary Win32 paths, including after Save Project As.
-    fn native(path: &Path) -> PathBuf {
-        let value = path.to_string_lossy();
-        if let Some(value) = value.strip_prefix("\\\\?\\UNC\\") {
-            PathBuf::from(format!("\\\\{value}"))
-        } else {
-            PathBuf::from(value.strip_prefix("\\\\?\\").unwrap_or(&value))
-        }
+// Native Altium references require ordinary Win32 paths, including library links.
+pub(crate) fn native_path(path: &Path) -> PathBuf {
+    let value = path.to_string_lossy();
+    if let Some(value) = value.strip_prefix("\\\\?\\UNC\\") {
+        PathBuf::from(format!("\\\\{value}"))
+    } else {
+        PathBuf::from(value.strip_prefix("\\\\?\\").unwrap_or(&value))
     }
-    let path = native(path);
-    let base = native(base);
+}
+fn reference(base: &Path, path: &Path) -> String {
+    let path = native_path(path);
+    let base = native_path(base);
     path.strip_prefix(&base)
         .unwrap_or(&path)
         .to_string_lossy()

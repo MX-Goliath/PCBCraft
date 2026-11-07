@@ -134,7 +134,7 @@ struct Scene<'a> {
 }
 
 pub(super) fn diff_overlay(
-    ui: &egui::Ui,
+    painter: &egui::Painter,
     doc: &Document,
     camera: &Camera,
     rect: Rect,
@@ -145,7 +145,7 @@ pub(super) fn diff_overlay(
         return;
     };
     let scene = Scene {
-        painter: ui.painter_at(rect),
+        painter: painter.clone(),
         camera,
         rect,
         schematic: Some(s),
@@ -153,6 +153,19 @@ pub(super) fn diff_overlay(
         library_preview: doc.library.is_some(),
     };
     let rgb = tint.r() as u32 | ((tint.g() as u32) << 8) | ((tint.b() as u32) << 16);
+    let primitives: Vec<_> = s
+        .primitives
+        .iter()
+        .filter(|p| {
+            !p.presentation.hidden
+                && (ids.contains(&p.id) || p.component.is_some_and(|id| ids.contains(&id)))
+        })
+        .collect();
+    for (position, _) in auto_junctions(&mut None, primitives) {
+        scene
+            .painter
+            .circle_filled(scene.screen(position), scene.nm(508_000).max(1.4), tint);
+    }
     for p in s.primitives.iter().chain(&s.parameter_objects).filter(|p| {
         !p.presentation.hidden
             && (ids.contains(&p.id) || p.component.is_some_and(|id| ids.contains(&id)))
@@ -1973,6 +1986,9 @@ fn paint_mode(
         view.sch_primary_dragging = false;
     }
     let mut selected_bounds = Rect::NOTHING;
+    if view.review_overlay {
+        return CanvasOutput::default();
+    }
     let mut component_bounds = HashMap::<Uuid, Rect>::new();
     let preview_ids: std::collections::HashSet<_> = view
         .sch_preview

@@ -94,6 +94,9 @@ impl PcbCraft {
             })
     }
     pub(super) fn show_panel(&mut self, panel: Panel) {
+        if panel == Panel::Git {
+            self.git.follow_active_document();
+        }
         self.set_panel_open(panel, true);
         match panel.side() {
             Side::Left => self.settings.left_panel = Some(panel),

@@ -63,6 +63,38 @@ fn project_variant_edits_save_reopen_and_undo_without_saving_the_schematic() {
     );
 }
 
+#[test]
+fn physical_bar_picks_toggle_only_the_variant_and_cancel_stops_picking() {
+    let (_dir, mut app) = fixture();
+    let base = app.documents[0].model.clone();
+    let owner = base.schematic.as_ref().unwrap().components[0].id;
+    app.settings
+        .active_variants
+        .insert(app.projects[0].path.clone(), Some("ASSEMBLY_A".into()));
+    app.documents[0].sch_editor.compiled_path = Some(String::new());
+    app.variants.pick_mode = Some(0);
+    let input = eda_render::SchematicInput {
+        clicked: true,
+        hit: Some(owner),
+        ..Default::default()
+    };
+    app.variant_canvas_input(0, &input);
+    assert_eq!(app.projects[0].variants[0].variations[0].kind, 0);
+    app.variant_canvas_input(0, &input);
+    assert_eq!(app.projects[0].variants[0].variations[0].kind, 1);
+    app.variant_canvas_input(
+        0,
+        &eda_render::SchematicInput {
+            cancelled: true,
+            ..Default::default()
+        },
+    );
+    app.variant_canvas_input(0, &input);
+    assert_eq!(app.projects[0].variants[0].variations[0].kind, 1);
+    assert_eq!(app.documents[0].model, base);
+    assert!(!app.documents[0].dirty());
+}
+
 fn frame(app: &mut PcbCraft, ctx: &egui::Context, events: Vec<egui::Event>) -> egui::FullOutput {
     ctx.run(
         egui::RawInput {

@@ -1,7 +1,46 @@
 //! Semantic review uses the same SCH/PCB geometry and camera as the editors.
 use crate::*;
 use eda_core::document_diff::{Change, Diff, Kind};
-use std::collections::HashSet;
+use std::{
+    collections::HashSet,
+    hash::{Hash, Hasher},
+    sync::Arc,
+};
+
+/// One immutable comparison's artwork. Camera translation reuses resident meshes.
+#[derive(Clone, Default)]
+pub(crate) struct Cache {
+    key: Option<u64>,
+    scale: f64,
+    origin: Pos2,
+    meshes: Vec<Arc<egui::epaint::Mesh>>,
+    gpu: Option<Arc<crate::pcb::gpu::Scene>>,
+    gpu_slots: Vec<Option<usize>>,
+    atlas: Option<egui::TextureHandle>,
+    visible_changes: Vec<(usize, eda_core::pcb::Bounds)>,
+    builds: usize,
+    zoom_changed: Option<(f64, std::time::Instant)>,
+}
+impl Cache {
+    fn paint(&self, painter: &egui::Painter, view: &View, rect: Rect) {
+        let scale = (view.camera.pixels_per_mm / self.scale) as f32;
+        let delta =
+            view.camera.screen(Point::default(), rect).to_vec2() - self.origin.to_vec2() * scale;
+        for (slot, mesh) in self.meshes.iter().enumerate() {
+            if let (Some(gpu), Some(gpu_slot)) = (&self.gpu, self.gpu_slots[slot]) {
+                painter.add(gpu.callback(gpu_slot, rect, delta, scale, false));
+            } else if scale == 1. && delta == Vec2::ZERO {
+                painter.add(egui::Shape::Mesh(mesh.clone()));
+            } else {
+                let mut moved = (**mesh).clone();
+                for vertex in &mut moved.vertices {
+                    vertex.pos = (vertex.pos.to_vec2() * scale + delta).to_pos2();
+                }
+                painter.add(egui::Shape::mesh(moved));
+            }
+        }
+    }
+}
 
 pub fn color(kind: Kind) -> Color32 {
     match kind {
@@ -45,21 +84,16 @@ pub fn fit(view: &mut View, bounds: eda_core::pcb::Bounds, rect: Rect) {
 }
 fn target_visible(
     target: &eda_core::document_diff::Target,
-    doc: Option<&Document>,
-    view: &View,
+    visible: Option<&HashSet<Uuid>>,
 ) -> bool {
-    doc.and_then(|d| d.pcb.as_ref()).is_none_or(|b| {
-        b.items.iter().any(|item| {
-            target.ids.contains(&item.id) && crate::pcb::artwork_visible(b, item, &view.pcb)
-        })
-    })
+    visible.is_none_or(|ids| target.ids.iter().any(|id| ids.contains(id)))
 }
 fn overlay(
-    ui: &egui::Ui,
+    painter: &egui::Painter,
     doc: &Document,
     view: &mut View,
     rect: Rect,
-    ids: HashSet<Uuid>,
+    ids: &HashSet<Uuid>,
     color: Color32,
 ) {
     if let Some(board) = &doc.pcb {
@@ -70,7 +104,7 @@ fn overlay(
             .collect();
         for item in &items {
             crate::pcb::paint_item(
-                &ui.painter_at(rect),
+                painter,
                 &view.camera,
                 rect,
                 item,
@@ -81,17 +115,10 @@ fn overlay(
         }
         // Copper tinting must retain drill openings and native pad/net labels.
         for item in &items {
-            crate::pcb::paint_details(
-                &ui.painter_at(rect),
-                board,
-                &view.camera.clone(),
-                view,
-                rect,
-                item,
-            );
+            crate::pcb::paint_details(painter, board, &view.camera.clone(), view, rect, item);
         }
     } else {
-        crate::schematic::diff_overlay(ui, doc, &view.camera, rect, &ids, color);
+        crate::schematic::diff_overlay(painter, doc, &view.camera, rect, ids, color);
     }
 }
 #[allow(clippy::too_many_arguments)]
@@ -160,7 +187,9 @@ pub fn canvas(
         view.pcb.initialize(board);
     }
     // Input is view-only: callers never route this canvas to editor commands.
+    view.review_overlay = mode == Mode::Overlay && !view.pcb.three_d.enabled;
     let _ = crate::canvas(ui, doc, view);
+    view.review_overlay = false;
     view.pcb.input = None;
     if mode != Mode::Overlay || view.pcb.three_d.enabled {
         return None;
@@ -175,79 +204,179 @@ pub fn canvas(
             Color32::from_black_alpha(155)
         },
     );
-    // Native layer colors (especially red Top Layer) must not masquerade as
-    // change classifications. Repaint the context in a neutral ink first.
-    let context_ids = if let Some(board) = &doc.pcb {
-        board.items.iter().map(|item| item.id).collect()
-    } else if let Some(sch) = &doc.schematic {
-        sch.primitives
-            .iter()
-            .chain(&sch.parameter_objects)
-            .map(|item| item.id)
-            .chain(sch.components.iter().map(|item| item.id))
-            .collect()
+    let mut hash = std::collections::hash_map::DefaultHasher::new();
+    (
+        crate::pcb::review_paint_key(view, ui.ctx()),
+        visible,
+        diff as *const Diff as usize,
+        diff.changes.len(),
+        before.map(|d| (d.id, d as *const Document as usize)),
+        after.map(|d| (d.id, d as *const Document as usize)),
+    )
+        .hash(&mut hash);
+    let key = hash.finish();
+    let mut cache = std::mem::take(&mut view.review_cache);
+    let zoom = view.camera.pixels_per_mm / cache.scale;
+    // Scale resident artwork through a gesture, then refine stroke minimums,
+    // labels and glyph rasterization once the zoom settles, just like native PCB.
+    let refine = if view.camera.pixels_per_mm != cache.scale {
+        let (scale, changed) = cache
+            .zoom_changed
+            .get_or_insert((view.camera.pixels_per_mm, std::time::Instant::now()));
+        if *scale != view.camera.pixels_per_mm {
+            *scale = view.camera.pixels_per_mm;
+            *changed = std::time::Instant::now();
+        }
+        let remaining = std::time::Duration::from_millis(120).saturating_sub(changed.elapsed());
+        ui.ctx().request_repaint_after(remaining);
+        remaining.is_zero()
     } else {
-        HashSet::new()
+        false
     };
-    overlay(
-        ui,
-        doc,
-        view,
-        rect,
-        context_ids,
-        Color32::from_gray(if doc.kind == DocumentKind::Schematic {
-            175
+    if cache.key != Some(key) || !(0.8..=1.25).contains(&zoom) || refine {
+        let layer = painter.layer_id();
+        let saved = ui.ctx().graphics_mut(|g| std::mem::take(g.entry(layer)));
+        let capture = painter.with_clip_rect(Rect::EVERYTHING);
+        // Native layer colors (especially red Top Layer) must not masquerade as
+        // change classifications. Repaint the context in a neutral ink first.
+        let context_ids = if let Some(board) = &doc.pcb {
+            board.items.iter().map(|item| item.id).collect()
+        } else if let Some(sch) = &doc.schematic {
+            sch.primitives
+                .iter()
+                .chain(&sch.parameter_objects)
+                .map(|item| item.id)
+                .chain(sch.components.iter().map(|item| item.id))
+                .collect()
         } else {
-            95
-        }),
-    );
-    for kind in [Kind::Removed, Kind::Moved, Kind::Modified, Kind::Added] {
-        if !visible[kind_index(kind)] {
-            continue;
-        }
-        let mut old = HashSet::new();
-        let mut new = HashSet::new();
-        for c in diff.changes.iter().filter(|c| c.kind == kind) {
-            if let Some(t) = &c.before {
-                old.extend(t.ids.iter().copied());
+            HashSet::new()
+        };
+        overlay(
+            &capture,
+            doc,
+            view,
+            rect,
+            &context_ids,
+            Color32::from_gray(if doc.kind == DocumentKind::Schematic {
+                175
+            } else {
+                95
+            }),
+        );
+        for kind in [Kind::Removed, Kind::Moved, Kind::Modified, Kind::Added] {
+            if !visible[kind_index(kind)] {
+                continue;
             }
-            if let Some(t) = &c.after {
-                new.extend(t.ids.iter().copied());
+            let mut old = HashSet::new();
+            let mut new = HashSet::new();
+            for c in diff.changes.iter().filter(|c| c.kind == kind) {
+                if let Some(t) = &c.before {
+                    old.extend(t.ids.iter().copied());
+                }
+                if let Some(t) = &c.after {
+                    new.extend(t.ids.iter().copied());
+                }
+            }
+            if let Some(doc) = before {
+                overlay(
+                    &capture,
+                    doc,
+                    view,
+                    rect,
+                    &old,
+                    color(kind).gamma_multiply(if kind == Kind::Removed { 1. } else { 0.55 }),
+                );
+            }
+            if let Some(doc) = after {
+                overlay(&capture, doc, view, rect, &new, color(kind));
             }
         }
-        if let Some(doc) = before {
-            overlay(
-                ui,
-                doc,
-                view,
-                rect,
-                old,
-                color(kind).gamma_multiply(if kind == Kind::Removed { 1. } else { 0.55 }),
-            );
-        }
-        if let Some(doc) = after {
-            overlay(ui, doc, view, rect, new, color(kind));
-        }
+
+        let visible_ids = |doc: Option<&Document>| {
+            doc.and_then(|d| d.pcb.as_ref()).map(|board| {
+                board
+                    .items
+                    .iter()
+                    .filter(|item| crate::pcb::artwork_visible(board, item, &view.pcb))
+                    .map(|item| item.id)
+                    .collect::<HashSet<_>>()
+            })
+        };
+        let old_visible = visible_ids(before);
+        let new_visible = visible_ids(after);
+        cache.visible_changes = diff
+            .changes
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| visible[kind_index(c.kind)])
+            .filter(|(_, c)| {
+                c.before
+                    .as_ref()
+                    .is_some_and(|t| target_visible(t, old_visible.as_ref()))
+                    || c.after
+                        .as_ref()
+                        .is_some_and(|t| target_visible(t, new_visible.as_ref()))
+            })
+            .map(|(i, c)| (i, bounds(c)))
+            .collect();
+        let shapes = ui.ctx().graphics_mut(|g| {
+            std::mem::replace(g.entry(layer), saved)
+                .all_entries()
+                .cloned()
+                .collect()
+        });
+        // Isolate UVs from ordinary UI text growing/resetting egui's font atlas.
+        let image = ui.ctx().fonts(|f| f.image());
+        let atlas = ui.ctx().load_texture(
+            "git-review-artwork",
+            image.clone(),
+            egui::TextureOptions::LINEAR,
+        );
+        cache.meshes = ui
+            .ctx()
+            .tessellate(shapes, ui.ctx().pixels_per_point())
+            .into_iter()
+            .filter_map(|p| {
+                if let egui::epaint::Primitive::Mesh(mut mesh) = p.primitive {
+                    if mesh.texture_id == egui::TextureId::default() {
+                        mesh.texture_id = atlas.id();
+                    }
+                    Some(Arc::new(mesh))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        let mut gpu_meshes = Vec::new();
+        cache.gpu_slots = cache
+            .meshes
+            .iter()
+            .map(|mesh| {
+                if mesh.texture_id == atlas.id() {
+                    let slot = gpu_meshes.len();
+                    gpu_meshes.push(mesh.clone());
+                    Some(slot)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        cache.gpu = crate::pcb::gpu_format(ui.ctx())
+            .map(|format| crate::pcb::gpu::Scene::new(gpu_meshes, image, format));
+        cache.atlas = Some(atlas);
+        cache.origin = view.camera.screen(Point::default(), rect);
+        cache.scale = view.camera.pixels_per_mm;
+        cache.key = Some(key);
+        cache.zoom_changed = None;
+        cache.builds += 1;
     }
-    let mut clicked = None;
-    for (i, c) in diff
-        .changes
-        .iter()
-        .enumerate()
-        .filter(|(_, c)| visible[kind_index(c.kind)])
-    {
-        if !c
-            .before
-            .as_ref()
-            .is_some_and(|t| target_visible(t, before, view))
-            && !c
-                .after
-                .as_ref()
-                .is_some_and(|t| target_visible(t, after, view))
-        {
-            continue;
-        }
-        let b = bounds(c);
+    cache.paint(&painter, view, rect);
+    let pointer = ui
+        .input(|input| input.pointer.hover_pos())
+        .filter(|p| rect.contains(*p));
+    let mut hovered = None;
+    for &(i, b) in &cache.visible_changes {
+        let c = &diff.changes[i];
         if b.empty {
             continue;
         }
@@ -256,6 +385,12 @@ pub fn canvas(
             view.camera.screen(b.max, rect),
         )
         .expand(5.);
+        if pointer.is_some_and(|p| box_rect.contains(p)) {
+            hovered = Some(i);
+        }
+        if selected != Some(i) {
+            continue;
+        }
         if let Some(target) = &c.after
             && selected == Some(i)
             && !target.bounds.empty
@@ -307,26 +442,6 @@ pub fn canvas(
                 }
             }
         }
-        let response = ui.interact(
-            box_rect.intersect(rect),
-            ui.id().with(("git-change", i)),
-            Sense::click(),
-        );
-        if response.clicked() {
-            clicked = Some(i);
-        }
-        if response.hovered() {
-            response.on_hover_text(format!(
-                "{} · {}{}",
-                c.kind.label(),
-                c.label,
-                if c.moved && c.kind != Kind::Moved {
-                    " · also moved"
-                } else {
-                    ""
-                }
-            ));
-        }
         if selected == Some(i) {
             painter.rect_stroke(
                 box_rect,
@@ -347,6 +462,22 @@ pub fn canvas(
             }
         }
     }
+    view.review_cache = cache;
+    let response = ui.interact(rect, ui.id().with("git-change-picking"), Sense::click());
+    let clicked = response.clicked().then_some(hovered).flatten();
+    if let Some(i) = hovered {
+        let c = &diff.changes[i];
+        response.on_hover_text(format!(
+            "{} · {}{}",
+            c.kind.label(),
+            c.label,
+            if c.moved && c.kind != Kind::Moved {
+                " · also moved"
+            } else {
+                ""
+            }
+        ));
+    }
     clicked
 }
 pub fn kind_index(kind: Kind) -> usize {
@@ -361,6 +492,189 @@ pub fn kind_index(kind: Kind) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn cached_changes_are_pickable_and_pan_does_not_leave_stale_hit_boxes() {
+        let mut doc = Document::new(DocumentKind::Board, "picking");
+        doc.pcb = Some(eda_core::pcb::Board::default());
+        doc.pcb
+            .as_mut()
+            .unwrap()
+            .items
+            .push(eda_core::pcb::Item::new(
+                eda_core::pcb::TOP,
+                None,
+                eda_core::pcb::Shape::Track {
+                    start: Point::mm(0, 5),
+                    end: Point::mm(10, 5),
+                    width: 300_000,
+                },
+            ));
+        let diff = eda_core::document_diff::compare(None, Some(&doc));
+        let ctx = egui::Context::default();
+        let mut view = View::default();
+        view.camera.centre_mm = [5., 5.];
+        view.camera.pixels_per_mm = 20.;
+        view.camera.fitted = true;
+        let pointer = Pos2::new(450., 325.);
+        let frame = |view: &mut View, events| {
+            let mut picked = None;
+            let _ = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(900., 650.))),
+                    events,
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        picked = canvas(
+                            ui,
+                            None,
+                            Some(&doc),
+                            &diff,
+                            view,
+                            Mode::Overlay,
+                            [true; 4],
+                            None,
+                            false,
+                        );
+                    });
+                },
+            );
+            picked
+        };
+        frame(&mut view, vec![egui::Event::PointerMoved(pointer)]);
+        for expected in [Some(0), None] {
+            frame(
+                &mut view,
+                vec![egui::Event::PointerButton {
+                    pos: pointer,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+            );
+            assert_eq!(
+                frame(
+                    &mut view,
+                    vec![egui::Event::PointerButton {
+                        pos: pointer,
+                        button: egui::PointerButton::Primary,
+                        pressed: false,
+                        modifiers: egui::Modifiers::NONE
+                    }]
+                ),
+                expected
+            );
+            view.camera.centre_mm[0] += 100.;
+            frame(&mut view, vec![egui::Event::PointerMoved(pointer)]);
+        }
+        assert_eq!(view.review_cache.builds, 1);
+    }
+    #[test]
+    fn large_pcb_and_schematic_reviews_reuse_artwork_during_navigation() {
+        for pcb in [true, false] {
+            let mut doc = Document::new(
+                if pcb {
+                    DocumentKind::Board
+                } else {
+                    DocumentKind::Schematic
+                },
+                "large additions",
+            );
+            if pcb {
+                doc.pcb = Some(eda_core::pcb::Board::default());
+            }
+            for i in 0..5000 {
+                let a = Point::mm(i % 100, i / 100);
+                let b = Point::mm(i % 100 + 1, i / 100 + 1);
+                if let Some(board) = &mut doc.pcb {
+                    board.items.push(eda_core::pcb::Item::new(
+                        eda_core::pcb::TOP,
+                        None,
+                        eda_core::pcb::Shape::Track {
+                            start: a,
+                            end: b,
+                            width: 100_000,
+                        },
+                    ));
+                } else {
+                    doc.schematic.as_mut().unwrap().primitives.push(
+                        eda_core::schematic_edit::primitive(
+                            eda_core::schematic::SchPrimitiveKind::Rectangle {
+                                a,
+                                b,
+                                radius: Point::default(),
+                            },
+                            None,
+                        ),
+                    );
+                }
+            }
+            let diff = eda_core::document_diff::compare(None, Some(&doc));
+            assert!(diff.changes.len() >= 5000); // SCH also compares sheet metadata.
+            let ctx = egui::Context::default();
+            let mut fonts = egui::FontDefinitions::default();
+            fonts.families.insert(
+                egui::FontFamily::Name("sch-sans".into()),
+                fonts.families[&egui::FontFamily::Proportional].clone(),
+            );
+            ctx.set_fonts(fonts);
+            let mut view = View::default();
+            let frame = |view: &mut View, visible| {
+                let _ = ctx.run(
+                    egui::RawInput {
+                        screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(900., 650.))),
+                        ..Default::default()
+                    },
+                    |ctx| {
+                        egui::CentralPanel::default().show(ctx, |ui| {
+                            canvas(
+                                ui,
+                                None,
+                                Some(&doc),
+                                &diff,
+                                view,
+                                Mode::Overlay,
+                                visible,
+                                None,
+                                false,
+                            );
+                        });
+                    },
+                );
+            };
+            for _ in 0..12 {
+                frame(&mut view, [true; 4]);
+                view.camera.centre_mm[0] += 1.;
+                view.camera.pixels_per_mm *= 1.005;
+            }
+            assert_eq!(
+                view.review_cache.builds, 1,
+                "pan/zoom must reuse {pcb} artwork"
+            );
+            assert_eq!(
+                view.review_cache
+                    .visible_changes
+                    .iter()
+                    .filter(|(_, bounds)| !bounds.empty)
+                    .count(),
+                5000
+            );
+            assert!(!view.review_cache.meshes.is_empty());
+            frame(&mut view, [true, true, true, false]);
+            assert_eq!(view.review_cache.builds, 2);
+            assert!(view.review_cache.visible_changes.is_empty());
+            view.camera.mirrored_x = true;
+            frame(&mut view, [true; 4]);
+            assert_eq!(view.review_cache.builds, 3);
+            view.camera.pixels_per_mm *= 2.;
+            frame(&mut view, [true; 4]);
+            assert_eq!(
+                view.review_cache.builds, 4,
+                "large zoom refines text/strokes"
+            );
+        }
+    }
     #[test]
     fn pcb_overlay_respects_hidden_layers_and_keeps_view_configuration() {
         let mut before = Document::new(DocumentKind::Board, "Layers");

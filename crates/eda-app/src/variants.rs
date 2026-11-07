@@ -20,6 +20,7 @@ pub(super) struct State {
     pub(super) cache: Option<(String, Arc<Document>)>,
     catalog: std::cell::RefCell<Option<(String, Arc<Vec<Row>>)>>,
     histories: BTreeMap<PathBuf, model::History>,
+    pick_mode: Option<u8>,
 }
 #[derive(Clone)]
 pub(super) struct Row {
@@ -79,6 +80,55 @@ fn natural(s: &str) -> (String, u64, String) {
         s[start..end].parse().unwrap_or(0),
         s[end..].to_lowercase(),
     )
+}
+fn variant_glyph(p: &egui::Painter, r: egui::Rect, n: usize, enabled: bool) {
+    let ink = |c: Color32| if enabled { c } else { Color32::from_gray(95) };
+    let at = |x: f32, y: f32| r.min + egui::vec2(x, y);
+    if n == 3 {
+        for x in [4., 13.] {
+            p.rect_filled(
+                egui::Rect::from_min_max(at(x, 7.), at(x + 5., 16.)),
+                0.,
+                ink(Color32::from_rgb(154, 184, 139)),
+            );
+            for y in [5., 18.] {
+                p.line_segment(
+                    [at(x + 2.5, y), at(x + 2.5, y + 3.)],
+                    egui::Stroke::new(1., ink(Color32::from_rgb(217, 189, 104))),
+                );
+            }
+        }
+        p.line_segment(
+            [at(7., 3.), at(15., 3.)],
+            egui::Stroke::new(1., ink(Color32::from_rgb(101, 149, 205))),
+        );
+    } else {
+        p.rect_filled(
+            egui::Rect::from_min_max(at(4., 5.), at(18., 17.)),
+            1.,
+            ink(Color32::from_rgb(68, 135, 114)),
+        );
+        for x in [7., 11., 15.] {
+            for y in [2., 18.] {
+                p.line_segment(
+                    [at(x, y), at(x, y + 3.)],
+                    egui::Stroke::new(1., ink(Color32::from_rgb(184, 213, 245))),
+                );
+            }
+        }
+        if n == 2 {
+            let red = egui::Stroke::new(2., ink(Color32::from_rgb(238, 84, 84)));
+            p.line_segment([at(2., 1.), at(20., 21.)], red);
+            p.line_segment([at(2., 21.), at(20., 1.)], red);
+        } else {
+            p.rect_stroke(
+                egui::Rect::from_min_max(at(7., 8.), at(15., 14.)),
+                0.,
+                egui::Stroke::new(1., ink(Color32::from_rgb(184, 213, 245))),
+                egui::StrokeKind::Inside,
+            );
+        }
+    }
 }
 impl PcbCraft {
     fn apply_variants(&mut self, index: usize, next: Vec<Variant>) -> Result<(), String> {
@@ -148,75 +198,214 @@ impl PcbCraft {
         let Some(i) = self.file_project_index() else {
             return;
         };
-        let project = self.projects[i].path.clone();
-        let mut selected = self
+        let selected = self
             .settings
             .active_variants
-            .get(&project)
+            .get(&self.projects[i].path)
             .cloned()
             .flatten();
-        let old = selected.clone();
-        let choices = self.projects[i]
-            .variants
-            .iter()
-            .map(|v| (v.id.clone(), v.name.clone()))
-            .collect::<Vec<_>>();
-        let mut toggle = false;
+        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.variants.pick_mode = None;
+        }
+        use schematic_active_bar::icons::{self, Glyph};
+        let width = 176.;
         egui::Area::new(egui::Id::new("variant_active_bar"))
-            .fixed_pos(egui::pos2(canvas.center().x - 210., canvas.top() + 5.))
+            .fade_in(false)
+            .order(egui::Order::Foreground)
+            .fixed_pos(egui::pos2(
+                canvas.center().x - width / 2.,
+                canvas.top() + 4.,
+            ))
             .show(ctx, |ui| {
                 egui::Frame::NONE
-                    .fill(Color32::from_gray(73))
-                    .inner_margin(5)
+                    .fill(Color32::from_gray(58))
+                    .corner_radius(5)
+                    .inner_margin(egui::Margin::ZERO)
                     .show(ui, |ui| {
+                        ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
                         ui.horizontal(|ui| {
-                            egui::ComboBox::from_id_salt("current_assembly_variant")
-                                .selected_text(
-                                    choices
-                                        .iter()
-                                        .find(|(id, _)| Some(id) == selected.as_ref())
-                                        .map_or("[No Variations]", |(_, n)| n.as_str()),
-                                )
-                                .show_ui(ui, |ui| {
-                                    ui.selectable_value(&mut selected, None, "[No Variations]");
-                                    for (id, name) in &choices {
-                                        ui.selectable_value(&mut selected, Some(id.clone()), name);
-                                    }
-                                });
-                            if ui.button("Variant Management…").clicked() {
-                                self.command = Some(Command::Variants);
+                            ui.add_space(4.);
+                            for (n, label) in [
+                                "Selection Filter",
+                                "Select",
+                                "Toggle Fitted / Not Fitted",
+                                "Choose Component Alternate Part",
+                                "Edit Component Variation",
+                            ]
+                            .iter()
+                            .enumerate()
+                            {
+                                let enabled = n < 2 || selected.is_some();
+                                let (rect, response) = ui.allocate_exact_size(
+                                    egui::vec2(100. / 3., 100. / 3.),
+                                    egui::Sense::click(),
+                                );
+                                let active =
+                                    n >= 2 && self.variants.pick_mode == Some((n - 2) as u8);
+                                if response.hovered() || active {
+                                    ui.painter().rect_filled(
+                                        rect.shrink2(egui::vec2(1., 2.)),
+                                        2.,
+                                        Color32::from_rgb(65, 99, 125),
+                                    );
+                                }
+                                let glyph = egui::Rect::from_center_size(
+                                    rect.center() - egui::vec2(0., 1.),
+                                    egui::vec2(22., 22.),
+                                );
+                                if n < 2 {
+                                    icons::paint(
+                                        ui.painter(),
+                                        glyph,
+                                        if n == 0 { Glyph::Filter } else { Glyph::Select },
+                                        true,
+                                    );
+                                } else {
+                                    variant_glyph(ui.painter(), glyph, n, enabled);
+                                }
+                                if n == 1 {
+                                    let at = rect.right_bottom() - egui::vec2(4., 3.);
+                                    ui.painter().add(egui::Shape::convex_polygon(
+                                        vec![at, at - egui::vec2(5., 0.), at - egui::vec2(0., 5.)],
+                                        Color32::WHITE,
+                                        egui::Stroke::NONE,
+                                    ));
+                                }
+                                if n < 2 {
+                                    egui::Popup::menu(&response).show(|ui| {
+                                        if n == 0 {
+                                            for (filter, label) in self.documents[index]
+                                                .view
+                                                .sch_filters
+                                                .iter_mut()
+                                                .zip([
+                                                    "Components",
+                                                    "Wires",
+                                                    "Buses",
+                                                    "Sheet Symbols",
+                                                    "Sheet Entries",
+                                                    "Net Labels",
+                                                    "Parameters",
+                                                    "Ports",
+                                                    "Power Ports",
+                                                    "Texts",
+                                                    "Drawing Objects",
+                                                    "Other",
+                                                ])
+                                            {
+                                                ui.checkbox(filter, label);
+                                            }
+                                        } else {
+                                            if ui.button("Select All").clicked() {
+                                                self.documents[index].view.sch_selection = self
+                                                    .documents[index]
+                                                    .model
+                                                    .schematic
+                                                    .as_ref()
+                                                    .unwrap()
+                                                    .components
+                                                    .iter()
+                                                    .map(|c| c.id)
+                                                    .collect();
+                                                ui.close();
+                                            }
+                                            if ui.button("Deselect All").clicked() {
+                                                self.documents[index].view.sch_selection.clear();
+                                                self.documents[index].view.selected = None;
+                                                ui.close();
+                                            }
+                                        }
+                                    });
+                                } else if enabled && response.clicked() {
+                                    self.variants.pick_mode =
+                                        if active { None } else { Some((n - 2) as u8) };
+                                }
+                                response.on_hover_text(*label);
                             }
-                            toggle = ui
-                                .add_enabled(
-                                    selected.is_some()
-                                        && self.documents[index].view.selected.is_some(),
-                                    egui::Button::new("Toggle Fitted"),
-                                )
-                                .clicked();
+                            ui.add_space(16. / 3.);
                         });
                     });
             });
-        if selected != old {
-            self.select_variant(project.clone(), selected.clone());
+        if self.variants.pick_mode.is_some() {
+            ctx.set_cursor_icon(egui::CursorIcon::Crosshair);
         }
-        if toggle && let Some(id) = selected {
-            let d = &self.documents[index];
-            let s = d.model.schematic.as_ref().unwrap();
-            let hit = d.view.selected;
-            let owner = hit.and_then(|id| s.primitive(id).and_then(|p| p.component).or(Some(id)));
-            if let Some(c) = s.components.iter().find(|c| Some(c.id) == owner) {
-                let uid = model::component_uid(
-                    s,
-                    c,
-                    d.sch_editor.compiled_path.as_deref().unwrap_or_default(),
-                );
-                let mut next = self.projects[i].variants.clone();
-                if let Some(v) = next.iter_mut().find(|v| v.id == id) {
-                    let change = v.variation_mut(&uid, &c.designator);
-                    change.kind = if change.kind == 1 { 0 } else { 1 };
+    }
+
+    pub(super) fn variant_canvas_input(
+        &mut self,
+        index: usize,
+        input: &eda_render::SchematicInput,
+    ) {
+        if input.cancelled || input.secondary_clicked {
+            self.variants.pick_mode = None;
+            return;
+        }
+        let Some(mode) = self.variants.pick_mode.filter(|_| input.clicked) else {
+            return;
+        };
+        let Some(i) = self.file_project_index() else {
+            return;
+        };
+        let Some(id) = self
+            .settings
+            .active_variants
+            .get(&self.projects[i].path)
+            .cloned()
+            .flatten()
+        else {
+            return;
+        };
+        let d = &self.documents[index];
+        let s = d.model.schematic.as_ref().unwrap();
+        let owner = input
+            .hit
+            .and_then(|id| s.primitive(id).and_then(|p| p.component).or(Some(id)));
+        let Some(c) = s.components.iter().find(|c| Some(c.id) == owner) else {
+            return;
+        };
+        let uid = model::component_uid(
+            s,
+            c,
+            d.sch_editor.compiled_path.as_deref().unwrap_or_default(),
+        );
+        let designator = c.designator.clone();
+        if mode == 0 {
+            let mut next = self.projects[i].variants.clone();
+            if let Some(v) = next.iter_mut().find(|v| v.id == id) {
+                let kind = if v.variation(&uid, &designator).is_some_and(|c| c.kind == 1) {
+                    0
+                } else {
+                    1
+                };
+                let edit = model::Edit::SetKind {
+                    id: id.clone(),
+                    components: vec![model::ComponentRef { uid, designator }],
+                    kind,
+                };
+                match model::edited(&next, edit).and_then(|next| self.apply_variants(i, next)) {
+                    Ok(()) => {}
+                    Err(e) => self.message(true, e),
                 }
-                if let Err(e) = self.apply_variants(i, next) {
-                    self.message(true, e);
+            }
+        } else {
+            self.variants.pick_mode = None;
+            self.open_variants();
+            if let Some(d) = &mut self.variants.dialog {
+                d.variant = d.draft.iter().position(|v| v.id == id).unwrap_or(0);
+                if let Some(n) = d
+                    .rows
+                    .iter()
+                    .position(|r| r.uid == uid && r.designator == designator)
+                {
+                    d.row = n;
+                    d.selected = BTreeSet::from([n]);
+                    d.component_kind = Some(if mode == 1 {
+                        2
+                    } else {
+                        d.draft[d.variant]
+                            .variation(&uid, &designator)
+                            .map_or(0, |c| c.kind)
+                    });
                 }
             }
         }
@@ -485,6 +674,7 @@ impl PcbCraft {
         }
     }
     pub(super) fn select_variant(&mut self, project: PathBuf, id: Option<String>) {
+        self.variants.pick_mode = None;
         self.settings.active_variants.insert(project.clone(), id);
         self.file_state.selected_project = Some(project.clone());
         if let Some(p) = self.projects.iter().find(|p| p.path == project)

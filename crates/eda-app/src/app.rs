@@ -318,6 +318,7 @@ impl PcbCraft {
             .storage
             .and_then(|s| eframe::get_value(s, "pcbcraft.settings"))
             .unwrap_or_default();
+        settings.variant_style.upgrade_legacy_defaults();
         let mut documents = Vec::new();
         for path in std::mem::take(&mut settings.recent) {
             if path
@@ -1394,7 +1395,6 @@ impl PcbCraft {
                     if self.documents[index].model.kind == DocumentKind::Schematic {
                         ui.painter()
                             .rect_filled(canvas, 0.0, Color32::from_gray(195));
-                        ui.add_space(26.0);
                     }
                     let projection = self.variant_projection(index);
                     let doc = &mut self.documents[index];
@@ -1416,9 +1416,11 @@ impl PcbCraft {
                     self.cursor_mm = output.cursor_mm;
                     if let Some(input) = &output.schematic_input
                         && self.documents[index].sch_editor.compiled_path.is_some()
-                        && input.clicked
                     {
-                        self.documents[index].view.selected = input.hit;
+                        if input.clicked {
+                            self.documents[index].view.selected = input.hit;
+                        }
+                        self.variant_canvas_input(index, input);
                     }
                     if let Some(input) = output.schematic_input
                         && self.documents[index].sch_editor.compiled_path.is_none()

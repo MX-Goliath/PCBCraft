@@ -91,7 +91,9 @@ pub(super) fn prepare(
         set(
             &mut c.fields,
             "AltLibLink_LibraryIdentifier",
-            path.to_string_lossy().into_owned(),
+            project_files::native_path(&path)
+                .to_string_lossy()
+                .into_owned(),
         );
         set(&mut c.fields, "AltLibLink_DesignItemID", name);
         set(

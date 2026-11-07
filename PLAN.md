@@ -3258,3 +3258,121 @@ Cause, implementation and validation: docs/pcb-update/INTERACTIVE_ROUTING.md.
   (789 tests: 184 app / 328 core / 1 geom / 160 IO / 116 render); Linux GNU
   workspace/all-target check. GUI review build succeeded. Source changes remain
   uncommitted and full Altium variant parity remains incomplete as listed above.
+
+### Schematic variant appearance correction — 2026-11-07
+
+- User reported that physical variant appearance does not resemble Altium. The
+  previous functional QA did not establish a visual match. Re-observed installed
+  AD Enterprise 24.4.1 with the disposable variant project, including No Variations,
+  named assembly, red crosses on C2 and temporarily R9, Drawing Style preview,
+  Gray Box and Mesh, native changed-parameter font dialog and Active Bar tooltips.
+  Original design and existing unsaved Harness documents were not saved/closed.
+- Corrected electrical-context masking; No Variations parameter masking; automatic
+  not-fitted masking independent of graphics; cross bounds excluding all parameter
+  strings; gray bidirectional thin mesh; changed Times New Roman 10 bold italic
+  parameters. Alternate symbols retain sheet annotation geometry/visibility and
+  compare against sheet text, rather than inheriting library annotation placement.
+- Replaced the invented text strip with the observed five-slot 176px physical
+  Active Bar. Commands pick a component on the physical sheet; Escape/right-click
+  cancel picking. Added filter/select menus and regressions for variant-only picks.
+  Choosing/editing an alternate reuses the transactional manager child dialogs.
+- Found verbatim Win32 prefixes in companion-library identifiers after a normal
+  save. Normalized library references through the same helper as document paths;
+  extended the native roundtrip assertion. The separate VisualReference project
+  probes the reference normalization without touching the already open QA file.
+- Added logical/assembly scene JSON diagnostics (variant_scene example), annotation
+  layout/font and cross-bounds regressions. A first test run found a stale raw
+  expression in the long-label test fixture; corrected that fixture. Final gates
+  and live-window verification follow below. Pixel parity remains an observation
+  target; the implementation list alone does not establish it.
+- Follow-up live QA found the original four-field stored style with dim=false;
+  migration now recognizes that untouched legacy form too. Customized colors,
+  fonts, suffixes and other style changes are retained. Also removed the 26px
+  schematic top spacer: native Active Bar overlays the canvas, and the spacer
+  shifted the page center. Fit Document in AD24 confirms the full working area.
+- Windows QA of the rebuilt executable: No Variations masks context/parameters;
+  named assembly shows C2 cross, masked context and C1 green changed value.
+  The five-slot bar starts component picking; R9 toggles Not Fitted, Escape exits
+  and Undo restores the original variant without dirtying the schematic. QA
+  project changes were undone before restarting. Only the generated demo/group
+  were discarded. Final executable remains open on VisualComparison.PrjPcb.
+- Native reference observations remain separate: C2/R9 cross and mesh were
+  observed on the QA project; C1 green value was re-confirmed on NativeOrdered.
+  New shared-sheet project/cache probes are not additional evidence of complete
+  native interoperability. Exact rasterization at all zooms/DPI and every
+  selection-menu gesture remain unverified; the feature stays partial.
+- Final gates after the viewport change PASS: fmt check, strict workspace and
+  all-target Clippy, 792 workspace tests (185 app / 330 core / 1 geom / 160 IO /
+  116 render), Linux GNU all-target check and native GUI build. SCH/PCB/IntLib
+  hashes still match the source copies. Changes are uncommitted.
+- Final post-restart Drawing Style inspection confirmed migration without manual
+  edits: graphics width 0.508mm, Times New Roman 10, Bold and Italic checked.
+
+### Git follows the active document — 2026-11-07
+
+- Git now resolves the active document's loaded owning project before its source
+  directory. Project-owned untitled documents use their new-project association;
+  free untitled documents clear automatic context. Home retains the last browser.
+  Opening Git explicitly rebinds it to the current document rather than the
+  persisted or manually selected folder.
+- Every Git review captures its original project directory in addition to the
+  repository root. Switching to a historical or deleted-file review restores the
+  original scope even when two projects share a repository or file names.
+- Browser state is cached per directory, including history, search, commit draft
+  and in-flight jobs. Background results stay in their originating browser;
+  finishing a comparison in another project does not steal the active tab.
+- Added regressions for nested project sheets/source paths, unsaved ownership,
+  stale preferences, manual-folder reset, deleted scoped reviews, preservation
+  of drafts and jobs, and delayed comparison completion after a project switch.
+  Verification results follow below.
+- Windows Computer Use on the rebuilt GUI at 1707x1019: Git opens on the active
+  git-panel-qa-v2 project despite a persisted variants-qa folder; saved working
+  PCB diff stays in v2. Opening git-panel-qa-v3 switches the panel automatically.
+  Its committed PCB diff and v2's working diff coexist with identically named
+  files; switching either diff restores the correct project and browser mode.
+  The selected v3 commit remains selected after returning. Open working file
+  creates the ordinary v3 PCB beside both diffs; selecting the v2 SCH returns
+  Git to v2. No native documents or Git commits were changed during this QA.
+- Final gates PASS: fmt check, strict workspace/all-target Clippy, 795 workspace
+  tests (188 app / 330 core / 1 geom / 160 IO / 116 render), Linux GNU all-target
+  check and native GUI build. Source changes remain uncommitted.
+
+### Large Git diff rendering — 2026-11-07
+
+- Observed the reported root PCB comparison open in the GUI: Empty -> 05d76c02,
+  15,583 additions on the PDU board. Found a complete board scan for every change
+  plus a separate egui interaction widget per change on every frame.
+- Added immutable review artwork caching for both PCB and SCH, with a private
+  font atlas and resident GPU meshes (software mesh fallback). Navigation reuses
+  artwork; settled zoom refines text/strokes. Content, layer/display settings,
+  filters, mirror, fonts and DPI invalidate the cache. Non-font image textures
+  remain on the ordinary texture path. PCB outline/grid and SCH sheet/grid remain
+  native, without painting and tessellating the whole model beneath the overlay.
+- Visible change bounds are cached with linear ID-set visibility lookup. One
+  canvas interaction picks changes, preserving hover/selection and avoiding stale
+  hit boxes after pan. Unfiltered Changes lists no longer lowercase every label.
+- Added the read-only diff_performance example, warm-frame root-comparison probes
+  including egui tessellation and excluding GPU/presentation. On the saved PDU
+  board (15,581 additions), baseline median was 171.92 ms vs native After 6.45 ms;
+  initial optimized probe was 6.32 ms vs After 6.48 ms. PDU SCH (268 changes) was
+  2.39 ms baseline and 0.21 ms optimized. Final probes and GUI checks follow below.
+- Final warm-frame software probe: PDU PCB overlay median 7.54 ms (max 8.03 ms),
+  native After 8.42 ms; PDU SCH overlay 0.30 ms (max 1.21 ms); synthetic SCH with
+  20,000 added rectangles / 20,001 changes 19.10 ms (max 19.49 ms). These include
+  egui tessellation, exclude GPU/presentation and ran alongside build activity;
+  they measure CPU work rather than delivered frame rate.
+- Windows Computer Use on the rebuilt GUI at 1707x1019: exercised the reported
+  15,583-addition PCB comparison, pan, Page Up zoom, document Fit, canvas picking,
+  Added filter off/on, Top Layer visibility off/on and native After -> Overlay.
+  Returned to the same PCB tab after viewing both SCH comparisons. Verified the
+  267-addition baseline SCH, pan/zoom/selection, and the seven-change native
+  revision with red R11 removal, blue R1 movement, orange C1/wires and green C99.
+  Working and diff tabs coexist. Only one PCBCraft GUI was running.
+- Interactive GUI profiler batches logged CPU medians 2.52-3.18 ms and p95
+  4.14-6.49 ms, with cold rebuilds/switches up to 129.74 ms. GPU presentation is
+  not measured. First construction and changes to display/content still rebuild
+  artwork; this optimization targets recurring navigation/rendering cost.
+- Final gates PASS: fmt, strict workspace/all-target Clippy, all 797 workspace
+  tests (188 app / 330 core / 1 geom / 160 IO / 118 render), Linux GNU all-target
+  check and native Windows GUI build. Seven original PDU source-file SHA-256
+  hashes remain unchanged. Source changes remain uncommitted.

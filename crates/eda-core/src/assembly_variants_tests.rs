@@ -99,16 +99,30 @@ fn assembly_projection_keeps_base_pins_wires_and_history_unchanged() {
     } else {
         panic!()
     }
+    let wire = s.primitives.iter().find(|p| p.component.is_none()).unwrap();
+    let base_wire = d
+        .schematic
+        .as_ref()
+        .unwrap()
+        .primitives
+        .iter()
+        .find(|p| p.component.is_none())
+        .unwrap();
+    assert_eq!(wire.kind, base_wire.kind);
+    assert_eq!(wire.color, 0xc0c0c0);
+    let no_variations = project(&d, None, "", &Default::default()).unwrap();
     assert_eq!(
-        s.primitives.iter().find(|p| p.component.is_none()),
-        d.schematic
+        no_variations
+            .schematic
             .as_ref()
             .unwrap()
             .primitives
             .iter()
             .find(|p| p.component.is_none())
+            .unwrap()
+            .color,
+        0xc0c0c0
     );
-    assert_eq!(project(&d, None, "", &Default::default()).unwrap(), d);
     let style = DisplayStyle {
         cross: false,
         ..Default::default()
@@ -121,6 +135,116 @@ fn assembly_projection_keeps_base_pins_wires_and_history_unchanged() {
             .primitives
             .len(),
         original.schematic.unwrap().primitives.len()
+    );
+}
+
+#[test]
+fn assembly_annotations_keep_sheet_layout_and_compare_against_the_sheet_value() {
+    let mut d = fixture();
+    let s = d.schematic.as_mut().unwrap();
+    let c = s.components[0].clone();
+    let mut alternate = edit::extract(s, c.id).unwrap().fresh_copy();
+    alternate.components[0]
+        .parameters
+        .insert("Value".into(), "47k".into());
+    for p in &mut alternate.primitives {
+        if let SchPrimitiveKind::Text { position, .. } = &mut p.kind {
+            *position = Point::mm(100, 100);
+            p.presentation.hidden = true;
+        }
+    }
+    let mut v = Variant::new("Alternate".into());
+    let change = v.variation_mut(&component_uid(s, &c, ""), "R1");
+    change.kind = 2;
+    change.alternate = Some(alternate);
+    let original = d.clone();
+    let assembly = project(&d, Some(&v), "", &Default::default()).unwrap();
+    let next = assembly.schematic.as_ref().unwrap();
+    let before = snapshot_comment(&d);
+    let after = snapshot_comment(&assembly);
+    assert_eq!(before.id, after.id);
+    assert!(!after.presentation.hidden);
+    if let (
+        SchPrimitiveKind::Text {
+            position: a,
+            orientation: oa,
+            justification: ja,
+            ..
+        },
+        SchPrimitiveKind::Text {
+            position: b,
+            orientation: ob,
+            justification: jb,
+            text,
+            font,
+        },
+    ) = (&before.kind, &after.kind)
+    {
+        assert_eq!((a, oa, ja), (b, ob, jb));
+        assert_eq!(text, "47k");
+        assert_eq!(next.fonts[*font].name, "Times New Roman");
+        assert_eq!(next.fonts[*font].height_nm, 2_540_000);
+        assert!(next.fonts[*font].bold && next.fonts[*font].italic);
+    } else {
+        panic!()
+    }
+    assert_eq!(after.color, 0x008000);
+    assert_eq!(d, original);
+}
+
+fn snapshot_comment(d: &Document) -> &SchPrimitive {
+    d.schematic
+        .as_ref()
+        .unwrap()
+        .primitives
+        .iter()
+        .find(|p| p.text_role == Some(TextRole::Comment))
+        .unwrap()
+}
+
+#[test]
+fn not_fitted_bounds_exclude_parameter_labels_and_masking_is_automatic() {
+    let d = fixture();
+    let mut distant = d.clone();
+    let s = distant.schematic.as_mut().unwrap();
+    let mut label = snapshot_comment(&d).clone();
+    label.id = Uuid::new_v4();
+    label.text_role = None;
+    label.presentation.name = "Package".into();
+    label.presentation.raw_text = Some("A very long package name".into());
+    if let SchPrimitiveKind::Text { position, text, .. } = &mut label.kind {
+        *position = Point::mm(200, 200);
+        *text = "A very long package name".into();
+    }
+    s.primitives.push(label);
+    let c = &s.components[0];
+    let mut v = Variant::new("DNP".into());
+    v.variation_mut(&component_uid(s, c, ""), "R1").kind = 1;
+    let style = DisplayStyle {
+        dim: false,
+        ..Default::default()
+    };
+    let a = project(&d, Some(&v), "", &style)
+        .unwrap()
+        .schematic
+        .unwrap();
+    let b = project(&distant, Some(&v), "", &style)
+        .unwrap()
+        .schematic
+        .unwrap();
+    let crosses = |s: Schematic| {
+        s.primitives
+            .into_iter()
+            .filter(|p| p.color == 255)
+            .map(|p| p.kind)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(crosses(a), crosses(b.clone()));
+    assert!(
+        b.primitives
+            .iter()
+            .filter(|p| !matches!(p.kind, SchPrimitiveKind::Polyline { .. }))
+            .all(|p| p.color == 0xc0c0c0)
     );
 }
 #[test]
@@ -319,6 +443,11 @@ fn exact_uid_wins_and_stale_links_require_explicit_unambiguous_rebinding() {
 
 #[test]
 fn display_style_mesh_text_and_parameter_font_are_read_only_projections() {
+    let mut legacy: DisplayStyle =
+        serde_json::from_str(r#"{"cross":true,"dim":false,"color":255,"width_nm":200000}"#)
+            .unwrap();
+    legacy.upgrade_legacy_defaults();
+    assert_eq!(legacy, DisplayStyle::default());
     let d = fixture();
     let original = d.clone();
     let c = &d.schematic.as_ref().unwrap().components[0];
