@@ -272,6 +272,7 @@ struct PadEdit {
 }
 
 pub struct PcbCraft {
+    updates: crate::updates::Updater,
     git: git_panel::State,
     library_editor: library_editor::State,
     variants: variants::State,
@@ -344,6 +345,7 @@ impl PcbCraft {
             settings.grid_nm = 1_000_000;
         }
         let mut app = Self {
+            updates: Default::default(),
             git: Default::default(),
             library_editor: Default::default(),
             variants: Default::default(),
@@ -357,7 +359,15 @@ impl PcbCraft {
             active: None,
             settings,
             search: String::new(),
-            log: vec![(false, "PCBCraft 0.1.0 · Rust / wgpu · Ready".into())],
+            log: vec![(
+                false,
+                concat!(
+                    "PCBCraft ",
+                    env!("CARGO_PKG_VERSION"),
+                    " · Rust / wgpu · Ready"
+                )
+                .into(),
+            )],
             command: None,
             pending: None,
             preferences: false,
@@ -1507,9 +1517,12 @@ impl PcbCraft {
                     }
                     ui.add_space(35.0);
                     ui.label(
-                        RichText::new("0.1.0  /  Main window and document foundation")
-                            .small()
-                            .color(MUTED),
+                        RichText::new(concat!(
+                            env!("CARGO_PKG_VERSION"),
+                            "  /  Main window and document foundation"
+                        ))
+                        .small()
+                        .color(MUTED),
                     );
                 });
             });
@@ -1581,7 +1594,7 @@ impl PcbCraft {
                 .collapsible(false)
                 .resizable(false)
                 .show(ctx, |ui| {
-                    ui.heading("PCBCraft 0.1.0");
+                    ui.heading(concat!("PCBCraft ", env!("CARGO_PKG_VERSION")));
                     ui.label("Independent EDA application written in Rust.");
                     ui.label("egui / eframe · wgpu");
                     ui.separator();

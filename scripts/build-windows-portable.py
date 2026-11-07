@@ -16,6 +16,8 @@ import tempfile
 import tomllib
 import zipfile
 
+from release_common import notices
+
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -95,27 +97,6 @@ def bundle_dependencies(binary, destination, crt_dir):
             elif not lower.startswith(("api-ms-win-", "ext-ms-win-")) and not (system / name).is_file():
                 raise RuntimeError(f"Unresolved dependency {name} of {current.name}")
     return dependencies
-
-
-def notices(metadata, destination):
-    destination.mkdir()
-    shutil.copy2(ROOT / "LICENSE", destination / "PCBCraft-MIT.txt")
-    shutil.copytree(ROOT / "assets/fonts", destination / "fonts", ignore=shutil.ignore_patterns("*.ttf"))
-    summaries = []
-    for package in metadata["packages"]:
-        if package["source"] is None:
-            continue
-        summaries.append({key: package[key] for key in ("name", "version", "license", "repository")})
-        source = Path(package["manifest_path"]).parent
-        candidates = [entry for entry in source.iterdir() if entry.is_file()
-                      and entry.name.lower().startswith(("license", "licence", "copying", "notice", "copyright"))]
-        if package["license_file"]:
-            candidates.append(source / package["license_file"])
-        for entry in set(candidates):
-            target = destination / "crates" / f'{package["name"]}-{package["version"]}' / entry.name
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(entry, target)
-    (destination / "dependencies.json").write_text(json.dumps(summaries, indent=2), encoding="utf-8")
 
 
 def main():

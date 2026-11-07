@@ -259,6 +259,7 @@ mod tests {
     }
     fn app() -> PcbCraft {
         let mut app = PcbCraft {
+            updates: Default::default(),
             git: Default::default(),
             library_editor: Default::default(),
             variants: Default::default(),

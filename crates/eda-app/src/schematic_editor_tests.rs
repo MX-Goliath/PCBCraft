@@ -293,6 +293,7 @@ fn alt_mouse_move_constrains_the_committed_transform_and_remains_one_undo() {
 
 pub(in crate::app) fn app() -> PcbCraft {
     PcbCraft {
+        updates: Default::default(),
         git: Default::default(),
         library_editor: Default::default(),
         variants: Default::default(),

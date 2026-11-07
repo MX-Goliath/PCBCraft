@@ -49,7 +49,8 @@ impl PcbCraft {
                             self.command = Some(command);
                         }
                     }
-                    let width = (ui.available_width() - 300.0).max(10.0);
+                    let width =
+                        (ui.available_width() - 300.0 - crate::updates::CONTROL_WIDTH).max(10.0);
                     let (rect, response) = ui.allocate_exact_size(
                         egui::vec2(width, height),
                         egui::Sense::click_and_drag(),
@@ -69,6 +70,7 @@ impl PcbCraft {
                             !ctx.input(|i| i.viewport().maximized.unwrap_or(false)),
                         ));
                     }
+                    self.updates.show(ui);
                     theme::draw_icon(
                         ui.painter(),
                         egui::Rect::from_center_size(

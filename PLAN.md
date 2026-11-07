@@ -3376,3 +3376,73 @@ Cause, implementation and validation: docs/pcb-update/INTERACTIVE_ROUTING.md.
   tests (188 app / 330 core / 1 geom / 160 IO / 118 render), Linux GNU all-target
   check and native Windows GUI build. Seven original PDU source-file SHA-256
   hashes remain unchanged. Source changes remain uncommitted.
+
+### GitHub Releases update channel ? 2026-11-07
+
+- User-requested release preparation for MX-Goliath/PCBCraft. Added an explicit
+  stable-channel check immediately left of title-bar Search, with a compact
+  rounded control, popup, received-byte percentage/bar, cancellation, retries,
+  release notes, no-public-release and network/rate-limit states. The popup stays
+  open while downloading. This chrome change is an authorized exception to the
+  Altium visual target; ChatGPT Desktop similarity is approximate, not measured.
+- Update service stays in eda-app, outside the document/history/geometry model.
+  Background HTTP uses HTTPS and OS trust, semantic version precedence, exact
+  native asset names and repository URLs, response/size bounds and streamed
+  SHA-256 plus length verification. Only verified files become installable;
+  error/cancel paths remove their temporary files. GitHub asset digests or
+  exact-name checksum sidecars are required. No client token or private-account
+  access is shipped. Checks happen on demand, without automatic downloads.
+- Selection preserves Windows installer vs portable.flag and Linux DEB vs
+  AppImage runtime APPIMAGE. macOS has separate arm64/x64 DMGs. Installation is
+  explicit through the native installer/archive; portable, AppImage and macOS
+  replacement instructions preserve settings. No unattended replacement/restart.
+- Added native DEB, per-user Inno Setup and macOS app/DMG packaging, sharing Rust
+  and font license notices with the existing portable/AppImage builders. DEB
+  dependencies combine ELF analysis and dlopened libraries; AppImage Debian
+  copyright lookup handles /usr-merged paths. macOS supports optional Developer
+  ID/hardened runtime/notarization/stapling, defaults to ad-hoc signing. Apple
+  credentials and Windows Authenticode are not provisioned.
+- Four-runner CI (Windows, Ubuntu 22.04, Apple Silicon and Intel macOS) builds all
+  six packages with SHA-256 sidecars; a complete-set/tag/hash gate precedes draft
+  creation. Only publishing a public stable draft makes it visible to clients.
+  Branch workflow_dispatch builds artifacts without creating a release. The
+  CI channel derives from github.repository; local builds default to this repo
+  and accept a compile-time PCBCRAFT_UPDATE_REPOSITORY override.
+- Added 12 Rust regressions for distribution/version/channel/URL/hash selection,
+  streaming, corruption/truncation/oversize/cancel cleanup and every popup phase;
+  five Python regressions validate release tags, complete sets, tampering and
+  DEB/macOS metadata. Python tests, script compilation, YAML syntax, tracked and
+  new-file privacy scans passed. Final workspace and native GUI results follow.
+- The preceding test GUI had an unsaved project group. Following the user's
+  explicit instruction not to save, closed it via Discard Changes; no document
+  save was performed. Only one PCBCraft GUI is used for the following checks.
+- Native Windows build and final strict workspace/all-target Clippy PASS. The
+  first full test attempt exhausted disk space while linking an existing IO
+  example. Package-scoped `cargo clean -p eda-io --profile dev` removed only Cargo
+  build artifacts and recovered about 15 GiB of physical disk space; the full
+  test run is being repeated. CI disables dev/test debug symbols and incremental
+  files to bound hosted-runner artifact size without reducing test coverage.
+- Home, About and the startup log now use the Cargo package version rather than
+  a hard-coded 0.1.0. GitHub connector metadata confirmed the expected canonical
+  repository is private. Native Windows GUI at 1707x1019 shows the rounded
+  control immediately left of Search; clicking runs a real anonymous request,
+  shows Checking and then No releases yet with the private-repository explanation.
+  Release checks and the popup do not change the document's dirty state. Actual
+  release-package download/installation cannot be exercised before a public
+  stable release exists; streamed download and every progress phase are covered
+  by the automated regressions. Linux/macOS native builds remain CI work.
+- Final gates PASS after artifact cleanup: cargo fmt --all -- --check, strict
+  workspace/all-target Clippy, native Windows GUI build, and all 809 workspace
+  tests (200 app / 330 core / 1 geom / 160 IO / 118 render), including GPU tests.
+  Five release Python tests, script byte-compilation, workflow YAML syntax,
+  repository privacy and diff whitespace checks also pass. Native popup retry and
+  outside-click dismissal were verified; the update control stays left of Search.
+  One new PCBCraft GUI remains open. No EDA documents were saved. Release/package
+  publication and native Linux/macOS execution were not performed in this local
+  Windows preparation task. Source changes remain uncommitted.
+- Pre-commit review caught AppImage's local Arch-license variable shadowing the
+  shared notices collector, causing UnboundLocalError before packaging on every
+  platform. Renamed it and added a staging regression with native Linux tools
+  mocked: it fails before the fix and passes afterward, checking license files,
+  launcher, output and checksum. All six Python release tests pass. Rust sources
+  are unchanged from the verified 809-test build. Commit/push requested by user.

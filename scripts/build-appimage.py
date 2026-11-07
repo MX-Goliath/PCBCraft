@@ -13,6 +13,8 @@ import subprocess
 import tempfile
 import tomllib
 
+from release_common import notices
+
 
 ROOT = Path(__file__).resolve().parents[1]
 # These are loaded with dlopen and therefore do not all appear in ldd output.
@@ -62,6 +64,18 @@ def bundle_libraries(binary, destination):
     return copied
 
 
+def debian_library_owner(source):
+    # ldconfig/ldd and dpkg can use opposite spellings across /usr-merged hosts.
+    candidates = {str(source), str(source.resolve())}
+    candidates.update("/usr" + path for path in list(candidates) if path.startswith("/lib/"))
+    candidates.update(path.removeprefix("/usr") for path in list(candidates) if path.startswith("/usr/lib/"))
+    for path in sorted(candidates):
+        result = subprocess.run(["dpkg-query", "-S", path], capture_output=True, text=True)
+        if result.returncode == 0:
+            return result.stdout.split(": ")[0].split(":")[0]
+    raise RuntimeError(f"Cannot identify Debian library license owner: {source}")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--no-build", action="store_true", help="Package the existing release binary")
@@ -104,19 +118,18 @@ def main():
             'exec "$appdir/usr/bin/pcbcraft" "$@"\n'
         )
         launcher.chmod(0o755)
-        shutil.copy2(ROOT / "LICENSE", licenses / "LICENSE")
-        shutil.copytree(ROOT / "assets/fonts", licenses / "fonts", ignore=shutil.ignore_patterns("*.ttf"))
+        full_metadata = run("bash", str(ROOT / "scripts/dev.sh"), "metadata", "--locked", "--format-version=1", capture_output=True)
+        notices(json.loads(full_metadata.stdout), licenses)
         # Arch supplies package-specific third-party notices here. Also include
         # Debian copyright files when building on Debian/Ubuntu.
         for source in bundled.values():
             if shutil.which("pacman"):
                 package = run("pacman", "-Qqo", str(source.resolve()), capture_output=True).stdout.strip()
-                notices = Path("/usr/share/licenses") / package
-                if notices.is_dir():
-                    shutil.copytree(notices, licenses / "system" / package, dirs_exist_ok=True)
+                system_notices = Path("/usr/share/licenses") / package
+                if system_notices.is_dir():
+                    shutil.copytree(system_notices, licenses / "system" / package, dirs_exist_ok=True)
             elif shutil.which("dpkg-query"):
-                owner = run("dpkg-query", "-S", str(source), capture_output=True).stdout.split(": ")[0]
-                package = owner.split(":")[0]
+                package = debian_library_owner(source)
                 notice = Path("/usr/share/doc") / package / "copyright"
                 if notice.is_file():
                     target = licenses / "system" / package

@@ -1,5 +1,8 @@
 # PCBCraft
 
+Desktop updates use GitHub Releases. See [release packages and update channel](docs/updates.md)
+for Windows installer/portable, Linux DEB/AppImage and macOS Intel/Apple Silicon.
+
 PCBCraft is an open-source, Rust-based EDA platform inspired by Altium Designer's interface and workflows, featuring schematic design, PCB layout, a custom engine.
 
 Самостоятельная EDA на Rust с интерфейсом, исследуемым по Altium Designer.
@@ -51,7 +54,7 @@ Python 3.11+ и redistributable CRT из Visual Studio; путь можно пе
 Для Ubuntu/Debian подготовить зависимости оконной системы:
 
 ```bash
-sudo apt-get install build-essential pkg-config libxkbcommon-dev libwayland-dev libx11-dev libxi-dev libxcursor-dev libxrandr-dev
+sudo apt-get install build-essential pkg-config libssl-dev libxkbcommon-dev libwayland-dev libx11-dev libxi-dev libxcursor-dev libxrandr-dev
 cargo run --locked -p eda-app
 ```
 

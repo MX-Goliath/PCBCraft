@@ -6,6 +6,7 @@ fn app() -> PcbCraft {
     let mut model = model;
     model.pcb = Some(board);
     PcbCraft {
+        updates: Default::default(),
         git: Default::default(),
         library_editor: Default::default(),
         variants: Default::default(),
