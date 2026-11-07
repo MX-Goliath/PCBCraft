@@ -3009,3 +3009,192 @@ Cause, implementation and validation: docs/pcb-update/INTERACTIVE_ROUTING.md.
   closing the dialog leaves the document clean. One PCBCraft GUI remains open
   on the synthetic SchLib/PcbLib pair; the generated Controller example was
   discarded under the user's permission. Full Altium parity remains incomplete.
+
+
+## 2026-11-07 ? Project Git panel and semantic revision review
+
+- User-requested independent Panels > Git left dock, outside the existing
+  Altium parity scope. Consulted GPT-6 Astra with high reasoning and default
+  service tier for dock width/chrome, history workflow and review semantics.
+- Implemented bounded shell-free Git access in eda-io, semantic document
+  comparisons in eda-core, and geometry/camera overlays in eda-render. Git tree
+  filters supported native files by the explicitly selected project directory.
+  History supports refs/tags, pagination, roots, merge parents and file history.
+- Working tree reviews compare HEAD with saved uncommitted files. Added an
+  explicit Include unsaved editor edits option using an immutable model snapshot;
+  commit continues to require saved files. Revision reviews are read-only and
+  cannot execute working-document Save/Undo/edit commands.
+- Selected-file commit uses a private index, rejects stale HEAD/conflicts/active
+  integration operations and preserves other staging. Push names the upstream,
+  sends complete commits, supports first upstream setup and never forces.
+- Added synthetic native-project/local-remote generator and regressions for
+  selected commits, roots/renames/deletions, scoped paths, local push, native
+  index/UUID changes, four semantic colors, library member unions and read-only
+  document preservation. Initial workspace run compiled in 18m 54s; app/core/IO
+  gates passed, one new render test lacked its named-font test setup. Corrected
+  the setup and an egui corner-method typo in the new dashed-contour code.
+- Strict workspace/all-target Clippy passed on the integrated implementation.
+  Final rebuilt executable, full regression rerun and actual-window QA follow;
+  results below supersede this intermediate checkpoint. Scope/limits are in
+  docs/interface/git-panel.md and docs/features.json.
+
+- Final automated gates PASS: cargo fmt --all -- --check; strict workspace,
+  all-target Clippy; 767 workspace tests (175 app / 322 core / 1 geom / 154 IO /
+  115 render), no failures; Linux GNU all-target type check (1m 51s). The last
+  full test compilation took 4m 27s; the final GUI build took 3m 06s.
+- GPT-6 Astra high/default inspected the actual 1440x900 Windows window read-only.
+  Corrected all four findings: revision-aware active-file highlight, wrapped/
+  collapsible/copyable property values, distinct empty/clean/search states and
+  clearer commit subject/metadata hierarchy with reveal-on-selection. Further
+  real-window corrections left-align file rows, keep loading in the fixed header
+  and show physical property values in mm instead of raw model nanometres.
+- Windows Computer Use PASS: independent Panels > Git; project-directory and
+  PrjPcb-path selection; history and changed files; SCH and PCB overlay each show
+  exactly one removal (red), translation (blue), parameter edit (orange), and
+  addition (green). Old positions have dashed bounds. Selecting the SCH move
+  fits both positions and draws its arrow; Before/After retain that camera.
+- Working-tree QA PASS: a saved PCB width edit is orange against HEAD. Toggled
+  Visible Grid in the synthetic open SchDoc without saving; Include unsaved
+  editor edits exposed the buffer change with an explicit Editor buffer banner.
+  Return + Undo restored the clean original model; native SchDoc stayed unchanged
+  on disk. A guarded native-writer refusal in the first fixture generator was
+  avoided by using independently authored ASCII 5.0 synthetic records. The final
+  Rust fixture generator runs successfully without patches or user inputs.
+- Final executable GUI commit/push PASS on the isolated synthetic repository:
+  selected only Review.PcbDoc, entered a message and committed through the panel.
+  The working diff closed, native change count became zero and outgoing count
+  became one. Only Review.PcbDoc entered the new commit; an unrelated staged text
+  file stayed staged. Push showed main -> origin/main and sent to a local bare
+  remote; local/remote hashes match and outgoing/incoming counts return to zero.
+  No source-repository commit/push or original Altium project changes occurred.
+- The native folder picker eventually appeared after an initial capture delay;
+  retained explicit path entry as a convenient way to choose a project. One final
+  PCBCraft QA GUI remains open. External-remote authentication and Linux GUI
+  runtime are unverified; semantic/native-format limits remain explicit in the
+  feature registry and Git-panel guide. This does not claim full Altium parity.
+### Git panel visual revision — 2026-11-07
+
+- User rejected the initial Git interface. Reworked it directly with actual-window
+  Computer Use inspection: native dock headers, compact repository toolbar,
+  Changes/History tabs, flat timeline rows, file icons/status columns, bottom
+  commit form, a separate searchable Changes/Properties dock, and compact
+  comparison controls. Long property values expand and offer Copy by context menu.
+- Removed persistent bounding boxes around every changed object. Selection alone
+  shows contours and movement arrows. Unchanged artwork is repainted neutral gray
+  to avoid confusing native red PCB layer colors with deletions.
+- Windows GUI regression: history and file selection, SCH/PCB four change classes,
+  movement focus, before/after values with mm units, independent commit checkboxes,
+  saved working-tree diff, and selected-file commit. The local synthetic QA commit
+  `80135d9c48d4bb2d27958f8e981a85aaa3f5ec64` contains only Review.PcbDoc;
+  the pre-existing unrelated.txt staging remains intact. No production remote push.
+- User supplied Bip_adaptive as the PDU project. Created an isolated copy at
+  `local/PDU-git-review`; all seven source file SHA-256 hashes remain unchanged.
+  Baseline `05d76c0239afbefd1bbbbf3958786feeddf8b95d` contains the original files.
+  Authored native SCH edits through validated commands: R1 +5 mm, C1 220nF,
+  R11 removal, C99 insertion, with connected wires updated. Board edits were
+  authored in Altium on the copy: ECALL_SW width 0.3 to 0.4 mm and version text
+  +2 mm. PCBCraft's guarded native PCB writer refuses this board's repour/reindex
+  streams, so no writer guard was bypassed. Altium also changed dimension text
+  locale, tiny coordinates, two regions and board metadata during save; these
+  additional native changes remain visible, not silently discarded.
+- Found and fixed native 1 nm relative-coordinate rounding that classified a
+  translated SCH component as Parameters. A regression covers translation
+  rounding while retaining an exact 1 nm width change as Parameters.
+- Verified saved working-tree diffs in the real GUI: SCH seven semantic changes
+  with all four colors; PCB twenty changes, including orange ECALL_SW width and
+  blue translated label. Selected both files and created the second commit via
+  the panel: `f0f9357136f0e2d481ee076766a2e3db718c7f06`. Only the two intended
+  native documents entered the commit; Altium History backups stayed untracked.
+- Committed SCH history comparison has the same seven changes as working-tree
+  review; post-commit HEAD/worktree comparison reports zero for both documents.
+  Fixed oversized SCH selection frames caused by hidden parameter geometry;
+  hidden metadata remains compared. Added a focus-bounds regression and readable
+  PCB net/text labels in the change list.
+- Final Windows GUI validation on rebuilt binary: hidden-parameter frame fixed,
+  SCH Before/After preserves camera, committed PCB history shows ECALL_SW width
+  and version-text translation with readable net/text labels and property values.
+  One QA GUI remains open on the PDU committed SCH overlay.
+- Final gates PASS: cargo fmt --all -- --check; cargo clippy --workspace
+  --all-targets -- -D warnings; cargo test --workspace (769 tests: 175 app,
+  324 core, 1 geom, 154 IO, 115 render); Linux GNU all-target type check.
+  Source repository changes remain uncommitted; no production remote push.
+
+### Git revision document tabs — 2026-11-07
+
+- Replaced the separate Git review workspace with ordinary read-only document
+  tabs. Working documents and multiple SCH/PCB revisions coexist; matching
+  immutable comparisons reuse a tab, and reopening a working-tree comparison
+  refreshes its captured snapshot. Closing a tab removes only that comparison.
+- Each revision uses the normal document View state, PCB layer strip, View
+  Configuration, grid settings, mirror/single-layer controls and 2D/3D cameras.
+  Common Ctrl+Tab / Ctrl+Shift+Tab cycling includes working and review documents.
+  PCB view shortcuts are shared with the ordinary editor. Ctrl+Home fits the
+  selected semantic change, including its former position.
+- Layer/object visibility, transparency and dimming now affect the colored PCB
+  overlay. Native 3D displays Before/After snapshots; semantic coloring remains
+  a 2D feature. SCH grid toggling changes view state rather than snapshot content.
+- Review tabs reject edit/save commands, use disabled placement toolbars and
+  read-only Properties, and never participate in dirty-document saves. Existing
+  tabs remain explicit captured snapshots after a Git commit.
+- Added regressions for independent tab views, comparison identity/reuse,
+  individual close, revision switching, working-document preservation and
+  hidden PCB layers. Updated the Git-panel guide; final checks recorded below.
+
+- Final Windows Computer Use verification at 1707x1019 on the PDU two-commit
+  fixture: simultaneous working SCH, committed SCH diff and PCB diff tabs;
+  Ctrl+Tab and Ctrl+Shift+Tab with search focus; individual Ctrl+W and middle-click
+  close; reopen; independent camera and hidden Top Layer retained across tabs;
+  shared View Configuration and layer strip; SCH G grid toggle; Ctrl+PageDown,
+  Ctrl+Home, View > Fit Board; native 3D After and return to 2D overlay. The
+  comparison toolbar fills the editor width. One QA GUI remains open with both
+  revision tabs and the PCB layer controls visible.
+- Final gates PASS: cargo fmt --all -- --check; cargo clippy --workspace
+  --all-targets -- -D warnings; cargo test --workspace (772 tests: 177 app,
+  324 core, 1 geom, 154 IO, 116 render); Linux GNU all-target type check.
+  All seven original PDU file hashes are unchanged; test-copy tracked files
+  remain clean. No source commit or remote push was performed in this stage.
+
+### Persistent panels and working-file navigation — 2026-11-07
+
+- Replaced document-dependent panel priority and independent SidePanels with a
+  workspace-owned registry and one host on each side. Git, Projects, Library and
+  View Configuration remain open as dock tabs; Properties, Components, Messages
+  and Changes share the right host. Switching SCH/PCB/revision/Home changes panel
+  contents, not membership, selection or width. Incompatible contexts have an
+  explicit empty state. Layer Stack Manager also uses the common right host.
+- Panels and View open or activate a panel. Re-selecting it does not toggle it
+  off. Close, middle-click and tab context menus consistently close one panel.
+  Removed dummy Navigator, SCH Filter, PCB Filter and PCB tabs and the inactive
+  pin control. Restore Default Layout resets the common registry.
+- Added Open working file to Git file context menus, revision-tab context menus
+  and the review toolbar. Unchanged working-tree rows open their native editor.
+  Working files and historical snapshots coexist; reopening a working file reuses
+  its editor without losing unsaved changes. Review snapshots no longer appear
+  as ordinary Free Documents. Changing repository preserves existing reviews.
+- Added regressions for persistent dock selection/membership/geometry across
+  document kinds, working-file identity and unsaved preservation, repository
+  switching with open snapshots, and panel commands with an unapplied stack draft.
+- Actual-window Windows checks at 1707x1019 on the existing two-commit PDU copy:
+  simultaneous working SCH/PCB and committed SCH/PCB diff tabs; Open working file
+  creates PCB or reuses SCH; Git history remains selected; View Configuration
+  leaves the Git tab available; SCH/PCB/Home preserve both docks; explicit Git
+  close/reopen retains state; selecting an already open Git in Panels keeps it
+  open. Restart retains ordinary dock membership and selection.
+- GUI testing found Layer Stack Manager rejecting panel commands. Moved dock
+  navigation ahead of document command guards, preserving pending drafts, and
+  gave its View menu the shared panel catalog. Verified Components opens through
+  that menu, Messages remains present, and Properties returns to stack controls.
+  Opening a file or comparison hides the manager without discarding its draft;
+  asynchronous document imports can finish while that manager is in a background
+  tab. Final build and verification results follow below.
+- Final rebuilt GUI: Stackup -> existing working SCH -> retained Stackup ->
+  committed PCB diff works without losing dock tabs. Revision-tab Open working
+  file reuses the ordinary PCB; Git file-context Open diff opens SCH alongside
+  both working files and the PCB comparison. One final QA GUI remains open on
+  the PDU SCH overlay. No native design files were saved during this regression.
+- Final gates PASS: cargo fmt --all -- --check; cargo clippy --workspace
+  --all-targets -- -D warnings; cargo test --workspace (777 tests: 182 app,
+  324 core, 1 geom, 154 IO, 116 render); Linux GNU all-target type check; GUI
+  build; git diff --check. Feature registry JSON parses successfully.
+  All seven original PDU hashes remain unchanged; disposable tracked files
+  remain clean. Source changes are uncommitted; no remote push was performed.

@@ -100,8 +100,7 @@ impl PcbCraft {
         panel.part = 1;
         panel.mode = 0;
         panel.query.clear();
-        self.settings.components = true;
-        self.settings.right_components = true;
+        self.show_panel(super::Panel::Components);
     }
     pub(super) fn import_library(&mut self, path: PathBuf, activate: bool) {
         let path = path.canonicalize().unwrap_or(path);
@@ -177,8 +176,7 @@ impl PcbCraft {
             self.components_ui.part = 1;
             self.components_ui.mode = 0;
             self.components_ui.query.clear();
-            self.settings.components = true;
-            self.settings.right_components = true;
+            self.show_panel(super::Panel::Components);
         }
     }
     fn pick_library(&mut self) {

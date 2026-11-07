@@ -559,7 +559,7 @@ impl PcbCraft {
                 self.file_state.group = Some(path.clone());
                 self.file_state.selected_project = self.projects.first().map(|p| p.path.clone());
                 self.recent(path.clone());
-                self.settings.projects = true;
+                self.show_panel(Panel::Projects);
                 let first = self
                     .projects
                     .iter()
@@ -591,7 +591,7 @@ impl PcbCraft {
                             self.file_state.selected_project = Some(p.path.clone());
                             self.projects.push(p);
                             self.recent(path);
-                            self.settings.projects = true;
+                            self.show_panel(Panel::Projects);
                         }
                         Err(e) => self.message(true, e),
                     }
@@ -605,7 +605,7 @@ impl PcbCraft {
                 self.file_state.saved_projects.clear();
                 self.file_state.group = None;
                 self.file_state.selected_project = None;
-                self.settings.projects = true;
+                self.show_panel(Panel::Projects);
             }
             OpenGroup => {
                 if let Some(path) = self

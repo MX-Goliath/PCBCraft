@@ -195,9 +195,7 @@ impl PcbCraft {
             return Ok(());
         }
         if id == "PlaceComponent" {
-            self.settings.right_components = true;
-            self.settings.right_messages = false;
-            self.settings.properties = false;
+            self.show_panel(Panel::Components);
             return Ok(());
         }
         let action = match id {

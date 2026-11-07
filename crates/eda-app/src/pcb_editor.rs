@@ -1751,9 +1751,7 @@ impl PcbCraft {
             return;
         }
         if input_.double_clicked {
-            self.settings.properties = true;
-            self.settings.right_components = false;
-            self.settings.right_messages = false;
+            self.show_panel(Panel::Properties);
         }
         if self.pcb_3d_input(index, &input_, ctx) {
             return;
@@ -1831,6 +1829,7 @@ impl PcbCraft {
             return;
         }
         let mut ed = std::mem::take(&mut doc.pcb_editor);
+        let mut show_properties = false;
         let result = (|| -> Result<(), String> {
             // Switching to another edit must not discard a route already entered.
             if ed.route_session.is_some()
@@ -1865,9 +1864,7 @@ impl PcbCraft {
                     finish_route(doc, &mut ed)?;
                     ed.set_tool(tool, &mut doc.view);
                     if tool == Tool::Route {
-                        self.settings.properties = true;
-                        self.settings.right_components = false;
-                        self.settings.right_messages = false;
+                        show_properties = true;
                     }
                     if tool == Tool::Route && !ed.routing_initialized {
                         let board = doc.model.pcb.as_ref().unwrap();
@@ -2118,6 +2115,9 @@ impl PcbCraft {
             Ok(())
         })();
         doc.pcb_editor = ed;
+        if show_properties {
+            self.show_panel(Panel::Properties);
+        }
         if let Err(e) = result {
             self.message(true, e);
         }
@@ -2135,9 +2135,42 @@ impl PcbCraft {
             for w in warnings {
                 self.message(false, w);
             }
-            self.settings.messages = true;
-            self.settings.right_messages = true;
+            self.show_panel(Panel::Messages);
         }
+    }
+    pub(super) fn pcb_view_sequence_shortcuts(&mut self, ctx: &egui::Context) -> bool {
+        let Some(index) = self.active else {
+            return false;
+        };
+        let ed = &mut self.documents[index].pcb_editor;
+        let now = ctx.input(|i| i.time);
+        if ed.sequence.is_some_and(|(_, time)| now - time > 2.0) {
+            ed.sequence = None;
+        }
+        let mut fit = None;
+        let handled = ctx.input_mut(|input| {
+            if let Some((Key::V, _)) = ed.sequence {
+                for (key, target) in [
+                    (Key::F, eda_render::pcb::FitTarget::Board),
+                    (Key::D, eda_render::pcb::FitTarget::Document),
+                ] {
+                    if input.consume_key(egui::Modifiers::NONE, key) {
+                        fit = Some(target);
+                        ed.sequence = None;
+                        return true;
+                    }
+                }
+            }
+            if ed.route_session.is_none() && input.consume_key(egui::Modifiers::NONE, Key::V) {
+                ed.sequence = Some((Key::V, now));
+                return true;
+            }
+            false
+        });
+        if let Some(target) = fit {
+            self.pcb_action(Action::Fit(target));
+        }
+        handled
     }
     pub(super) fn pcb_shortcuts(&mut self, ctx: &egui::Context) -> bool {
         let Some(index) = self.active else {
@@ -2199,19 +2232,6 @@ impl PcbCraft {
                 doc.pcb_editor.sequence = None;
                 return;
             }
-            if let Some((Key::V, _)) = doc.pcb_editor.sequence {
-                for (key, target) in [
-                    (Key::F, eda_render::pcb::FitTarget::Board),
-                    (Key::D, eda_render::pcb::FitTarget::Document),
-                ] {
-                    if input.consume_key(egui::Modifiers::NONE, key) {
-                        action = Some(Action::Fit(target));
-                        doc.pcb_editor.sequence = None;
-                        handled = true;
-                        return;
-                    }
-                }
-            }
             if let Some((prefix, _)) = doc.pcb_editor.sequence {
                 for (key, tool) in [
                     (Key::T, Tool::Route),
@@ -2270,46 +2290,6 @@ impl PcbCraft {
                     handled = true;
                     return;
                 }
-            }
-            if input.consume_key(ctrl, Key::F) {
-                if doc.view.pcb.three_d.enabled {
-                    doc.view.pcb.three_d.flip();
-                } else {
-                    doc.view.camera.mirrored_x = !doc.view.camera.mirrored_x;
-                }
-                handled = true;
-                return;
-            }
-            if input.consume_key(shift, Key::Num7) {
-                doc.view.pcb.three_d.show_components = !doc.view.pcb.three_d.show_components;
-                doc.view.pcb.three_d.invalidate();
-                handled = true;
-                return;
-            }
-            if input.consume_key(shift, Key::E) {
-                doc.view.pcb.snap.mode = match doc.view.pcb.snap.mode {
-                    pcb::SnapLayerMode::All => pcb::SnapLayerMode::Current,
-                    pcb::SnapLayerMode::Current => pcb::SnapLayerMode::Off,
-                    pcb::SnapLayerMode::Off => pcb::SnapLayerMode::All,
-                };
-                handled = true;
-                return;
-            }
-            if input.consume_key(shift, Key::S) {
-                if doc.view.pcb.three_d.enabled {
-                    doc.view.pcb.three_d.presentation.single_layer =
-                        !doc.view.pcb.three_d.presentation.single_layer;
-                } else {
-                    doc.view.pcb.single_layer = (doc.view.pcb.single_layer + 1) % 3;
-                }
-                handled = true;
-                return;
-            }
-            if input.consume_key(shift, Key::C) {
-                doc.view.pcb.highlight_net = None;
-                doc.view.pcb.highlight_nets.clear();
-                handled = true;
-                return;
             }
             if input.consume_key(egui::Modifiers::NONE, Key::Escape) {
                 if matches!(
@@ -2438,7 +2418,7 @@ impl PcbCraft {
                 handled = true;
                 return;
             }
-            for key in [Key::P, Key::M, Key::V, Key::D] {
+            for key in [Key::P, Key::M, Key::D] {
                 if input.consume_key(egui::Modifiers::NONE, key) {
                     doc.pcb_editor.sequence = Some((key, now));
                     handled = true;

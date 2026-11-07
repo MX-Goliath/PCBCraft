@@ -3,6 +3,7 @@ pub mod altium;
 pub mod altium_pcb;
 #[cfg(test)]
 mod altium_tests;
+pub mod git;
 #[cfg(test)]
 mod library_document_tests;
 pub mod library_documents;

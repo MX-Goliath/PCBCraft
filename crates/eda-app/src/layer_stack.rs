@@ -91,11 +91,10 @@ impl PcbCraft {
                         self.action(ui, "Undo", "Ctrl+Z", Command::Undo, undo);
                         self.action(ui, "Redo", "Ctrl+Y", Command::Redo, redo);
                     });
-                    for label in ["View", "Project"] {
-                        ui.menu_button(label, |ui| {
-                            ui.add_enabled(false, egui::Button::new("Not implemented"));
-                        });
-                    }
+                    ui.menu_button("View", |ui| self.panels_menu(ui));
+                    ui.menu_button("Project", |ui| {
+                        ui.add_enabled(false, egui::Button::new("Not implemented"));
+                    });
                     ui.menu_button("Tools", |ui| {
                         self.action(
                             ui,
@@ -220,35 +219,25 @@ impl PcbCraft {
         }
         let before_frame = m.stack.clone();
         let before_history = (m.undo.len(), m.redo.len());
-        egui::SidePanel::right("layer_stack_properties")
-            .default_width(366.0)
-            .width_range(260.0..=460.0)
-            .show(ctx, |ui| {
-                ui.label("Properties");
-                ui.separator();
-                ui.label("Layer Stack Manager");
-                stack_ui::search(ui);
-                egui::ScrollArea::vertical()
-                    .id_salt("stack_properties_scroll")
-                    .show(ui, |ui| {
-                        ui.spacing_mut().item_spacing.y = 2.0;
-                        ui.add_space(22.0);
-                        match m.tab {
-                            0 => stack_ui::layer_properties(ui, &mut m),
-                            1 => stack_ui::via_properties(ui, &mut m, &mut apply, &mut use_via),
-                            _ => stack_ui::impedance_properties(
-                                ui,
-                                &mut m,
-                                &mut apply,
-                                &mut use_width,
-                            ),
-                        }
-                        stack_ui::board_properties(ui, &mut m);
-                        if m.tab != 1 {
-                            stack_ui::other_properties(ui);
-                        }
-                    });
-            });
+        self.right_dock_with_properties(ctx, |_app, ui| {
+            ui.label("Layer Stack Manager");
+            stack_ui::search(ui);
+            egui::ScrollArea::vertical()
+                .id_salt("stack_properties_scroll")
+                .show(ui, |ui| {
+                    ui.spacing_mut().item_spacing.y = 2.0;
+                    ui.add_space(22.0);
+                    match m.tab {
+                        0 => stack_ui::layer_properties(ui, &mut m),
+                        1 => stack_ui::via_properties(ui, &mut m, &mut apply, &mut use_via),
+                        _ => stack_ui::impedance_properties(ui, &mut m, &mut apply, &mut use_width),
+                    }
+                    stack_ui::board_properties(ui, &mut m);
+                    if m.tab != 1 {
+                        stack_ui::other_properties(ui);
+                    }
+                });
+        });
         egui::CentralPanel::default()
             .frame(
                 egui::Frame::NONE
@@ -635,6 +624,42 @@ mod tests {
             redo: vec![],
             symmetry_dialog: false,
         }
+    }
+    #[test]
+    fn panel_navigation_preserves_pending_stack_draft() {
+        let mut app = crate::app::schematic_editor::tests::app();
+        let mut d = document();
+        let path = std::env::temp_dir().join(format!("{}.PcbDoc", Uuid::new_v4()));
+        d.source_path = Some(path.clone());
+        let mut m = manager(&d);
+        m.stack.add_copper(1).unwrap();
+        let draft = m.stack.clone();
+        let original = d.model.clone();
+        app.documents.push(d);
+        app.active = Some(app.documents.len() - 1);
+        app.layer_stack = Some(m);
+        let ctx = egui::Context::default();
+        for panel in [
+            Panel::Git,
+            Panel::Components,
+            Panel::Messages,
+            Panel::Properties,
+        ] {
+            app.run(Command::ShowPanel(panel), &ctx);
+            let side = if panel == Panel::Git {
+                docks::Side::Left
+            } else {
+                docks::Side::Right
+            };
+            assert_eq!(app.selected_panel(side), Some(panel));
+            assert!(app.layer_stack_active());
+            assert_eq!(app.layer_stack.as_ref().unwrap().stack, draft);
+            assert_eq!(app.documents.last().unwrap().model, original);
+        }
+        app.request_open_path(path);
+        assert!(!app.layer_stack_active());
+        assert_eq!(app.layer_stack.as_ref().unwrap().stack, draft);
+        assert_eq!(app.active, Some(app.documents.len() - 1));
     }
     #[test]
     fn apply_is_atomic_preserves_hidden_layers_and_noop_stays_clean() {

@@ -19,14 +19,19 @@ mod components;
 mod cross_probe;
 #[path = "design_sync.rs"]
 mod design_sync;
+#[path = "docks.rs"]
+mod docks;
 #[path = "document_bars.rs"]
 mod document_bars;
 #[path = "document_loader.rs"]
 mod document_loader;
+use docks::Panel;
 #[path = "file_menu.rs"]
 mod file_menu;
 #[path = "file_save.rs"]
 mod file_save;
+#[path = "git_panel.rs"]
+mod git_panel;
 #[path = "layer_stack.rs"]
 mod layer_stack;
 #[path = "library_editor.rs"]
@@ -71,6 +76,7 @@ enum SchAction {
 }
 
 struct OpenDocument {
+    read_only: bool,
     new_project: Option<PathBuf>,
     session_id: Uuid,
     model: Document,
@@ -88,6 +94,7 @@ impl OpenDocument {
     fn new(model: Document, path: Option<PathBuf>) -> Self {
         let saved = path.as_ref().map(|_| model.clone());
         Self {
+            read_only: false,
             new_project: None,
             session_id: Uuid::new_v4(),
             model,
@@ -102,6 +109,9 @@ impl OpenDocument {
         }
     }
     fn dirty(&self) -> bool {
+        if self.read_only {
+            return false;
+        }
         self.content_is_dirty()
             || self.pcb_editor.has_pending()
             || self
@@ -132,6 +142,12 @@ impl OpenDocument {
 #[derive(Serialize, Deserialize)]
 #[serde(default)]
 struct Settings {
+    left_panel: Option<Panel>,
+    view_configuration: bool,
+    library_panel: bool,
+    right_changes: bool,
+    git: bool,
+    git_directory: Option<PathBuf>,
     components: bool,
     right_components: bool,
     libraries: Vec<PathBuf>,
@@ -157,6 +173,10 @@ struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            left_panel: None,
+            view_configuration: false,
+            library_panel: false,
+            right_changes: false,
             components: false,
             right_components: false,
             libraries: vec![],
@@ -167,6 +187,8 @@ impl Default for Settings {
             snippet_folders: default_altium_folder("Examples/Snippets Examples")
                 .into_iter()
                 .collect(),
+            git: false,
+            git_directory: None,
             projects: true,
             properties: true,
             messages: false,
@@ -195,6 +217,7 @@ fn default_altium_folder(relative: &str) -> Option<PathBuf> {
 
 #[derive(Clone, Copy)]
 enum Command {
+    ShowPanel(Panel),
     Library(library_editor::Action),
     Variants,
     ValidateProject,
@@ -209,7 +232,6 @@ enum Command {
     Annotate,
     Synchronize(eda_core::design_sync::Direction, bool),
     ShowComponents,
-    ToggleComponents,
     SchPlace(Placement),
     SchEdit(SchAction),
     Pcb(pcb_editor::Action),
@@ -225,9 +247,6 @@ enum Command {
     Redo,
     Fit,
     Home,
-    ToggleProjects,
-    ToggleProperties,
-    ToggleMessages,
     ToggleGrid,
     ToggleUnits,
     Preferences,
@@ -253,6 +272,7 @@ struct PadEdit {
 }
 
 pub struct PcbCraft {
+    git: git_panel::State,
     library_editor: library_editor::State,
     variants: variants::State,
     file_state: file_menu::State,
@@ -323,6 +343,7 @@ impl PcbCraft {
             settings.grid_nm = 1_000_000;
         }
         let mut app = Self {
+            git: Default::default(),
             library_editor: Default::default(),
             variants: Default::default(),
             file_state: Default::default(),
@@ -371,8 +392,7 @@ impl PcbCraft {
         self.file_state.validation.application_message(error, &text);
         if error {
             tracing::error!("{text}");
-            self.settings.messages = true;
-            self.settings.right_messages = true;
+            self.show_panel(Panel::Messages);
         } else {
             tracing::info!("{text}");
         }
@@ -580,6 +600,7 @@ impl PcbCraft {
     }
 
     fn remove_document(&mut self, id: Uuid) {
+        self.git.reviews.remove(&id);
         self.property_ui.schematic.close_document(id);
         let active_id = self
             .active
@@ -626,6 +647,22 @@ impl PcbCraft {
     }
 
     fn run(&mut self, command: Command, ctx: &egui::Context) {
+        // Dock navigation does not edit a document or its pending editor draft.
+        // Keep it available in specialized workspaces as well as normal tabs.
+        match command {
+            Command::ShowPanel(panel) => {
+                self.show_panel(panel);
+                return;
+            }
+            Command::ShowComponents => {
+                self.show_panel(Panel::Components);
+                return;
+            }
+            _ => {}
+        }
+        if self.git_review_active() && !Self::git_command_allowed(command) {
+            return;
+        }
         if self.documents.iter().any(|d| d.pcb_editor.rules_open()) {
             self.message(true, "Apply or cancel Rules before another command");
             return;
@@ -813,34 +850,15 @@ impl PcbCraft {
                 }
             }
             Command::Home => self.active = None,
-            Command::ToggleProjects => self.settings.projects = !self.settings.projects,
-            Command::ToggleProperties => {
-                self.settings.properties = !self.settings.properties;
-                self.settings.right_messages = false;
-                self.settings.right_components = false;
-            }
-            Command::ToggleComponents => {
-                if self.settings.right_components && self.settings.components {
-                    self.settings.components = false;
-                    self.settings.right_components = false;
-                } else {
-                    self.settings.components = true;
-                    self.settings.right_components = true;
-                }
-            }
-            Command::ShowComponents => {
-                self.settings.components = true;
-                self.settings.right_components = true;
-            }
-            Command::ToggleMessages => {
-                self.settings.messages = !self.settings.messages;
-                self.settings.right_messages = true;
-                self.settings.right_components = false;
-            }
+            Command::ShowPanel(panel) => self.show_panel(panel),
+            Command::ShowComponents => self.show_panel(Panel::Components),
             Command::ToggleGrid => {
                 if let Some(index) = self.active {
                     let doc = &mut self.documents[index];
-                    if let Some(s) = &doc.model.schematic {
+                    if doc.read_only {
+                        doc.view.grid = !doc.view.grid;
+                        doc.view.sch_grid_override = Some(doc.view.grid);
+                    } else if let Some(s) = &doc.model.schematic {
                         let mut sheet = s.sheet.clone();
                         sheet.grid_visible = !sheet.grid_visible;
                         if let Err(error) = doc.edit_schematic(
@@ -889,7 +907,10 @@ impl PcbCraft {
         enabled: bool,
     ) {
         if ui
-            .add_enabled(enabled, egui::Button::new(label).shortcut_text(shortcut))
+            .add_enabled(
+                enabled && (!self.git_review_active() || Self::git_command_allowed(command)),
+                egui::Button::new(label).shortcut_text(shortcut),
+            )
             .clicked()
         {
             self.command = Some(command);
@@ -971,7 +992,6 @@ impl PcbCraft {
                         });
                     }
                     ui.menu_button("View", |ui| {
-                        self.action(ui, "Components", "", Command::ToggleComponents, true);
                         let pcb_active = self
                             .active
                             .is_some_and(|i| self.documents[i].model.pcb.is_some());
@@ -1056,28 +1076,7 @@ impl PcbCraft {
                         }
                         self.action(ui, "Home Page", "", Command::Home, true);
                         ui.separator();
-                        if ui
-                            .checkbox(&mut self.settings.projects, "Projects")
-                            .clicked()
-                        {
-                            ui.close();
-                        }
-                        if ui
-                            .checkbox(&mut self.settings.properties, "Properties")
-                            .clicked()
-                        {
-                            self.settings.right_components = false;
-                            self.settings.right_messages = false;
-                            ui.close();
-                        }
-                        if ui
-                            .checkbox(&mut self.settings.messages, "Messages")
-                            .clicked()
-                        {
-                            self.settings.right_components = false;
-                            self.settings.right_messages = true;
-                            ui.close();
-                        }
+                        self.panels_menu(ui);
                         ui.separator();
                         self.action(
                             ui,
@@ -1250,11 +1249,7 @@ impl PcbCraft {
                     }
                     ui.menu_button("Window", |ui| {
                         if ui.button("Restore Default Layout").clicked() {
-                            self.settings.projects = true;
-                            self.settings.properties = true;
-                            self.settings.messages = false;
-                            self.settings.components = false;
-                            self.settings.right_components = false;
+                            self.restore_docks();
                             ctx.memory_mut(|m| *m = egui::Memory::default());
                             theme::apply(ctx);
                             for doc in &mut self.documents {
@@ -1355,279 +1350,10 @@ impl PcbCraft {
                         ui.label(RichText::new(status).size(11.0));
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.menu_button("Panels", |ui| {
-                            if self
-                                .active
-                                .is_some_and(|i| self.documents[i].model.pcb.is_some())
-                            {
-                                self.action(
-                                    ui,
-                                    "View Configuration",
-                                    "L",
-                                    Command::Pcb(pcb_editor::Action::Layers),
-                                    true,
-                                );
-                            }
-                            self.action(ui, "Components", "", Command::ToggleComponents, true);
-                            self.action(ui, "Projects", "", Command::ToggleProjects, true);
-                            self.action(ui, "Properties", "", Command::ToggleProperties, true);
-                            self.action(ui, "Messages", "", Command::ToggleMessages, true);
-                        });
+                        ui.menu_button("Panels", |ui| self.panels_menu(ui));
                     });
                 });
             });
-    }
-
-    fn view_configuration(&mut self, ctx: &egui::Context) {
-        let Some(i) = self.active else {
-            return;
-        };
-        let mut close = false;
-        let mut projects = false;
-        let mut requested_mode = None;
-        egui::SidePanel::left("view_configuration_altium_v1")
-            .default_width(330.0)
-            .width_range(300.0..=600.0)
-            .resizable(true)
-            .frame(
-                egui::Frame::NONE
-                    .fill(theme::PANEL)
-                    .inner_margin(egui::Margin {
-                        left: 4,
-                        right: 4,
-                        top: 0,
-                        bottom: 4,
-                    }),
-            )
-            .show(ctx, |ui| {
-                let (header, _) = ui.allocate_exact_size(
-                    egui::vec2(ui.available_width(), 23.0),
-                    egui::Sense::hover(),
-                );
-                ui.painter()
-                    .rect_filled(header, 0.0, Color32::from_rgb(92, 128, 155));
-                ui.painter().text(
-                    header.left_center() + egui::vec2(5.0, 0.0),
-                    egui::Align2::LEFT_CENTER,
-                    "View Configuration",
-                    egui::FontId::new(11.0, egui::FontFamily::Name("ui-bold".into())),
-                    Color32::from_gray(240),
-                );
-                for (n, icon) in [theme::Icon::Close, theme::Icon::Pin]
-                    .into_iter()
-                    .enumerate()
-                {
-                    let r = egui::Rect::from_min_size(
-                        egui::pos2(header.right() - 17.0 * (n + 1) as f32, header.top()),
-                        egui::vec2(17.0, 23.0),
-                    );
-                    theme::draw_icon(
-                        ui.painter(),
-                        egui::Rect::from_center_size(r.center(), egui::vec2(16., 16.)),
-                        icon,
-                        n == 0,
-                    );
-                    if n == 0
-                        && ui
-                            .interact(r, ui.id().with("view_config_close"), egui::Sense::click())
-                            .clicked()
-                    {
-                        close = true;
-                    }
-                }
-                let c = egui::pos2(header.right() - 42., header.center().y);
-                ui.painter().add(egui::Shape::convex_polygon(
-                    vec![
-                        c + egui::vec2(-3., -2.),
-                        c + egui::vec2(3., -2.),
-                        c + egui::vec2(0., 3.),
-                    ],
-                    Color32::GRAY,
-                    egui::Stroke::NONE,
-                ));
-                egui::TopBottomPanel::bottom("view_configuration_tabs")
-                    .exact_height(23.0)
-                    .frame(egui::Frame::NONE)
-                    .show_inside(ui, |ui| {
-                        let (tabs, _) = ui.allocate_exact_size(
-                            egui::vec2(ui.available_width(), 23.0),
-                            egui::Sense::hover(),
-                        );
-                        let mut x = tabs.left();
-                        for (n, name, width) in [
-                            (0, "Projects", 52.0),
-                            (1, "Navigator", 65.0),
-                            (2, "PCB", 32.0),
-                            (3, "PCB Filter", 62.0),
-                            (4, "View Configuration", 110.0),
-                        ] {
-                            let r = egui::Rect::from_min_size(
-                                egui::pos2(x, tabs.top()),
-                                egui::vec2(width, 23.0),
-                            );
-                            if n == 4 {
-                                ui.painter().rect_filled(r, 0.0, Color32::from_gray(76));
-                            }
-                            ui.painter().line_segment(
-                                [r.right_top(), r.right_bottom()],
-                                egui::Stroke::new(1.0, Color32::from_gray(40)),
-                            );
-                            ui.painter().text(
-                                r.center(),
-                                egui::Align2::CENTER_CENTER,
-                                name,
-                                egui::FontId::proportional(11.0),
-                                if n == 0 || n == 4 {
-                                    Color32::from_gray(212)
-                                } else {
-                                    Color32::GRAY
-                                },
-                            );
-                            if n == 0
-                                && ui
-                                    .interact(
-                                        r,
-                                        ui.id().with("view_config_projects"),
-                                        egui::Sense::click(),
-                                    )
-                                    .clicked()
-                            {
-                                projects = true;
-                            }
-                            x += width;
-                        }
-                    });
-                egui::Frame::NONE
-                    .inner_margin(egui::Margin {
-                        left: 6,
-                        right: 4,
-                        top: 0,
-                        bottom: 0,
-                    })
-                    .show(ui, |ui| {
-                        let doc = &mut self.documents[i];
-                        let previous_mode = doc.view.pcb.three_d.enabled;
-                        let layer = doc.view.pcb.configuration_panel(
-                            ui,
-                            doc.model.pcb.as_ref().unwrap(),
-                            &mut doc.view.grid,
-                            &mut doc.view.camera,
-                        );
-                        if doc.view.pcb.three_d.enabled != previous_mode {
-                            requested_mode = Some(doc.view.pcb.three_d.enabled);
-                            doc.view.pcb.three_d.enabled = previous_mode;
-                        }
-                        if let Some(layer) = layer {
-                            self.command =
-                                Some(Command::Pcb(pcb_editor::Action::RouteLayer(layer)));
-                        }
-                    });
-            });
-        if let Some(enabled) = requested_mode {
-            self.set_pcb_3d(enabled);
-        }
-        if close || projects {
-            self.documents[i].view.pcb.show_layer_dialog = false;
-            if projects {
-                self.settings.projects = true;
-            }
-        }
-    }
-
-    fn right_dock(&mut self, ctx: &egui::Context) {
-        let schematic = self
-            .active
-            .is_some_and(|i| self.documents[i].model.kind == DocumentKind::Schematic);
-        egui::SidePanel::right(if schematic {
-            "right_dock_schematic_v3"
-        } else {
-            "right_dock_pcb_v4"
-        })
-        .default_width(316.0)
-        .width_range(230.0..=500.0)
-        .resizable(true)
-        .show(ctx, |ui| {
-            if let Some(position) = ctx.input(|i| i.pointer.press_origin()) {
-                self.property_ui.focused = ui.max_rect().contains(position);
-            }
-            let components = self.settings.components
-                && (self.settings.right_components
-                    || (!self.settings.properties && !self.settings.messages));
-            let messages = !components
-                && self.settings.messages
-                && (self.settings.right_messages || !self.settings.properties);
-            egui::Frame::NONE
-                .fill(if self.property_ui.focused {
-                    Color32::from_rgb(57, 91, 112)
-                } else {
-                    Color32::from_gray(66)
-                })
-                .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label(if components {
-                            "Components"
-                        } else if messages {
-                            "Messages"
-                        } else {
-                            "Properties"
-                        });
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if theme::icon_button(ui, theme::Icon::Close, false, true).clicked() {
-                                self.command = Some(if components {
-                                    Command::ToggleComponents
-                                } else if messages {
-                                    Command::ToggleMessages
-                                } else {
-                                    Command::ToggleProperties
-                                });
-                            }
-                            theme::icon_button(ui, theme::Icon::Pin, false, false);
-                        });
-                    });
-                });
-            ui.add_space(4.0);
-            egui::TopBottomPanel::bottom("right_dock_tabs")
-                .exact_height(21.0)
-                .show_inside(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        if ui.selectable_label(messages, "Messages").clicked() {
-                            self.settings.messages = true;
-                            self.settings.right_messages = true;
-                            self.settings.right_components = false;
-                        }
-                        for name in if schematic {
-                            ["Properties", "Components"]
-                        } else {
-                            ["Components", "Properties"]
-                        } {
-                            if name == "Properties" {
-                                if ui
-                                    .selectable_label(!messages && !components, name)
-                                    .clicked()
-                                {
-                                    self.settings.properties = true;
-                                    self.settings.right_messages = false;
-                                    self.settings.right_components = false;
-                                }
-                            } else if self.settings.components
-                                && ui.selectable_label(components, name).clicked()
-                            {
-                                self.settings.right_components = true;
-                            }
-                        }
-                    });
-                });
-            if components {
-                self.components_panel(ui);
-            } else if messages {
-                self.messages_panel(ui);
-            } else {
-                let compiled = self
-                    .active
-                    .is_some_and(|i| self.documents[i].sch_editor.compiled_path.is_some());
-                ui.add_enabled_ui(!compiled, |ui| self.properties(ui));
-            }
-        });
     }
 
     fn workspace(&mut self, ctx: &egui::Context) {
@@ -1645,6 +1371,18 @@ impl PcbCraft {
                 ui.spacing_mut().item_spacing.y = 0.0;
                 self.document_tabs(ui);
                 if let Some(index) = self.active {
+                    if self.documents[index].read_only {
+                        self.sync_git_scene();
+                        if self.documents[index].model.kind == DocumentKind::Board {
+                            self.pcb_layer_bar(ui, index);
+                        }
+                        if self.documents[index].model.kind == DocumentKind::Schematic {
+                            self.schematic_bottom_bar(ui, index);
+                        }
+                        self.documents[index].view.pcb.navigation = self.settings.pcb_navigation;
+                        self.git_workspace(ui, index);
+                        return;
+                    }
                     self.library_model_table(ui, index);
                     if self.documents[index].model.kind == DocumentKind::Board {
                         self.pcb_layer_bar(ui, index);
@@ -1936,6 +1674,39 @@ impl PcbCraft {
     }
 
     fn shortcuts(&mut self, ctx: &egui::Context) {
+        if !self.documents.is_empty()
+            && self.pending.is_none()
+            && !self.file_state.modal()
+            && !self.library_editor.modal()
+            && !self.sheet_sync.busy()
+            && self.annotation.is_none()
+            && self.design_sync.is_none()
+        {
+            let direction = ctx.input_mut(|i| {
+                if i.consume_key(egui::Modifiers::CTRL | egui::Modifiers::SHIFT, Key::Tab) {
+                    Some(false)
+                } else if i.consume_key(egui::Modifiers::CTRL, Key::Tab) {
+                    Some(true)
+                } else {
+                    None
+                }
+            });
+            if let Some(next) = direction {
+                let count = self.documents.len();
+                self.active = Some(match self.active {
+                    Some(i) if next => (i + 1) % count,
+                    Some(i) => (i + count - 1) % count,
+                    None => 0,
+                });
+                self.pad_edit = None;
+                self.sync_git_scene();
+                return;
+            }
+        }
+        if self.git_review_active() {
+            self.git_view_shortcuts(ctx);
+            return;
+        }
         if let Some(index) = self.active
             && self.documents[index].sch_editor.bar.resources.modal()
         {
@@ -2038,6 +1809,7 @@ impl PcbCraft {
 
 impl eframe::App for PcbCraft {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.poll_git(ctx);
         self.poll_document_loader(ctx);
         if std::env::var_os("PCBCRAFT_FRAME_PROFILE").is_some()
             && let Some(seconds) = _frame.info().cpu_usage
@@ -2072,27 +1844,19 @@ impl eframe::App for PcbCraft {
         self.title_bar(ctx);
         self.menus(ctx);
         self.status(ctx);
-        let view_configuration = !self.layer_stack_active()
-            && self.active.is_some_and(|i| {
-                self.documents[i].model.pcb.is_some()
-                    && self.documents[i].view.pcb.show_layer_dialog
-            });
-        if view_configuration {
-            self.view_configuration(ctx);
-        } else if self.settings.projects {
-            self.projects(ctx);
-        }
-        if !self.layer_stack_active()
-            && (self.settings.properties || self.settings.messages || self.settings.components)
-        {
+        self.left_dock(ctx);
+        if !self.layer_stack_active() {
             self.right_dock(ctx);
         }
+        self.git_dialogs(ctx);
         self.library_dialog(ctx);
         self.workspace(ctx);
         self.library_editor_dialogs(ctx);
-        self.finish_schematic_interaction();
-        self.finish_pcb_interaction(ctx);
-        self.finish_library_drag(ctx);
+        if !self.git_review_active() {
+            self.finish_schematic_interaction();
+            self.finish_pcb_interaction(ctx);
+            self.finish_library_drag(ctx);
+        }
         self.schematic_move_menu(ctx);
         self.pcb_dialogs(ctx);
         self.cross_probe_dialog(ctx);
@@ -2120,16 +1884,17 @@ impl eframe::App for PcbCraft {
                 }
             }
         }
-        let title = self
-            .active
-            .map(|i| {
-                format!(
-                    "{}{} — PCBCraft",
-                    self.documents[i].model.name,
-                    if self.documents[i].dirty() { " *" } else { "" }
-                )
-            })
-            .unwrap_or_else(|| "Home — PCBCraft".into());
+        let title = self.git_review_title().unwrap_or_else(|| {
+            self.active
+                .map(|i| {
+                    format!(
+                        "{}{} — PCBCraft",
+                        self.documents[i].model.name,
+                        if self.documents[i].dirty() { " *" } else { "" }
+                    )
+                })
+                .unwrap_or_else(|| "Home — PCBCraft".into())
+        });
         let changed = ctx.data_mut(|data| {
             let id = egui::Id::new("pcbcraft-window-title");
             if data.get_temp::<String>(id).as_ref() == Some(&title) {

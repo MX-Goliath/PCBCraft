@@ -133,6 +133,56 @@ struct Scene<'a> {
     library_preview: bool,
 }
 
+pub(super) fn diff_overlay(
+    ui: &egui::Ui,
+    doc: &Document,
+    camera: &Camera,
+    rect: Rect,
+    ids: &std::collections::HashSet<Uuid>,
+    tint: Color32,
+) {
+    let Some(s) = &doc.schematic else {
+        return;
+    };
+    let scene = Scene {
+        painter: ui.painter_at(rect),
+        camera,
+        rect,
+        schematic: Some(s),
+        document_id: doc.id,
+        library_preview: doc.library.is_some(),
+    };
+    let rgb = tint.r() as u32 | ((tint.g() as u32) << 8) | ((tint.b() as u32) << 16);
+    for p in s.primitives.iter().chain(&s.parameter_objects).filter(|p| {
+        !p.presentation.hidden
+            && (ids.contains(&p.id) || p.component.is_some_and(|id| ids.contains(&id)))
+    }) {
+        let mut p = p.clone();
+        p.color = rgb;
+        p.fill = p.fill.map(|_| rgb);
+        p.presentation.text_color = Some(rgb);
+        match &mut p.kind {
+            K::HarnessEntry { text_color, .. } | K::SheetEntry { text_color, .. } => {
+                *text_color = rgb
+            }
+            _ => {}
+        }
+        if let K::Junction {
+            position,
+            radius_nm,
+        } = &p.kind
+        {
+            scene.painter.circle_filled(
+                scene.screen(*position),
+                scene.nm(*radius_nm).max(1.2),
+                tint,
+            );
+        } else {
+            scene.primitive(&p, None);
+        }
+    }
+}
+
 pub(super) fn symbol_preview(
     ui: &mut egui::Ui,
     fragment: &eda_core::schematic_edit::Fragment,
@@ -1598,7 +1648,7 @@ fn paint_mode(
     };
     let sheet = doc.schematic.as_ref().map(|s| &s.sheet);
     if let Some(sheet) = sheet {
-        view.grid = sheet.grid_visible;
+        view.grid = view.sch_grid_override.unwrap_or(sheet.grid_visible);
         view.grid_nm = sheet.grid_nm;
     }
     let mut board = Rect::from_two_pos(
@@ -1673,7 +1723,11 @@ fn paint_mode(
             ],
             Stroke::new(0.7, Color32::BLACK),
         );
-    } else if view.grid && sheet.is_none_or(|s| s.grid_visible) {
+    } else if view.grid
+        && view
+            .sch_grid_override
+            .unwrap_or_else(|| sheet.is_none_or(|s| s.grid_visible))
+    {
         let mut step = sheet.map_or(view.grid_nm, |s| s.grid_nm) as f64 / 1e6;
         while step * view.camera.pixels_per_mm < 5.0 {
             step *= 10.0;

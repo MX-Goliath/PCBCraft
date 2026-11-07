@@ -192,11 +192,12 @@ impl PcbCraft {
             .iter()
             .enumerate()
             .filter(|(_, doc)| {
-                !self.projects.iter().any(|p| {
-                    p.documents
-                        .iter()
-                        .any(|entry| document_path(doc) == Some(&entry.path))
-                })
+                !doc.read_only
+                    && !self.projects.iter().any(|p| {
+                        p.documents
+                            .iter()
+                            .any(|entry| document_path(doc) == Some(&entry.path))
+                    })
             })
             .map(|(i, doc)| Node {
                 variant: None,
@@ -265,7 +266,7 @@ impl PcbCraft {
             enabled: entry.exists
                 && matches!(
                     entry.kind.as_str(),
-                    "pcbdoc" | "schdoc" | "schlib" | "intlib"
+                    "pcbdoc" | "schdoc" | "schlib" | "pcblib" | "intlib"
                 ),
             active: document.is_some() && document == self.active,
             dirty: document.is_some_and(|i| self.documents[i].dirty()),
@@ -273,207 +274,110 @@ impl PcbCraft {
         }
     }
 
-    pub(super) fn projects(&mut self, ctx: &egui::Context) {
-        if self.library_panel(ctx) {
-            return;
-        }
-        // eframe can run a zero-sized startup pass. Do not persist a collapsed
-        // panel width before the real native window dimensions arrive.
-        if ctx.available_rect().width() < 600.0 || ctx.available_rect().height() < 100.0 {
-            return;
-        }
+    pub(super) fn projects_content(&mut self, ui: &mut egui::Ui) {
+        let ctx = ui.ctx().clone();
         let nodes = self.project_nodes();
-        let schematic = self
-            .active
-            .is_some_and(|i| self.documents[i].model.kind == DocumentKind::Schematic);
         let mut open = None;
         let mut activate = None;
         let query_id = Id::new("projects_filter");
         let mut query = ctx.data_mut(|d| d.get_temp::<String>(query_id).unwrap_or_default());
-        egui::SidePanel::left("projects_tree_v6")
-            .default_width(334.0)
-            .width_range(190.0..=900.0)
-            .resizable(true)
-            .frame(
-                egui::Frame::NONE
-                    .fill(Color32::from_gray(56))
-                    .inner_margin(egui::Margin {
-                        left: 9,
-                        right: 7,
-                        top: 0,
-                        bottom: 0,
-                    }),
-            )
-            .show(ctx, |ui| {
-                // Keep the allocated width: nested bottom panels otherwise shrink
-                // this frame to its minimum and leave its resize handle elsewhere.
-                ui.set_min_width(ui.available_width());
-                ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
-                let (header, _) =
-                    ui.allocate_exact_size(vec2(ui.available_width(), 23.0), Sense::hover());
-                ui.painter()
-                    .rect_filled(header, 0.0, Color32::from_gray(75));
-                ui.painter().text(
-                    header.min + vec2(6.0, 11.0),
-                    Align2::LEFT_CENTER,
-                    "Projects",
-                    FontId::new(12.0, egui::FontFamily::Name("ui-bold".into())),
-                    Color32::from_gray(230),
-                );
-                for (slot, icon, enabled) in
-                    [(0, theme::Icon::Close, true), (1, theme::Icon::Pin, false)]
-                {
-                    let r = Rect::from_center_size(
-                        pos2(header.right() - 9.0 - slot as f32 * 16.0, header.center().y),
-                        vec2(16.0, 21.0),
-                    );
-                    theme::draw_icon(
-                        ui.painter(),
-                        Rect::from_center_size(r.center(), vec2(10.0, 10.0)),
-                        icon,
-                        enabled,
-                    );
-                    let response = ui.interact(r, ui.id().with(("header", slot)), Sense::click());
-                    if enabled && response.clicked() {
-                        self.command = Some(Command::ToggleProjects);
-                    }
-                    response.on_hover_text(if enabled {
-                        "Hide Projects"
-                    } else {
-                        "Auto-hide is not implemented"
-                    });
-                }
-                triangle(
-                    ui.painter(),
-                    pos2(header.right() - 42.0, header.center().y),
-                    true,
-                    Color32::LIGHT_GRAY,
-                );
-                ui.allocate_ui_with_layout(
-                    vec2(ui.available_width(), 37.0),
-                    egui::Layout::left_to_right(egui::Align::Center),
-                    |ui| {
-                        ui.add_space(10.0);
-                        for (n, icon, label, command) in [
-                            (0, theme::Icon::Save, "Save document", Command::Save),
-                            (1, theme::Icon::SaveAll, "Save All", Command::SaveAll),
-                            (2, theme::Icon::Open, "Open document", Command::Open),
-                            (3, theme::Icon::Folder, "Open project", Command::OpenProject),
-                            (
-                                4,
-                                theme::Icon::Settings,
-                                "Preferences",
-                                Command::Preferences,
-                            ),
-                        ] {
-                            let enabled = n > 1 || self.active.is_some();
-                            let (r, response) =
-                                ui.allocate_exact_size(vec2(28.0, 23.0), Sense::click());
-                            theme::draw_icon(
-                                ui.painter(),
-                                Rect::from_center_size(r.center(), vec2(14.0, 14.0)),
-                                icon,
-                                enabled,
-                            );
-                            if enabled && response.clicked() {
-                                self.command = Some(command);
-                            }
-                            response.on_hover_text(label);
+        ui.scope(|ui| {
+            // Keep the allocated width: nested bottom panels otherwise shrink
+            // this frame to its minimum and leave its resize handle elsewhere.
+            ui.set_min_width(ui.available_width());
+            ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
+            ui.allocate_ui_with_layout(
+                vec2(ui.available_width(), 37.0),
+                egui::Layout::left_to_right(egui::Align::Center),
+                |ui| {
+                    ui.add_space(10.0);
+                    for (n, icon, label, command) in [
+                        (0, theme::Icon::Save, "Save document", Command::Save),
+                        (1, theme::Icon::SaveAll, "Save All", Command::SaveAll),
+                        (2, theme::Icon::Open, "Open document", Command::Open),
+                        (3, theme::Icon::Folder, "Open project", Command::OpenProject),
+                        (
+                            4,
+                            theme::Icon::Settings,
+                            "Preferences",
+                            Command::Preferences,
+                        ),
+                    ] {
+                        let enabled = n > 1 || self.active.is_some();
+                        let (r, response) =
+                            ui.allocate_exact_size(vec2(28.0, 23.0), Sense::click());
+                        theme::draw_icon(
+                            ui.painter(),
+                            Rect::from_center_size(r.center(), vec2(14.0, 14.0)),
+                            icon,
+                            enabled,
+                        );
+                        if enabled && response.clicked() {
+                            self.command = Some(command);
                         }
-                    },
-                );
-                ui.add_space(4.0);
-                ui.horizontal(|ui| {
-                    ui.add_space(16.0);
-                    theme::search_field(ui, &mut query, ui.available_width() - 8.0);
-                });
-                ui.add_space(15.0);
-                egui::TopBottomPanel::bottom("project_panel_tabs_v4")
-                    .exact_height(23.0)
-                    .frame(egui::Frame::NONE.fill(Color32::from_gray(51)))
-                    .show_inside(ui, |ui| {
-                        ui.spacing_mut().item_spacing.x = 6.0;
-                        ui.spacing_mut().button_padding = vec2(5.0, 2.0);
-                        ui.horizontal(|ui| {
-                            for label in if schematic {
-                                vec!["Projects", "Navigator", "SCH Filter"]
-                            } else {
-                                vec![
-                                    "Projects",
-                                    "Navigator",
-                                    "PCB",
-                                    "PCB Filter",
-                                    "View Configuration",
-                                ]
-                            } {
-                                let enabled = label == "Projects" || label == "View Configuration";
-                                let text = egui::RichText::new(label).size(11.0);
-                                let response = ui.add_enabled(
-                                    enabled,
-                                    egui::Button::new(text)
-                                        .selected(label == "Projects")
-                                        .frame(label == "Projects"),
-                                );
-                                if label == "View Configuration" && response.clicked() {
-                                    self.command = Some(Command::Pcb(pcb_editor::Action::Layers));
-                                }
-                            }
-                        });
-                    });
-                let selection = Id::new("project_tree_selection");
-                ctx.data_mut(|d| d.insert_temp(Id::new("project_tree_rows"), Vec::<Id>::new()));
-                let active_key = Id::new("project_tree_active");
-                let active = self.active.map(|i| self.documents[i].session_id);
-                ctx.data_mut(|d| {
-                    if d.get_temp::<Option<Uuid>>(active_key) != Some(active) {
-                        d.remove::<Id>(selection);
-                        d.insert_temp(active_key, active);
+                        response.on_hover_text(label);
                     }
-                });
-                egui::ScrollArea::vertical()
-                    .id_salt("project_tree_scroll")
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| {
-                        for node in &nodes {
-                            draw_node(
-                                ui,
-                                node,
-                                0,
-                                &query.to_lowercase(),
-                                selection,
-                                &mut open,
-                                &mut activate,
-                            );
-                        }
-                    });
-                let rows = ctx.data(|d| {
-                    d.get_temp::<Vec<Id>>(Id::new("project_tree_rows"))
-                        .unwrap_or_default()
-                });
-                if let Some(index) = ctx
-                    .memory(|m| m.focused())
-                    .and_then(|id| rows.iter().position(|r| *r == id))
-                {
-                    let delta = ui.input_mut(|i| {
-                        if i.consume_key(egui::Modifiers::NONE, Key::ArrowDown) {
-                            1
-                        } else if i.consume_key(egui::Modifiers::NONE, Key::ArrowUp) {
-                            -1
-                        } else {
-                            0
-                        }
-                    });
-                    if delta != 0 {
-                        let next =
-                            (index as isize + delta).clamp(0, rows.len() as isize - 1) as usize;
-                        ctx.memory_mut(|m| m.request_focus(rows[next]));
-                        ctx.data_mut(|d| {
-                            d.insert_temp(selection, rows[next]);
-                            d.insert_temp(Id::new("project_tree_reveal"), rows[next]);
-                        });
-                    }
+                },
+            );
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                ui.add_space(16.0);
+                theme::search_field(ui, &mut query, ui.available_width() - 8.0);
+            });
+            ui.add_space(15.0);
+            let selection = Id::new("project_tree_selection");
+            ctx.data_mut(|d| d.insert_temp(Id::new("project_tree_rows"), Vec::<Id>::new()));
+            let active_key = Id::new("project_tree_active");
+            let active = self.active.map(|i| self.documents[i].session_id);
+            ctx.data_mut(|d| {
+                if d.get_temp::<Option<Uuid>>(active_key) != Some(active) {
+                    d.remove::<Id>(selection);
+                    d.insert_temp(active_key, active);
                 }
             });
+            egui::ScrollArea::vertical()
+                .id_salt("project_tree_scroll")
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    for node in &nodes {
+                        draw_node(
+                            ui,
+                            node,
+                            0,
+                            &query.to_lowercase(),
+                            selection,
+                            &mut open,
+                            &mut activate,
+                        );
+                    }
+                });
+            let rows = ctx.data(|d| {
+                d.get_temp::<Vec<Id>>(Id::new("project_tree_rows"))
+                    .unwrap_or_default()
+            });
+            if let Some(index) = ctx
+                .memory(|m| m.focused())
+                .and_then(|id| rows.iter().position(|r| *r == id))
+            {
+                let delta = ui.input_mut(|i| {
+                    if i.consume_key(egui::Modifiers::NONE, Key::ArrowDown) {
+                        1
+                    } else if i.consume_key(egui::Modifiers::NONE, Key::ArrowUp) {
+                        -1
+                    } else {
+                        0
+                    }
+                });
+                if delta != 0 {
+                    let next = (index as isize + delta).clamp(0, rows.len() as isize - 1) as usize;
+                    ctx.memory_mut(|m| m.request_focus(rows[next]));
+                    ctx.data_mut(|d| {
+                        d.insert_temp(selection, rows[next]);
+                        d.insert_temp(Id::new("project_tree_reveal"), rows[next]);
+                    });
+                }
+            }
+        });
         ctx.data_mut(|d| d.insert_temp(query_id, query));
         if let Some((path, id)) = ctx.data_mut(|d| {
             d.remove_temp::<(PathBuf, Option<String>)>(Id::new("project_variant_select"))
@@ -900,6 +804,7 @@ mod tests {
     #[test]
     fn startup_sizing_does_not_collapse_projects_or_change_width_between_editors() {
         let mut app = PcbCraft {
+            git: Default::default(),
             library_editor: Default::default(),
             variants: Default::default(),
             file_state: Default::default(),
@@ -946,7 +851,7 @@ mod tests {
                     ..Default::default()
                 },
                 |ctx| {
-                    app.projects(ctx);
+                    app.left_dock(ctx);
                     if width > 0.0 {
                         assert!(
                             (ctx.available_rect().left() - 334.0).abs() < 1.0,

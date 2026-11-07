@@ -2,6 +2,9 @@ use super::*;
 impl PcbCraft {
     pub(super) fn set_pcb_3d(&mut self, enabled: bool) {
         let Some(index) = self.active else { return };
+        if enabled && self.documents[index].read_only {
+            self.git_enter_3d(index);
+        }
         let doc = &mut self.documents[index];
         if doc.view.pcb.three_d.enabled == enabled {
             return;
@@ -42,6 +45,9 @@ impl PcbCraft {
         {
             return false;
         }
+        if self.pcb_view_sequence_shortcuts(ctx) {
+            return true;
+        }
         let mode = ctx.input_mut(|i| {
             if i.consume_key(egui::Modifiers::NONE, Key::Num3) {
                 Some(true)
@@ -80,7 +86,72 @@ impl PcbCraft {
                 return true;
             }
         }
-        false
+        let index = self.active.unwrap();
+        let doc = &mut self.documents[index];
+        let mut action = None;
+        let handled = ctx.input_mut(|input| {
+            let ctrl = egui::Modifiers::CTRL;
+            let shift = egui::Modifiers::SHIFT;
+            if input.consume_key(ctrl, Key::F) {
+                if doc.view.pcb.three_d.enabled {
+                    doc.view.pcb.three_d.flip();
+                } else {
+                    doc.view.camera.mirrored_x = !doc.view.camera.mirrored_x;
+                }
+                return true;
+            }
+            if input.consume_key(shift, Key::Num7) {
+                doc.view.pcb.three_d.show_components = !doc.view.pcb.three_d.show_components;
+                doc.view.pcb.three_d.invalidate();
+                return true;
+            }
+            if input.consume_key(shift, Key::E) {
+                doc.view.pcb.snap.mode = match doc.view.pcb.snap.mode {
+                    eda_core::pcb::SnapLayerMode::All => eda_core::pcb::SnapLayerMode::Current,
+                    eda_core::pcb::SnapLayerMode::Current => eda_core::pcb::SnapLayerMode::Off,
+                    eda_core::pcb::SnapLayerMode::Off => eda_core::pcb::SnapLayerMode::All,
+                };
+                return true;
+            }
+            if input.consume_key(shift, Key::S) {
+                if doc.view.pcb.three_d.enabled {
+                    doc.view.pcb.three_d.presentation.single_layer =
+                        !doc.view.pcb.three_d.presentation.single_layer;
+                } else {
+                    doc.view.pcb.single_layer = (doc.view.pcb.single_layer + 1) % 3;
+                }
+                return true;
+            }
+            if input.consume_key(shift, Key::C) {
+                doc.view.pcb.highlight_net = None;
+                doc.view.pcb.highlight_nets.clear();
+                return true;
+            }
+            for (mods, key, candidate) in [
+                (
+                    ctrl,
+                    Key::PageDown,
+                    pcb_editor::Action::Fit(eda_render::pcb::FitTarget::Document),
+                ),
+                (
+                    ctrl,
+                    Key::Home,
+                    pcb_editor::Action::Fit(eda_render::pcb::FitTarget::Selection),
+                ),
+                (egui::Modifiers::NONE, Key::L, pcb_editor::Action::Layers),
+                (egui::Modifiers::NONE, Key::G, pcb_editor::Action::Grid),
+            ] {
+                if input.consume_key(mods, key) {
+                    action = Some(candidate);
+                    return true;
+                }
+            }
+            false
+        });
+        if let Some(action) = action {
+            self.pcb_action(action);
+        }
+        handled
     }
     pub(super) fn pcb_3d_input(
         &mut self,

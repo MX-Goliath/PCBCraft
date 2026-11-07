@@ -89,6 +89,9 @@ impl Drop for State {
 
 impl PcbCraft {
     pub(super) fn request_open_path(&mut self, path: PathBuf) {
+        if let Some(manager) = &mut self.layer_stack {
+            manager.visible = false;
+        }
         let path = path.canonicalize().unwrap_or(path);
         if let Some(index) = self
             .documents
@@ -111,7 +114,7 @@ impl PcbCraft {
         if self.design_sync.is_none()
             && self.annotation.is_none()
             && self.pending.is_none()
-            && self.layer_stack.is_none()
+            && !self.layer_stack_active()
         {
             let received = self
                 .document_loader

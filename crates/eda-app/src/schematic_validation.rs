@@ -345,9 +345,7 @@ impl PcbCraft {
             .iter()
             .any(|r| matches!(r.severity, Some(Severity::Error | Severity::Fatal)))
         {
-            self.settings.messages = true;
-            self.settings.right_messages = true;
-            self.settings.right_components = false;
+            self.show_panel(Panel::Messages);
         }
     }
     pub(super) fn next_validation_message(&mut self, next: bool) {

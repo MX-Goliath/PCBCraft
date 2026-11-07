@@ -34,7 +34,6 @@ pub(super) struct State {
     details: Option<Details>,
     footprint_details: Option<FootprintDetails>,
     pins_tab: bool,
-    show_projects: bool,
     selected_model: Option<usize>,
     pcb_panel_flags: Option<[bool; 3]>,
     applied_mask: String,
@@ -134,8 +133,7 @@ impl PcbCraft {
         match result {
             Ok(doc) => {
                 self.add_document(doc, None);
-                self.settings.projects = true;
-                self.library_editor.show_projects = false;
+                self.show_panel(Panel::Library);
             }
             Err(e) => self.message(true, e),
         }
@@ -199,13 +197,11 @@ impl PcbCraft {
             return;
         }
         if matches!(action, Action::Panel) {
-            self.library_editor.show_projects = false;
-            self.settings.projects = true;
+            self.show_panel(Panel::Library);
             return;
         }
         if matches!(action, Action::New) {
             self.library_editor.new = true;
-            self.library_editor.show_projects = false;
             return;
         }
         let Some(index) = self
@@ -497,114 +493,89 @@ impl PcbCraft {
             "Library definitions made available to Components and design synchronization",
         );
     }
-    pub(super) fn library_panel(&mut self, ctx: &egui::Context) -> bool {
-        let Some(index) = self
-            .active
-            .filter(|i| self.documents[*i].model.library.is_some())
-        else {
+    pub(super) fn library_panel_content(&mut self, ui: &mut egui::Ui) -> bool {
+        let Some(index) = self.active.filter(|i| {
+            self.documents[*i].model.library.is_some() && !self.documents[*i].read_only
+        }) else {
+            ui.label("Select an editable library document to browse its members.");
             return false;
         };
-        if self.library_editor.show_projects {
-            return false;
-        }
         let pcb = self.documents[index].model.kind == DocumentKind::Board;
         if pcb {
-            self.pcb_library_panel(ctx, index);
+            self.pcb_library_panel(ui, index);
             return true;
         }
         let mut command = None;
         let mut action = None;
-        egui::SidePanel::left("library_panel")
-            .default_width(334.)
-            .width_range(190. ..=900.)
-            .show(ctx, |ui| {
-                ui.set_min_width(ui.available_width());
-                egui::Frame::NONE
-                    .fill(Color32::from_gray(75))
-                    .show(ui, |ui| {
-                        ui.set_min_width(ui.available_width());
-                        ui.label(
-                            egui::RichText::new(if pcb { "PCB Library" } else { "SCH Library" })
-                                .strong(),
-                        );
-                    });
-                theme::search_field(ui, &mut self.library_editor.query, ui.available_width());
-                egui::TopBottomPanel::bottom("library_panel_buttons")
-                    .exact_height(62.)
-                    .show_inside(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            for (label, a) in [
-                                ("Place", Action::Place),
-                                ("Add", Action::Add),
-                                ("Delete", Action::Remove),
-                                ("Edit", Action::Rename),
-                            ] {
-                                if ui
-                                    .add_enabled(!pcb || label != "Place", egui::Button::new(label))
-                                    .clicked()
-                                {
-                                    action = Some(a);
-                                }
+        ui.scope(|ui| {
+            theme::search_field(ui, &mut self.library_editor.query, ui.available_width());
+            egui::TopBottomPanel::bottom("library_panel_buttons")
+                .exact_height(34.)
+                .show_inside(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        for (label, a) in [
+                            ("Place", Action::Place),
+                            ("Add", Action::Add),
+                            ("Delete", Action::Remove),
+                            ("Edit", Action::Rename),
+                        ] {
+                            if ui
+                                .add_enabled(!pcb || label != "Place", egui::Button::new(label))
+                                .clicked()
+                            {
+                                action = Some(a);
                             }
-                        });
-                        ui.horizontal(|ui| {
-                            if ui.selectable_label(false, "Projects").clicked() {
-                                self.library_editor.show_projects = true;
-                            }
-                            let _ = ui.selectable_label(
-                                true,
-                                if pcb { "PCB Library" } else { "SCH Library" },
-                            );
-                        });
+                        }
                     });
-                ui.horizontal(|ui| {
-                    ui.label(if pcb { "Name" } else { "Design Item ID" });
-                    ui.separator();
-                    ui.label(if pcb { "Pads" } else { "Description" });
                 });
+            ui.horizontal(|ui| {
+                ui.label(if pcb { "Name" } else { "Design Item ID" });
                 ui.separator();
-                let q = self.library_editor.query.to_lowercase();
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    for (n, member) in edit::members(&self.documents[index].model).enumerate() {
-                        let name = edit::name(member);
-                        if !name.to_lowercase().contains(&q) {
-                            continue;
-                        }
-                        let (part, mode) = edit::variant(member);
-                        let label = if member.kind == DocumentKind::Schematic
-                            && member.schematic.as_ref().unwrap().components[0]
-                                .settings
-                                .part_count
-                                > 1
-                            || mode > 0
-                        {
-                            format!("{name}  Part {part}  Mode {}", mode + 1)
-                        } else {
-                            name.into()
-                        };
-                        let response = ui.selectable_label(n == 0, label);
-                        if response.clicked() && n != 0 {
-                            command = Some(edit::Edit::Select(n));
-                        }
-                        response.context_menu(|ui| {
-                            for (label, a) in [
-                                ("New Component", Action::Add),
-                                ("Copy Component", Action::Duplicate),
-                                ("Rename", Action::Rename),
-                                ("Remove", Action::Remove),
-                            ] {
-                                if ui.button(label).clicked() {
-                                    if n != 0 {
-                                        command = Some(edit::Edit::Select(n));
-                                    }
-                                    action = Some(a);
-                                    ui.close();
-                                }
-                            }
-                        });
-                    }
-                });
+                ui.label(if pcb { "Pads" } else { "Description" });
             });
+            ui.separator();
+            let q = self.library_editor.query.to_lowercase();
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                for (n, member) in edit::members(&self.documents[index].model).enumerate() {
+                    let name = edit::name(member);
+                    if !name.to_lowercase().contains(&q) {
+                        continue;
+                    }
+                    let (part, mode) = edit::variant(member);
+                    let label = if member.kind == DocumentKind::Schematic
+                        && member.schematic.as_ref().unwrap().components[0]
+                            .settings
+                            .part_count
+                            > 1
+                        || mode > 0
+                    {
+                        format!("{name}  Part {part}  Mode {}", mode + 1)
+                    } else {
+                        name.into()
+                    };
+                    let response = ui.selectable_label(n == 0, label);
+                    if response.clicked() && n != 0 {
+                        command = Some(edit::Edit::Select(n));
+                    }
+                    response.context_menu(|ui| {
+                        for (label, a) in [
+                            ("New Component", Action::Add),
+                            ("Copy Component", Action::Duplicate),
+                            ("Rename", Action::Rename),
+                            ("Remove", Action::Remove),
+                        ] {
+                            if ui.button(label).clicked() {
+                                if n != 0 {
+                                    command = Some(edit::Edit::Select(n));
+                                }
+                                action = Some(a);
+                                ui.close();
+                            }
+                        }
+                    });
+                }
+            });
+        });
         if let Some(c) = command {
             self.edit_library(c);
         }
@@ -613,205 +584,185 @@ impl PcbCraft {
         }
         true
     }
-    fn pcb_library_panel(&mut self, ctx: &egui::Context, index: usize) {
+    fn pcb_library_panel(&mut self, ui: &mut egui::Ui, index: usize) {
         let mut member = None;
         let mut action = None;
         let mut primitive = None;
         let mut magnify = false;
         let flags = self.library_editor.pcb_panel_flags.get_or_insert([true; 3]);
-        egui::SidePanel::left("library_panel")
-            .default_width(334.)
-            .width_range(190. ..=900.)
-            .show(ctx, |ui| {
-                egui::Frame::NONE
-                    .fill(Color32::from_gray(75))
-                    .show(ui, |ui| {
-                        ui.set_min_width(ui.available_width());
-                        ui.strong("PCB Library");
-                    });
-                ui.horizontal(|ui| {
-                    ui.label("Mask");
-                    ui.text_edit_singleline(&mut self.library_editor.query);
+        ui.scope(|ui| {
+            ui.horizontal(|ui| {
+                ui.label("Mask");
+                ui.text_edit_singleline(&mut self.library_editor.query);
+            });
+            ui.horizontal(|ui| {
+                if ui
+                    .add_sized([145., 24.], egui::Button::new("Apply"))
+                    .clicked()
+                {
+                    self.library_editor.applied_mask = self.library_editor.query.clone();
+                }
+                if ui.button("Clear").clicked() {
+                    self.library_editor.query.clear();
+                    self.library_editor.applied_mask.clear();
+                }
+                magnify = ui.button("Magnify").clicked();
+            });
+            ui.add_enabled(
+                false,
+                egui::Button::new("Normal     ▾").min_size(vec2(ui.available_width(), 22.)),
+            );
+            ui.horizontal(|ui| {
+                ui.checkbox(&mut flags[0], "Select");
+                ui.checkbox(&mut flags[1], "Zoom");
+                ui.checkbox(&mut flags[2], "Clear Existing");
+            });
+            ui.label("Footprints");
+            egui::Grid::new("footprint_members_header")
+                .min_col_width(60.)
+                .show(ui, |ui| {
+                    ui.label("Name");
+                    ui.label("Pads");
+                    ui.label("Primitives");
+                    ui.end_row();
                 });
-                ui.horizontal(|ui| {
-                    if ui
-                        .add_sized([145., 24.], egui::Button::new("Apply"))
-                        .clicked()
-                    {
-                        self.library_editor.applied_mask = self.library_editor.query.clone();
-                    }
-                    if ui.button("Clear").clicked() {
-                        self.library_editor.query.clear();
-                        self.library_editor.applied_mask.clear();
-                    }
-                    magnify = ui.button("Magnify").clicked();
-                });
-                ui.add_enabled(
-                    false,
-                    egui::Button::new("Normal     ▾").min_size(vec2(ui.available_width(), 22.)),
-                );
-                ui.horizontal(|ui| {
-                    ui.checkbox(&mut flags[0], "Select");
-                    ui.checkbox(&mut flags[1], "Zoom");
-                    ui.checkbox(&mut flags[2], "Clear Existing");
-                });
-                ui.label("Footprints");
-                egui::Grid::new("footprint_members_header")
-                    .min_col_width(60.)
-                    .show(ui, |ui| {
-                        ui.label("Name");
-                        ui.label("Pads");
-                        ui.label("Primitives");
-                        ui.end_row();
-                    });
-                egui::ScrollArea::vertical()
-                    .id_salt("footprints")
-                    .auto_shrink([false, false])
-                    .max_height(178.)
-                    .min_scrolled_height(178.)
-                    .show(ui, |ui| {
-                        egui::Grid::new("footprint_members")
-                            .min_col_width(60.)
-                            .show(ui, |ui| {
-                                for (n, m) in
-                                    edit::members(&self.documents[index].model).enumerate()
+            egui::ScrollArea::vertical()
+                .id_salt("footprints")
+                .auto_shrink([false, false])
+                .max_height(178.)
+                .min_scrolled_height(178.)
+                .show(ui, |ui| {
+                    egui::Grid::new("footprint_members")
+                        .min_col_width(60.)
+                        .show(ui, |ui| {
+                            for (n, m) in edit::members(&self.documents[index].model).enumerate() {
+                                if !edit::name(m)
+                                    .to_lowercase()
+                                    .contains(&self.library_editor.applied_mask.to_lowercase())
                                 {
-                                    if !edit::name(m)
-                                        .to_lowercase()
-                                        .contains(&self.library_editor.applied_mask.to_lowercase())
-                                    {
-                                        continue;
-                                    }
-                                    let b = m.pcb.as_ref().unwrap();
-                                    if ui.selectable_label(n == 0, edit::name(m)).clicked()
-                                        && n != 0
-                                    {
-                                        member = Some(n);
-                                    }
-                                    ui.label(
-                                        b.items
-                                            .iter()
-                                            .filter(|i| {
-                                                matches!(i.shape, eda_core::pcb::Shape::Pad { .. })
-                                            })
-                                            .count()
-                                            .to_string(),
-                                    );
-                                    ui.label(b.items.len().to_string());
-                                    ui.end_row();
+                                    continue;
                                 }
-                            });
-                    });
-                ui.horizontal(|ui| {
-                    ui.add_enabled(false, egui::Button::new("Place"));
-                    for (label, a) in [
-                        ("Add", Action::Add),
-                        ("Delete", Action::Remove),
-                        ("Edit", Action::Rename),
-                    ] {
-                        if ui.button(label).clicked() {
-                            action = Some(a);
-                        }
-                    }
-                });
-                ui.separator();
-                ui.strong("Footprint Primitives");
-                egui::ScrollArea::both()
-                    .id_salt("footprint_primitives")
-                    .auto_shrink([false, false])
-                    .max_height(210.)
-                    .min_scrolled_height(210.)
-                    .show(ui, |ui| {
-                        egui::Grid::new("footprint_primitive_rows")
-                            .striped(true)
-                            .show(ui, |ui| {
-                                for label in ["Type", "Name", "X Size", "Y Size", "Layer"] {
-                                    ui.label(label);
+                                let b = m.pcb.as_ref().unwrap();
+                                if ui.selectable_label(n == 0, edit::name(m)).clicked() && n != 0 {
+                                    member = Some(n);
                                 }
-                                ui.end_row();
-                                let d = &self.documents[index];
-                                let b = d.model.pcb.as_ref().unwrap();
-                                for item in &b.items {
-                                    let bounds = item.bounds();
-                                    if ui
-                                        .selectable_label(
-                                            d.view.pcb.selected.contains(&item.id),
-                                            item.kind(),
-                                        )
-                                        .clicked()
-                                    {
-                                        primitive = Some(item.id);
-                                    }
-                                    ui.label(
-                                        if let eda_core::pcb::Shape::Pad { name, .. } = &item.shape
-                                        {
-                                            name.as_str()
-                                        } else {
-                                            ""
-                                        },
-                                    );
-                                    ui.label(format!(
-                                        "{:.3}",
-                                        (bounds.max.x - bounds.min.x) as f64 / 1e6
-                                    ));
-                                    ui.label(format!(
-                                        "{:.3}",
-                                        (bounds.max.y - bounds.min.y) as f64 / 1e6
-                                    ));
-                                    ui.label(eda_core::pcb::layer_name(item.layer));
-                                    ui.end_row();
-                                }
-                            });
-                    });
-                ui.separator();
-                ui.strong("Other");
-                let available = ui.available_size() - vec2(0., 30.);
-                if available.x > 30. && available.y > 30. {
-                    ui.push_id("footprint_preview", |ui| {
-                        ui.allocate_ui(available, |ui| {
-                            let d = &self.documents[index];
-                            let bounds = d.model.pcb.as_ref().unwrap().bounds();
-                            let mut view = eda_render::View::default();
-                            if !bounds.empty {
-                                view.camera.centre_mm = [
-                                    (bounds.min.x as f64 + bounds.max.x as f64) / 2e6,
-                                    (bounds.min.y as f64 + bounds.max.y as f64) / 2e6,
-                                ];
-                                view.camera.pixels_per_mm = ((available.x as f64 - 20.)
-                                    / ((bounds.max.x - bounds.min.x).max(1) as f64 / 1e6))
-                                    .min(
-                                        (available.y as f64 - 20.)
-                                            / ((bounds.max.y - bounds.min.y).max(1) as f64 / 1e6),
-                                    )
-                                    .clamp(0.01, 500.);
-                                view.camera.fitted = true;
-                            }
-                            view.grid = false;
-                            if d.model.pcb.as_ref().unwrap().items.is_empty() {
-                                ui.painter().rect_filled(
-                                    ui.available_rect_before_wrap(),
-                                    0.,
-                                    Color32::BLACK,
+                                ui.label(
+                                    b.items
+                                        .iter()
+                                        .filter(|i| {
+                                            matches!(i.shape, eda_core::pcb::Shape::Pad { .. })
+                                        })
+                                        .count()
+                                        .to_string(),
                                 );
-                            } else {
-                                ui.add_enabled_ui(false, |ui| {
-                                    let _ = eda_render::pcb::canvas(
-                                        ui,
-                                        d.model.pcb.as_ref().unwrap(),
-                                        &mut view,
-                                    );
-                                });
+                                ui.label(b.items.len().to_string());
+                                ui.end_row();
                             }
                         });
-                    });
-                }
-                ui.horizontal(|ui| {
-                    if ui.selectable_label(false, "Projects").clicked() {
-                        self.library_editor.show_projects = true;
-                    }
-                    let _ = ui.selectable_label(true, "PCB Library");
                 });
+            ui.horizontal(|ui| {
+                ui.add_enabled(false, egui::Button::new("Place"));
+                for (label, a) in [
+                    ("Add", Action::Add),
+                    ("Delete", Action::Remove),
+                    ("Edit", Action::Rename),
+                ] {
+                    if ui.button(label).clicked() {
+                        action = Some(a);
+                    }
+                }
             });
+            ui.separator();
+            ui.strong("Footprint Primitives");
+            egui::ScrollArea::both()
+                .id_salt("footprint_primitives")
+                .auto_shrink([false, false])
+                .max_height(210.)
+                .min_scrolled_height(210.)
+                .show(ui, |ui| {
+                    egui::Grid::new("footprint_primitive_rows")
+                        .striped(true)
+                        .show(ui, |ui| {
+                            for label in ["Type", "Name", "X Size", "Y Size", "Layer"] {
+                                ui.label(label);
+                            }
+                            ui.end_row();
+                            let d = &self.documents[index];
+                            let b = d.model.pcb.as_ref().unwrap();
+                            for item in &b.items {
+                                let bounds = item.bounds();
+                                if ui
+                                    .selectable_label(
+                                        d.view.pcb.selected.contains(&item.id),
+                                        item.kind(),
+                                    )
+                                    .clicked()
+                                {
+                                    primitive = Some(item.id);
+                                }
+                                ui.label(
+                                    if let eda_core::pcb::Shape::Pad { name, .. } = &item.shape {
+                                        name.as_str()
+                                    } else {
+                                        ""
+                                    },
+                                );
+                                ui.label(format!(
+                                    "{:.3}",
+                                    (bounds.max.x - bounds.min.x) as f64 / 1e6
+                                ));
+                                ui.label(format!(
+                                    "{:.3}",
+                                    (bounds.max.y - bounds.min.y) as f64 / 1e6
+                                ));
+                                ui.label(eda_core::pcb::layer_name(item.layer));
+                                ui.end_row();
+                            }
+                        });
+                });
+            ui.separator();
+            ui.strong("Other");
+            let available = ui.available_size() - vec2(0., 30.);
+            if available.x > 30. && available.y > 30. {
+                ui.push_id("footprint_preview", |ui| {
+                    ui.allocate_ui(available, |ui| {
+                        let d = &self.documents[index];
+                        let bounds = d.model.pcb.as_ref().unwrap().bounds();
+                        let mut view = eda_render::View::default();
+                        if !bounds.empty {
+                            view.camera.centre_mm = [
+                                (bounds.min.x as f64 + bounds.max.x as f64) / 2e6,
+                                (bounds.min.y as f64 + bounds.max.y as f64) / 2e6,
+                            ];
+                            view.camera.pixels_per_mm = ((available.x as f64 - 20.)
+                                / ((bounds.max.x - bounds.min.x).max(1) as f64 / 1e6))
+                                .min(
+                                    (available.y as f64 - 20.)
+                                        / ((bounds.max.y - bounds.min.y).max(1) as f64 / 1e6),
+                                )
+                                .clamp(0.01, 500.);
+                            view.camera.fitted = true;
+                        }
+                        view.grid = false;
+                        if d.model.pcb.as_ref().unwrap().items.is_empty() {
+                            ui.painter().rect_filled(
+                                ui.available_rect_before_wrap(),
+                                0.,
+                                Color32::BLACK,
+                            );
+                        } else {
+                            ui.add_enabled_ui(false, |ui| {
+                                let _ = eda_render::pcb::canvas(
+                                    ui,
+                                    d.model.pcb.as_ref().unwrap(),
+                                    &mut view,
+                                );
+                            });
+                        }
+                    });
+                });
+            }
+        });
         let flags = *self.library_editor.pcb_panel_flags.as_ref().unwrap();
         if let Some(id) = primitive {
             let view = &mut self.documents[index].view.pcb;
@@ -1567,10 +1518,8 @@ impl PcbCraft {
                     }
                 );
                 self.add_document(edit::new(kind, &filename), None);
-                self.settings.projects = true;
-                self.settings.properties = true;
-                self.settings.right_components = false;
-                self.settings.right_messages = false;
+                self.show_panel(Panel::Projects);
+                self.show_panel(Panel::Properties);
                 open = false;
             }
             self.library_editor.new = open;

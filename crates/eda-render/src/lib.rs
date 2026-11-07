@@ -4,6 +4,7 @@ use eda_geom::Point;
 use egui::{Color32, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+pub mod document_diff;
 mod image_cache;
 mod interaction;
 pub mod pcb;
@@ -114,6 +115,7 @@ pub struct View {
     pub pcb: pcb::BoardView,
     pub camera: Camera,
     pub grid: bool,
+    pub sch_grid_override: Option<bool>,
     pub grid_nm: i64,
     pub visible: [bool; 4],
     pub active_layer: Layer,
@@ -198,6 +200,7 @@ impl Default for View {
             pcb: pcb::BoardView::default(),
             camera: Camera::default(),
             grid: true,
+            sch_grid_override: None,
             grid_nm: 1_000_000,
             visible: [true; 4],
             active_layer: Layer::Top,

@@ -150,7 +150,8 @@ impl PcbCraft {
         if self.documents[index].model.pcb.is_none() {
             return;
         }
-        let blocked = self.documents[index].pcb_editor.rules_open()
+        let blocked = self.documents[index].read_only
+            || self.documents[index].pcb_editor.rules_open()
             || self.file_state.modal()
             || self.pending.is_some();
         if blocked {

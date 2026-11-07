@@ -45,6 +45,9 @@ impl PcbCraft {
         dialog.set_file_name(filename).save_file()
     }
     pub(super) fn save_index(&mut self, index: usize, save_as: bool) -> bool {
+        if self.documents[index].read_only {
+            return false;
+        }
         let path = if save_as || self.documents.get(index).is_none_or(|d| d.path.is_none()) {
             self.choose_document_destination(index, false)
         } else {

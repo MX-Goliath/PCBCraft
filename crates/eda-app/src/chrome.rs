@@ -5,16 +5,17 @@ impl PcbCraft {
     pub(super) fn title_bar(&mut self, ctx: &egui::Context) {
         // AD24 keeps the same title strip in both document editors.
         let height = 23.;
-        let title = self
-            .active
-            .map(|i| {
-                format!(
-                    "{}{} - PCBCraft",
-                    self.documents[i].model.name,
-                    if self.documents[i].dirty() { " *" } else { "" }
-                )
-            })
-            .unwrap_or_else(|| "PCBCraft".into());
+        let title = self.git_review_title().unwrap_or_else(|| {
+            self.active
+                .map(|i| {
+                    format!(
+                        "{}{} - PCBCraft",
+                        self.documents[i].model.name,
+                        if self.documents[i].dirty() { " *" } else { "" }
+                    )
+                })
+                .unwrap_or_else(|| "PCBCraft".into())
+        });
         egui::TopBottomPanel::top("window_title")
             .exact_height(height)
             .frame(egui::Frame::NONE.fill(egui::Color32::from_gray(74)))
@@ -29,16 +30,18 @@ impl PcbCraft {
                         (Icon::Undo, Command::Undo, "Undo"),
                         (Icon::Redo, Command::Redo, "Redo"),
                     ] {
-                        let enabled = match command {
-                            Command::Save => self.active.is_some(),
-                            Command::Undo => self
-                                .active
-                                .is_some_and(|i| self.documents[i].history.can_undo()),
-                            Command::Redo => self
-                                .active
-                                .is_some_and(|i| self.documents[i].history.can_redo()),
-                            _ => true,
-                        };
+                        let enabled = (!self.git_review_active()
+                            || matches!(command, Command::Open))
+                            && match command {
+                                Command::Save => self.active.is_some(),
+                                Command::Undo => self
+                                    .active
+                                    .is_some_and(|i| self.documents[i].history.can_undo()),
+                                Command::Redo => self
+                                    .active
+                                    .is_some_and(|i| self.documents[i].history.can_redo()),
+                                _ => true,
+                            };
                         if icon_button(ui, icon, false, enabled)
                             .on_hover_text(tip)
                             .clicked()

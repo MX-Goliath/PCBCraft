@@ -628,7 +628,8 @@ impl PcbCraft {
         };
         let mut chosen = None;
         let mut opening = None;
-        let modal = self.documents[index].sch_editor.bar.dialog.is_some()
+        let modal = self.documents[index].read_only
+            || self.documents[index].sch_editor.bar.dialog.is_some()
             || self.documents[index].sch_editor.bar.resources.modal();
         if let Some(last) =
             ctx.data(|d| d.get_temp::<[usize; 14]>(egui::Id::new("schematic_bar_last_commands")))
@@ -646,6 +647,9 @@ impl PcbCraft {
             .order(egui::Order::Foreground)
             .fixed_pos(origin)
             .show(ctx, |ui| {
+                if self.documents[index].read_only {
+                    ui.disable();
+                }
                 egui::Frame::NONE
                     .fill(Color32::from_gray(58))
                     .corner_radius(5)
@@ -658,8 +662,9 @@ impl PcbCraft {
                                 let doc = &self.documents[index];
                                 let state = &doc.sch_editor.bar;
                                 let entry = definition.items.get(state.last[group]);
-                                let is_enabled =
-                                    group == 0 || entry.is_some_and(|e| enabled(e.action, doc));
+                                let is_enabled = !doc.read_only
+                                    && (group == 0
+                                        || entry.is_some_and(|e| enabled(e.action, doc)));
                                 let (rect, response) = ui.allocate_exact_size(
                                     egui::vec2(100.0 / 3.0, 100.0 / 3.0),
                                     Sense::click(),

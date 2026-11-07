@@ -53,7 +53,6 @@ pub enum Icon {
     Redo,
     Settings,
     Home,
-    Pin,
     Close,
     Folder,
     Minimize,
@@ -293,13 +292,7 @@ pub fn draw_icon(p: &egui::Painter, rect: egui::Rect, icon: Icon, enabled: bool)
                 c,
             );
         }
-        Icon::Pin => {
-            line((5.0, 2.0), (12.0, 2.0), c);
-            line((6.0, 2.0), (6.0, 8.0), c);
-            line((11.0, 2.0), (11.0, 8.0), c);
-            line((3.0, 9.0), (13.0, 9.0), c);
-            line((8.0, 9.0), (8.0, 15.0), c);
-        }
+
         Icon::Filter => {
             p.add(egui::Shape::convex_polygon(
                 vec![

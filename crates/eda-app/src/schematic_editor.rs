@@ -218,6 +218,9 @@ impl OpenDocument {
         Ok(())
     }
     pub(super) fn edit_schematic(&mut self, command: Edit, revision: u64) -> Result<bool, String> {
+        if self.read_only {
+            return Err("Git revision tabs are read-only".into());
+        }
         if self.sch_editor.compiled_path.is_some() {
             return Err("The physical variant view is read-only; switch to Editor to change the base schematic".into());
         }

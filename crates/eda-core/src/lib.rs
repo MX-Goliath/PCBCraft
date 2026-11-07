@@ -2,6 +2,7 @@
 pub mod assembly_variants;
 pub mod cross_probe;
 pub mod design_sync;
+pub mod document_diff;
 pub mod library;
 pub mod library_edit;
 pub mod pcb;

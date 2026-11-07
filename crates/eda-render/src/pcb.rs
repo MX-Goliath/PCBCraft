@@ -837,7 +837,7 @@ fn layer_paint_order(layer: u16, active: u16, kind: u8) -> (u8, u16, u8) {
         kind,
     )
 }
-fn artwork_visible(board: &Board, item: &Item, view: &BoardView) -> bool {
+pub(super) fn artwork_visible(board: &Board, item: &Item, view: &BoardView) -> bool {
     view.is_visible(item)
         && board.text_visible(item)
         && (view.single_layer == 0
@@ -1100,7 +1100,7 @@ fn paint_scene(
     builder.end_group(painter);
     builder.origin(painter);
 }
-fn paint_details(
+pub(super) fn paint_details(
     painter: &egui::Painter,
     b: &Board,
     camera: &Camera,
@@ -1535,7 +1535,7 @@ fn paint_draft(
     }
     true
 }
-fn paint_item(
+pub(super) fn paint_item(
     p: &egui::Painter,
     camera: &Camera,
     rect: Rect,
@@ -1764,6 +1764,21 @@ fn polygon(
     }
     mesh.indices.extend(indices.iter().map(|v| *v as u32));
     p.add(egui::Shape::mesh(mesh));
+}
+
+pub(super) fn review_tint(
+    color: Color32,
+    item: &eda_core::pcb::Item,
+    view: &crate::pcb::BoardView,
+) -> Color32 {
+    let mut factor = view.display.alpha(item) as f32 / 255.;
+    if view.single_layer == 1
+        && item.layer != view.active_layer
+        && item.layer != eda_core::pcb::MULTI_LAYER
+    {
+        factor *= view.display.dim as f32 / 255.;
+    }
+    color.gamma_multiply(factor)
 }
 
 #[cfg(test)]

@@ -144,8 +144,7 @@ impl PcbCraft {
     }
     fn probe_message(&mut self, text: String) {
         self.cross_probe.status = text.clone();
-        self.settings.messages = true;
-        self.settings.right_messages = true;
+        self.show_panel(Panel::Messages);
         self.message(false, format!("Cross Probe: {text}"));
     }
     fn show_probe(&mut self, id: Uuid, target: Target) {
@@ -198,9 +197,7 @@ impl PcbCraft {
             .keep_source
             .and_then(|id| self.documents.iter().position(|d| d.session_id == id))
             .or(Some(index));
-        self.settings.properties = true;
-        self.settings.right_components = false;
-        self.settings.right_messages = false;
+        self.show_panel(Panel::Properties);
         self.cross_probe.status =
             format!("Located in {} · Esc exits Cross Probe", destination_name);
     }
@@ -262,6 +259,7 @@ mod tests {
     }
     fn app() -> PcbCraft {
         let mut app = PcbCraft {
+            git: Default::default(),
             library_editor: Default::default(),
             variants: Default::default(),
             file_state: Default::default(),

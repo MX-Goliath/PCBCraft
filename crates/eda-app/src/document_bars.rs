@@ -96,6 +96,7 @@ pub(super) fn document_icon(ui: &egui::Ui, rect: Rect, kind: DocumentKind) {
 impl PcbCraft {
     pub(super) fn document_tabs(&mut self, ui: &mut egui::Ui) {
         let mut close = None;
+        let mut working = None;
         let active_id = self.active.map(|i| self.documents[i].session_id);
         let selection_key = ui.id().with("document_tab_selection");
         let reveal = ui.ctx().data_mut(|d| {
@@ -123,11 +124,13 @@ impl PcbCraft {
                                 .flatten();
                             let prefix =
                                 sheet_number.map_or_else(String::new, |n| format!("[{n}] "));
-                            let title = format!(
-                                "{prefix}{}{}",
-                                doc.model.name,
-                                if doc.dirty() { " *" } else { "" }
-                            );
+                            let title = self.git_tab_title(doc.session_id).unwrap_or_else(|| {
+                                format!(
+                                    "{prefix}{}{}",
+                                    doc.model.name,
+                                    if doc.dirty() { " *" } else { "" }
+                                )
+                            });
                             let response = tab(
                                 ui,
                                 &title,
@@ -147,6 +150,22 @@ impl PcbCraft {
                                 close = Some(doc.session_id);
                             }
                             response.context_menu(|ui| {
+                                if let Some(path) = self.git_working_path(doc.session_id) {
+                                    if ui
+                                        .add_enabled(
+                                            path.is_file(),
+                                            egui::Button::new("Open working file"),
+                                        )
+                                        .on_disabled_hover_text(
+                                            "This file does not exist in the working tree",
+                                        )
+                                        .clicked()
+                                    {
+                                        working = Some(path);
+                                        ui.close();
+                                    }
+                                    ui.separator();
+                                }
                                 if ui.button(format!("Close {title}")).clicked() {
                                     close = Some(doc.session_id);
                                     ui.close();
@@ -219,6 +238,9 @@ impl PcbCraft {
                     });
                 });
         });
+        if let Some(path) = working {
+            self.open_git_working_path(path);
+        }
         if let Some(id) = close {
             self.request_close(id);
         }
@@ -226,7 +248,7 @@ impl PcbCraft {
 
     pub(super) fn schematic_bottom_bar(&mut self, ui: &mut egui::Ui, index: usize) {
         let paths = self.variant_paths(index);
-        let enabled = self.file_project_index().is_some();
+        let enabled = self.file_project_index().is_some() && !self.documents[index].read_only;
         let selected = self.documents[index].sch_editor.compiled_path.clone();
         let name = self.documents[index]
             .model
