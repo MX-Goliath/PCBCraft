@@ -62,3 +62,95 @@ fn project_variant_edits_save_reopen_and_undo_without_saving_the_schematic() {
         source
     );
 }
+
+fn frame(app: &mut PcbCraft, ctx: &egui::Context, events: Vec<egui::Event>) -> egui::FullOutput {
+    ctx.run(
+        egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1707., 1019.),
+            )),
+            focused: true,
+            events,
+            ..Default::default()
+        },
+        |ctx| app.variants_dialog(ctx),
+    )
+}
+fn button(output: &egui::FullOutput, label: &str) -> egui::Pos2 {
+    output
+        .shapes
+        .iter()
+        .find_map(|shape| match &shape.shape {
+            egui::epaint::Shape::Text(t) if t.galley.job.text == label => {
+                Some(t.pos + t.galley.rect.center().to_vec2())
+            }
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("Missing {label} button"))
+}
+fn click(app: &mut PcbCraft, ctx: &egui::Context, at: egui::Pos2) {
+    for pressed in [true, false] {
+        let _ = frame(
+            app,
+            ctx,
+            vec![
+                egui::Event::PointerMoved(at),
+                egui::Event::PointerButton {
+                    pos: at,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+        );
+    }
+}
+
+#[test]
+fn manager_cancel_discards_definitions_and_drawing_style() {
+    let (_dir, mut app) = fixture();
+    app.open_variants();
+    let original = app.projects[0].variants.clone();
+    let style = app.settings.variant_style.clone();
+    let d = app.variants.dialog.as_mut().unwrap();
+    d.draft[0].name = "Cancelled".into();
+    d.style.mesh = true;
+    d.style.cross = false;
+    let ctx = egui::Context::default();
+    for _ in 0..3 {
+        let _ = frame(&mut app, &ctx, vec![]);
+    }
+    let output = frame(&mut app, &ctx, vec![]);
+    click(&mut app, &ctx, button(&output, "Cancel"));
+    assert!(app.variants.dialog.is_none());
+    assert_eq!(app.projects[0].variants, original);
+    assert_eq!(app.settings.variant_style, style);
+    assert!(!app.variants_dirty());
+}
+
+#[test]
+fn manager_ok_commits_project_history_and_style_without_editing_source_sheet() {
+    let (_dir, mut app) = fixture();
+    app.open_variants();
+    let original = app.documents[0].model.clone();
+    let d = app.variants.dialog.as_mut().unwrap();
+    d.draft[0].name = "Accepted".into();
+    d.style.mesh = true;
+    d.style.cross = false;
+    let ctx = egui::Context::default();
+    for _ in 0..3 {
+        let _ = frame(&mut app, &ctx, vec![]);
+    }
+    let output = frame(&mut app, &ctx, vec![]);
+    click(&mut app, &ctx, button(&output, "OK"));
+    assert!(app.variants.dialog.is_none());
+    assert_eq!(app.projects[0].variants[0].name, "Accepted");
+    assert!(app.settings.variant_style.mesh);
+    assert!(app.variants_dirty());
+    assert_eq!(app.documents[0].model, original);
+    assert!(!app.documents[0].dirty());
+    app.documents[0].sch_editor.compiled_path = Some(String::new());
+    app.variant_undo(false);
+    assert_eq!(app.projects[0].variants[0].name, "Assembly A");
+}

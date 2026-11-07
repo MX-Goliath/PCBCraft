@@ -1,7 +1,7 @@
-# Project assembly variants - 2026-11-02 checkpoint
+# Project assembly variants
 
-This checkpoint was stopped by the user before completion of the full variant
-stage. Implemented behavior and remaining interoperability/UI work are distinct.
+The 2026-11-07 follow-up extends the earlier checkpoint. This remains a partial
+Altium implementation; observation, implementation and verification are separate.
 
 ## Reference observations
 
@@ -54,23 +54,79 @@ The installed 24.4.1 observation takes precedence over newer documentation.
   continues to include the physical components, including not-fitted parts.
   Catalog and view caches avoid loading project sheets each rendered frame.
 
-## Explicitly unfinished
+## 2026-11-07 follow-up
 
-- This is not full Altium variant parity. Final real-window QA of PCBCraft,
-  exact dialog dimensions/typography/icons, full grid/multiselect behavior,
-  unresolved UID repair, complete native drawing styles and reporting remain.
-- Newly selected alternative graphics are persisted in PCBCraftAlternateDataN
-  extension fields for PCBCraft reopening. Authoring a native .PrjPcbVariants
-  library for those edits is not implemented; Altium will not obtain the new
-  symbol from these extension fields. Existing native library data is read only.
-  Native alternate-library identity matching is bounded and can be unavailable.
-- Physical paths from repeated sheet references are distinguished, but native
-  Repeat()/annotation, fully folded multipart physical components and complete
-  channel variant semantics are not implemented. Repeated-sheet project PDF
-  refuses missing explicit channel pagination rather than silently duplicating it.
-- Native global variant-parameter encoding and new-alternate native reopening
-  have not been verified in Altium. Native values containing a pipe/newline are
-  refused on save. Unknown unsupported kinds remain subject to validation.
-- BOM, placement, PCB 3D, assembly drawings, fabrication variants, OutJob variant
-  execution and library-update workflows are outside this completed checkpoint.
-- Latest validation and any known failures are recorded in PLAN.md.
+Observed in installed Altium Enterprise 24.4.1 at 1707x1019/1026:
+Variant Management has six project columns followed by variant columns, and
+parameter columns for every variant. Add/Edit opens Edit Project Variant;
+component cells open Edit Component Variation with Fitted / Not Fitted /
+Alternate Part and Replace Component. Drawing Style offers cross or mesh,
+not-fitted text, masking and modified parameter text/font. Fabrication and
+paste-mask controls were observed, not implemented.
+
+A disposable project copy in local/variants-qa was authored and saved in Altium.
+Its native format establishes that the first variant's global parameters are
+[Parameter2_1], [Parameter2_2], etc.; project parameters occupy owner 1.
+The alternate cache is an ordinary SchLib named .PrjPcbVariants, with symbols
+matched by AltLibLink_DesignItemID. AlternatePart can be empty for Kind=2.
+Original schematic, PCB and integrated-library hashes were unchanged.
+Altium reopened the generated alternate library and global parameter. Its native
+reader requires variation records before parameter records and interleaved
+ParamVariationN/ParamDesignatorN pairs. An ordered QA copy showed C1 alternate
+1404, 4-11-00008 and 10nF in the manager and the green modified value in the
+physical view. The Save As probe also exposed unsupported Windows verbatim paths;
+project references now remove that prefix. Legacy ANSI Cyrillic metadata is
+preserved even when document paths contain ASCII only.
+
+Implemented in this follow-up:
+
+- All-variant parameter grid, native column order, separate variant and component
+  dialogs, clone with unique name, Ctrl/Shift row selection, bulk Fitted/Not
+  Fitted/parameter/reset operations, local undo/redo and explicit UID relinking.
+- GUI-independent commands validate the whole transaction. Exact UID matches
+  take precedence over designator-only entries. Parameter names are case
+  insensitive. History retains at most 128 commits. Undo normalizes selection.
+- Drawing Style edits remain local until manager OK. Manager Cancel discards both
+  style and variant changes. Cross/mesh, masked symbols, overlay text and varied
+  parameter color/bold/italic/suffix are implemented as read-only projections.
+- Native global parameter sections are read/written and reindexed on deletion;
+  opaque parameter properties and base project parameter sections are retained.
+  Legacy inline ParameterN fields remain readable. Private parameter UID fields
+  preserve repeated-designator identity on PCBCraft reopening; ambiguous native
+  values without physical identity are refused.
+- Native alternate library authoring through the independent SchLib writer;
+  Save/Save All/Save As include the companion library. Existing unused symbols
+  and source container streams are preserved through the existing library
+  writer's conservative checks. Unsupported multipart/display-mode/image or
+  auxiliary data produces an error. Both project and companion have external
+  change guards; project-write failure attempts companion rollback.
+- Detailed CSV report includes states, overrides, global parameters and unresolved
+  links. Assembly BOM CSV resolves alternate metadata and parameter expressions,
+  excludes Not Fitted / graphical / No BOM items, and refuses unresolved links or
+  multipart components requiring physical folding. Export is available from
+  Detailed Report. CSV is an independent output format, not an Altium template.
+- The variant_roundtrip example makes a separate native project/library copy for
+  interoperability inspection. Current validation is recorded in PLAN.md.
+
+## Remaining parity gaps
+
+- Exact UI/DPI/icon/typographic parity, native resize/sort/cell-range/clipboard
+  behavior and complete drawing-style/font/preferences storage remain partial.
+  Windows PCBCraft verification at 1707x1019 confirmed aligned variant columns,
+  the component variation child dialog, Not Fitted, Undo/Redo, manager OK, native
+  project/companion saving and assembly projection (red C2 cross, green C1 value).
+  GUI-exported GuiVariantBOM.csv contains alternate C1 / 1404 / 10 нФ and excludes
+  C2. The original unsaved group was saved as SessionSnapshot.DsnWrk before the
+  authorized restart. The single updated GUI is left on the disposable QA copy.
+  Schematic, PCB and integrated-library hashes still match their original copies.
+- Native new-alternate writing covers one complete symbol part/display mode;
+  arbitrary native library data may be refused. PCBCraftAlternateDataN also
+  remains for exact PCBCraft geometry roundtrip. Native Altium reopening
+  is verified on the bounded QA copy, separately from the independent reader.
+- Repeat()/compiled channel annotation, fully folded multipart components,
+  channel pagination and complete channel variant semantics remain incomplete.
+  Project PDF still refuses repeated sheets without explicit pagination.
+- PCB 3D/assembly drawings/placement/fabrication/paste-mask variant execution,
+  OutJob integration, ActiveBOM templates and library-update workflows remain
+  unsupported. Their controls remain disabled. Linux runtime visual verification
+  is not established by the shared Rust layout or a type check.

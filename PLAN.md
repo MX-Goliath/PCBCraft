@@ -3198,3 +3198,63 @@ Cause, implementation and validation: docs/pcb-update/INTERACTIVE_ROUTING.md.
   build; git diff --check. Feature registry JSON parses successfully.
   All seven original PDU hashes remain unchanged; disposable tracked files
   remain clean. Source changes are uncommitted; no remote push was performed.
+
+### Assembly variant continuation ? 2026-11-07
+
+- Observed installed AD Enterprise 24.4.1 Variant Management, Edit Project Variant,
+  Parameter Properties, Edit Component Variation and Drawing Style at the same
+  1707-pixel desktop width. The native project copy in local/variants-qa was the
+  only project authored/saved for this research. Original SCH/PCB/IntLib hashes
+  match the source copy; existing unsaved native Harness documents were retained.
+- Added independent validated bulk commands, exact UID precedence, insensitive
+  parameter names, explicit stale-link repair, bounded local history and active
+  selection normalization after Undo. Unresolved links refuse assembly viewing,
+  project output and BOM generation rather than applying ambiguous values.
+- Reworked the manager around the two all-variant grids and six native project
+  columns. Added child variant/component/parameter dialogs, unique cloning,
+  Ctrl/Shift row selections, bulk states/parameters/reset, native column grouping,
+  reports and local drawing-style drafts. Cancel preserves project and style.
+  Parameter rename retains opaque native properties.
+- Native evidence established Parameter2_1 for the first variant's global
+  parameter and an ordinary SchLib companion .PrjPcbVariants for alternate parts.
+  Implemented both, including Save As, existing-symbol/container preservation,
+  conservative unsupported-data refusal, companion external-change protection
+  and rollback if the project write fails. Private exact-geometry/UID fields
+  remain alongside native content.
+- The native roundtrip example generated NativeRoundtrip.PrjPcb and its companion.
+  Live Altium exposed two interoperability defects: Win32 verbatim project paths
+  and parameter records emitted before their component records. Fixed Save As
+  path normalization and native record ordering/interleaved parameter pairs.
+  A separate NativeOrdered project with normalized/copied document references
+  and the exact generated library was opened in Altium: global AssemblyTitle
+  retained; C1 alternate 1404 and parameter values 4-11-00008 / 10nF confirmed.
+  Legacy ANSI tie-breaking now recognizes Cyrillic text without Cyrillic paths.
+- Added configurable cross/mesh/masking/not-fitted text and changed-parameter
+  color, bold, italic and suffix projections; detailed CSV and assembly BOM CSV.
+  BOM refuses unsupported multipart folding and excludes Not Fitted/No BOM items.
+- Full parity remains open: exact UI/DPI/icons/grid/clipboard, project-native
+  drawing preferences, full multipart/Repeat/channels, placement, PCB 3D/assembly,
+  fabrication/paste-mask, OutJob and ActiveBOM execution. See feature registry
+  and interface/schematic-variants.md; no claim of full Altium equivalence.
+- The user authorized closing/restarting PCBCraft. Saved the original unsaved
+  group separately as local/variants-qa/SessionSnapshot.DsnWrk before closing.
+  Built a separate review executable, closed each prior GUI before replacement,
+  and installed the checked executable at target/debug/pcbcraft.exe.
+- Additional native confirmation: the ordered QA copy displays C1 alternate
+  1404, 4-11-00008, 10nF and its remaining parameters; selecting the variant and
+  physical sheet displays the changed value in green. The unordered copy had
+  blank parameter cells, so ordering is a verified interoperability requirement.
+  Source-data/code QA copies and imported native observations remain distinct.
+- Final Windows PCBCraft 1707x1019 QA: corrected shared component/parameter grid
+  sizing, imported Cyrillic/alternate metadata, component child dialog, C2 Not
+  Fitted, Undo/Redo, Detailed Report and GUI CSV export. GuiVariantBOM.csv contains
+  37 fitted rows, C1 library 1404 / resolved 10 нФ, and excludes C2. Manager OK and
+  Ctrl+S saved the QA project and ordinary companion without error; native text
+  contains C2 Kind=1. Physical view shows its red cross and C1 green modified
+  value. SCH/PCB/IntLib hashes still match local/PDU-git-review. One updated GUI
+  remains open on the QA copy; original design documents were not saved.
+- Final gates PASS after the last source change: cargo fmt --all -- --check;
+  cargo clippy --workspace --all-targets -- -D warnings; cargo test --workspace
+  (789 tests: 184 app / 328 core / 1 geom / 160 IO / 116 render); Linux GNU
+  workspace/all-target check. GUI review build succeeded. Source changes remain
+  uncommitted and full Altium variant parity remains incomplete as listed above.

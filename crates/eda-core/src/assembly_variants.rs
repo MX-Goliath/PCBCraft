@@ -26,6 +26,9 @@ pub struct Variant {
     pub id: String,
     pub name: String,
     pub parameters: BTreeMap<String, String>,
+    /// Opaque native parameter properties, keyed by case-folded parameter name.
+    #[serde(default)]
+    pub parameter_fields: BTreeMap<String, BTreeMap<String, String>>,
     pub variations: Vec<Variation>,
     pub fields: BTreeMap<String, String>,
 }
@@ -35,27 +38,38 @@ impl Variant {
             id: Uuid::new_v4().to_string().to_uppercase(),
             name,
             parameters: BTreeMap::new(),
+            parameter_fields: BTreeMap::new(),
             variations: vec![],
             fields: BTreeMap::new(),
         }
     }
     pub fn variation(&self, uid: &str, designator: &str) -> Option<&Variation> {
-        self.variations.iter().find(|v| {
-            if v.uid.trim_matches('\\').is_empty() {
-                v.designator.eq_ignore_ascii_case(designator)
-            } else {
-                same_uid(&v.uid, uid)
-            }
-        })
+        self.variations
+            .iter()
+            .find(|v| !v.uid.trim_matches('\\').is_empty() && same_uid(&v.uid, uid))
+            .or_else(|| {
+                self.variations.iter().find(|v| {
+                    v.uid.trim_matches('\\').is_empty()
+                        && v.designator.eq_ignore_ascii_case(designator)
+                })
+            })
     }
     pub fn variation_mut(&mut self, uid: &str, designator: &str) -> &mut Variation {
-        let n = self.variations.iter().position(|v| {
-            if uid.is_empty() || v.uid.trim_matches('\\').is_empty() {
-                v.designator.eq_ignore_ascii_case(designator)
-            } else {
-                same_uid(&v.uid, uid)
-            }
-        });
+        let n = if uid.trim_matches('\\').is_empty() {
+            self.variations
+                .iter()
+                .position(|v| v.designator.eq_ignore_ascii_case(designator))
+        } else {
+            self.variations
+                .iter()
+                .position(|v| !v.uid.trim_matches('\\').is_empty() && same_uid(&v.uid, uid))
+                .or_else(|| {
+                    self.variations.iter().position(|v| {
+                        v.uid.trim_matches('\\').is_empty()
+                            && v.designator.eq_ignore_ascii_case(designator)
+                    })
+                })
+        };
         let n = n.unwrap_or_else(|| {
             self.variations.push(Variation {
                 uid: uid.into(),
@@ -66,6 +80,170 @@ impl Variant {
         });
         &mut self.variations[n]
     }
+
+    pub fn unique_name(variants: &[Variant], stem: &str) -> String {
+        let stem = stem.trim();
+        (0..)
+            .map(|n| {
+                if n == 0 {
+                    stem.to_owned()
+                } else {
+                    format!("{stem} {n}")
+                }
+            })
+            .find(|name| !variants.iter().any(|v| v.name.eq_ignore_ascii_case(name)))
+            .unwrap()
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ComponentRef {
+    pub uid: String,
+    pub designator: String,
+}
+
+/// Commands are independent of the table selection and committed as one undo step.
+#[derive(Clone, Debug)]
+pub enum Edit {
+    Add(Variant),
+    Replace {
+        id: String,
+        value: Variant,
+    },
+    Remove(String),
+    SetKind {
+        id: String,
+        components: Vec<ComponentRef>,
+        kind: u32,
+    },
+    SetParameter {
+        id: String,
+        components: Vec<ComponentRef>,
+        name: String,
+        value: Option<String>,
+    },
+    Reset {
+        id: String,
+        components: Vec<ComponentRef>,
+    },
+    Rebind {
+        id: String,
+        index: usize,
+        component: ComponentRef,
+    },
+}
+
+pub fn edited(current: &[Variant], edit: Edit) -> Result<Vec<Variant>, String> {
+    let mut next = current.to_vec();
+    let id = match &edit {
+        Edit::Add(_) => None,
+        Edit::Replace { id, .. }
+        | Edit::SetKind { id, .. }
+        | Edit::SetParameter { id, .. }
+        | Edit::Reset { id, .. }
+        | Edit::Rebind { id, .. }
+        | Edit::Remove(id) => Some(id),
+    };
+    let index = id
+        .map(|id| {
+            next.iter()
+                .position(|v| &v.id == id)
+                .ok_or("Variant no longer exists")
+        })
+        .transpose()?;
+    match edit {
+        Edit::Add(v) => next.push(v),
+        Edit::Remove(_) => {
+            next.remove(index.unwrap());
+        }
+        Edit::Replace { id, value } => {
+            if id != value.id {
+                return Err("Editing a variant cannot change its identity".into());
+            }
+            next[index.unwrap()] = value;
+        }
+        Edit::SetKind {
+            components, kind, ..
+        } => {
+            if kind > 1 {
+                return Err(
+                    "Choose and validate an alternate component before using Alternate Part".into(),
+                );
+            }
+            for c in components {
+                let change = next[index.unwrap()].variation_mut(&c.uid, &c.designator);
+                change.kind = kind;
+                // Retain a selected alternate for a later switch, like the native manager.
+            }
+        }
+        Edit::SetParameter {
+            components,
+            name,
+            value,
+            ..
+        } => {
+            let name = name.trim();
+            if name.is_empty() {
+                return Err("A parameter name is required".into());
+            }
+            for c in components {
+                let values = &mut next[index.unwrap()]
+                    .variation_mut(&c.uid, &c.designator)
+                    .parameters;
+                values.retain(|key, _| !key.eq_ignore_ascii_case(name));
+                if let Some(value) = &value {
+                    values.insert(name.into(), value.clone());
+                }
+            }
+        }
+        Edit::Reset { components, .. } => {
+            next[index.unwrap()].variations.retain(|v| {
+                !components.iter().any(|c| {
+                    if v.uid.trim_matches('\\').is_empty() {
+                        v.designator.eq_ignore_ascii_case(&c.designator)
+                    } else {
+                        same_uid(&v.uid, &c.uid)
+                    }
+                })
+            });
+        }
+        Edit::Rebind {
+            index: row,
+            component,
+            ..
+        } => {
+            let change = next[index.unwrap()]
+                .variations
+                .get_mut(row)
+                .ok_or("Variation no longer exists")?;
+            change.uid = component.uid;
+            change.designator = component.designator;
+        }
+    }
+    validate(&next)?;
+    Ok(next)
+}
+
+/// A stale UID is never silently rebound by designator. Ambiguity needs a choice.
+pub fn unresolved(variant: &Variant, components: &[ComponentRef]) -> Vec<usize> {
+    variant
+        .variations
+        .iter()
+        .enumerate()
+        .filter_map(|(n, v)| {
+            let count = components
+                .iter()
+                .filter(|c| {
+                    if v.uid.trim_matches('\\').is_empty() {
+                        v.designator.eq_ignore_ascii_case(&c.designator)
+                    } else {
+                        same_uid(&v.uid, &c.uid)
+                    }
+                })
+                .count();
+            (count != 1).then_some(n)
+        })
+        .collect()
 }
 pub fn same_uid(a: &str, b: &str) -> bool {
     a.trim_matches('\\')
@@ -89,9 +267,9 @@ pub fn validate(variants: &[Variant]) -> Result<(), String> {
     }
     for v in variants {
         if v.name.trim().is_empty()
-            || v.name.eq_ignore_ascii_case("[No Variations]")
+            || v.name.trim().eq_ignore_ascii_case("[No Variations]")
             || v.name.contains(['\r', '\n'])
-            || !names.insert(v.name.to_lowercase())
+            || !names.insert(v.name.trim().to_lowercase())
         {
             return Err("Variant names must be nonempty and unique".into());
         }
@@ -100,7 +278,7 @@ pub fn validate(variants: &[Variant]) -> Result<(), String> {
         }
         let mut components = BTreeSet::new();
         for c in &v.variations {
-            let key = if c.uid.is_empty() {
+            let key = if c.uid.trim_matches('\\').is_empty() {
                 format!("designator:{}", c.designator.to_uppercase())
             } else {
                 c.uid.trim_matches('\\').to_uppercase()
@@ -111,6 +289,7 @@ pub fn validate(variants: &[Variant]) -> Result<(), String> {
             if c.kind > 2 {
                 return Err(format!("Unsupported variation kind {}", c.kind));
             }
+            validate_parameters(&c.parameters)?;
             if let Some(a) = &c.alternate {
                 if a.components.len() != 1 {
                     return Err("An alternate must contain one component unit".into());
@@ -124,6 +303,17 @@ pub fn validate(variants: &[Variant]) -> Result<(), String> {
                 }
                 d.validate()?;
             }
+        }
+        validate_parameters(&v.parameters)?;
+    }
+    Ok(())
+}
+
+fn validate_parameters(parameters: &BTreeMap<String, String>) -> Result<(), String> {
+    let mut names = BTreeSet::new();
+    for key in parameters.keys() {
+        if key.trim().is_empty() || !names.insert(key.trim().to_lowercase()) {
+            return Err("Parameter names must be nonempty and unique ignoring case".into());
         }
     }
     Ok(())
@@ -147,6 +337,9 @@ impl History {
             return Ok(false);
         }
         self.past.push(std::mem::replace(current, next));
+        if self.past.len() > 128 {
+            self.past.remove(0);
+        }
         self.future.clear();
         self.revision += 1;
         Ok(true)
@@ -178,6 +371,64 @@ fn assign(values: &mut BTreeMap<String, String>, key: &str, value: &str) {
         .cloned()
         .unwrap_or_else(|| key.into());
     values.insert(key, value.into());
+}
+
+/// Resolve assembly metadata without graphics, for BOMs and reports. Electrical
+/// connectivity deliberately continues to use the base document.
+pub fn assembly_component(
+    sheet: &Schematic,
+    component: &Component,
+    variant: Option<&Variant>,
+    path: &str,
+) -> Result<Option<Component>, String> {
+    let change = variant.and_then(|v| {
+        v.variation(
+            &component_uid(sheet, component, path),
+            &component.designator,
+        )
+    });
+    if change.is_some_and(|c| c.kind == 1) {
+        return Ok(None);
+    }
+    let mut result = if let Some(change) = change.filter(|c| c.kind == 2) {
+        let alternate = change
+            .alternate
+            .as_ref()
+            .and_then(|a| a.components.first())
+            .ok_or_else(|| {
+                format!(
+                    "Alternate component unavailable for {}",
+                    component.designator
+                )
+            })?;
+        let mut c = alternate.clone();
+        c.id = component.id;
+        c.designator = component.designator.clone();
+        c.position = component.position;
+        c
+    } else {
+        component.clone()
+    };
+    if let Some(change) = change {
+        for (key, value) in &change.parameters {
+            if key.eq_ignore_ascii_case("Comment") {
+                result.comment = value.clone();
+            }
+            if key.eq_ignore_ascii_case("Description") {
+                result.description = value.clone();
+            }
+            assign(&mut result.parameters, key, value);
+        }
+    }
+    let mut sheet_parameters = sheet.sheet.parameters.clone();
+    if let Some(variant) = variant {
+        for (key, value) in &variant.parameters {
+            assign(&mut sheet_parameters, key, value);
+        }
+        assign(&mut sheet_parameters, "VariantName", &variant.name);
+    }
+    result.comment = parameter_text(&result.comment, &result.parameters, &sheet_parameters);
+    Ok(Some(result))
 }
 fn pin_signature(primitives: &[SchPrimitive], owner: Uuid) -> Vec<(String, Point, u32)> {
     let mut p = primitives
@@ -243,19 +494,34 @@ pub fn alternate_for(s: &Schematic, c: &Component, local: &Fragment) -> Result<F
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct DisplayStyle {
     pub cross: bool,
     pub dim: bool,
     pub color: u32,
     pub width_nm: i64,
+    pub mesh: bool,
+    pub not_fitted_text: String,
+    pub modify_parameters: bool,
+    pub parameter_color: u32,
+    pub parameter_italic: bool,
+    pub parameter_bold: bool,
+    pub parameter_suffix: String,
 }
 impl Default for DisplayStyle {
     fn default() -> Self {
         Self {
             cross: true,
-            dim: false,
+            dim: true,
             color: 255,
             width_nm: 200_000,
+            mesh: false,
+            not_fitted_text: String::new(),
+            modify_parameters: true,
+            parameter_color: 0x008000,
+            parameter_italic: true,
+            parameter_bold: false,
+            parameter_suffix: String::new(),
         }
     }
 }
@@ -307,6 +573,9 @@ pub fn project(
             if key.eq_ignore_ascii_case("Comment") {
                 target.comment = value.clone();
             }
+            if key.eq_ignore_ascii_case("Description") {
+                target.description = value.clone();
+            }
             assign(&mut target.parameters, key, value);
         }
         for p in s
@@ -335,10 +604,17 @@ pub fn project(
                 let next = parameter_text(raw, &target.parameters, &s.sheet.parameters);
                 let changed = changed || *text != next;
                 *text = next;
-                if changed && let Some(mut f) = s.fonts.get(*font).cloned() {
-                    f.italic = true;
-                    s.fonts.push(f);
-                    *font = s.fonts.len() - 1;
+                if changed && style.modify_parameters {
+                    text.push_str(&style.parameter_suffix);
+                    p.color = style.parameter_color;
+                    if let Some(mut f) = s.fonts.get(*font).cloned() {
+                        f.italic = style.parameter_italic;
+                        f.bold = style.parameter_bold;
+                        *font = s.fonts.iter().position(|old| old == &f).unwrap_or_else(|| {
+                            s.fonts.push(f);
+                            s.fonts.len() - 1
+                        });
+                    }
                 }
             }
             if change.kind == 1 && style.dim {
@@ -346,7 +622,7 @@ pub fn project(
                 p.fill = p.fill.map(|_| 0xe0e0e0);
             }
         }
-        if change.kind == 1 && style.cross {
+        if change.kind == 1 && (style.cross || style.mesh || !style.not_fitted_text.is_empty()) {
             let bounds = base
                 .primitives
                 .iter()
@@ -367,19 +643,55 @@ pub fn project(
                     }))
                 });
             if let Some(b) = bounds {
-                for points in [
-                    vec![b.min, b.max],
-                    vec![
-                        Point {
-                            x: b.min.x,
-                            y: b.max.y,
-                        },
+                let mut lines = vec![];
+                if style.cross {
+                    lines.extend([
+                        vec![b.min, b.max],
+                        vec![
+                            Point {
+                                x: b.min.x,
+                                y: b.max.y,
+                            },
+                            Point {
+                                x: b.max.x,
+                                y: b.min.y,
+                            },
+                        ],
+                    ]);
+                }
+                if style.mesh {
+                    lines.push(vec![
+                        b.min,
                         Point {
                             x: b.max.x,
                             y: b.min.y,
                         },
-                    ],
-                ] {
+                        b.max,
+                        Point {
+                            x: b.min.x,
+                            y: b.max.y,
+                        },
+                        b.min,
+                    ]);
+                    let height = b.max.y - b.min.y;
+                    let width = b.max.x - b.min.x;
+                    let step = 1_000_000.max((width + height) / 100);
+                    let mut offset = step;
+                    while offset < width + height {
+                        lines.push(vec![
+                            Point {
+                                x: b.min.x + offset.min(width),
+                                y: b.min.y + (offset - width).max(0),
+                            },
+                            Point {
+                                x: b.min.x + (offset - height).max(0),
+                                y: b.min.y + offset.min(height),
+                            },
+                        ]);
+                        offset += step;
+                    }
+                }
+                for points in lines {
                     let mut p = edit::primitive(
                         SchPrimitiveKind::Polyline {
                             points,
@@ -390,6 +702,23 @@ pub fn project(
                     );
                     p.color = style.color;
                     p.width_nm = style.width_nm;
+                    s.primitives.push(p);
+                }
+                if !style.not_fitted_text.is_empty() {
+                    let mut p = edit::primitive(
+                        SchPrimitiveKind::Text {
+                            position: Point {
+                                x: b.min.x + (b.max.x - b.min.x) / 2,
+                                y: b.min.y + (b.max.y - b.min.y) / 2,
+                            },
+                            text: style.not_fitted_text.clone(),
+                            font: 0,
+                            orientation: 0,
+                            justification: 4,
+                        },
+                        Some(c.id),
+                    );
+                    p.color = style.color;
                     s.primitives.push(p);
                 }
             }

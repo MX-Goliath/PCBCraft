@@ -1,16 +1,22 @@
 //! Project Variant Management and read-only schematic assembly views.
+#[path = "variants_manager.rs"]
+mod manager;
 #[cfg(test)]
 #[path = "variants_tests.rs"]
 mod tests;
 use super::*;
 use eda_core::assembly_variants::{self as model, Variant};
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
 
 #[derive(Default)]
 pub(super) struct State {
     pub(super) request_project: Option<PathBuf>,
     pub dialog: Option<Dialog>,
     saved: BTreeMap<PathBuf, (Vec<Variant>, Vec<u8>)>,
+    alternate_files: BTreeMap<PathBuf, Option<Vec<u8>>>,
     pub(super) cache: Option<(String, Arc<Document>)>,
     catalog: std::cell::RefCell<Option<(String, Arc<Vec<Row>>)>>,
     histories: BTreeMap<PathBuf, model::History>,
@@ -30,13 +36,19 @@ pub(super) struct Dialog {
     history: model::History,
     rows: Arc<Vec<Row>>,
     row: usize,
+    selected: BTreeSet<usize>,
     variant: usize,
     filter: String,
     only_varied: bool,
-    name: String,
     parameter: String,
     value: String,
-    edit_variant: bool,
+    editor: Option<manager::VariantEditor>,
+    component_kind: Option<u32>,
+    style: model::DisplayStyle,
+    style_editor: Option<model::DisplayStyle>,
+    fit_width: bool,
+    links: bool,
+    report: Option<String>,
     library: Option<eda_core::library::Library>,
     error: String,
 }
@@ -76,6 +88,10 @@ impl PcbCraft {
             self.variants
                 .saved
                 .insert(p.path.clone(), (p.variants.clone(), bytes));
+            self.variants.alternate_files.insert(
+                p.path.clone(),
+                std::fs::read(p.path.with_extension("PrjPcbVariants")).ok(),
+            );
         }
         self.variants
             .histories
@@ -109,6 +125,15 @@ impl PcbCraft {
                 } else {
                     h.undo(&mut p.variants)
                 }
+            }
+            if self
+                .settings
+                .active_variants
+                .get(&p.path)
+                .and_then(|v| v.as_ref())
+                .is_some_and(|id| !p.variants.iter().any(|v| &v.id == id))
+            {
+                self.settings.active_variants.insert(p.path.clone(), None);
             }
         }
         self.variants.cache = None;
@@ -218,6 +243,20 @@ impl PcbCraft {
             .and_then(|v| v.as_ref());
         let variant = selected.and_then(|id| project.variants.iter().find(|v| &v.id == id));
         let rows = self.variant_rows(p)?;
+        if let Some(v) = variant {
+            let refs = rows
+                .iter()
+                .map(|r| model::ComponentRef {
+                    uid: r.uid.clone(),
+                    designator: r.designator.clone(),
+                })
+                .collect::<Vec<_>>();
+            if !model::unresolved(v, &refs).is_empty() {
+                return Err(
+                    "Resolve variant component links before generating project output".into(),
+                );
+            }
+        }
         for (_, d) in snapshots {
             let mut paths = rows
                 .iter()
@@ -247,11 +286,20 @@ impl PcbCraft {
                 continue;
             }
             let expected = &self.variants.saved[&p.path].1;
-            match eda_io::project_variants::save(p, expected) {
+            let expected_library = self
+                .variants
+                .alternate_files
+                .get(&p.path)
+                .and_then(|b| b.as_deref());
+            match eda_io::project_variants::save_with_alternates(p, expected, expected_library) {
                 Ok(bytes) => {
                     self.variants
                         .saved
                         .insert(p.path.clone(), (p.variants.clone(), bytes));
+                    self.variants.alternate_files.insert(
+                        p.path.clone(),
+                        std::fs::read(p.path.with_extension("PrjPcbVariants")).ok(),
+                    );
                 }
                 Err(e) => {
                     self.message(true, e);
@@ -381,6 +429,10 @@ impl PcbCraft {
                     self.variants
                         .saved
                         .insert(path.clone(), (p.variants.clone(), bytes));
+                    self.variants.alternate_files.insert(
+                        path.clone(),
+                        std::fs::read(path.with_extension("PrjPcbVariants")).ok(),
+                    );
                 }
                 Err(e) => {
                     self.message(true, e.to_string());
@@ -395,16 +447,42 @@ impl PcbCraft {
             history: Default::default(),
             rows,
             row: 0,
+            selected: BTreeSet::from([0]),
             variant: 0,
             filter: String::new(),
             only_varied: false,
-            name: String::new(),
             parameter: String::new(),
             value: String::new(),
-            edit_variant: false,
+            editor: None,
+            component_kind: None,
+            style: self.settings.variant_style.clone(),
+            style_editor: None,
+            fit_width: true,
+            links: false,
+            report: None,
             library: None,
             error: String::new(),
         });
+        if let Some(d) = &mut self.variants.dialog {
+            let refs = d
+                .rows
+                .iter()
+                .map(|r| model::ComponentRef {
+                    uid: r.uid.clone(),
+                    designator: r.designator.clone(),
+                })
+                .collect::<Vec<_>>();
+            let count = d
+                .draft
+                .iter()
+                .map(|v| model::unresolved(v, &refs).len())
+                .sum::<usize>();
+            if count > 0 {
+                d.error = format!(
+                    "{count} unresolved component link(s). Use Component Links to review and relink them."
+                );
+            }
+        }
     }
     pub(super) fn select_variant(&mut self, project: PathBuf, id: Option<String>) {
         self.settings.active_variants.insert(project.clone(), id);
@@ -435,6 +513,17 @@ impl PcbCraft {
             .get(&project.path)
             .and_then(|id| id.as_ref());
         let variant = selected.and_then(|id| project.variants.iter().find(|v| &v.id == id));
+        if let Some(v) = variant {
+            let result=self.variant_rows(p).and_then(|rows| {
+                let refs=rows.iter().map(|r|model::ComponentRef{uid:r.uid.clone(),designator:r.designator.clone()}).collect::<Vec<_>>();
+                if model::unresolved(v,&refs).is_empty(){Ok(())}else{Err("Resolve variant component links in Variant Management before viewing this assembly".into())}
+            });
+            if let Err(e) = result {
+                self.documents[index].sch_editor.compiled_path = None;
+                self.message(true, e);
+                return None;
+            }
+        }
         let doc = &self.documents[index];
         let key = format!(
             "{}:{}:{}:{}:{}:{}",
@@ -485,391 +574,6 @@ impl PcbCraft {
                 paths
             }
             Err(_) => vec![String::new()],
-        }
-    }
-    pub(super) fn variants_dialog(&mut self, ctx: &egui::Context) {
-        let Some(mut d) = self.variants.dialog.take() else {
-            return;
-        };
-        let mut keep = true;
-        let mut accept = false;
-        egui::Modal::new(egui::Id::new("variant_management")).show(ctx, |ui| {
-            ui.set_width(1000.0_f32.min(ctx.available_rect().width() - 50.));
-            ui.heading("Variant Management");
-            ui.label(format!(
-                "Components for project {}",
-                d.project.file_name().unwrap_or_default().to_string_lossy()
-            ));
-            ui.horizontal(|ui| {
-                ui.label("Filter");
-                ui.text_edit_singleline(&mut d.filter);
-                ui.checkbox(&mut d.only_varied, "Only Show Varied Components");
-            });
-            let before = d.draft.clone();
-            egui::ScrollArea::both()
-                .id_salt("variant_components")
-                .max_height(270.)
-                .show(ui, |ui| {
-                    egui::Grid::new("variant_components_grid")
-                        .striped(true)
-                        .min_col_width(110.)
-                        .show(ui, |ui| {
-                            for label in ["Hierarchy Path", "Logical", "Name", "Document"] {
-                                ui.strong(label);
-                            }
-                            for (n, v) in d.draft.iter().enumerate() {
-                                if ui
-                                    .selectable_label(
-                                        d.variant == n,
-                                        egui::RichText::new(&v.name).strong(),
-                                    )
-                                    .clicked()
-                                {
-                                    d.variant = n;
-                                }
-                            }
-                            ui.end_row();
-                            for (n, row) in d.rows.iter().enumerate() {
-                                let c = row
-                                    .document
-                                    .schematic
-                                    .as_ref()
-                                    .unwrap()
-                                    .components
-                                    .iter()
-                                    .find(|c| c.id == row.component)
-                                    .unwrap();
-                                if !format!(
-                                    "{} {} {}",
-                                    row.designator, c.comment, row.document.name
-                                )
-                                .to_lowercase()
-                                .contains(&d.filter.to_lowercase())
-                                {
-                                    continue;
-                                }
-                                if d.only_varied
-                                    && !d.draft.iter().any(|v| {
-                                        v.variation(&row.uid, &row.designator).is_some_and(|c| {
-                                            c.kind != 0 || !c.parameters.is_empty()
-                                        })
-                                    })
-                                {
-                                    continue;
-                                }
-                                ui.label(if row.path.is_empty() {
-                                    "Main"
-                                } else {
-                                    row.path.as_str()
-                                });
-                                if ui.selectable_label(d.row == n, &row.designator).clicked() {
-                                    d.row = n;
-                                }
-                                ui.label(&c.comment);
-                                ui.label(&row.document.name);
-                                for (vn, v) in d.draft.iter_mut().enumerate() {
-                                    let state = v
-                                        .variation(&row.uid, &row.designator)
-                                        .map_or(0, |c| c.kind);
-                                    let mut kind = state;
-                                    egui::ComboBox::from_id_salt(("assembly_state", n, vn))
-                                        .selected_text(match kind {
-                                            1 => "Not Fitted",
-                                            2 => "Alternate Part",
-                                            _ => "Fitted",
-                                        })
-                                        .show_ui(ui, |ui| {
-                                            ui.selectable_value(&mut kind, 0, "Fitted");
-                                            ui.selectable_value(&mut kind, 1, "Not Fitted");
-                                            ui.selectable_value(&mut kind, 2, "Alternate Part");
-                                        });
-                                    if kind != state {
-                                        v.variation_mut(&row.uid, &row.designator).kind = kind;
-                                        d.row = n;
-                                        d.variant = vn;
-                                    }
-                                }
-                                ui.end_row();
-                            }
-                        });
-                });
-            ui.separator();
-            ui.label("Component Parameters");
-            if let Some(row) = d.rows.get(d.row)
-                && let Some(v) = d.draft.get_mut(d.variant)
-            {
-                let s = row.document.schematic.as_ref().unwrap();
-                let c = s.components.iter().find(|c| c.id == row.component).unwrap();
-                ui.label(format!(
-                    "Parameter Variations: {} — {}",
-                    row.designator, v.name
-                ));
-                let mut params = c.parameters.clone();
-                params.insert("Comment".into(), c.comment.clone());
-                if let Some(change) = v.variation(&row.uid, &row.designator) {
-                    params.extend(change.parameters.clone());
-                }
-                egui::ScrollArea::vertical()
-                    .id_salt("variant_parameters")
-                    .max_height(165.)
-                    .show(ui, |ui| {
-                        egui::Grid::new("variant_parameters_grid")
-                            .striped(true)
-                            .min_col_width(180.)
-                            .show(ui, |ui| {
-                                ui.strong("Parameter Name");
-                                ui.strong("Original Value");
-                                ui.strong("New Value");
-                                ui.end_row();
-                                for name in params.keys() {
-                                    let base = if name.eq_ignore_ascii_case("Comment") {
-                                        c.comment.clone()
-                                    } else {
-                                        c.parameters.get(name).cloned().unwrap_or_default()
-                                    };
-                                    let changed = v
-                                        .variation(&row.uid, &row.designator)
-                                        .and_then(|c| c.parameters.get(name));
-                                    let mut value = changed.unwrap_or(&base).clone();
-                                    ui.label(name);
-                                    ui.label(&base);
-                                    let response =
-                                        ui.add(egui::TextEdit::singleline(&mut value).font(
-                                            if changed.is_some() {
-                                                egui::TextStyle::Monospace
-                                            } else {
-                                                egui::TextStyle::Body
-                                            },
-                                        ));
-                                    if response.changed() {
-                                        v.variation_mut(&row.uid, &row.designator)
-                                            .parameters
-                                            .insert(name.clone(), value);
-                                    }
-                                    if ui.small_button("Reset").clicked() {
-                                        v.variation_mut(&row.uid, &row.designator)
-                                            .parameters
-                                            .remove(name);
-                                    }
-                                    ui.end_row();
-                                }
-                            });
-                    });
-                ui.horizontal(|ui| {
-                    ui.label("Parameter");
-                    ui.text_edit_singleline(&mut d.parameter);
-                    ui.label("Value");
-                    ui.text_edit_singleline(&mut d.value);
-                    if ui.button("Add / Set").clicked() && !d.parameter.trim().is_empty() {
-                        v.variation_mut(&row.uid, &row.designator)
-                            .parameters
-                            .insert(d.parameter.clone(), d.value.clone());
-                    }
-                });
-                if v.variation(&row.uid, &row.designator)
-                    .is_some_and(|c| c.kind == 2)
-                {
-                    ui.horizontal(|ui| {
-                        if ui.button("Choose alternate library…").clicked()
-                            && let Some(path) = self
-                                .file_dialog
-                                .clone()
-                                .add_filter("Schematic Library", &["SchLib", "IntLib"])
-                                .pick_file()
-                        {
-                            match eda_io::altium::library::load(&path) {
-                                Ok(lib) => {
-                                    d.library = Some(lib);
-                                    d.error.clear();
-                                }
-                                Err(e) => d.error = e,
-                            }
-                        }
-                        if let Some(lib) = &d.library {
-                            egui::ComboBox::from_id_salt("variant_alternate_symbol")
-                                .selected_text("Select alternate component")
-                                .show_ui(ui, |ui| {
-                                    for symbol in &lib.symbols {
-                                        if ui.button(&symbol.name).clicked() {
-                                            let result = symbol
-                                                .instantiate(c.part, c.display_mode, s)
-                                                .and_then(|a| {
-                                                    model::alternate_for(s, c, &a)?;
-                                                    Ok(a)
-                                                });
-                                            match result {
-                                                Ok(a) => {
-                                                    let change =
-                                                        v.variation_mut(&row.uid, &row.designator);
-                                                    change.alternate = Some(a);
-                                                    change.fields.insert(
-                                                        "AltLibLink_DesignItemID".into(),
-                                                        symbol.name.clone(),
-                                                    );
-                                                    change.fields.insert(
-                                                        "AlternatePart".into(),
-                                                        symbol.name.clone(),
-                                                    );
-                                                    d.error.clear();
-                                                }
-                                                Err(e) => d.error = e,
-                                            }
-                                            ui.close();
-                                        }
-                                    }
-                                });
-                        }
-                        let text = v
-                            .variation(&row.uid, &row.designator)
-                            .and_then(|c| c.alternate.as_ref())
-                            .and_then(|a| a.components.first())
-                            .map_or("No alternate selected", |c| c.library_reference.as_str());
-                        ui.label(text);
-                    });
-                }
-            }
-            if before != d.draft {
-                let next = std::mem::replace(&mut d.draft, before);
-                if let Err(e) = d.history.commit(&mut d.draft, next) {
-                    d.error = e;
-                }
-            }
-            ui.separator();
-            ui.horizontal(|ui| {
-                if ui.button("Add Variant…").clicked() {
-                    let mut n = d.draft.len() + 1;
-                    while d.draft.iter().any(|v| v.name == format!("Variant {n}")) {
-                        n += 1;
-                    }
-                    let mut next = d.draft.clone();
-                    next.push(Variant::new(format!("Variant {n}")));
-                    if let Err(e) = d.history.commit(&mut d.draft, next) {
-                        d.error = e;
-                    }
-                    d.variant = d.draft.len().saturating_sub(1);
-                }
-                if ui
-                    .add_enabled(!d.draft.is_empty(), egui::Button::new("Duplicate Variant"))
-                    .clicked()
-                {
-                    let mut next = d.draft.clone();
-                    let mut v = next[d.variant].clone();
-                    v.id = Uuid::new_v4().to_string();
-                    v.name = format!("{} Copy", v.name);
-                    next.push(v);
-                    if let Err(e) = d.history.commit(&mut d.draft, next) {
-                        d.error = e;
-                    } else {
-                        d.variant = d.draft.len() - 1;
-                    }
-                }
-                if ui
-                    .add_enabled(!d.draft.is_empty(), egui::Button::new("Delete Variant…"))
-                    .clicked()
-                {
-                    let mut next = d.draft.clone();
-                    next.remove(d.variant);
-                    if let Err(e) = d.history.commit(&mut d.draft, next) {
-                        d.error = e;
-                    }
-                    d.variant = d.variant.min(d.draft.len().saturating_sub(1));
-                }
-                if ui
-                    .add_enabled(!d.draft.is_empty(), egui::Button::new("Edit Variant…"))
-                    .clicked()
-                {
-                    d.name = d.draft[d.variant].name.clone();
-                    d.edit_variant = !d.edit_variant;
-                }
-                if ui
-                    .add_enabled(d.history.can_undo(), egui::Button::new("Undo"))
-                    .clicked()
-                {
-                    d.history.undo(&mut d.draft);
-                    d.variant = d.variant.min(d.draft.len().saturating_sub(1));
-                }
-                if ui
-                    .add_enabled(d.history.can_redo(), egui::Button::new("Redo"))
-                    .clicked()
-                {
-                    d.history.redo(&mut d.draft);
-                    d.variant = d.variant.min(d.draft.len().saturating_sub(1));
-                }
-            });
-            if d.edit_variant && d.variant < d.draft.len() {
-                ui.horizontal(|ui| {
-                    ui.label("Variant name");
-                    ui.text_edit_singleline(&mut d.name);
-                    if ui.button("Rename").clicked() {
-                        let mut next = d.draft.clone();
-                        next[d.variant].name = d.name.trim().into();
-                        if let Err(e) = d.history.commit(&mut d.draft, next) {
-                            d.error = e;
-                        }
-                    }
-                });
-                ui.horizontal(|ui| {
-                    ui.label("Variant parameter");
-                    ui.text_edit_singleline(&mut d.parameter);
-                    ui.text_edit_singleline(&mut d.value);
-                    if ui.button("Set variant parameter").clicked() && !d.parameter.is_empty() {
-                        let mut next = d.draft.clone();
-                        next[d.variant]
-                            .parameters
-                            .insert(d.parameter.clone(), d.value.clone());
-                        if let Err(e) = d.history.commit(&mut d.draft, next) {
-                            d.error = e;
-                        }
-                    }
-                    if ui.button("Remove parameter").clicked() {
-                        let mut next = d.draft.clone();
-                        next[d.variant].parameters.remove(&d.parameter);
-                        if let Err(e) = d.history.commit(&mut d.draft, next) {
-                            d.error = e;
-                        }
-                    }
-                });
-                ui.label(format!("{:?}", d.draft[d.variant].parameters));
-            }
-            ui.horizontal(|ui| {
-                ui.label("Drawing Style");
-                ui.checkbox(&mut self.settings.variant_style.cross, "Cross Not Fitted");
-                ui.checkbox(&mut self.settings.variant_style.dim, "Dim Not Fitted");
-            });
-            if !d.error.is_empty() {
-                ui.colored_label(Color32::LIGHT_RED, &d.error);
-            }
-            ui.horizontal(|ui| {
-                if ui.button("OK").clicked() {
-                    accept = true;
-                }
-                if ui.button("Cancel").clicked() {
-                    keep = false;
-                }
-            });
-        });
-        if accept {
-            let result = model::validate(&d.draft).and_then(|_| {
-                let i = self
-                    .projects
-                    .iter()
-                    .position(|p| p.path == d.project)
-                    .ok_or("Project was closed")?;
-                if self.projects[i].variants != d.original {
-                    return Err("Variants changed; reopen the manager".into());
-                }
-                self.apply_variants(i, d.draft.clone())
-            });
-            match result {
-                Ok(()) => {
-                    self.variants.cache = None;
-                    keep = false;
-                }
-                Err(e) => d.error = e,
-            }
-        }
-        if keep {
-            self.variants.dialog = Some(d);
         }
     }
 }

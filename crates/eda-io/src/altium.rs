@@ -250,7 +250,18 @@ pub fn load_project(path: &Path) -> Result<Project, String> {
                 .filter(|p| resolve_path(base, p).is_file())
                 .count()
         };
-        let (t, encoding) = if score(&a) > score(&b) {
+        let cyrillic_word = a
+            .chars()
+            .scan(0usize, |run, ch| {
+                *run = if ('\u{0400}'..='\u{04ff}').contains(&ch) {
+                    *run + 1
+                } else {
+                    0
+                };
+                Some(*run)
+            })
+            .any(|run| run >= 3);
+        let (t, encoding) = if score(&a) > score(&b) || score(&a) == score(&b) && cyrillic_word {
             (a, "Windows-1251")
         } else {
             (b, "Windows-1252")

@@ -47,8 +47,20 @@ pub fn absolute(base: &Path, name: &str) -> PathBuf {
 }
 
 fn reference(base: &Path, path: &Path) -> String {
-    path.strip_prefix(base)
-        .unwrap_or(path)
+    // Rust canonicalization uses Windows verbatim paths. Native Altium project
+    // references require ordinary Win32 paths, including after Save Project As.
+    fn native(path: &Path) -> PathBuf {
+        let value = path.to_string_lossy();
+        if let Some(value) = value.strip_prefix("\\\\?\\UNC\\") {
+            PathBuf::from(format!("\\\\{value}"))
+        } else {
+            PathBuf::from(value.strip_prefix("\\\\?\\").unwrap_or(&value))
+        }
+    }
+    let path = native(path);
+    let base = native(base);
+    path.strip_prefix(&base)
+        .unwrap_or(&path)
         .to_string_lossy()
         .replace('/', "\\")
 }
@@ -63,9 +75,10 @@ pub fn create_project(path: &Path) -> Result<Project, String> {
 
 /// Rebase every document reference, preserving options, variants and unknown keys.
 pub fn save_project_as(project: &Project, destination: &Path) -> Result<Project, String> {
+    let (variants, library) = crate::project_variants::prepare_save_as(project, destination)?;
     let text = crate::project_variants::rewrite(
         &decode(&altium::read_bounded(&project.path)?)?,
-        &project.variants,
+        &variants,
     )?;
     let old_base = project.path.parent().unwrap_or(Path::new("."));
     let new_base = destination.parent().unwrap_or(Path::new("."));
@@ -97,7 +110,13 @@ pub fn save_project_as(project: &Project, destination: &Path) -> Result<Project,
         .into_iter()
         .chain(output.encode_utf16().flat_map(u16::to_le_bytes))
         .collect();
-    write_atomic(destination, &bytes)?;
+    let expected_library = std::fs::read(destination.with_extension("PrjPcbVariants")).ok();
+    crate::project_variants::write_bundle(
+        destination,
+        &bytes,
+        library.as_deref(),
+        expected_library.as_deref(),
+    )?;
     altium::load_project(destination)
 }
 
@@ -233,6 +252,11 @@ mod tests {
         text.push_str("\r\n[Unknown]\r\nFuture=42\r\n");
         std::fs::write(&p, text).unwrap();
         let saved = save_project_as(&project, &dest.join("copy.PrjPcb")).unwrap();
+        assert!(
+            !decode(&std::fs::read(&saved.path).unwrap())
+                .unwrap()
+                .contains("DocumentPath=\\\\?\\")
+        );
         assert_eq!(saved.documents[0].path, sheet.canonicalize().unwrap());
         assert!(saved.documents[0].exists);
         assert!(

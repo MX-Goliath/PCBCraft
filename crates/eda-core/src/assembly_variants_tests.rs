@@ -201,3 +201,191 @@ fn variant_parameters_override_sheet_special_strings_without_component_variation
     );
     assert_eq!(d.schematic.unwrap().sheet.parameters["Title"], "Base");
 }
+
+#[test]
+fn bulk_edits_are_atomic_and_history_restores_all_components() {
+    let v = Variant::new("Assembly".into());
+    let id = v.id.clone();
+    let components = vec![
+        ComponentRef {
+            uid: "\\LEFT\\R".into(),
+            designator: "R1".into(),
+        },
+        ComponentRef {
+            uid: "\\RIGHT\\R".into(),
+            designator: "R1".into(),
+        },
+    ];
+    let mut current = vec![v];
+    let original = current.clone();
+    let next = edited(
+        &current,
+        Edit::SetKind {
+            id: id.clone(),
+            components: components.clone(),
+            kind: 1,
+        },
+    )
+    .unwrap();
+    let mut history = History::default();
+    history.commit(&mut current, next).unwrap();
+    assert_eq!(current[0].variations.len(), 2);
+    assert!(current[0].variations.iter().all(|v| v.kind == 1));
+    let before = current.clone();
+    assert!(
+        edited(
+            &current,
+            Edit::SetKind {
+                id: id.clone(),
+                components: components.clone(),
+                kind: 2
+            }
+        )
+        .is_err()
+    );
+    assert_eq!(current, before);
+    history.undo(&mut current);
+    assert_eq!(current, original);
+    history.redo(&mut current);
+    assert_eq!(current, before);
+    let next = edited(
+        &current,
+        Edit::SetParameter {
+            id: id.clone(),
+            components: components.clone(),
+            name: "Value".into(),
+            value: Some("22k".into()),
+        },
+    )
+    .unwrap();
+    let next = edited(
+        &next,
+        Edit::SetParameter {
+            id: id.clone(),
+            components: components.clone(),
+            name: "value".into(),
+            value: Some("33k".into()),
+        },
+    )
+    .unwrap();
+    assert!(
+        next[0]
+            .variations
+            .iter()
+            .all(|v| v.parameters.len() == 1 && v.parameters["value"] == "33k")
+    );
+    let next = edited(&next, Edit::Reset { id, components }).unwrap();
+    assert!(next[0].variations.is_empty());
+}
+
+#[test]
+fn exact_uid_wins_and_stale_links_require_explicit_unambiguous_rebinding() {
+    let mut v = Variant::new("A".into());
+    v.variations.push(Variation {
+        designator: "R1".into(),
+        kind: 1,
+        ..Default::default()
+    });
+    v.variations.push(Variation {
+        uid: "\\EXACT".into(),
+        designator: "R1".into(),
+        kind: 0,
+        ..Default::default()
+    });
+    assert_eq!(v.variation("exact", "R1").unwrap().kind, 0);
+    let components = vec![ComponentRef {
+        uid: "\\NEW".into(),
+        designator: "R1".into(),
+    }];
+    assert_eq!(unresolved(&v, &components), vec![1]);
+    let id = v.id.clone();
+    let next = edited(
+        &[v],
+        Edit::Rebind {
+            id,
+            index: 1,
+            component: components[0].clone(),
+        },
+    )
+    .unwrap();
+    assert!(unresolved(&next[0], &components).is_empty());
+    let mut bad = next.clone();
+    bad[0].name = " [No Variations] ".into();
+    assert!(validate(&bad).is_err());
+    bad = next;
+    bad[0].parameters = BTreeMap::from([("A".into(), "1".into()), ("a".into(), "2".into())]);
+    assert!(validate(&bad).is_err());
+}
+
+#[test]
+fn display_style_mesh_text_and_parameter_font_are_read_only_projections() {
+    let d = fixture();
+    let original = d.clone();
+    let c = &d.schematic.as_ref().unwrap().components[0];
+    let mut v = Variant::new("Assembly".into());
+    let change = v.variation_mut(&component_uid(d.schematic.as_ref().unwrap(), c, ""), "R1");
+    change.kind = 1;
+    change.parameters.insert("Value".into(), "33k".into());
+    let style = DisplayStyle {
+        cross: false,
+        mesh: true,
+        dim: false,
+        not_fitted_text: "DNP".into(),
+        parameter_suffix: "*".into(),
+        parameter_bold: true,
+        ..Default::default()
+    };
+    let s = project(&d, Some(&v), "", &style)
+        .unwrap()
+        .schematic
+        .unwrap();
+    assert!(
+        s.primitives
+            .iter()
+            .any(|p| matches!(&p.kind,SchPrimitiveKind::Text{text,..} if text=="DNP"))
+    );
+    assert!(s.primitives.iter().any(|p|matches!(&p.kind,SchPrimitiveKind::Text{text,font,..} if text=="33k*"&&s.fonts[*font].bold&&s.fonts[*font].italic)));
+    let style = DisplayStyle {
+        modify_parameters: false,
+        cross: false,
+        ..Default::default()
+    };
+    let s = project(&d, Some(&v), "", &style)
+        .unwrap()
+        .schematic
+        .unwrap();
+    assert!(s.primitives.iter().any(|p|matches!(&p.kind,SchPrimitiveKind::Text{text,font,..} if text=="33k"&&!s.fonts[*font].italic)));
+    assert_eq!(d, original);
+}
+
+#[test]
+fn assembly_metadata_uses_alternate_values_and_excludes_not_fitted_parts() {
+    let d = fixture();
+    let s = d.schematic.as_ref().unwrap();
+    let c = &s.components[0];
+    let mut v = Variant::new("BOM".into());
+    let change = v.variation_mut(&component_uid(s, c, ""), "R1");
+    change.parameters.insert("value".into(), "47k".into());
+    assert_eq!(
+        assembly_component(s, c, Some(&v), "")
+            .unwrap()
+            .unwrap()
+            .comment,
+        "47k"
+    );
+    v.variations[0].kind = 1;
+    assert!(assembly_component(s, c, Some(&v), "").unwrap().is_none());
+    let mut alternate = edit::extract(s, c.id).unwrap();
+    alternate.components[0].library_reference = "Alternate".into();
+    alternate.components[0]
+        .parameters
+        .insert("Value".into(), "100k".into());
+    v.variations[0].alternate = Some(alternate);
+    v.variations[0].kind = 2;
+    v.variations[0].parameters.clear();
+    let next = assembly_component(s, c, Some(&v), "").unwrap().unwrap();
+    assert_eq!(next.library_reference, "Alternate");
+    assert_eq!(next.comment, "100k");
+    assert_eq!(next.id, c.id);
+    assert_eq!(next.designator, "R1");
+}
