@@ -19,6 +19,34 @@ the release binary. Release compiler paths are remapped to avoid publishing
 the local home-account path. Package validation and real-window checks are
 recorded in the subsequent release verification checkpoint.
 
+Local release verification completed on Windows x64 with Rust 1.90.0 (GNU).
+The packages were built from clean source revision
+`76799eb4dc90ded6b01776ee10092cf448207a4a`; the v0.0.1 tag identifies that revision.
+Format, strict workspace/all-target Clippy and all 854 workspace tests pass.
+Test debug symbols and incremental compilation were disabled to bound disk use;
+test coverage was unchanged. All 12 release/privacy Python tests pass, and the
+full reachable-history privacy scan passes for 2339 files/objects.
+
+Both packages include build metadata and license notices. The portable archive
+passes CRC, path-safety, version/revision, checksum, PE import and local-account
+path checks, with no user settings included. The normal per-user installer
+completed successfully, installed an uninstaller, omitted portable.flag, and
+installed exactly the same executable as the portable archive. Existing user
+settings were unchanged. The final interactive GUI smoke check was stopped by
+the user through Computer Use; no final visual/runtime check is claimed.
+
+- Installer: 14088212 bytes, SHA-256
+  `32e66062fe4ed81a35757cc9b856fd3718381d79d4db46e1cde6591a4070a95f`.
+- Portable ZIP: 20442040 bytes, SHA-256
+  `8802239ea933e168a8573eb0df8ec7481eb7a1e0eae52f72dee609c70f127514`.
+
+The release is Windows-only and unsigned. GitHub remains private, so downloads
+require authentication and the application's anonymous updater cannot access
+this release. Publication uses the GitHub API with existing local credentials;
+GitHub Actions is not invoked. Old generated example binaries were retained and
+NTFS-compressed after automatic review rejected recursive deletion; no source
+examples were removed.
+
 ### Authorized history cleanup — November 8, 2026
 
 At the user's explicit request, rewrote the repository history to remove the
