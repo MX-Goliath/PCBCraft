@@ -95,10 +95,12 @@ def package_macos(metadata, staging, dist, app_version):
     return output
 
 
-def package_windows(staging, dist, app_version, iscc, no_build):
+def package_windows(staging, dist, app_version, iscc, no_build, target=None):
     command = [sys.executable, str(ROOT / "scripts/build-windows-portable.py")]
     if no_build:
         command.append("--no-build")
+    if target:
+        command += ["--target", target]
     run(*command)
     # Only our freshly generated archive is extracted, never a downloaded update.
     with zipfile.ZipFile(dist / f"PCBCraft-{app_version}-windows-x64-portable.zip") as archive:
@@ -114,6 +116,8 @@ def main():
     parser.add_argument("--format", choices=["windows-installer", "deb", "macos"], required=True)
     parser.add_argument("--no-build", action="store_true")
     parser.add_argument("--iscc", default="ISCC.exe")
+    parser.add_argument("--target", choices=["x86_64-pc-windows-msvc", "x86_64-pc-windows-gnu"],
+                        help="Explicit Rust target for Windows packaging")
     args = parser.parse_args()
     required = {"windows-installer": "Windows", "deb": "Linux", "macos": "Darwin"}[args.format]
     if platform.system() != required:
@@ -128,7 +132,7 @@ def main():
         staging = Path(temporary)
         app_version = version()
         if args.format == "windows-installer":
-            output = package_windows(staging, dist, app_version, args.iscc, args.no_build)
+            output = package_windows(staging, dist, app_version, args.iscc, args.no_build, args.target)
         elif args.format == "deb":
             output = package_deb(cargo_metadata(), staging, dist, app_version)
         else:

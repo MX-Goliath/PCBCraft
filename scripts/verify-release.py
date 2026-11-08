@@ -8,11 +8,14 @@ import re
 from release_common import version
 
 
-def filenames(app_version):
-    return [f"PCBCraft-{app_version}-{suffix}" for suffix in (
-        "windows-x64-setup.exe", "windows-x64-portable.zip", "linux-amd64.deb",
-        "x86_64.AppImage", "macos-arm64.dmg", "macos-x64.dmg",
-    )]
+def filenames(app_version, platform="all"):
+    suffixes = {
+        "windows": ("windows-x64-setup.exe", "windows-x64-portable.zip"),
+        "linux": ("linux-amd64.deb", "x86_64.AppImage"),
+        "macos": ("macos-arm64.dmg", "macos-x64.dmg"),
+    }
+    selected = sum(suffixes.values(), ()) if platform == "all" else suffixes[platform]
+    return [f"PCBCraft-{app_version}-{suffix}" for suffix in selected]
 
 
 def verify_tag(tag, app_version, allow_branch=False):
@@ -24,8 +27,8 @@ def verify_tag(tag, app_version, allow_branch=False):
             raise ValueError(f"Tag {tag!r} does not match workspace version v{app_version}")
 
 
-def verify_artifacts(directory, app_version):
-    expected = filenames(app_version)
+def verify_artifacts(directory, app_version, platform="all"):
+    expected = filenames(app_version, platform)
     expected_files = set(expected + [name + ".sha256" for name in expected])
     actual = {path.name for path in directory.iterdir() if path.is_file()}
     if actual != expected_files:
@@ -46,11 +49,13 @@ def main():
     parser.add_argument("--tag", required=True)
     parser.add_argument("--allow-branch", action="store_true", help="Permit a branch name for workflow_dispatch instead of requiring a release tag")
     parser.add_argument("--artifacts", type=Path)
+    parser.add_argument("--platform", choices=["all", "windows", "linux", "macos"], default="all",
+                        help="Verify only the explicitly selected platform; default requires every platform")
     args = parser.parse_args()
     app_version = version()
     verify_tag(args.tag, app_version, args.allow_branch)
     if args.artifacts:
-        verify_artifacts(args.artifacts, app_version)
+        verify_artifacts(args.artifacts, app_version, args.platform)
     print(f"Release validation passed for {app_version}")
 
 

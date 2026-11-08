@@ -65,19 +65,25 @@ project files. Existing downloaded versions can be removed manually from cache.
 
 1. Set `[workspace.package].version` in `Cargo.toml`; update `Cargo.lock`.
 2. Run the normal format, strict Clippy and workspace test gates.
-3. Push a matching `vMAJOR.MINOR.PATCH` tag when ready to create a release draft.
-4. `.github/workflows/release.yml` builds/tests on Windows, Ubuntu 22.04 and native
-   macOS Apple Silicon/Intel runners. Windows produces an Inno Setup per-user
-   installer and a portable ZIP; Linux produces DEB and AppImage; macOS produces
-   an app bundle in DMG. Every asset has a SHA-256 sidecar and license notices.
-5. A final job requires all six packages and checks every checksum, then creates
-   one **draft** GitHub Release with generated notes. Review the packages and
-   publish the draft as a stable release to make it visible to the updater.
+3. Build the requested packages locally. Windows produces an Inno Setup per-user
+   installer and a portable ZIP. Include a SHA-256 sidecar and license notices.
+4. Verify the exact package set, tag and embedded version. A Windows-only release
+   must explicitly select `--platform windows`; the default verifier requires
+   all six Windows/Linux/macOS packages.
+5. Commit the release sources, build/package from that clean revision, push a
+   matching `vMAJOR.MINOR.PATCH` tag and upload only the verified assets to a
+   GitHub Release. Publish after checking the uploaded sizes and hashes.
 
-`workflow_dispatch` on a branch builds downloadable CI artifacts without creating
-a release. Version tags must exactly match the workspace version. Prerelease tags
-are intentionally outside this stable-channel workflow. Publishing a partial
-platform set is refused. The workflow embeds `github.repository` as
+Both workflows use `workflow_dispatch` only: pushing commits/tags or publishing
+a release does not start GitHub Actions. Version 0.0.1 Windows packages are built
+and uploaded locally without using Actions minutes.
+
+The optional release workflow builds/tests all platforms on Windows, Ubuntu 22.04
+and native macOS runners when explicitly dispatched. A branch dispatch produces
+downloadable CI artifacts; a tag dispatch requires all six packages and creates
+a draft release. Version tags must exactly match the workspace version.
+Prerelease tags are outside this stable-channel workflow.
+The workflow embeds `github.repository` as
 `PCBCRAFT_UPDATE_REPOSITORY`; for a local fork/channel override, set that environment
 variable to `owner/repository` **when compiling**, not when launching the app.
 The public channel needs no additional backend or release credentials in clients.
@@ -95,11 +101,16 @@ python scripts/build-release.py --format deb
 python scripts/build-appimage.py
 python scripts/build-release.py --format macos
 python -m unittest discover -s scripts -p test_release.py
-python scripts/verify-release.py --tag v0.1.0 --artifacts dist
+python scripts/verify-release.py --tag v0.0.1 --artifacts dist
+python scripts/verify-release.py --tag v0.0.1 --platform windows --artifacts dist
 ```
 
-`--no-build` packages an existing native release binary. Windows requires MSVC,
-redistributable CRT and Inno Setup 6 (`--iscc` can specify its path). DEB needs
+`--no-build` packages an existing native release binary. Windows supports native
+MSVC or GNU toolchains and needs Inno Setup 6 (`--iscc` can specify its path).
+The portable metadata records the actual target; `--target` selects an explicit
+Windows x64 target and its corresponding Cargo output directory. MSVC runtime
+DLLs are bundled when imported, using the redistributable CRT directory.
+DEB needs
 `dpkg-dev`, `binutils`, OpenSSL development headers and the documented X11/Wayland
 libraries; runtime dependencies are generated with `dpkg-shlibdeps` plus dlopened
 windowing libraries. AppImage uses the existing bundler, now also including Rust

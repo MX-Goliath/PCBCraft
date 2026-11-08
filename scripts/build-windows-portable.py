@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build a Windows x64 portable ZIP with Python 3.11+ and the MSVC toolchain."""
+"""Build a Windows x64 portable ZIP with Python 3.11+ and a native Rust toolchain."""
 
 import argparse
 from datetime import datetime, timezone
@@ -102,13 +102,22 @@ def bundle_dependencies(binary, destination, crt_dir):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--no-build", action="store_true")
+    parser.add_argument("--target", choices=["x86_64-pc-windows-msvc", "x86_64-pc-windows-gnu"],
+                        help="Explicit Cargo target; defaults to the current Rust host")
     parser.add_argument("--crt-dir", type=Path, help="MSVC redistributable x64 CRT directory")
     args = parser.parse_args()
     if platform.system() != "Windows" or platform.machine().lower() not in ("amd64", "x86_64"):
-        parser.error("Run on Windows x64 with the native MSVC Rust toolchain")
+        parser.error("Run on Windows x64 with a native Rust toolchain")
+    host = next(line.removeprefix("host: ") for line in run("rustc", "-vV").stdout.splitlines() if line.startswith("host: "))
+    target = args.target or host
+    if target not in ("x86_64-pc-windows-msvc", "x86_64-pc-windows-gnu"):
+        parser.error("A native Windows x64 Rust target is required")
     if not args.no_build:
-        subprocess.run(["cargo", "build", "--locked", "--release", "-p", "eda-app", "--bin", "pcbcraft"], cwd=ROOT, check=True)
-    metadata = json.loads(run("cargo", "metadata", "--locked", "--format-version=1", "--filter-platform", "x86_64-pc-windows-msvc").stdout)
+        command = ["cargo", "build", "--locked", "--release", "-p", "eda-app", "--bin", "pcbcraft"]
+        if args.target:
+            command += ["--target", args.target]
+        subprocess.run(command, cwd=ROOT, check=True)
+    metadata = json.loads(run("cargo", "metadata", "--locked", "--format-version=1", "--filter-platform", target).stdout)
     version = tomllib.loads((ROOT / "Cargo.toml").read_text(encoding="utf-8"))["workspace"]["package"]["version"]
     name = f"PCBCraft-{version}-windows-x64-portable"
     dist = ROOT / "dist"
@@ -118,7 +127,10 @@ def main():
         folder = Path(temporary) / name
         folder.mkdir()
         binary = folder / "pcbcraft.exe"
-        shutil.copy2(Path(metadata["target_directory"]) / "release/pcbcraft.exe", binary)
+        build_dir = Path(metadata["target_directory"])
+        if args.target:
+            build_dir /= args.target
+        shutil.copy2(build_dir / "release/pcbcraft.exe", binary)
         dependencies = bundle_dependencies(binary, folder, args.crt_dir or find_crt())
         (folder / "portable.flag").write_text("Keep this file beside pcbcraft.exe to store settings in Data/app.ron.\n", encoding="utf-8")
         (folder / "Data").mkdir()
@@ -131,19 +143,19 @@ def main():
             encoding="ascii",
         )
         (folder / "README.txt").write_text(
-            "PCBCraft для Windows x64 — portable\n\n"
-            "Распакуйте всю папку в доступный для записи каталог и запустите pcbcraft.exe.\n"
-            "Установка Rust, Altium или Visual C++ Redistributable не требуется.\n"
-            "Настройки сохраняются в Data/app.ron рядом с программой, пока присутствует portable.flag.\n"
-            "Для переноса настроек копируйте всю папку. Удаление portable.flag включает обычное хранилище AppData.\n"
-            "Проекты открываются через File > Open или передачей пути первым аргументом.\n"
-            "Нужны Windows 10/11 x64 и драйвер GPU с поддержкой используемого wgpu графического backend.\n\n"
-            "Диагностика открытия: сначала закройте PCBCraft, затем запустите Diagnose.cmd\n"
-            "и откройте плату (либо перетащите PCB-файл на Diagnose.cmd). Этапы загрузки\n"
-            "и обработки STEP сохраняются в Data/diagnostic.log.\n\n"
-            "Это текущая версия разработки. Сохранение PcbDoc/SchDoc поддерживает не все изменения;\n"
-            "работайте с копиями исходных проектов. Подробности: docs/pcb-update/DESIGN_SYNC.md\n"
-            "в исходном репозитории PCBCraft.\n",
+            "PCBCraft for Windows x64 - portable\n\n"
+            "Extract the entire folder to a writable directory and run pcbcraft.exe.\n"
+            "Rust, Altium and a separate Visual C++ Redistributable installation are not required.\n"
+            "Settings are saved in Data/app.ron while portable.flag is present beside the executable.\n"
+            "Copy the entire folder to transfer settings. Removing portable.flag enables normal AppData storage.\n"
+            "Open projects through File > Open or pass their path as the first argument.\n"
+            "Requires Windows 10/11 x64 and a GPU driver supporting the selected wgpu backend.\n\n"
+            "Import diagnostics: close PCBCraft, run Diagnose.cmd and open a board\n"
+            "(or drop a PCB file onto Diagnose.cmd). Import and STEP processing stages\n"
+            "are recorded in Data/diagnostic.log.\n\n"
+            "This is a development release. PcbDoc/SchDoc saving supports a limited subset of edits;\n"
+            "work with copies of source projects. See docs/pcb-update/DESIGN_SYNC.md\n"
+            "in the PCBCraft source repository for limitations.\n",
             encoding="utf-8-sig",
         )
         notices(metadata, folder / "licenses")
@@ -152,7 +164,7 @@ def main():
         (folder / "build-info.json").write_text(json.dumps({
             "version": version, "revision": revision, "working_tree_modified": dirty,
             "built_at_utc": datetime.now(timezone.utc).isoformat(),
-            "target": "x86_64-pc-windows-msvc", "profile": "release", "dependencies": dependencies,
+            "target": target, "profile": "release", "dependencies": dependencies,
             "rustc": run("rustc", "--version").stdout.strip(),
             "executable_sha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
         }, indent=2), encoding="utf-8")

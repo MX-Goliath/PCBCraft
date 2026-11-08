@@ -1,5 +1,24 @@
 # PCBCraft implementation plan
 
+### Local Windows release 0.0.1 — November 8, 2026
+
+The user requested Windows installer and portable packages at version 0.0.1,
+built locally and uploaded to GitHub Releases without using GitHub Actions.
+Updated workspace/lockfile versions and current package examples. Both GitHub
+workflows remain manual-dispatch only.
+
+Windows packaging now supports the installed native GNU toolchain as well as
+MSVC, records the actual target, and supports explicit target output directories.
+The release verifier has an explicit Windows-only mode while preserving the
+default requirement for the complete six-package cross-platform set. Regression
+tests cover package-set integrity, target metadata and omission of user settings.
+Portable instructions are English; installer mode omits portable.flag.
+
+The local build runs format, strict Clippy and workspace tests before compiling
+the release binary. Release compiler paths are remapped to avoid publishing
+the local home-account path. Package validation and real-window checks are
+recorded in the subsequent release verification checkpoint.
+
 ### Authorized history cleanup — November 8, 2026
 
 At the user's explicit request, rewrote the repository history to remove the
