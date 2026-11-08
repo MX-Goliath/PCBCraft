@@ -1,5 +1,25 @@
 # PCBCraft implementation plan
 
+### Authorized history cleanup — November 8, 2026
+
+At the user's explicit request, rewrote the repository history to remove the
+remaining private reference labels and normalize author/committer identities to
+MX-Goliath with the public GitHub no-reply address. Preserved all 149 historical
+commits and all local references, including two tree-only tool checkpoints.
+Historical package publisher/maintainer names were normalized as well.
+
+The rewritten tip has exactly the same tracked-file tree as the previously
+validated release. No Rust source or algorithm behavior changed. A complete
+pre-rewrite bundle and commit/ref mappings are retained locally under ignored
+target/history-cleanup; they must not be published.
+
+The rewritten reachable objects pass the privacy scanner and a separate search
+for the previously identified private labels. The earlier pre-publication note
+about labels remaining in reachable history is superseded by this cleanup.
+GitHub main/master updates use explicit force-with-lease checks against the
+observed remote tips. Other clones and server-retained objects are outside the
+rewritten branch history and must not be merged back into it.
+
 ### Pre-publication privacy review — November 8, 2026
 
 Reviewed tracked files, synthetic fixtures, contributor metadata and all locally

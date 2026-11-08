@@ -36,3 +36,9 @@ After a history cleanup, existing clones must be replaced or reset to the cleane
 history before publishing further changes. Merging an old branch can reintroduce
 removed content. Remote caches, forks, other clones, build logs and downloaded
 artifacts are separate from reachable Git history and need separate handling.
+
+On November 8, 2026, the user authorized rewriting the remaining historical
+private reference labels and normalizing repository author/committer identities
+to MX-Goliath. All 149 historical commits were preserved, and the application
+source at the rewritten tip was unchanged. The complete pre-rewrite bundle is
+local-only in ignored `target/history-cleanup/`; never publish that backup.
