@@ -25,7 +25,7 @@ struct Patch {
     authored: BTreeMap<u32, Uuid>,
 }
 
-/// Rearrange complete native owner subtrees, never individual component records.
+/// Keep owner subtrees together and order drawable children inside components.
 fn drawing_order(
     output: &mut [(u8, Vec<u8>, Option<u32>)],
     source: &Schematic,
@@ -44,7 +44,12 @@ fn drawing_order(
         .filter(|p| source.primitive(p.id).is_some())
         .map(|p| p.id)
         .collect();
-    if old == desired {
+    if old == desired
+        && target
+            .primitives
+            .iter()
+            .all(|p| source.primitive(p.id).is_some())
+    {
         return Ok(());
     }
     let additional = |id: Uuid| {
@@ -107,11 +112,37 @@ fn drawing_order(
             }
         }
     }
+    let mut child_ranks = BTreeMap::new();
+    for (rank, p) in target
+        .primitives
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| p.component.is_some() && p.presentation.parent.is_none())
+    {
+        let index = if p.source_index == eda_core::schematic_edit::AUTHORED {
+            patch
+                .authored
+                .iter()
+                .find_map(|(n, id)| (*id == p.id).then_some(*n))
+        } else {
+            Some(p.source_index)
+        };
+        if let Some(index) = index {
+            child_ranks.insert(index, rank);
+        }
+    }
     let rank = |index: Option<u32>| {
         let mut index = index?;
+        let mut child = None;
         for _ in 0..64 {
             if let Some(rank) = ranks.get(&index) {
-                return Some(*rank);
+                return Some((
+                    *rank,
+                    child.map_or(0, |_| 1),
+                    child
+                        .and_then(|c| child_ranks.get(&c).copied())
+                        .unwrap_or(usize::MAX),
+                ));
             }
             let f = if (index as usize) < patch.records.len() {
                 patch.records[index as usize].as_ref()?
@@ -122,11 +153,14 @@ fn drawing_order(
             if owner <= 0 || owner == index as i64 {
                 return None;
             }
+            child = Some(index);
             index = owner as u32;
         }
         None
     };
-    output.sort_by_key(|(_, _, index)| rank(*index).map_or((0, 0), |rank| (1, rank)));
+    output.sort_by_key(|(_, _, index)| {
+        rank(*index).map_or((0, 0, 0, 0), |(root, child, order)| (1, root, child, order))
+    });
     Ok(())
 }
 
@@ -246,22 +280,23 @@ fn hierarchy_changes(
                 old.kind,
                 K::SheetSymbol { .. } | K::SheetEntry { .. } | K::Port { .. }
             ) || old.presentation.parent.is_some()
-                || old.component.is_none()
-                    && matches!(
-                        old.kind,
-                        K::Polyline { .. }
-                            | K::Text { .. }
-                            | K::PowerPort { .. }
-                            | K::Rectangle { .. }
-                            | K::Arc { .. }
-                            | K::TextFrame { .. }
-                            | K::Bezier { .. }
-                            | K::NoErc { .. }
-                            | K::Blanket { .. }
-                            | K::ParameterSet { .. }
-                            | K::CompileMask { .. }
-                            | K::Image { .. }
-                    ))
+                || matches!(
+                    old.kind,
+                    K::Polyline { .. }
+                        | K::Text { .. }
+                        | K::PowerPort { .. }
+                        | K::Rectangle { .. }
+                        | K::Arc { .. }
+                        | K::TextFrame { .. }
+                        | K::Bezier { .. }
+                        | K::NoErc { .. }
+                        | K::Blanket { .. }
+                        | K::ParameterSet { .. }
+                        | K::CompileMask { .. }
+                        | K::Image { .. }
+                        | K::Pin { .. }
+                        | K::Ieee { .. }
+                ))
         {
             patch.remove_tree(old.source_index as usize);
         }
@@ -849,6 +884,36 @@ fn hierarchy_changes(
     Ok(())
 }
 
+// Explicit parameter objects are encoded by hierarchy_changes. Treat their
+// names as already represented so the scalar map does not add a second hidden
+// record for a newly authored Comment or an added library parameter.
+fn parameter_baseline(old: &Fields, scene: &Schematic, owner: Option<Uuid>) -> Fields {
+    let mut before = old.clone();
+    for p in scene
+        .primitives
+        .iter()
+        .chain(&scene.parameter_objects)
+        .filter(|p| {
+            p.component == owner
+                && p.presentation.parent.is_none()
+                && (p.presentation.record_type == 41
+                    || p.text_role == Some(eda_core::schematic::TextRole::Comment))
+        })
+    {
+        if let K::Text { text, .. } = &p.kind
+            && !before
+                .keys()
+                .any(|name| name.eq_ignore_ascii_case(&p.presentation.name))
+        {
+            before.insert(
+                p.presentation.name.clone(),
+                p.presentation.raw_text.as_ref().unwrap_or(text).clone(),
+            );
+        }
+    }
+    before
+}
+
 fn parameters(
     patch: &mut Patch,
     source: &Schematic,
@@ -1219,6 +1284,63 @@ fn changes(original: &Document, doc: &Document) -> Result<Patch, String> {
         if old.description != c.description {
             set(f, "COMPONENTDESCRIPTION", c.description.clone());
         }
+        for (key, before, after) in [
+            (
+                "SOURCELIBRARYNAME",
+                old.settings.source.as_str(),
+                c.settings.source.as_str(),
+            ),
+            (
+                "DESIGNITEMID",
+                old.settings.design_item_id.as_str(),
+                c.settings.design_item_id.as_str(),
+            ),
+        ] {
+            if before != after {
+                set(f, key, after.to_owned());
+            }
+        }
+        for (key, before, after) in [
+            (
+                "DESIGNATORLOCKED",
+                old.settings.designator_locked,
+                c.settings.designator_locked,
+            ),
+            (
+                "PARTIDLOCKED",
+                old.settings.part_locked,
+                c.settings.part_locked,
+            ),
+        ] {
+            if before != after {
+                set(f, key, boolean(after));
+            }
+        }
+        if old.settings.part_count != c.settings.part_count {
+            set(f, "PARTCOUNT", (c.settings.part_count + 1).to_string());
+        }
+        if old.settings.display_mode_names != c.settings.display_mode_names {
+            f.retain(|key, _| {
+                !key.to_ascii_uppercase()
+                    .starts_with("CUSTOMDISPLAYMODENAME")
+            });
+            for (mode, name) in &c.settings.display_mode_names {
+                set(f, &format!("CUSTOMDISPLAYMODENAME{mode}"), name.clone());
+            }
+            set(
+                f,
+                "DISPLAYMODECOUNT",
+                (c.settings
+                    .display_mode_names
+                    .keys()
+                    .copied()
+                    .max()
+                    .unwrap_or(c.display_mode)
+                    .max(c.display_mode)
+                    + 1)
+                .to_string(),
+            );
+        }
         if old.settings.kind != c.settings.kind {
             if f.contains_key("COMPONENTKINDVERSION2") || c.settings.kind >= 5 {
                 set(f, "COMPONENTKINDVERSION2", c.settings.kind.to_string());
@@ -1262,7 +1384,7 @@ fn changes(original: &Document, doc: &Document) -> Result<Patch, String> {
             &mut patch,
             source,
             old.source_index,
-            &old.parameters,
+            &parameter_baseline(&old.parameters, target, Some(c.id)),
             &c.parameters,
         )?;
         models(&mut patch, source, old, c)?;
@@ -1287,7 +1409,7 @@ fn changes(original: &Document, doc: &Document) -> Result<Patch, String> {
         &mut patch,
         source,
         0,
-        &source.sheet.parameters,
+        &parameter_baseline(&source.sheet.parameters, target, None),
         &target.sheet.parameters,
     )?;
     for p in &target.primitives {
@@ -1316,18 +1438,7 @@ fn changes(original: &Document, doc: &Document) -> Result<Patch, String> {
             .iter()
             .find_map(|(index, id)| (*id == c.id).then_some(*index))
             .unwrap();
-        let drawn: Fields = target
-            .primitives
-            .iter()
-            .filter(|p| p.component == Some(c.id) && p.presentation.record_type == 41)
-            .filter_map(|p| {
-                if let K::Text { text, .. } = &p.kind {
-                    Some((p.presentation.name.clone(), text.clone()))
-                } else {
-                    None
-                }
-            })
-            .collect();
+        let drawn = parameter_baseline(&Fields::new(), target, Some(c.id));
         parameters(&mut patch, source, index, &drawn, &c.parameters)?;
         let mut blank = c.clone();
         blank.source_index = index;
@@ -1595,6 +1706,18 @@ fn verify(
         }
     });
     scene.parameter_objects.extend(restored);
+    // These non-drawing objects follow native owner subtrees, not an independent
+    // drawing order. Match only their collection order after restoring identities;
+    // every object's ownership, value and presentation is still compared below.
+    let parameter_order: BTreeMap<_, _> = expected_scene
+        .parameter_objects
+        .iter()
+        .enumerate()
+        .map(|(n, p)| (p.id, n))
+        .collect();
+    scene
+        .parameter_objects
+        .sort_by_key(|p| parameter_order.get(&p.id).copied().unwrap_or(usize::MAX));
     for expected in &expected_scene.primitives {
         if source.primitive(expected.id) == Some(expected) {
             continue;
@@ -1810,6 +1933,18 @@ fn verify(
     }
     // New entries are serialized inside their owner's native subtree. Match
     // their model order only after validating identity, ownership and topology.
+    for c in &expected_scene.components {
+        let order = |s: &Schematic| {
+            s.primitives
+                .iter()
+                .filter(|p| p.component == Some(c.id) && !p.presentation.hidden)
+                .map(|p| p.id)
+                .collect::<Vec<_>>()
+        };
+        if order(scene) != order(expected_scene) {
+            return Err("Native SchDoc verification found changed component drawing order; the destination was not modified".into());
+        }
+    }
     if !authored_indices.is_empty() {
         let order: BTreeMap<_, _> = expected_scene
             .primitives
@@ -1837,8 +1972,7 @@ fn verify(
         }
     }
     if actual != expected {
-        #[cfg(test)]
-        {
+        let detail = {
             fn difference(
                 a: &serde_json::Value,
                 b: &serde_json::Value,
@@ -1870,19 +2004,29 @@ fn verify(
                     }
                     _ => {}
                 }
-                Some(format!("{path}: actual={a}, expected={b}"))
+                fn summary(v: &serde_json::Value) -> String {
+                    match v {
+                        serde_json::Value::Array(values) => format!("{} entries", values.len()),
+                        serde_json::Value::Object(values) => format!("{} fields", values.len()),
+                        _ => v.to_string().chars().take(160).collect(),
+                    }
+                }
+                Some(format!(
+                    "{path}: actual={}, expected={}",
+                    summary(a),
+                    summary(b)
+                ))
             }
-            eprintln!(
-                "{}",
-                difference(
-                    &serde_json::to_value(&actual).unwrap(),
-                    &serde_json::to_value(&expected).unwrap(),
-                    String::new()
-                )
-                .unwrap()
-            );
-        }
-        return Err("Native SchDoc verification found unsupported scene changes; choose PCBCraft JSON. The destination was not modified".into());
+            difference(
+                &serde_json::to_value(&actual).unwrap(),
+                &serde_json::to_value(&expected).unwrap(),
+                String::new(),
+            )
+            .unwrap()
+        };
+        return Err(format!(
+            "Native SchDoc verification found unsupported scene changes; choose PCBCraft JSON. The destination was not modified. {detail}"
+        ));
     }
     Ok(())
 }

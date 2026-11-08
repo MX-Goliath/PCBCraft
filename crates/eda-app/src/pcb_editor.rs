@@ -1720,8 +1720,10 @@ fn input(
 }
 impl PcbCraft {
     pub(super) fn poll_pcb_pours(&mut self, ctx: &egui::Context) {
-        let allow_apply =
-            !self.layer_stack_active() && self.annotation.is_none() && self.design_sync.is_none();
+        let allow_apply = !self.layer_stack_active()
+            && self.annotation.is_none()
+            && self.design_sync.is_none()
+            && self.library_update.is_none();
         let mut errors = vec![];
         for doc in &mut self.documents {
             if doc.model.pcb.is_none() {
@@ -2089,6 +2091,7 @@ impl PcbCraft {
                         designator,
                         comment: String::new(),
                         footprint: "Local footprint".into(),
+                        footprint_parameters: None,
                         parameters: Some(Default::default()),
                         position,
                         rotation: 0.0,
@@ -2795,6 +2798,7 @@ mod controller_tests {
             designator: "U10".into(),
             comment: String::new(),
             footprint: "SOT23".into(),
+            footprint_parameters: None,
             parameters: Some(Default::default()),
             position: Point::mm(10, 0),
             rotation: 0.0,
@@ -2931,6 +2935,7 @@ mod controller_tests {
                     designator: format!("U{index}"),
                     comment: String::new(),
                     footprint: String::new(),
+                    footprint_parameters: None,
                     parameters: Some(Default::default()),
                     position: Point::mm(10, 0),
                     rotation: 0.0,

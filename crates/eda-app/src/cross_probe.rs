@@ -285,6 +285,7 @@ mod tests {
             layer_stack: None,
             annotation: None,
             design_sync: None,
+            library_update: None,
             allow_exit: false,
             cursor_mm: None,
             pad_edit: None,

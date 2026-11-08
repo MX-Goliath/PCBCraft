@@ -323,6 +323,7 @@ mod tests {
                 designator: format!("U{n}"),
                 comment: String::new(),
                 footprint: String::new(),
+                footprint_parameters: None,
                 parameters: None,
                 position: Point::mm(x, 0),
                 rotation: 0.,

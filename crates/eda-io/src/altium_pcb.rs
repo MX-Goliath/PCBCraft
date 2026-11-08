@@ -521,6 +521,7 @@ fn component(f: Fields, ns: Uuid, n: usize) -> Result<Component> {
         designator: f.text("SOURCEDESIGNATOR"),
         comment: f.text("SOURCECOMMENT"),
         footprint: f.text("PATTERN"),
+        footprint_parameters: Some(Default::default()),
         parameters: Some(Default::default()),
         position: f.pos("X", "Y")?,
         rotation: f.num("ROTATION", 0.0)?,
@@ -992,7 +993,7 @@ fn text_item(p: &[u8], legacy: &[u8], wide: &BTreeMap<u32, String>, board: &Boar
     if let Some(c) =
         index(u16_at(p, 7)?).and_then(|idx| board.components.iter().find(|c| c.index == idx))
     {
-        if designator {
+        if designator && (!c.designator.is_empty() || text.eq_ignore_ascii_case(".Designator")) {
             text = c.designator.clone();
         }
         if comment && (text.is_empty() || text.eq_ignore_ascii_case(".Comment")) {
@@ -1227,6 +1228,27 @@ fn finish(b: &mut Board) -> Result<()> {
     // Native component comments commonly live in the owned Texts6 record,
     // while Components6 contains no SOURCECOMMENT at all.
     for component in &mut b.components {
+        // Manually placed footprints may have no SOURCEDESIGNATOR. Their
+        // actual annotation is stored only in the owned designator Texts6.
+        if component.designator.is_empty()
+            && let Some(text) = b.items.iter().find_map(|item| {
+                if item.component == Some(component.index)
+                    && item
+                        .properties
+                        .get("DESIGNATOR")
+                        .is_some_and(|v| v.eq_ignore_ascii_case("TRUE"))
+                    && let Shape::Text { text, .. } = &item.shape
+                    && !text.is_empty()
+                    && !text.eq_ignore_ascii_case(".Designator")
+                {
+                    Some(text)
+                } else {
+                    None
+                }
+            })
+        {
+            component.designator = text.clone();
+        }
         if let Some(text) = b.items.iter().find_map(|item| {
             if item.component == Some(component.index)
                 && item

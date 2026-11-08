@@ -338,8 +338,10 @@ fn refresh_hierarchy(s: &mut Schematic, before: &Schematic) -> Result<(), String
         }
     }
     for p in &mut s.primitives {
-        if let K::SheetEntry { name, .. } | K::Port { name, .. } | K::ParameterSet { name, .. } =
-            &p.kind
+        if let K::SheetEntry { name, .. }
+        | K::Port { name, .. }
+        | K::ParameterSet { name, .. }
+        | K::Pin { name, .. } = &p.kind
         {
             p.presentation.name = name.clone();
         }

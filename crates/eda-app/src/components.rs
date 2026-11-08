@@ -12,6 +12,7 @@ pub(super) struct Panel {
     part: u32,
     mode: u32,
     available: bool,
+    available_selected: Option<PathBuf>,
     details_more: bool,
     details_closed: bool,
     table_height: f32,
@@ -22,6 +23,74 @@ pub(super) struct Panel {
 }
 
 impl PcbCraft {
+    fn remove_available_library(&mut self, path: &std::path::Path) {
+        let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        let same =
+            |p: &PathBuf| p == path || p.canonicalize().unwrap_or_else(|_| p.clone()) == canonical;
+        let active = self
+            .components_ui
+            .libraries
+            .get(self.components_ui.library)
+            .map(|(p, _)| p.clone());
+        self.components_ui.libraries.retain(|(p, _)| !same(p));
+        self.components_ui
+            .footprint_libraries
+            .retain(|(p, _)| !same(p));
+        self.settings.libraries.retain(|p| !same(p));
+        self.forget_available_library(&canonical);
+        self.components_ui.library = active
+            .and_then(|active| {
+                self.components_ui
+                    .libraries
+                    .iter()
+                    .position(|(p, _)| *p == active)
+            })
+            .unwrap_or(0);
+        self.components_ui.selected = 0;
+        self.components_ui.part = 1;
+        self.components_ui.mode = 0;
+        self.components_ui.available_selected = None;
+    }
+    fn refresh_available_library(&mut self, path: PathBuf) {
+        if let Some(index) = self.available_library_editor(&path) {
+            self.publish_authored_library(index, false);
+            return;
+        }
+        let result = if path
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("PcbLib"))
+        {
+            eda_io::altium_pcb::library::load(&path).map(|library| {
+                if let Some((_, slot)) = self
+                    .components_ui
+                    .footprint_libraries
+                    .iter_mut()
+                    .find(|(p, _)| *p == path)
+                {
+                    *slot = library;
+                }
+            })
+        } else {
+            eda_io::altium::library::load(&path).map(|library| {
+                if let Some((_, slot)) = self
+                    .components_ui
+                    .libraries
+                    .iter_mut()
+                    .find(|(p, _)| *p == path)
+                {
+                    *slot = library;
+                }
+            })
+        };
+        match result {
+            Ok(()) => {
+                self.components_ui.selected = 0;
+                self.components_ui.part = 1;
+                self.components_ui.mode = 0;
+            }
+            Err(e) => self.message(true, format!("Library refresh failed: {e}")),
+        }
+    }
     pub(super) fn show_simulation_components(&mut self) {
         let configured = self
             .settings
@@ -195,6 +264,8 @@ impl PcbCraft {
         }
         let mut open = true;
         let mut add = false;
+        let mut remove = None;
+        let mut refresh = None;
         egui::Window::new("Available File-based Libraries")
             .open(&mut open)
             .default_width(620.0)
@@ -205,7 +276,15 @@ impl PcbCraft {
                     .max_height(300.0)
                     .show(ui, |ui| {
                         for (path, library) in &self.components_ui.libraries {
-                            ui.label(&library.name);
+                            if ui
+                                .selectable_label(
+                                    self.components_ui.available_selected.as_ref() == Some(path),
+                                    &library.name,
+                                )
+                                .clicked()
+                            {
+                                self.components_ui.available_selected = Some(path.clone());
+                            }
                             ui.label(
                                 RichText::new(path.display().to_string())
                                     .small()
@@ -213,11 +292,19 @@ impl PcbCraft {
                             );
                         }
                         for (path, library) in &self.components_ui.footprint_libraries {
-                            ui.label(format!(
-                                "{} ({} footprints)",
-                                path.file_name().unwrap_or_default().to_string_lossy(),
-                                library.footprints.len()
-                            ));
+                            if ui
+                                .selectable_label(
+                                    self.components_ui.available_selected.as_ref() == Some(path),
+                                    format!(
+                                        "{} ({} footprints)",
+                                        path.file_name().unwrap_or_default().to_string_lossy(),
+                                        library.footprints.len()
+                                    ),
+                                )
+                                .clicked()
+                            {
+                                self.components_ui.available_selected = Some(path.clone());
+                            }
                             ui.label(
                                 RichText::new(path.display().to_string())
                                     .small()
@@ -226,14 +313,36 @@ impl PcbCraft {
                         }
                     });
                 ui.separator();
-                add = ui
-                    .button("Install…")
-                    .on_hover_text("Add a local SchLib, PcbLib or IntLib to PCBCraft")
-                    .clicked();
+                ui.horizontal(|ui| {
+                    add = ui
+                        .button("Install…")
+                        .on_hover_text("Add a local SchLib, PcbLib or IntLib to PCBCraft")
+                        .clicked();
+                    let selected = self.components_ui.available_selected.clone();
+                    if ui
+                        .add_enabled(selected.is_some(), egui::Button::new("Remove"))
+                        .on_hover_text("Remove from available libraries; keep the file on disk")
+                        .clicked()
+                    {
+                        remove = selected.clone();
+                    }
+                    if ui
+                        .add_enabled(selected.is_some(), egui::Button::new("Refresh"))
+                        .clicked()
+                    {
+                        refresh = selected;
+                    }
+                });
             });
         self.components_ui.available = open;
         if add {
             self.pick_library();
+        }
+        if let Some(path) = remove {
+            self.remove_available_library(&path);
+        }
+        if let Some(path) = refresh {
+            self.refresh_available_library(path);
         }
     }
     pub(super) fn components_panel(&mut self, ui: &mut egui::Ui) {
@@ -246,6 +355,7 @@ impl PcbCraft {
         let mut install = false;
         let mut place = false;
         let mut drag = false;
+        let mut refresh = false;
         ui.add_space(4.0);
         ui.horizontal(|ui| {
             ui.spacing_mut().interact_size.y = 24.0;
@@ -299,7 +409,16 @@ impl PcbCraft {
                 }
                 ui.add_enabled(false, egui::Button::new("File-based Libraries Search…"));
                 ui.separator();
-                ui.add_enabled(false, egui::Button::new("Refresh                       F5"));
+                if ui
+                    .add_enabled(
+                        !self.components_ui.libraries.is_empty(),
+                        egui::Button::new("Refresh                       F5"),
+                    )
+                    .clicked()
+                {
+                    refresh = true;
+                    ui.close();
+                }
             });
             for y in [-3.0, 0.0, 3.0] {
                 ui.painter().line_segment(
@@ -322,6 +441,13 @@ impl PcbCraft {
                 );
             }
         });
+        refresh |= ui.rect_contains_pointer(ui.max_rect())
+            && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::F5));
+        if refresh
+            && let Some((path, _)) = self.components_ui.libraries.get(self.components_ui.library)
+        {
+            self.refresh_available_library(path.clone());
+        }
         ui.add_space(5.0);
         theme::search_field_height(
             ui,
@@ -1079,4 +1205,58 @@ fn detail_rows(values: &std::collections::BTreeMap<String, String>) -> Vec<(Stri
             .collect::<String>()
     });
     rows
+}
+
+#[cfg(test)]
+mod library_management_tests {
+    use eda_core::{DocumentKind, library_edit as edit};
+    #[test]
+    fn available_editor_tracks_edits_undo_refresh_and_removal_without_deleting_files() {
+        let mut app = super::super::schematic_editor::tests::app();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("Parts.SchLib");
+        let doc = edit::new(DocumentKind::Schematic, "Parts.SchLib");
+        eda_io::save(&path, &doc).unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        app.add_document(doc, Some(path.clone()));
+        let i = app.active.unwrap();
+        app.library_command(super::super::library_editor::Action::Install);
+        let d = &mut app.documents[i];
+        d.history
+            .library_edit(&mut d.model, 0, &edit::Edit::Rename("Edited".into()))
+            .unwrap();
+        app.sync_available_libraries();
+        assert_eq!(app.components_ui.libraries[0].1.symbols[0].name, "Edited");
+        app.refresh_available_library(path.canonicalize().unwrap());
+        assert_eq!(app.components_ui.libraries[0].1.symbols[0].name, "Edited");
+        let d = &mut app.documents[i];
+        d.history.undo(&mut d.model);
+        app.sync_available_libraries();
+        assert_eq!(
+            app.components_ui.libraries[0].1.symbols[0].name,
+            "Component_1"
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        app.settings.libraries.push(path.clone());
+        app.remove_available_library(&path);
+        app.sync_available_libraries();
+        assert!(app.components_ui.libraries.is_empty());
+        assert!(app.settings.libraries.is_empty());
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    }
+    #[test]
+    fn failed_refresh_retains_the_previous_usable_library() {
+        let mut app = super::super::schematic_editor::tests::app();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("Parts.SchLib");
+        eda_io::save(&path, &edit::new(DocumentKind::Schematic, "Parts.SchLib")).unwrap();
+        app.import_library(path.clone(), false);
+        std::fs::write(&path, b"invalid replacement").unwrap();
+        app.refresh_available_library(path.canonicalize().unwrap());
+        assert_eq!(app.components_ui.libraries.len(), 1);
+        assert_eq!(
+            app.components_ui.libraries[0].1.symbols[0].name,
+            "Component_1"
+        );
+    }
 }

@@ -10,6 +10,7 @@ fn board_and_pad() -> (Board, Item) {
         designator: "DA1".into(),
         comment: String::new(),
         footprint: "QFN'32".into(),
+        footprint_parameters: None,
         parameters: Some(Fields::new()),
         position: Point::default(),
         rotation: 0.,

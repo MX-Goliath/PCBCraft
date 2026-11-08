@@ -112,6 +112,7 @@ impl PcbCraft {
     pub(super) fn poll_document_loader(&mut self, ctx: &egui::Context) {
         // Keep an ECO/annotation/dialog's active document stable until it closes.
         if self.design_sync.is_none()
+            && self.library_update.is_none()
             && self.annotation.is_none()
             && self.pending.is_none()
             && !self.layer_stack_active()

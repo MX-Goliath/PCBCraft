@@ -434,17 +434,23 @@ fn component(
             source_row(ui, "Design Item ID", &c.properties, "SOURCELIBREFERENCE");
             source_row(ui, "Source", &c.properties, "SOURCECOMPONENTLIBRARY");
             ui.add_space(12.0);
-            let height = board
-                .items
-                .iter()
-                .filter(|i| {
-                    i.component == Some(c.index)
-                        && i.properties.contains_key("PCBCRAFT_BODY_PROJECTION")
-                })
-                .filter_map(|i| i.properties.get("OVERALLHEIGHT"))
-                .filter_map(|v| eda_io::altium_pcb::dimension(v).ok())
-                .max()
-                .unwrap_or(0);
+            let height = c
+                .properties
+                .get("HEIGHT")
+                .and_then(|v| eda_io::altium_pcb::dimension(v).ok())
+                .unwrap_or_else(|| {
+                    board
+                        .items
+                        .iter()
+                        .filter(|i| {
+                            i.component == Some(c.index)
+                                && i.properties.contains_key("PCBCRAFT_BODY_PROJECTION")
+                        })
+                        .filter_map(|i| i.properties.get("OVERALLHEIGHT"))
+                        .filter_map(|v| eda_io::altium_pcb::dimension(v).ok())
+                        .max()
+                        .unwrap_or(0)
+                });
             read_row(
                 ui,
                 "Height",
@@ -1256,8 +1262,11 @@ fn parameters(
             }
         };
         if let Some(c) = owner.and_then(|id| board.components.iter().find(|c| c.id == id)) {
+            for (key, value) in c.parameters.iter().flat_map(|p| p.iter()) {
+                add(4, key, value.clone());
+            }
             for (key, value) in &c.properties {
-                if key.starts_with("PARAMETER.") {
+                if c.parameters.is_none() && key.starts_with("PARAMETER.") {
                     add(4, key.trim_start_matches("PARAMETER."), value.clone());
                 }
             }
@@ -1317,15 +1326,37 @@ fn parameters(
                 }
             }
         }
-        entries.sort_by(|a, b| a.0.cmp(&b.0));
+        let mut entries: Vec<_> = entries
+            .into_iter()
+            .map(|(name, value)| (name, value, if owner.is_some() { "Component" } else { "" }))
+            .collect();
+        if let Some(c) = owner.and_then(|id| board.components.iter().find(|c| c.id == id)) {
+            entries.extend(
+                c.footprint_parameters
+                    .iter()
+                    .flat_map(|p| p.iter())
+                    .filter(|(name, value)| {
+                        query.is_empty()
+                            || format!("{name} {value} footprint")
+                                .to_lowercase()
+                                .contains(query)
+                    })
+                    .map(|(name, value)| (name.clone(), value.clone(), "Footprint")),
+            );
+        }
+        entries.sort_by(|a, b| a.0.cmp(&b.0).then(a.2.cmp(b.2)));
         egui::Frame::NONE
             .stroke(Stroke::new(1.0, theme::BORDER))
             .inner_margin(4)
             .show(ui, |ui| {
-                let w = (ui.available_width() - 6.0) / 2.0;
+                let w = (ui.available_width() - if owner.is_some() { 12. } else { 6. })
+                    / if owner.is_some() { 3. } else { 2. };
                 ui.horizontal(|ui| {
                     ui.add_sized([w, 20.0], egui::Label::new("Name"));
-                    ui.label("Value");
+                    ui.add_sized([w, 20.], egui::Label::new("Value"));
+                    if owner.is_some() {
+                        ui.label("Source");
+                    }
                 });
                 ui.separator();
                 egui::ScrollArea::vertical()
@@ -1333,18 +1364,79 @@ fn parameters(
                     .max_height(400.0)
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
-                        for (name, value) in entries {
+                        for (name, value, source) in entries {
                             ui.horizontal(|ui| {
                                 ui.add_sized([w, 20.0], egui::Label::new(&name).truncate())
                                     .on_hover_text(name);
                                 ui.add_sized([w, 20.0], egui::Label::new(&value).truncate())
                                     .on_hover_text(value);
+                                if owner.is_some() {
+                                    ui.add_sized([w, 20.], egui::Label::new(source).truncate());
+                                }
                             });
                         }
                     });
-                ui.add_enabled(false, egui::Button::new("Place"));
+                if owner.is_none() {
+                    ui.add_enabled(false, egui::Button::new("Place"));
+                }
             });
     });
+}
+
+#[cfg(test)]
+mod parameter_namespace_tests {
+    use super::*;
+    #[test]
+    fn component_parameter_panel_shows_footprint_and_schematic_values_with_sources() {
+        let mut doc = eda_core::library_edit::member(DocumentKind::Board, "TEST").unwrap();
+        let b = doc.pcb.as_mut().unwrap();
+        let c = &mut b.components[0];
+        c.parameters = Some(pcb::Fields::from([(
+            "Vendor".into(),
+            "SchematicVendor".into(),
+        )]));
+        c.footprint_parameters = Some(pcb::Fields::from([(
+            "Vendor".into(),
+            "FootprintVendor".into(),
+        )]));
+        let id = c.id;
+        let before = b.clone();
+        let ctx = egui::Context::default();
+        theme::apply(&ctx);
+        let mut group = 0;
+        let output = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(400., 800.),
+                )),
+                ..Default::default()
+            },
+            |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    parameters(ui, b, Some(id), &mut group, "", Units::Millimetres);
+                });
+            },
+        );
+        for label in [
+            "Name",
+            "Value",
+            "Source",
+            "Component",
+            "Footprint",
+            "SchematicVendor",
+            "FootprintVendor",
+        ] {
+            assert!(
+                output
+                    .shapes
+                    .iter()
+                    .any(|s| matches!(&s.shape,egui::Shape::Text(t) if t.galley.job.text==label)),
+                "Missing parameter label: {label}"
+            );
+        }
+        assert_eq!(*b, before);
+    }
 }
 fn routing(
     ui: &mut egui::Ui,

@@ -360,6 +360,25 @@ fn schlib(
                 });
                 if let Some(out) = editable.as_deref_mut() {
                     let s = doc.schematic.as_mut().unwrap();
+                    // Definitions keep the default designator. The A/B suffix
+                    // belongs to placed sections; saving it into the library
+                    // would accumulate suffixes on every edit/reopen cycle.
+                    if let Some(raw) = s
+                        .primitives
+                        .iter()
+                        .chain(&s.parameter_objects)
+                        .find(|p| p.text_role == Some(eda_core::schematic::TextRole::Designator))
+                        .and_then(|p| p.presentation.raw_text.clone())
+                    {
+                        s.components[0].designator = raw.clone();
+                        for p in s.primitives.iter_mut().chain(&mut s.parameter_objects) {
+                            if p.text_role == Some(eda_core::schematic::TextRole::Designator)
+                                && let SchPrimitiveKind::Text { text, .. } = &mut p.kind
+                            {
+                                *text = raw.clone();
+                            }
+                        }
+                    }
                     s.sheet.border = false;
                     s.sheet.title_block = false;
                     out.push(doc);

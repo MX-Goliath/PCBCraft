@@ -35,7 +35,7 @@ fn reference_order(a: &str, b: &str) -> std::cmp::Ordering {
     (a.len() - i).cmp(&(b.len() - j)).then_with(|| a.cmp(&b))
 }
 
-fn status_icon(ui: &mut egui::Ui, result: Option<bool>) {
+pub(super) fn status_icon(ui: &mut egui::Ui, result: Option<bool>) {
     let (rect, _) = ui.allocate_exact_size(egui::vec2(14., 18.), egui::Sense::hover());
     let Some(ok) = result else {
         return;
@@ -640,6 +640,7 @@ mod tests {
             designator: "R1".into(),
             comment: "old".into(),
             footprint: String::new(),
+            footprint_parameters: None,
             parameters: Some(Default::default()),
             position: Point::mm(1, 1),
             rotation: 0.,

@@ -1,6 +1,86 @@
 use super::*;
 
 #[test]
+fn removing_middle_part_and_mode_keeps_other_symbols_and_is_one_undo_step() {
+    let mut doc = new(DocumentKind::Schematic, "Parts.SchLib");
+    for command in [
+        Edit::AddPart,
+        Edit::AddPart,
+        Edit::AddDisplayMode,
+        Edit::AddDisplayMode,
+        Edit::RenameDisplayMode("Service".into()),
+        Edit::Add("Unrelated".into()),
+    ] {
+        doc = preview(&doc, &command).unwrap();
+    }
+    let unrelated = doc.schematic.clone();
+    let select_middle = members(&doc)
+        .position(|m| name(m) == "Component_1" && variant(m) == (2, 1))
+        .unwrap();
+    doc = preview(&doc, &Edit::Select(select_middle)).unwrap();
+    let before = doc.clone();
+    let mut history = History::default();
+    history
+        .library_edit(&mut doc, 0, &Edit::RemovePart)
+        .unwrap();
+    assert_eq!(
+        members(&doc).filter(|m| name(m) == "Component_1").count(),
+        6
+    );
+    for m in members(&doc).filter(|m| name(m) == "Component_1") {
+        assert_eq!(
+            m.schematic.as_ref().unwrap().components[0]
+                .settings
+                .part_count,
+            2
+        );
+        assert!((1..=2).contains(&variant(m).0));
+    }
+    assert_eq!(variant(&doc).1, 1);
+    history
+        .library_edit(&mut doc, 1, &Edit::RemoveDisplayMode)
+        .unwrap();
+    assert_eq!(
+        members(&doc).filter(|m| name(m) == "Component_1").count(),
+        4
+    );
+    assert_eq!(display_mode_name(&doc, 1), "Service");
+    assert_eq!(
+        members(&doc)
+            .find(|m| name(m) == "Unrelated")
+            .unwrap()
+            .schematic,
+        unrelated
+    );
+    history.undo(&mut doc);
+    history.undo(&mut doc);
+    assert_eq!(doc, before);
+    history.redo(&mut doc);
+    history.redo(&mut doc);
+    doc.validate().unwrap();
+}
+
+#[test]
+fn normal_mode_last_part_and_conflicting_mode_names_are_rejected_atomically() {
+    let doc = new(DocumentKind::Schematic, "Parts.SchLib");
+    for command in [
+        Edit::RemovePart,
+        Edit::RemoveDisplayMode,
+        Edit::RenameDisplayMode("X".into()),
+    ] {
+        assert!(preview(&doc, &command).is_err());
+    }
+    let doc = preview(&doc, &Edit::AddDisplayMode).unwrap();
+    assert!(preview(&doc, &Edit::RenameDisplayMode("normal".into())).is_err());
+    let doc = preview(&doc, &Edit::RenameDisplayMode("Service".into())).unwrap();
+    let doc = preview(&doc, &Edit::AddDisplayMode).unwrap();
+    assert!(preview(&doc, &Edit::RenameDisplayMode("service".into())).is_err());
+    let doc = preview(&doc, &Edit::ComponentKind(6)).unwrap();
+    assert!(members(&doc).all(|m| m.schematic.as_ref().unwrap().components[0].settings.kind == 6));
+    assert!(preview(&doc, &Edit::ComponentKind(7)).is_err());
+}
+
+#[test]
 fn footprint_metadata_is_checked_and_undo_keeps_geometry_and_parameters() {
     let mut doc = new(DocumentKind::Board, "Parts.PcbLib");
     let before = doc.clone();

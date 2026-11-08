@@ -713,6 +713,7 @@ mod tests {
             designator: "U1".into(),
             comment: String::new(),
             footprint: String::new(),
+            footprint_parameters: None,
             parameters: Some(Default::default()),
             position: Point::mm(10, 10),
             rotation: 90.,

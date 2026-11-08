@@ -220,6 +220,7 @@ impl Default for SheetOptions {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ComponentSettings {
+    pub display_mode_names: BTreeMap<u32, String>,
     pub models: Vec<ComponentModel>,
     pub rotation: u32,
     pub part_count: u32,
@@ -232,6 +233,7 @@ pub struct ComponentSettings {
 impl Default for ComponentSettings {
     fn default() -> Self {
         Self {
+            display_mode_names: BTreeMap::new(),
             models: vec![],
             rotation: 0,
             part_count: 1,

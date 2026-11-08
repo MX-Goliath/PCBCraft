@@ -352,6 +352,7 @@ mod tests {
             layer: TOP,
             locked: false,
             properties: Fields::new(),
+            footprint_parameters: None,
             parameters: Some(Fields::from([
                 ("ID".into(), "216".into()),
                 ("Vendor's name".into(), "A'B OR (C)".into()),

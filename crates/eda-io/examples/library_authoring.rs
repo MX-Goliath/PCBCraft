@@ -89,5 +89,24 @@ fn main() -> Result<(), String> {
         &symbol,
         &[&footprint],
     )?;
+    let mut variants = symbol.clone();
+    for command in [
+        lib::Edit::AddPart,
+        lib::Edit::AddPart,
+        lib::Edit::AddDisplayMode,
+        lib::Edit::RenameDisplayMode("Diagnostic".into()),
+        lib::Edit::AddDisplayMode,
+        lib::Edit::RenameDisplayMode("Service".into()),
+    ] {
+        variants = lib::preview(&variants, &command)?;
+    }
+    eda_io::save(&directory.join("AuthoringVariants.SchLib"), &variants)?;
+    let n = lib::members(&variants)
+        .position(|m| lib::variant(m) == (2, 1))
+        .unwrap();
+    variants = lib::preview(&variants, &lib::Edit::Select(n))?;
+    variants = lib::preview(&variants, &lib::Edit::RemovePart)?;
+    variants = lib::preview(&variants, &lib::Edit::RemoveDisplayMode)?;
+    eda_io::save(&directory.join("AuthoringReduced.SchLib"), &variants)?;
     Ok(())
 }

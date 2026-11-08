@@ -262,6 +262,12 @@ fn schlib(doc: &Document) -> Result<Vec<u8>> {
             let mut records = crate::altium::writer::library_records(&scene)?;
             records[0].insert("PARTCOUNT".into(), (parts + 1).to_string());
             records[0].insert("DISPLAYMODECOUNT".into(), modes.to_string());
+            records[0].retain(|k, _| !k.starts_with("CUSTOMDISPLAYMODENAME"));
+            for (mode, name) in &scene.components[0].settings.display_mode_names {
+                if *mode > 0 && *mode < modes {
+                    records[0].insert(format!("CUSTOMDISPLAYMODENAME{mode}"), name.clone());
+                }
+            }
             let mut mapping = BTreeMap::from([(0i64, 0i64)]);
             for (index, f) in records.iter().enumerate() {
                 let kind = f

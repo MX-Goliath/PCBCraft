@@ -89,6 +89,7 @@ fn component_flip_swaps_stack_sides_offsets_and_mask_tenting() {
         designator: "U1".into(),
         comment: "".into(),
         footprint: "".into(),
+        footprint_parameters: None,
         parameters: Some(Default::default()),
         position: Point::default(),
         rotation: 0.0,

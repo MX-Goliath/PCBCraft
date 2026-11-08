@@ -97,6 +97,7 @@ fn run() -> Result<(), String> {
                 designator: format!("U{}", index + 1),
                 comment: String::new(),
                 footprint: "ActiveBarProbe".into(),
+                footprint_parameters: None,
                 parameters: None,
                 position: Point::mm(x, 20),
                 rotation: 0.,

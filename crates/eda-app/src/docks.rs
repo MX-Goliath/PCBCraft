@@ -265,6 +265,17 @@ impl PcbCraft {
             doc.view.pcb.show_layer_dialog = false;
         }
     }
+    fn panel_title(&self, panel: Panel) -> &'static str {
+        if panel == Panel::Library && self.library_active() {
+            if self.documents[self.active.unwrap()].model.kind == eda_core::DocumentKind::Board {
+                "PCB Library"
+            } else {
+                "SCH Library"
+            }
+        } else {
+            panel.title()
+        }
+    }
     pub(super) fn panels_menu(&mut self, ui: &mut egui::Ui) {
         for panel in Panel::ALL {
             let available = self.panel_open(panel)
@@ -279,7 +290,7 @@ impl PcbCraft {
             if ui
                 .add_enabled(
                     available,
-                    egui::Button::new(panel.title()).selected(self.panel_open(panel)),
+                    egui::Button::new(self.panel_title(panel)).selected(self.panel_open(panel)),
                 )
                 .clicked()
             {
@@ -552,14 +563,15 @@ impl PcbCraft {
         let title = Rect::from_min_max(
             header.min,
             pos2(
-                (header.left() + 12. + panel.title().len() as f32 * 7.).min(header.right() - 65.),
+                (header.left() + 12. + self.panel_title(panel).len() as f32 * 7.)
+                    .min(header.right() - 65.),
                 header.bottom(),
             ),
         );
         ui.painter().text(
             header.left_center() + vec2(6., 0.),
             Align2::LEFT_CENTER,
-            panel.title(),
+            self.panel_title(panel),
             FontId::new(12., egui::FontFamily::Name("ui-bold".into())),
             Color32::from_gray(230),
         );
@@ -589,7 +601,7 @@ impl PcbCraft {
         theme::draw_icon(ui.painter(), close.shrink(5.), theme::Icon::Close, true);
         if ui
             .interact(close, Id::new((group, "close")), Sense::click())
-            .on_hover_text(format!("Close {} panel", panel.title()))
+            .on_hover_text(format!("Close {} panel", self.panel_title(panel)))
             .clicked()
         {
             self.close_panel(panel);
@@ -616,7 +628,10 @@ impl PcbCraft {
         egui::Popup::menu(&ui.interact(menu, Id::new((group, "menu")), Sense::click())).show(
             |ui| {
                 for p in tabs {
-                    if ui.selectable_label(*p == panel, p.title()).clicked() {
+                    if ui
+                        .selectable_label(*p == panel, self.panel_title(*p))
+                        .clicked()
+                    {
                         self.show_panel(*p);
                         ui.close();
                     }
@@ -649,7 +664,7 @@ impl PcbCraft {
                                 ui.spacing_mut().item_spacing.x = 1.;
                                 for p in tabs {
                                     let response = ui.add(
-                                        egui::Button::new(p.title())
+                                        egui::Button::new(self.panel_title(*p))
                                             .selected(*p == panel)
                                             .sense(Sense::click_and_drag()),
                                     );
@@ -710,7 +725,10 @@ impl PcbCraft {
     }
     fn dock_context(&mut self, ui: &mut egui::Ui, root: &Root, panel: Panel) {
         let panels = [panel];
-        if ui.button(format!("Close '{}'", panel.title())).clicked() {
+        if ui
+            .button(format!("Close '{}'", self.panel_title(panel)))
+            .clicked()
+        {
             self.close_panel(panel);
             ui.close();
         }
@@ -857,9 +875,9 @@ impl PcbCraft {
                 {
                     let vertical = matches!(side, Side::Left | Side::Right);
                     let size = if vertical {
-                        vec2(24., panel.title().len() as f32 * 7. + 14.)
+                        vec2(24., self.panel_title(panel).len() as f32 * 7. + 14.)
                     } else {
-                        vec2(panel.title().len() as f32 * 7. + 14., 24.)
+                        vec2(self.panel_title(panel).len() as f32 * 7. + 14., 24.)
                     };
                     let (rect, response) = ui.allocate_exact_size(size, Sense::click_and_drag());
                     #[cfg(test)]
@@ -875,7 +893,7 @@ impl PcbCraft {
                         }),
                     );
                     let galley = ui.painter().layout_no_wrap(
-                        panel.title().into(),
+                        self.panel_title(panel).into(),
                         FontId::proportional(12.),
                         Color32::from_gray(230),
                     );
@@ -979,7 +997,7 @@ impl PcbCraft {
                 ctx.show_viewport_immediate(
                     viewport,
                     egui::ViewportBuilder::default()
-                        .with_title(panel.title())
+                        .with_title(self.panel_title(panel))
                         .with_decorations(false)
                         .with_resizable(true)
                         .with_inner_size([bounds[2], bounds[3]])
@@ -987,7 +1005,7 @@ impl PcbCraft {
                         .with_position([bounds[0], bounds[1]]),
                     |ctx, class| {
                         if class == egui::ViewportClass::Embedded {
-                            egui::Window::new(panel.title())
+                            egui::Window::new(self.panel_title(panel))
                                 .id(Id::new(("embedded_dock", root.id)))
                                 .default_size([bounds[2], bounds[3]])
                                 .show(ctx, |ui| {
@@ -1372,7 +1390,7 @@ impl PcbCraft {
             painter.text(
                 rect.min + vec2(6., 6.),
                 Align2::LEFT_TOP,
-                drag.panels[0].title(),
+                self.panel_title(drag.panels[0]),
                 FontId::proportional(12.),
                 Color32::WHITE,
             );

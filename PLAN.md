@@ -1,5 +1,185 @@
 # План реализации PCBCraft
 
+### Прямое обновление footprint из PcbLib — 08.11.2026
+
+Продолжение §9/§11 исходного `ALTIUM_RUST_AGENT_PLAN.md`.
+В AD 24.4.1 проверены Update PCB With Current Footprint и диалог
+Component(s) Update Options 424 × 458. Изолированный PCBCraft_Update_6CF7B9E1:
+поворот 90°, U1 / LOCAL_VALUE, pad 1 из 2 × 2 в 3 × 2 mm; native UniqueID
+LRMUVKPG, позиция и надписи сохраняются. Обновление параметров заменяет старый
+Parameter 1 на LibraryVendor=LibraryVendor; Text / On Any Layer сохраняет
+обозначение/комментарий компонента. Выбранные опции сохраняются между вызовами.
+Контрольные native-файлы лежат в `target/library-observations/footprint-update-20261108`.
+Пользовательские проекты в Altium не сохранялись.
+
+Реализовано GUI-независимое `footprint_update`: нормализация геометрии, сторона,
+поворот и позиция экземпляра, цепи по номерам площадок, сохранение идентичности,
+надписей и локальных масок; отдельное обновление масок без замены геометрии.
+Параметры footprint заменяются выбранной опцией и хранятся отдельно от параметров
+схемы: поле `footprint_parameters`,
+native APPURTENANCE=Footprint / VARIANTGUID=Footprint, сохранение base/System/variant
+групп и восстановление старых JSON по native UID. Properties показывает источник
+Component / Footprint. Tools / Current / All и контекстное
+меню PCB Library охватывают все совпадающие открытые платы. Все замены готовятся
+до изменения первой истории; каждая плата получает Undo без неявной записи.
+Проверяются ревизии, пути, состав открытых плат, pending edits и read-only.
+Неоднозначные цепи, удаление подключённой площадки, locked/unsupported данные
+отклоняются. Thermal Relief Overrides отключён: межархивное копирование пока
+не моделируется, matched native pads сохраняют исходные непрочитанные байты.
+
+Исправлен импорт U1 из Texts6 при отсутствии SOURCEDESIGNATOR в Components6;
+заполненное source-поле сохраняет прежний приоритет. Binary-регрессия покрывает
+ASCII/Unicode, точный неизменённый Save и изменение посторонней геометрии без
+перезаписи Components6. В PcbLib устранено неприменимое предупреждение об отсутствии
+Board6 outline. Проверка реального окна обнаружила увеличение диалога на 7 px
+из-за close box; layout исправлен и повторно проверен в окне.
+
+Промежуточный GUI-контроль: Current / Cancel без изменения платы; All / OK,
+Undo до чистого baseline, Redo, таблица LibraryVendor / LibraryVendor / Footprint,
+Save As в `GuiFootprintNamespaced_v1.PcbDoc`. AD открыл v1 чистым; native-группы
+Footprint/System/base раздельны. Побайтовое сравнение выявило служебный префикс
+пути и сохранение старой HEIGHT=212.9921mil вместо библиотечного HEIGHT=0mil.
+Исправлены native-path conversion, запись/удаление HEIGHT и FOOTPRINTDESCRIPTION,
+их read-back-проверка и отображение высоты в Properties. v1 остаётся промежуточным
+файлом; итоговый прогон выполнен после фиксации исходников и тестов.
+
+Итоговая проверка: `cargo fmt --all -- --check`, строгий workspace/all-target
+Clippy, Windows dev build и все 854 теста прошли через `scripts/dev.ps1`:
+app 225, core 344, geom 1, io 166, render 118, включая GPU. Лог:
+`footprint-update-20261108/final-854-rust-gates.log`. Новые проверки охватывают
+обе стороны платы/поворот, цепи, маски отдельно от геометрии, stale/atomic/Undo,
+разделение namespace параметров и legacy JSON, сохранение variant-группы,
+изменение и удаление высоты, описание и ordinary Win32 source link.
+
+Финальный GUI-контроль: исходная высота 5.410 mm отображается правильно;
+Current Footprint → OK меняет pad 1 и высоту на 0.000 mm; Undo возвращает
+чистый baseline, Redo восстанавливает обновление. Save As записал отдельный
+`GuiFootprintVerified.PcbDoc`. Повторный импорт подтверждает U1 / LOCAL_VALUE,
+позицию (2461387000, 76835000) nm и 90°, pad 1 ≈ 3 × 2 mm, pad 2 ≈ 2 × 2 mm,
+base parameters = {}, footprint_parameters = {LibraryVendor: LibraryVendor}.
+Raw-проверка: UniqueID LRMUVKPG, HEIGHT=0mil, обычный путь библиотеки; Texts6/Data
+побайтово совпадает с baseline. AD 24.4.1 открыл итоговый файл без dirty marker;
+PCB/Components и Properties показывают U1 / LOCAL_VALUE, 90°, Height 0mil,
+правильную геометрию и LibraryVendor / LibraryVendor / Footprint. Открыт один
+экземпляр PCBCraft с чистым итоговым файлом и чистой библиотекой.
+
+Статус всего запроса остаётся partial.
+Полное соответствие не заявлено: PCB-side comparison/ECO, thermal overrides,
+PcbLib Place, native auxiliary/3D, все изменения pad mapping, точная типографика,
+иконки и Linux GUI остаются в `docs/features.json`.
+
+### Обновление экземпляров из SchLib — 08.11.2026
+
+Продолжение §9/§11 исходного `ALTIUM_RUST_AGENT_PLAN.md`.
+Наблюдение: в AD Enterprise 24.4.1 на изолированном UpdateReference проверены
+Update From Library, Advanced, отдельные значения параметров и ECO. Исходные
+10k/47k заменяются библиотечным 12k, если не исключить значение из обновления.
+Результат AD сохранён отдельно как NativeUpdated.SchDoc; пользовательские
+проекты не сохранялись. Генератор: `eda-io/examples/library_update_probe.rs`.
+
+Реализация: GUI-независимое `library_update`, сохранение идентичности, позиции,
+поворота, обозначения и выбранных локальных параметров; отдельные настройки
+графики/моделей/надписей/lock fields. Wizard из схемы и SchLib, выбор листов и
+экземпляров, grouped ECO и отчёт. Сравнение защищено ревизиями и fingerprint
+файлов; закрытые листы открываются с Undo без неявной записи. Проверки всех
+замен предшествуют изменениям истории. Неоднозначные источники отклоняются.
+
+Параметры приведены к наблюдаемой матрице AD: системные/пользовательские столбцы,
+выбор ячеек, Update/Reject Selected и All, Show all parts. Защищённые значения
+нельзя включить обратно массовой командой. Страница экземпляров разделяет колонки
+схемы, библиотеки и Actions; кнопки мастера имеют наблюдаемые размеры 75 × 23.
+Полные пути различают источники с одинаковыми именами файлов. Сохраняемые надписи
+не дублируются скрытыми скалярными записями Comment/Vendor; порядок тела и выводов
+проверяется в самом native-файле, а не нормализуется только в сравнении модели.
+
+Проверка: финальные `cargo fmt --all -- --check`,
+`cargo clippy --workspace --all-targets -- -D warnings`, Windows dev build и
+`cargo test --workspace` прошли через `scripts/dev.ps1`. Всего 844 теста:
+app 222, core 340, geom 1, io 163, render 118, включая GPU. Новые проверки:
+атомарность/устаревшие источники, Undo закрытых листов без записи, блокировки,
+неизменность внешних проводов, native-повороты/UID/порядок графики, физическое
+количество Comment/Vendor, выбор отдельной ячейки и pending Properties перед
+прямым Update Schematics.
+
+Реальное окно Windows 1707 × 1019: частичное обновление, U2 / Value → Reject
+Selected, ECO Validate/Execute, Check/Done, Undo/Redo и native Save As.
+Итоговый `update-20261108-v8/GuiUpdatedVerified.SchDoc` повторно прочитан:
+U1 = 12k, U2 = 47k, Vendor = Example, по одной записи Comment/Value/Vendor,
+два тела и четыре вывода, прежние позиции/повороты. AD 24.4.1 открыл этот
+GUI-файл без dirty marker; после Fit All Objects видны P1/P2 и 12k/47k.
+Промежуточные v6/v7 сохранены с описанием обнаруженных дефектов, а не подменены
+успешным результатом. Прямой SchLib / Update Schematics проверен отдельно:
+Information «Updated 2 components / In 1 Schematic Documents», копия
+`GuiDirectUpdate.SchDoc` содержит 12k/12k и Source = Parts.SchLib; один Undo
+возвращает чистый исходный лист с 12k/47k. Открыт один экземпляр PCBCraft.
+
+Наблюдение следующего пути: уникальный PCBCraft_Update_6CF7B9E1 на отдельной
+синтетической PCB, поворот 90°, U1 / LOCAL_VALUE, pad 1 из 2 × 2 в 3 × 2 mm.
+PcbLib / Update PCB With Current Footprint применяет options сразу; native
+UniqueID, позиция, поворот и локальный комментарий сохранены. Последующая
+реализация этого пути и исправление импорта обозначения описаны в этапе выше.
+Пользовательские проекты в AD не сохранялись.
+
+Статус всего запроса остаётся partial: точное визуальное равенство, полные PCB updates,
+полные multipart/варианты, Choose Component, DbLib/Workspace и остальной исходный
+охват не объявлены завершёнными. Linux GUI/DPI в этом этапе не проверялись.
+Оставшиеся границы перечислены в `docs/interface/library-authoring.md` и
+`docs/features.json` (`libraries.update_instances`).
+
+### Файловые библиотеки компонентов — 08.11.2026
+
+Работа по §9/§11 и визуальному контракту §7/§25 исходного
+`ALTIUM_RUST_AGENT_PLAN.md`. Полная эквивалентность Altium не заявляется.
+
+- Наблюдение: Altium Enterprise 24.4.1, только синтетические SchLib/PcbLib.
+  Проверены дерево секций, General/Pins, Tools/Mode, пустые новые варианты,
+  переименование режима, PCB Library и Edit → свойства footprint.
+  Отдельно сохранён NativeModes.SchLib с `CustomDisplayModeName1=Alternate QA`.
+  Исходные пользовательские проекты не сохранялись.
+- Реализация: удаление секции/режима во всех вариантах с перенумерацией и
+  Undo/Redo; защита Normal/последней секции; общие Type и имена режимов.
+  Native-имена читаются/записываются без сохранения удалённых ключей.
+  Библиотечный Designator отделён от суффикса размещённой секции: повторные
+  сохранения не накапливают A/B.
+- UI: один символ в списке, Part A/B, Description/search, Part в Properties,
+  Tools/Mode, Pins с видимостью/Edit/Delete, Hidden/Locked, свойства footprint
+  и высота в текущих единицах. После создания открывается Library.
+  Неподдержанные native Tools отключены; дополнительные команды отделены.
+- Исправлены замена переименованной footprint-модели вместо добавления,
+  сохранение остальных моделей/current-флагов/native-метаданных, source index
+  при правке pin, Cancel/Esc и ошибки имён без потери введённого текста.
+  2D preview использует однозначную модель и приоритет открытого PcbLib.
+- Available Libraries: Refresh/Remove, прежний snapshot при ошибке чтения,
+  сохранность файла при Remove. Открытая опубликованная библиотека обновляется
+  после applied revision и Undo/Redo; Save As переносит запись без дубликата.
+  Windows canonical/raw paths нормализуются.
+- Проверка: итоговые `cargo fmt --all -- --check`,
+  `cargo clippy --workspace --all-targets -- -D warnings`, Windows dev build
+  и `cargo test --workspace` прошли. 827 тестов: app 214, core 332, geom 1,
+  io 162, render 118, включая GPU. Команды — через локальный GNU toolchain
+  в `scripts/dev.ps1`. Первый прогон поймал canonical/raw-path дефект Remove;
+  после исправления повторные полные прогоны прошли.
+- Windows GUI 1707×1019: File/New/Library/Create, новая SchLib, pin и native
+  Save; дерево/Part A/B, Normal/Service GUI, Rename/Cancel, видимость вывода
+  и Undo, переключение заголовка SCH/PCB Library, свойства footprint,
+  2D preview открытой модели, Edit/двойной щелчок, замена имени одной строки
+  модели и Undo. Последние выравнивание и стрелка проверены после пересборки.
+  Экземпляры PCBCraft запускались последовательно; финальный оставлен открыт.
+- Native: созданная с нуля в GUI `GuiNew.SchLib` открылась в AD 24.4.1 с
+  Component_1, U? и pin 1. GUI-редактирование native-исходника сохранено
+  отдельно в `GuiVariants.SchLib`: AD показывает Part A/B, исходную графику,
+  модель TEST_2PAD и `Service GUI` в Tools/Mode. Rust example сформировал
+  AuthoringVariants/AuthoringReduced.SchLib и SchLib/PcbLib/IntLib без правок
+  байтов вручную. Артефакты — только в ignored target/library-observations.
+  Linux GUI/DPI и полное пиксельное равенство не проверены.
+
+Остаются пиксельная/DPI/Linux GUI сверка, обновление размещённых экземпляров
+и конфликты, полная multipart-аннотация, DbLib/Workspace/PvLib, интегрированный
+проект библиотек, мастера/reports и неподдержанные native ресурсы/3D.
+Последний элемент файловой библиотеки пока нельзя удалить.
+Подробнее: `docs/interface/library-authoring.md`, `libraries.authoring`
+в `docs/features.json` остаётся partial.
+
 ### Независимое перемещение панелей — уточнение 08.11.2026
 
 По прямому уточнению пользователя любая область заголовка и вкладка переносит

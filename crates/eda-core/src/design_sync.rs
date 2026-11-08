@@ -338,6 +338,10 @@ impl Footprint {
         b.layer_stack = None;
         b.items.retain(|i| i.component == Some(c.index));
         b.components.retain(|p| p.id == id);
+        b.components[0].parameters = b.components[0]
+            .footprint_parameters
+            .take()
+            .or_else(|| Some(Default::default()));
         b.nets.clear();
         b.components[0].locked = false;
         for p in &mut b.items {
@@ -1988,6 +1992,8 @@ fn install(
         b.components.retain(|c| c.id != id);
     }
     let mut c = part.components.remove(0);
+    c.footprint_parameters = c.parameters.take();
+    c.parameters = Some(Default::default());
     c.id = id;
     c.index = index;
     c.properties.remove("SOURCEUNIQUEID");

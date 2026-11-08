@@ -46,8 +46,8 @@ pub fn absolute(base: &Path, name: &str) -> PathBuf {
     path.canonicalize().unwrap_or(path)
 }
 
-// Native Altium references require ordinary Win32 paths, including library links.
-pub(crate) fn native_path(path: &Path) -> PathBuf {
+/// Native Altium references require ordinary Win32 paths, including library links.
+pub fn native_path(path: &Path) -> PathBuf {
     let value = path.to_string_lossy();
     if let Some(value) = value.strip_prefix("\\\\?\\UNC\\") {
         PathBuf::from(format!("\\\\{value}"))

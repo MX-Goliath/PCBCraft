@@ -39,7 +39,11 @@ pub enum Edit {
     Rename(String),
     Remove,
     AddPart,
+    RemovePart,
     AddDisplayMode,
+    RemoveDisplayMode,
+    RenameDisplayMode(String),
+    ComponentKind(u32),
     Pin(Box<sch::SchPrimitive>),
     LinkFootprint {
         name: String,
@@ -65,6 +69,20 @@ pub fn variant(doc: &Document) -> (u32, u32) {
         .as_ref()
         .and_then(|s| s.components.first())
         .map_or((1, 0), |c| (c.part, c.display_mode))
+}
+pub fn display_mode_name(doc: &Document, mode: u32) -> String {
+    doc.schematic
+        .as_ref()
+        .and_then(|s| s.components.first())
+        .and_then(|c| c.settings.display_mode_names.get(&mode))
+        .cloned()
+        .unwrap_or_else(|| {
+            if mode == 0 {
+                "Normal".into()
+            } else {
+                format!("Alternate {mode}")
+            }
+        })
 }
 pub fn members(doc: &Document) -> impl Iterator<Item = &Document> {
     std::iter::once(doc).chain(doc.library.iter().flat_map(|b| &b.others))
@@ -126,6 +144,7 @@ pub fn symbol_member(
     s.components[0].settings.part_count = 1;
     s.components[0].part = 1;
     s.components[0].display_mode = 0;
+    s.components[0].settings.display_mode_names.clear();
     Ok(doc)
 }
 fn check_name(value: &str) -> Result<(), String> {
@@ -244,6 +263,7 @@ pub fn member(kind: DocumentKind, item_name: &str) -> Result<Document, String> {
                 }
                 .into();
                 p.presentation.hidden = true;
+                p.presentation.allow_sync = true;
                 s.primitives.push(p);
             }
         }
@@ -256,6 +276,7 @@ pub fn member(kind: DocumentKind, item_name: &str) -> Result<Document, String> {
                 designator: ".Designator".into(),
                 comment: ".Comment".into(),
                 footprint: item_name.into(),
+                footprint_parameters: None,
                 parameters: Some(Default::default()),
                 position: Point::default(),
                 rotation: 0.,
@@ -448,6 +469,130 @@ pub fn preview(doc: &Document, command: &Edit) -> Result<Document, String> {
             }
         }
         Edit::Select(index) => select(&mut next, *index)?,
+        Edit::ComponentKind(kind) => {
+            if *kind > 6 || next.schematic.is_none() {
+                return Err("Choose a supported schematic component type".into());
+            }
+            next.schematic.as_mut().unwrap().components[0].settings.kind = *kind;
+            for m in &mut next.library.as_mut().unwrap().others {
+                if name(m) == old_name {
+                    m.schematic.as_mut().unwrap().components[0].settings.kind = *kind;
+                }
+            }
+        }
+        Edit::RenameDisplayMode(value) => {
+            check_name(value)?;
+            let mode = variant(doc).1;
+            if mode == 0 {
+                return Err("Normal display mode cannot be renamed".into());
+            }
+            let mut seen = BTreeSet::new();
+            for m in members(doc).filter(|m| name(m) == old_name) {
+                let other = variant(m).1;
+                if other != mode
+                    && seen.insert(other)
+                    && display_mode_name(m, other).eq_ignore_ascii_case(value)
+                {
+                    return Err("This display mode name already exists".into());
+                }
+            }
+            next.schematic.as_mut().unwrap().components[0]
+                .settings
+                .display_mode_names
+                .insert(mode, value.clone());
+            for m in &mut next.library.as_mut().unwrap().others {
+                if name(m) == old_name {
+                    m.schematic.as_mut().unwrap().components[0]
+                        .settings
+                        .display_mode_names
+                        .insert(mode, value.clone());
+                }
+            }
+        }
+        Edit::RemovePart | Edit::RemoveDisplayMode => {
+            let c = &doc
+                .schematic
+                .as_ref()
+                .ok_or("Parts require a symbol library")?
+                .components[0];
+            let remove_part = matches!(command, Edit::RemovePart);
+            if remove_part && c.settings.part_count <= 1 {
+                return Err("The last part cannot be removed".into());
+            }
+            if !remove_part && c.display_mode == 0 {
+                return Err("Normal display mode cannot be removed".into());
+            }
+            let removed = variant(doc);
+            let matches_removed = |m: &Document| {
+                name(m) == old_name
+                    && if remove_part {
+                        variant(m).0 == removed.0
+                    } else {
+                        variant(m).1 == removed.1
+                    }
+            };
+            let replacement = members(doc)
+                .enumerate()
+                .skip(1)
+                .filter(|(_, m)| name(m) == old_name && !matches_removed(m))
+                .min_by_key(|(_, m)| {
+                    let (p, mode) = variant(m);
+                    (
+                        u32::from(if remove_part {
+                            mode != removed.1
+                        } else {
+                            p != removed.0
+                        }),
+                        if remove_part {
+                            p.abs_diff(removed.0)
+                        } else {
+                            mode.abs_diff(removed.1)
+                        },
+                    )
+                })
+                .map(|(i, _)| i)
+                .ok_or("No remaining symbol variant")?;
+            select(&mut next, replacement)?;
+            next.library
+                .as_mut()
+                .unwrap()
+                .others
+                .retain(|m| !matches_removed(m));
+            let new_parts = c.settings.part_count - u32::from(remove_part);
+            fn renumber(
+                m: &mut Document,
+                old_name: &str,
+                removed: (u32, u32),
+                remove_part: bool,
+                parts: u32,
+            ) {
+                if name(m) == old_name {
+                    let c = &mut m.schematic.as_mut().unwrap().components[0];
+                    if remove_part && c.part > removed.0 {
+                        c.part -= 1;
+                    }
+                    if !remove_part && c.display_mode > removed.1 {
+                        c.display_mode -= 1;
+                    }
+                    if !remove_part {
+                        c.settings.display_mode_names = c
+                            .settings
+                            .display_mode_names
+                            .iter()
+                            .filter(|(mode, _)| **mode != removed.1)
+                            .map(|(mode, value)| {
+                                (mode - u32::from(*mode > removed.1), value.clone())
+                            })
+                            .collect();
+                    }
+                    c.settings.part_count = parts;
+                }
+            }
+            renumber(&mut next, &old_name, removed, remove_part, new_parts);
+            for m in &mut next.library.as_mut().unwrap().others {
+                renumber(m, &old_name, removed, remove_part, new_parts);
+            }
+        }
         Edit::Add(value) | Edit::Duplicate(value) => {
             check_name(value)?;
             if members(doc).any(|m| name(m).eq_ignore_ascii_case(value)) {
@@ -555,14 +700,23 @@ pub fn preview(doc: &Document, command: &Edit) -> Result<Document, String> {
                 .schematic
                 .as_mut()
                 .ok_or("Pins require a symbol library")?;
-            if !matches!(&pin.kind, sch::SchPrimitiveKind::Pin { number, .. } if !number.trim().is_empty())
+            if !matches!(&pin.kind, sch::SchPrimitiveKind::Pin { number, orientation, electrical, .. } if !number.trim().is_empty() && *orientation < 4 && *electrical < 8)
             {
-                return Err("Pin number cannot be empty".into());
+                return Err(
+                    "A pin needs a designator, a valid orientation and electrical type".into(),
+                );
             }
             let mut p = pin.as_ref().clone();
             p.component = Some(s.components[0].id);
             p.source_index = edit::AUTHORED;
+            if let sch::SchPrimitiveKind::Pin { name, .. } = &p.kind {
+                p.presentation.name = name.clone();
+            }
             if let Some(old) = s.primitives.iter_mut().find(|p| p.id == pin.id) {
+                if !matches!(old.kind, sch::SchPrimitiveKind::Pin { .. }) {
+                    return Err("The selected object is not a pin".into());
+                }
+                p.source_index = old.source_index;
                 *old = p;
             } else {
                 s.primitives.push(p);

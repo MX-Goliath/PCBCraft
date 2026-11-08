@@ -319,6 +319,7 @@ pub(in crate::app) fn app() -> PcbCraft {
         layer_stack: None,
         annotation: None,
         design_sync: None,
+        library_update: None,
         allow_exit: false,
         cursor_mm: None,
         pad_edit: None,

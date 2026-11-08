@@ -1183,6 +1183,13 @@ fn build_document(
         }
         components.push(Component {
             settings: eda_core::schematic::ComponentSettings {
+                display_mode_names: (1..32)
+                    .filter_map(|mode| {
+                        r.fields
+                            .get(&format!("CUSTOMDISPLAYMODENAME{mode}"))
+                            .map(|name| (mode, name.clone()))
+                    })
+                    .collect(),
                 models: models.remove(&(r.index as usize)).unwrap_or_default(),
                 rotation: r.fields.n("ORIENTATION") as u32 % 4,
                 part_count: (r.fields.n("PARTCOUNT") - 1).clamp(1, 1024) as u32,

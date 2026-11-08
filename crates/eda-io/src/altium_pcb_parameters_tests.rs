@@ -43,6 +43,10 @@ fn base_parameters_keep_names_values_and_ignore_other_namespaces() {
     let mut board = board();
     import(&mut board, &data()).unwrap();
     assert_eq!(
+        board.components[0].footprint_parameters,
+        Some(Fields::from([("ID".into(), "footprint-only".into())]))
+    );
+    assert_eq!(
         board.components[0].parameters,
         Some(Fields::from([
             ("ID".into(), "216".into()),
@@ -51,6 +55,55 @@ fn base_parameters_keep_names_values_and_ignore_other_namespaces() {
     );
     let json = serde_json::to_vec(&board).unwrap();
     assert_eq!(serde_json::from_slice::<Board>(&json).unwrap(), board);
+}
+
+#[test]
+fn footprint_parameters_save_separately_and_legacy_recovery_keeps_local_component_values() {
+    let mut doc = native_document();
+    let b = doc.pcb.as_mut().unwrap();
+    let component_values = b.components[0].parameters.clone();
+    b.components[0].footprint_parameters = Some(Fields::from([
+        ("Vendor".into(), "Updated".into()),
+        ("ComponentLink1URL".into(), "a{}b=c".into()),
+    ]));
+    let bytes = writer::serialize(&doc, writer::Format::Preserve).unwrap();
+    let read = import_pcb(&bytes, "updated.PcbDoc").unwrap();
+    let b = read.pcb.as_ref().unwrap();
+    assert_eq!(b.components[0].parameters, component_values);
+    assert_eq!(
+        b.components[0].footprint_parameters,
+        doc.pcb.as_ref().unwrap().components[0].footprint_parameters
+    );
+    let mut file = cfb::CompoundFile::open(Cursor::new(bytes)).unwrap();
+    let mut raw = vec![];
+    file.open_stream("/PrimitiveParameters/Data")
+        .unwrap()
+        .read_to_end(&mut raw)
+        .unwrap();
+    assert!(
+        raw.windows(b"|VARIANTGUID=variant-guid|COUNT=1".len())
+            .any(|w| w == b"|VARIANTGUID=variant-guid|COUNT=1")
+    );
+    assert!(
+        raw.windows(b"|NAME=ID|VALUE=variant-only\0".len())
+            .any(|w| w == b"|NAME=ID|VALUE=variant-only\0")
+    );
+    let mut legacy = native_document().pcb.unwrap();
+    legacy.components[0].footprint_parameters = None;
+    legacy.components[0]
+        .parameters
+        .as_mut()
+        .unwrap()
+        .insert("ID".into(), "local".into());
+    upgrade_component_parameters(&mut legacy).unwrap();
+    assert_eq!(
+        legacy.components[0].parameters.as_ref().unwrap()["ID"],
+        "local"
+    );
+    assert_eq!(
+        legacy.components[0].footprint_parameters.as_ref().unwrap()["ID"],
+        "footprint-only"
+    );
 }
 
 #[test]
@@ -119,6 +172,11 @@ fn malformed_groups_and_wrong_owners_fail_atomically() {
         ]),
         blocks(&["|PRIMITIVEID=ABCDEFGH|ID=Component#0|COUNT=1", "|NAME=ID"]),
         blocks(&["|PRIMITIVEID=ABCDEFGH|ID=Component#0|COUNT=18446744073709551615"]),
+        blocks(&[
+            "|PRIMITIVEID=ABCDEFGH|ID=Component#0|APPURTENANCE=Footprint|VARIANTGUID=Footprint|COUNT=2",
+            "|NAME=ID|VALUE=one",
+            "|NAME=id|VALUE=two",
+        ]),
     ] {
         let mut board = board();
         let old = board.clone();

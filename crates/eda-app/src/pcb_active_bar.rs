@@ -153,6 +153,7 @@ impl PcbCraft {
         let blocked = self.documents[index].read_only
             || self.documents[index].pcb_editor.rules_open()
             || self.file_state.modal()
+            || self.library_update.is_some()
             || self.pending.is_some();
         if blocked {
             self.documents[index].pcb_editor.bar.menu = None;

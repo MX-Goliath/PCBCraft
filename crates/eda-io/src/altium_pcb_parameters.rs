@@ -65,6 +65,7 @@ pub(super) fn import(board: &mut Board, data: &[u8]) -> Result<()> {
     let mut n = 0;
     // Stage all fields first, so malformed input cannot partially upgrade JSON.
     let mut parameters = BTreeMap::<u32, Fields>::new();
+    let mut footprint_parameters = BTreeMap::<u32, Fields>::new();
     while n < records.len() {
         let header = &records[n];
         let count = header
@@ -77,14 +78,21 @@ pub(super) fn import(board: &mut Board, data: &[u8]) -> Result<()> {
             .and_then(|n| n.checked_add(count))
             .filter(|end| *end <= records.len())
             .ok_or("Truncated parameter group")?;
-        // Footprint/System parameters and named variants are distinct namespaces.
-        // Retain their native records, but do not use them as base component values.
-        if header.get("VARIANTGUID").is_none_or(String::is_empty)
-            && header.get("APPURTENANCE").is_none_or(String::is_empty)
+        // System and named-variant groups remain archived. Footprint groups
+        // have their own table and must never replace schematic parameters.
+        let footprint = header.get("VARIANTGUID").is_some_and(|v| v == "Footprint")
+            && header.get("APPURTENANCE").is_some_and(|v| v == "Footprint");
+        let base = header.get("VARIANTGUID").is_none_or(String::is_empty)
+            && header.get("APPURTENANCE").is_none_or(String::is_empty);
+        if (base || footprint)
             && let Some(index) = component_owner(board, header)
                 .map_err(|error| format!("PrimitiveParameters/Data record {n}: {error}"))?
         {
-            let fields = parameters.entry(index).or_default();
+            let fields = if footprint {
+                footprint_parameters.entry(index).or_default()
+            } else {
+                parameters.entry(index).or_default()
+            };
             for record in &records[n + 1..end] {
                 let name = record
                     .get("NAME")
@@ -94,7 +102,14 @@ pub(super) fn import(board: &mut Board, data: &[u8]) -> Result<()> {
                 if fields.keys().any(|key| key.eq_ignore_ascii_case(name)) {
                     return Err("Duplicate component parameter".into());
                 }
-                fields.insert(name.clone(), decode_value(name, value));
+                fields.insert(
+                    name.clone(),
+                    if footprint {
+                        value.clone()
+                    } else {
+                        decode_value(name, value)
+                    },
+                );
             }
         }
         n = end;
@@ -103,12 +118,19 @@ pub(super) fn import(board: &mut Board, data: &[u8]) -> Result<()> {
         if let Some(fields) = parameters.remove(&component.index) {
             component.parameters = Some(fields);
         }
+        if let Some(fields) = footprint_parameters.remove(&component.index) {
+            component.footprint_parameters = Some(fields);
+        }
     }
     Ok(())
 }
 
 pub(crate) fn upgrade_component_parameters(board: &mut Board) -> Result<()> {
-    if board.components.iter().all(|c| c.parameters.is_some()) {
+    if board
+        .components
+        .iter()
+        .all(|c| c.parameters.is_some() && c.footprint_parameters.is_some())
+    {
         return Ok(());
     }
     let Some(source) = &board.source else {
@@ -153,17 +175,27 @@ pub(crate) fn upgrade_component_parameters(board: &mut Board) -> Result<()> {
         // The supported ASCII component records contain no parameter table.
         for component in &mut board.components {
             component.parameters.get_or_insert_with(Fields::new);
+            component
+                .footprint_parameters
+                .get_or_insert_with(Fields::new);
         }
     }
     for component in &mut board.components {
-        if component.parameters.is_none() {
+        if component.parameters.is_none() || component.footprint_parameters.is_none() {
             // Component indices may have changed in the saved JSON. Resolve the
             // archived owner by its native identity, never by its current slot.
             if let Some(original) = recovered.components.iter().find(|c| {
                 c.properties.contains_key("UNIQUEID")
                     && c.properties.get("UNIQUEID") == component.properties.get("UNIQUEID")
             }) {
-                component.parameters.clone_from(&original.parameters);
+                if component.parameters.is_none() {
+                    component.parameters.clone_from(&original.parameters);
+                }
+                if component.footprint_parameters.is_none() {
+                    component
+                        .footprint_parameters
+                        .clone_from(&original.footprint_parameters);
+                }
             }
         }
     }

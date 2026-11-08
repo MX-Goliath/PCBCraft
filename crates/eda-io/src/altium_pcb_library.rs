@@ -184,6 +184,9 @@ fn footprint(
         ..Board::default()
     };
     board.components[0].parameters = Some(Fields::new());
+    // In a definition the editable Parameters table already represents its
+    // footprint values. The placed-board namespace is assigned on placement.
+    board.components[0].footprint_parameters = None;
     if let Some(data) = source.get(&format!("{prefix}/PrimitiveParameters")) {
         let groups = u32_at(data, 0)?;
         let records = property_records(&data[4..], 0)?;
@@ -300,6 +303,11 @@ fn footprint(
         return Err("Footprint primitive count mismatch".into());
     }
     finish(&mut board)?;
+    // A library definition intentionally has no Board6 outline. Do not pass
+    // that board-only diagnostic to footprint consumers as lost geometry.
+    board
+        .warnings
+        .retain(|w| !w.starts_with("No valid Board6 outline"));
     board.validate()?;
     Footprint::from_library_board(board)
 }

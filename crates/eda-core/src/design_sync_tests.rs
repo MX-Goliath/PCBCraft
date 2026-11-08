@@ -55,6 +55,7 @@ fn fixture() -> (Document, Document) {
         designator: "R1".into(),
         comment: "10k".into(),
         footprint: "R0603".into(),
+        footprint_parameters: None,
         parameters: Some(Default::default()),
         position: Point::mm(30, 30),
         rotation: 0.,

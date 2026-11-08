@@ -2653,6 +2653,10 @@ fn primitive_properties(
             inner_symbol,
             ..
         } => {
+            row(ui, "", |ui| {
+                changed |= ui.checkbox(&mut p.presentation.hidden, "Hidden").changed();
+                changed |= ui.checkbox(&mut p.presentation.locked, "Locked").changed();
+            });
             changed |= text_row(ui, "Name", name);
             changed |= text_row(ui, "Designator", number);
             row(ui, "", |ui| {

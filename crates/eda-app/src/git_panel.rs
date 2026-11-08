@@ -525,6 +525,7 @@ impl PcbCraft {
         if ctx.wants_keyboard_input()
             || self.pending.is_some()
             || self.file_state.modal()
+            || self.library_update.is_some()
             || self
                 .active
                 .is_some_and(|i| self.documents[i].view.pcb.configuration_modal_open())

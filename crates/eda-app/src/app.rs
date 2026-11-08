@@ -25,6 +25,8 @@ mod docks;
 mod document_bars;
 #[path = "document_loader.rs"]
 mod document_loader;
+#[path = "library_update.rs"]
+mod library_update;
 use docks::Panel;
 #[path = "file_menu.rs"]
 mod file_menu;
@@ -235,6 +237,7 @@ enum Command {
     LayerStack,
     Annotate,
     Synchronize(eda_core::design_sync::Direction, bool),
+    UpdateLibraries(bool, bool),
     ShowComponents,
     SchPlace(Placement),
     SchEdit(SchAction),
@@ -286,6 +289,7 @@ pub struct PcbCraft {
     document_loader: document_loader::State,
     annotation: Option<annotation::Dialog>,
     design_sync: Option<design_sync::Dialog>,
+    library_update: Option<library_update::Dialog>,
     layer_stack: Option<layer_stack::Manager>,
     cross_probe: cross_probe::State,
     file_dialog: rfd::FileDialog,
@@ -381,6 +385,7 @@ impl PcbCraft {
             layer_stack: None,
             annotation: None,
             design_sync: None,
+            library_update: None,
             allow_exit: false,
             cursor_mm: None,
             pad_edit: None,
@@ -695,6 +700,7 @@ impl PcbCraft {
         }
         if self.annotation.is_some()
             || self.design_sync.is_some()
+            || self.library_update.is_some()
             || self.sheet_sync.busy()
             || self.file_state.modal()
             || self.library_editor.modal()
@@ -717,6 +723,7 @@ impl PcbCraft {
                 | Command::NewBoard
                 | Command::NewSchematic
                 | Command::Open
+                | Command::UpdateLibraries(..)
         ) && let Err(error) = self.commit_library_properties()
         {
             self.message(true, error);
@@ -728,6 +735,9 @@ impl PcbCraft {
         match command {
             Command::Library(action) => self.library_command(action),
             Command::Variants => self.open_variants(),
+            Command::UpdateLibraries(selected, from_library) => {
+                self.open_library_update(selected, from_library)
+            }
             Command::File(action) => self.file_command(action, ctx),
             Command::SynchronizeEntries(selected) => self.start_sheet_sync(selected),
             Command::NavigateHierarchy => self.start_hierarchy_navigation(),
@@ -1166,11 +1176,26 @@ impl PcbCraft {
                                             true,
                                         );
                                         ui.separator();
-                                        for label in [
-                                            "Parameter Manager...",
-                                            "Footprint Manager...",
+                                        for label in
+                                            ["Parameter Manager...", "Footprint Manager..."]
+                                        {
+                                            ui.add_enabled(false, egui::Button::new(label));
+                                        }
+                                        self.action(
+                                            ui,
                                             "Update From Libraries...",
+                                            "",
+                                            Command::UpdateLibraries(false, false),
+                                            true,
+                                        );
+                                        self.action(
+                                            ui,
                                             "Update Selected From Libraries...",
+                                            "",
+                                            Command::UpdateLibraries(true, false),
+                                            true,
+                                        );
+                                        for label in [
                                             "Update Parameters From Database...",
                                             "Item Manager...",
                                         ] {
@@ -1703,6 +1728,7 @@ impl PcbCraft {
             && !self.sheet_sync.busy()
             && self.annotation.is_none()
             && self.design_sync.is_none()
+            && self.library_update.is_none()
         {
             let direction = ctx.input_mut(|i| {
                 if i.consume_key(egui::Modifiers::CTRL | egui::Modifiers::SHIFT, Key::Tab) {
@@ -1746,6 +1772,7 @@ impl PcbCraft {
             || self.library_editor.modal()
             || self.variants.dialog.is_some()
             || self.design_sync.is_some()
+            || self.library_update.is_some()
             || self.layer_stack_active()
             || self.pending.is_some()
             || self
@@ -1833,6 +1860,7 @@ impl eframe::App for PcbCraft {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll_git(ctx);
         self.poll_document_loader(ctx);
+        self.sync_available_libraries();
         if std::env::var_os("PCBCRAFT_FRAME_PROFILE").is_some()
             && let Some(seconds) = _frame.info().cpu_usage
         {
@@ -1889,6 +1917,7 @@ impl eframe::App for PcbCraft {
         self.dialogs(ctx);
         self.annotation_dialog(ctx);
         self.design_sync_dialog(ctx);
+        self.library_update_dialog(ctx);
         self.sheet_sync_dialog(ctx);
         self.sheet_sync_context_menu(ctx);
         self.selection_popup(ctx);

@@ -108,6 +108,10 @@ pub struct Component {
     /// Base-variant component parameters; None means legacy/uninterpreted data.
     #[serde(default)]
     pub parameters: Option<Fields>,
+    /// Footprint-owned values are separate from schematic/base component values.
+    /// None means a legacy JSON document has not recovered this namespace yet.
+    #[serde(default)]
+    pub footprint_parameters: Option<Fields>,
     pub position: Point,
     pub rotation: f64,
     pub layer: u16,
@@ -1723,6 +1727,7 @@ mod tests {
             designator: "R1".into(),
             comment: "".into(),
             footprint: "R".into(),
+            footprint_parameters: None,
             parameters: Some(Default::default()),
             position: Point::default(),
             rotation: 0.0,
@@ -1969,6 +1974,7 @@ mod tests {
             designator: "U1".into(),
             comment: String::new(),
             footprint: String::new(),
+            footprint_parameters: None,
             parameters: Some(Default::default()),
             position: p(0, 0),
             rotation: 0.0,

@@ -344,6 +344,7 @@ fn net_tie_exemption_is_limited_to_copper_owned_by_that_footprint() {
         designator: "NT1".into(),
         comment: String::new(),
         footprint: "NetTie".into(),
+        footprint_parameters: None,
         parameters: None,
         position: Point::default(),
         rotation: 0.,

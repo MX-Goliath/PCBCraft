@@ -916,12 +916,18 @@ fn component_changes(c: &Component) -> Fields {
         "SOURCECOMPONENTLIBRARY",
         "SOURCELIBRARYNAME",
         "UNIQUEID",
+        "HEIGHT",
+        "FOOTPRINTDESCRIPTION",
     ] {
         if let Some(value) = c.properties.get(key) {
             f.insert(key.into(), value.clone());
         }
     }
-    if c.parameters.as_ref().is_some_and(|p| !p.is_empty()) {
+    if c.parameters.as_ref().is_some_and(|p| !p.is_empty())
+        || c.footprint_parameters
+            .as_ref()
+            .is_some_and(|p| !p.is_empty())
+    {
         f.insert("UNIQUEID".into(), component_uid(c));
     }
     for (k, v) in [
@@ -945,8 +951,25 @@ fn component_uid(c: &Component) -> String {
         .unwrap_or_else(|| c.id.simple().to_string()[..8].to_ascii_uppercase())
 }
 
-/// Rewrite only the base component namespace. Variant/system/footprint groups
-/// and unrelated record fields are retained byte-for-byte when unmodified.
+fn parameter_value(name: &str, value: &str, footprint: bool) -> String {
+    if footprint {
+        value.into()
+    } else {
+        parameters::encode_value(name, value)
+    }
+}
+fn parameter_fields(name: &str, value: &str, footprint: bool) -> Fields {
+    let mut fields = Fields::from([
+        ("NAME".into(), name.into()),
+        ("VALUE".into(), parameter_value(name, value, footprint)),
+    ]);
+    if !footprint {
+        fields.insert("ISIMPORTED".into(), "TRUE".into());
+    }
+    fields
+}
+/// Rewrite the base and footprint namespaces independently. Variant/system
+/// groups and unrelated fields stay byte-for-byte intact when unmodified.
 fn parameter_section(
     board: &Board,
     streams: &BTreeMap<String, Vec<u8>>,
@@ -975,23 +998,30 @@ fn parameter_section(
             .ok_or("Truncated parameter group")?;
         let base = h.get("VARIANTGUID").is_none_or(String::is_empty)
             && h.get("APPURTENANCE").is_none_or(String::is_empty);
-        let owner = if base {
+        let footprint = h.get("VARIANTGUID").is_some_and(|v| v == "Footprint")
+            && h.get("APPURTENANCE").is_some_and(|v| v == "Footprint");
+        let owner = if base || footprint {
             parameters::component_owner(board, &h)?
         } else {
             None
         };
-        if base && let Some(owner) = owner {
+        if let Some(owner) = owner {
             let c = board
                 .components
                 .iter()
                 .find(|c| c.index == owner)
                 .ok_or("Parameter owner was removed; native reference remapping is required")?;
-            if !owners.insert(owner) {
+            if !owners.insert((owner, footprint)) {
                 return Err(
-                    "Multiple base parameter groups for one component require consolidation".into(),
+                    "Multiple parameter groups in one component namespace require consolidation"
+                        .into(),
                 );
             }
-            if let Some(parameters) = &c.parameters {
+            if let Some(parameters) = if footprint {
+                &c.footprint_parameters
+            } else {
+                &c.parameters
+            } {
                 let old: Vec<_> = raw[n + 1..end]
                     .iter()
                     .map(|b| fields(b))
@@ -1007,10 +1037,13 @@ fn parameter_section(
                         if !names.insert(key.to_uppercase()) {
                             return Err("Duplicate component parameter".into());
                         }
-                        if record
-                            .get("VALUE")
-                            .is_some_and(|v| parameters::decode_value(name, v) == *value)
-                            && key == name
+                        if record.get("VALUE").is_some_and(|v| {
+                            (if footprint {
+                                v.clone()
+                            } else {
+                                parameters::decode_value(name, v)
+                            }) == *value
+                        }) && key == name
                         {
                             records.push(block.clone());
                         } else {
@@ -1018,7 +1051,7 @@ fn parameter_section(
                                 block,
                                 &map_changes(&Fields::from([
                                     ("NAME".into(), key.clone()),
-                                    ("VALUE".into(), parameters::encode_value(key, value)),
+                                    ("VALUE".into(), parameter_value(key, value, footprint)),
                                 ])),
                             )?);
                         }
@@ -1028,11 +1061,7 @@ fn parameter_section(
                     if names.insert(name.to_uppercase()) {
                         records.push(patch_fields(
                             &[],
-                            &map_changes(&Fields::from([
-                                ("NAME".into(), name.clone()),
-                                ("VALUE".into(), parameters::encode_value(name, value)),
-                                ("ISIMPORTED".into(), "TRUE".into()),
-                            ])),
+                            &map_changes(&parameter_fields(name, value, footprint)),
                         )?);
                     }
                 }
@@ -1064,40 +1093,48 @@ fn parameter_section(
         n = end;
     }
     for c in &board.components {
-        if owners.contains(&c.index) {
-            continue;
-        }
-        let Some(parameters) = &c.parameters else {
-            continue;
-        };
-        if parameters.is_empty() {
-            continue;
-        }
-        let header = Fields::from([
-            ("PRIMITIVEID".into(), component_uid(c)),
-            (
-                "ID".into(),
-                format!("Component#{}", maps.components[&c.index]),
-            ),
-            ("VARIANTGUID".into(), String::new()),
-            ("COUNT".into(), parameters.len().to_string()),
-        ]);
-        out.push(patch_fields(&[], &map_changes(&header))?);
-        let mut names = BTreeSet::new();
-        for (name, value) in parameters {
-            if name.is_empty() || !names.insert(name.to_uppercase()) {
-                return Err("Invalid or duplicate component parameter name".into());
+        for (footprint, parameters) in [(false, &c.parameters), (true, &c.footprint_parameters)] {
+            if owners.contains(&(c.index, footprint)) {
+                continue;
             }
-            out.push(patch_fields(
-                &[],
-                &map_changes(&Fields::from([
-                    ("NAME".into(), name.clone()),
-                    ("VALUE".into(), parameters::encode_value(name, value)),
-                    ("ISIMPORTED".into(), "TRUE".into()),
-                ])),
-            )?);
+            let Some(parameters) = parameters else {
+                continue;
+            };
+            if parameters.is_empty() {
+                continue;
+            }
+            let mut header = Fields::from([
+                ("PRIMITIVEID".into(), component_uid(c)),
+                (
+                    "ID".into(),
+                    format!("Component#{}", maps.components[&c.index]),
+                ),
+                (
+                    "VARIANTGUID".into(),
+                    if footprint {
+                        "Footprint".into()
+                    } else {
+                        String::new()
+                    },
+                ),
+                ("COUNT".into(), parameters.len().to_string()),
+            ]);
+            if footprint {
+                header.insert("APPURTENANCE".into(), "Footprint".into());
+            }
+            out.push(patch_fields(&[], &map_changes(&header))?);
+            let mut names = BTreeSet::new();
+            for (name, value) in parameters {
+                if name.is_empty() || !names.insert(name.to_uppercase()) {
+                    return Err("Invalid or duplicate component parameter name".into());
+                }
+                out.push(patch_fields(
+                    &[],
+                    &map_changes(&parameter_fields(name, value, footprint)),
+                )?);
+            }
+            groups += 1;
         }
-        groups += 1;
     }
     Ok((encode_blocks(&out)?, groups))
 }
@@ -1456,7 +1493,7 @@ fn encode_binary(
                 let comp = board.components.iter().find(|n| n.index == *index).unwrap();
                 let fallback = patch_fields(&[], &map_changes(&comp.properties))?;
                 let base = raw.get(*index as usize).unwrap_or(&fallback);
-                let mut f = component_changes(comp);
+                let mut changes = map_changes(&component_changes(comp));
                 // Re-encoding equal fields can change native legacy text and
                 // numeric spellings even though our importer reads them alike.
                 // A comment ECO must leave the footprint/library/transform bytes
@@ -1465,12 +1502,19 @@ fn encode_binary(
                     old_board.and_then(|old| old.components.iter().find(|c| c.index == *index))
                 {
                     let before = component_changes(original);
-                    f.retain(|key, value| before.get(key) != Some(value));
+                    changes.retain(|key, value| before.get(key) != value.as_ref());
+                    for key in ["HEIGHT", "FOOTPRINTDESCRIPTION"] {
+                        if original.properties.contains_key(key)
+                            && !comp.properties.contains_key(key)
+                        {
+                            changes.insert(key.into(), None);
+                        }
+                    }
                 }
                 if raw.get(*index as usize).is_none() || index != new_index {
-                    f.insert("ID".into(), new_index.to_string());
+                    changes.insert("ID".into(), string(new_index.to_string()));
                 }
-                records.push(patch_fields(base, &map_changes(&f))?);
+                records.push(patch_fields(base, &changes)?);
             }
         } else if old_board.is_some_and(|old| old.polygons.len() > old.polygon_pours.len()) {
             records = raw;
@@ -1816,6 +1860,11 @@ fn encode_ascii(
                 };
                 done_comps.insert(id);
                 changes = map_changes(&component_changes(c));
+                for key in ["HEIGHT", "FOOTPRINTDESCRIPTION"] {
+                    if f.contains_key(key) && !c.properties.contains_key(key) {
+                        changes.insert(key.into(), None);
+                    }
+                }
                 changes.insert("DESIGNATOR".into(), string(&c.designator));
             }
             "RULE" => {
@@ -2014,9 +2063,15 @@ fn verify_tables(expected: &Board, actual: &Board, maps: Option<&Maps>) -> Resul
             }
         }
         if c.designator != a.designator
+            || ["HEIGHT", "FOOTPRINTDESCRIPTION"]
+                .iter()
+                .any(|key| c.properties.get(*key) != a.properties.get(*key))
             || c.parameters
                 .as_ref()
                 .is_some_and(|p| a.parameters.as_ref() != Some(p))
+            || c.footprint_parameters
+                .as_ref()
+                .is_some_and(|p| a.footprint_parameters.as_ref() != Some(p))
             || c.comment != a.comment
             || c.footprint != a.footprint
             || c.layer != a.layer
@@ -2383,18 +2438,28 @@ pub fn serialize(doc: &Document, format: Format) -> Result<Vec<u8>> {
         }
     }
     for component in &board.components {
-        let original_parameters = old_board
-            .and_then(|b| b.components.iter().find(|c| c.index == component.index))
-            .and_then(|c| c.parameters.as_ref());
-        if !binary
-            && component.parameters.as_ref().is_some_and(|parameters| {
-                !parameters.is_empty()
-                    || parameters != original_parameters.unwrap_or(&Fields::new())
-            })
-        {
-            return Err(
-                "Changed component parameters require binary PcbDoc or PCBCraft JSON".into(),
-            );
+        let original =
+            old_board.and_then(|b| b.components.iter().find(|c| c.index == component.index));
+        for (parameters, original_parameters) in [
+            (
+                &component.parameters,
+                original.and_then(|c| c.parameters.as_ref()),
+            ),
+            (
+                &component.footprint_parameters,
+                original.and_then(|c| c.footprint_parameters.as_ref()),
+            ),
+        ] {
+            if !binary
+                && parameters.as_ref().is_some_and(|parameters| {
+                    !parameters.is_empty()
+                        || parameters != original_parameters.unwrap_or(&Fields::new())
+                })
+            {
+                return Err(
+                    "Changed component parameters require binary PcbDoc or PCBCraft JSON".into(),
+                );
+            }
         }
     }
     if !binary {
@@ -2643,6 +2708,77 @@ mod tests {
         c.insert("KNOWN".into(), string("new"));
         let b = patch_fields(raw, &c).unwrap();
         assert_eq!(b, b"|KNOWN=new|CUSTOM=one|CUSTOM=two|OPAQUE=\xff\0");
+    }
+    #[test]
+    fn manually_placed_designator_survives_missing_source_field_and_native_save() {
+        for (source, physical, expected) in
+            [("", "U1", "U1"), ("", "ДД1", "ДД1"), ("DD2", "DD1", "DD2")]
+        {
+            let mut d = doc();
+            let b = d.pcb.as_mut().unwrap();
+            let raw = format!("|SOURCEDESIGNATOR={source}|PATTERN=TEST|X=0mil|Y=0mil|LAYER=TOP\0");
+            let mut c = component(fields(raw.as_bytes()).unwrap(), d.id, 0).unwrap();
+            c.designator = physical.into();
+            b.components.push(c);
+            let mut text = Item::new(
+                TOP_OVERLAY,
+                None,
+                Shape::Text {
+                    position: Point::mm(1, 2),
+                    text: physical.into(),
+                    height: 1_000_000,
+                    stroke: 100_000,
+                    rotation: 0.,
+                    mirrored: false,
+                    font: String::new(),
+                },
+            );
+            text.component = Some(0);
+            text.properties.insert("DESIGNATOR".into(), "TRUE".into());
+            b.items.push(text);
+            // The writer normally emits SOURCEDESIGNATOR. Reproduce a native
+            // manually placed footprint by removing that field from the stream.
+            let bytes = serialize(&d, Format::Binary).unwrap();
+            let mut file = cfb::CompoundFile::open(Cursor::new(bytes)).unwrap();
+            let raw = if source.is_empty() {
+                b"|PATTERN=TEST|X=0mil|Y=0mil|LAYER=TOP\0".to_vec()
+            } else {
+                raw.into_bytes()
+            };
+            write_stream(
+                &mut file,
+                "/Components6/Data",
+                &encode_blocks(std::slice::from_ref(&raw)).unwrap(),
+            )
+            .unwrap();
+            let bytes = file.into_inner().into_inner();
+            let mut imported = import_pcb(&bytes, "placed.PcbDoc").unwrap();
+            assert_eq!(
+                imported.pcb.as_ref().unwrap().components[0].designator,
+                expected
+            );
+            assert!(
+                matches!(&imported.pcb.as_ref().unwrap().items[1].shape, Shape::Text { text, .. } if text == expected)
+            );
+            assert_eq!(serialize(&imported, Format::Preserve).unwrap(), bytes);
+            if let Shape::Track { end, .. } = &mut imported.pcb.as_mut().unwrap().items[0].shape {
+                *end = Point::mm(15, 3);
+            }
+            let saved = serialize(&imported, Format::Preserve).unwrap();
+            assert_eq!(
+                property_blocks(&read_streams(&saved).unwrap()["/Components6/Data"]).unwrap()[0],
+                raw
+            );
+            assert_eq!(
+                import_pcb(&saved, "saved.PcbDoc")
+                    .unwrap()
+                    .pcb
+                    .unwrap()
+                    .components[0]
+                    .designator,
+                expected
+            );
+        }
     }
     #[test]
     fn comment_eco_preserves_native_component_numeric_and_legacy_unicode_bytes() {
