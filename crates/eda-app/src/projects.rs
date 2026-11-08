@@ -804,6 +804,7 @@ mod tests {
     #[test]
     fn startup_sizing_does_not_collapse_projects_or_change_width_between_editors() {
         let mut app = PcbCraft {
+            dock_runtime: Default::default(),
             updates: Default::default(),
             git: Default::default(),
             library_editor: Default::default(),

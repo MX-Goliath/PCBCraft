@@ -219,25 +219,35 @@ impl PcbCraft {
         }
         let before_frame = m.stack.clone();
         let before_history = (m.undo.len(), m.redo.len());
-        self.right_dock_with_properties(ctx, |_app, ui| {
-            ui.label("Layer Stack Manager");
-            stack_ui::search(ui);
-            egui::ScrollArea::vertical()
-                .id_salt("stack_properties_scroll")
-                .show(ui, |ui| {
-                    ui.spacing_mut().item_spacing.y = 2.0;
-                    ui.add_space(22.0);
-                    match m.tab {
-                        0 => stack_ui::layer_properties(ui, &mut m),
-                        1 => stack_ui::via_properties(ui, &mut m, &mut apply, &mut use_via),
-                        _ => stack_ui::impedance_properties(ui, &mut m, &mut apply, &mut use_width),
-                    }
-                    stack_ui::board_properties(ui, &mut m);
-                    if m.tab != 1 {
-                        stack_ui::other_properties(ui);
-                    }
-                });
-        });
+        {
+            let mut properties = |_app: &mut Self, ui: &mut egui::Ui| {
+                ui.label("Layer Stack Manager");
+                stack_ui::search(ui);
+                egui::ScrollArea::vertical()
+                    .id_salt("stack_properties_scroll")
+                    .show(ui, |ui| {
+                        ui.spacing_mut().item_spacing.y = 2.0;
+                        ui.add_space(22.0);
+                        match m.tab {
+                            0 => stack_ui::layer_properties(ui, &mut m),
+                            1 => stack_ui::via_properties(ui, &mut m, &mut apply, &mut use_via),
+                            _ => stack_ui::impedance_properties(
+                                ui,
+                                &mut m,
+                                &mut apply,
+                                &mut use_width,
+                            ),
+                        }
+                        stack_ui::board_properties(ui, &mut m);
+                        if m.tab != 1 {
+                            stack_ui::other_properties(ui);
+                        }
+                    });
+            };
+            self.left_dock_with_properties(ctx, &mut properties);
+            self.right_dock_with_properties(ctx, &mut properties);
+            self.finish_docks_with_properties(ctx, &mut properties);
+        }
         egui::CentralPanel::default()
             .frame(
                 egui::Frame::NONE

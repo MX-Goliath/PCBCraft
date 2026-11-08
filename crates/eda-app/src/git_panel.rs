@@ -1256,7 +1256,7 @@ impl PcbCraft {
         let working_path = self.git_working_path(id);
         let mut open_working = false;
         let mut changes_action = false;
-        let changes_selected = self.selected_panel(docks::Side::Right) == Some(Panel::Changes);
+        let changes_selected = self.panel_selected(Panel::Changes);
         let Some(review) = self.git.reviews.get_mut(&id) else {
             return;
         };

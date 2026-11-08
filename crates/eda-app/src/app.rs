@@ -142,6 +142,8 @@ impl OpenDocument {
 #[derive(Serialize, Deserialize)]
 #[serde(default)]
 struct Settings {
+    dock_layout: Option<docks::Layout>,
+    dock_visible: Option<Vec<Panel>>,
     left_panel: Option<Panel>,
     view_configuration: bool,
     library_panel: bool,
@@ -173,6 +175,8 @@ struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            dock_layout: None,
+            dock_visible: None,
             left_panel: None,
             view_configuration: false,
             library_panel: false,
@@ -272,6 +276,7 @@ struct PadEdit {
 }
 
 pub struct PcbCraft {
+    dock_runtime: docks::Runtime,
     updates: crate::updates::Updater,
     git: git_panel::State,
     library_editor: library_editor::State,
@@ -345,6 +350,7 @@ impl PcbCraft {
             settings.grid_nm = 1_000_000;
         }
         let mut app = Self {
+            dock_runtime: Default::default(),
             updates: Default::default(),
             git: Default::default(),
             library_editor: Default::default(),
@@ -383,6 +389,7 @@ impl PcbCraft {
             pcb_clipboard: None,
             components_ui: Default::default(),
         };
+        app.restore_dock_visibility();
         for path in app.settings.libraries.clone() {
             app.import_library(path, false);
         }
@@ -1855,17 +1862,21 @@ impl eframe::App for PcbCraft {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.run(Command::Quit, ctx);
         }
-        self.shortcuts(ctx);
+        self.prepare_dock_input(ctx);
+        if !self.dock_drag_active() {
+            self.shortcuts(ctx);
+        }
         self.title_bar(ctx);
         self.menus(ctx);
         self.status(ctx);
-        self.left_dock(ctx);
         if !self.layer_stack_active() {
+            self.left_dock(ctx);
             self.right_dock(ctx);
         }
         self.git_dialogs(ctx);
         self.library_dialog(ctx);
         self.workspace(ctx);
+        self.finish_docks(ctx);
         self.library_editor_dialogs(ctx);
         if !self.git_review_active() {
             self.finish_schematic_interaction();
@@ -1924,6 +1935,7 @@ impl eframe::App for PcbCraft {
         }
     }
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        self.save_dock_visibility();
         eframe::set_value(storage, "pcbcraft.settings", &self.settings);
     }
 }
