@@ -1,31 +1,31 @@
-# ADR 0002: первая стадия импорта Altium schematic
+# ADR 0002: first stage of Altium schematic import
 
-Принято 19 октября 2026. Связь с исходным планом: §3, §5, §9–10, §25–26.
+Accepted October 19, 2026. Related original plan sections: §3, §5, §9–10, §25–26.
 
-Импорт и native-запись имеют независимые уровни поддержки. Сейчас реализован
-просмотр CFB/ASCII SchDoc 5.0 и ссылок PrjPcb. Native writer отсутствует.
-Компоненты, сцена, исходные поля и оригинальный файл хранятся в eda-core;
-парсер CFB/INI находится в eda-io, экранная геометрия — в eda-render.
+Import and native writing have independent support levels. CFB/ASCII SchDoc 5.0
+viewing and PrjPcb references are currently implemented. There is no native writer.
+Components, the scene, original fields and the original file are stored in eda-core;
+the CFB/INI parser lives in eda-io, and screen geometry lives in eda-render.
 
-Сцена остаётся в i64 nm. Файловая координата 10 mil и её доля `_FRAC/100000`
-вычисляются в i128 и один раз округляются до ближайшего nm, включая отрицательные
-значения. Максимальная ошибка округления — 0.5 nm. Поля исходной координаты
-и исходные байты сохраняются без такой потери. Это достаточный контракт
-просмотра, но ещё не решение для редактирования/native roundtrip с точностью
-10 pm из исходного плана. До такого редактирования требуется отдельная миграция.
-Диапазон геометрии расширен с ±1 м до ±100 м для больших листов.
-Размещение дочерних объектов SchDoc уже абсолютное; повторный поворот запрещён.
+The scene remains in i64 nm. File coordinates in 10 mil units and their
+`_FRAC/100000` fractions are calculated in i128 and rounded once to the nearest nm,
+including negative values. Maximum rounding error is 0.5 nm. Original coordinate
+fields and bytes are preserved without this loss. This is a sufficient viewing
+contract, but not yet a solution for editing/native roundtrips at the original
+plan's 10 pm precision. A separate migration is required before such editing.
+The geometry range is expanded from ±1 m to ±100 m for large sheets.
+SchDoc child-object positions are already absolute; rotating them again is prohibited.
 
-UUID v5 строится из native UniqueID документа и индекса записи. Файл без
-UniqueID получает ID от содержимого. ID стабильны при повторном импорте одного
-документа; устойчивость индексов при стороннем редактировании не обещается.
+UUID v5 is derived from the document's native UniqueID and record index. A file
+without UniqueID receives a content-based ID. IDs are stable when reimporting the
+same document; index stability after third-party editing is not promised.
 
-JSON v1 расширен опциональным `schematic`; старые документы читаются.
-Сохранение импортированной сцены выполняется только в собственный формат.
-Неизвестные streams и поля сохраняются в архиве исходного SchDoc; это не
-гарантирует их актуальность после будущих изменений геометрии.
+JSON v1 is extended with optional `schematic`; older documents remain readable.
+The imported scene is saved only in the application's own format.
+Unknown streams and fields are retained in the original SchDoc archive;
+this does not guarantee their validity after future geometry changes.
 
-Linux использует те же парсер, модель и renderer. Windows-пути проекта
-нормализуются, относительные ссылки разрешаются от папки проекта, уникальные
-совпадения регистра ищутся отдельно. Шрифты Windows/Altium не распространяются;
-поддержан пользовательский каталог и свободный fallback.
+Linux uses the same parser, model and renderer. Windows project paths are
+normalized, relative references are resolved from the project folder, and unique
+case-insensitive matches are searched separately. Windows/Altium fonts are not
+distributed; a user directory and a free fallback are supported.

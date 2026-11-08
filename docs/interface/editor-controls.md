@@ -1,114 +1,115 @@
-# Управление SCH и PCB — 02.11.2026
+# SCH and PCB controls — November 2, 2026
 
-Эталон: доступный Altium Designer Enterprise 24.4.1 на Windows. Это карта
-проверенных путей и оставшихся расхождений, а не заявление о полном паритете
-всех настроек и интерактивных команд Altium.
+Reference: available Altium Designer Enterprise 24.4.1 on Windows. This maps
+verified paths and remaining differences; it does not claim full parity with all
+Altium settings and interactive commands.
 
-## Наблюдения в установленном Altium
+## Observations in installed Altium
 
-Использовалась отдельная `interaction-reference.SchDoc`, скопированная из
-`fixtures/schematic/minimal.SchDoc` в `.tools`. Пользовательские проекты не
-редактировались и не сохранялись. В PCB наблюдались выбор и меню существующего
-документа; команды изменения геометрии не запускались.
+A separate `interaction-reference.SchDoc` was copied from
+`fixtures/schematic/minimal.SchDoc` into `.tools`. User projects were neither edited
+nor saved. PCB selection and menus were observed in an existing document;
+geometry-changing commands were not run.
 
-- Ctrl+PgDn увеличивает область объектов тестовой схемы.
-- ЛКМ с пустого места строит рамку. Рамка, охватывающая надписи компонента,
-  но не его крайний вывод, выбрала дочерние надписи и No ERC. У родителя были
-  незакрашенные маркеры. Выбор компонента кликом по корпусу дал зелёные маркеры.
-- Повторный обычный клик по выбранному компоненту снял его выбор.
-- Первый клик по ломаному Wire выбрал весь провод с зелёными узлами.
-  Повторный клик по вертикальному участку дал красные маркеры сегмента.
-- PCB: клавиша S открыла меню Select. Наблюдались Select overlapped (Shift+Tab),
-  Select next (Tab), геометрические способы выбора, All, Board, Net,
-  Connected Copper (Ctrl+H), Physical Connection и дополнительные способы.
+- Ctrl+PgDn zooms to the test schematic's object area.
+- Left-drag from empty space creates a selection rectangle. A rectangle enclosing
+  component labels but excluding its outermost pin selected child labels and No ERC.
+  The parent had unfilled markers. Clicking the component body gave green markers.
+- Another ordinary click on the selected component deselected it.
+- The first click on a bent Wire selected the whole wire with green nodes.
+  Another click on its vertical portion gave red segment markers.
+- PCB: S opened Select. Observed entries included Select overlapped (Shift+Tab),
+  Select next (Tab), geometric selection methods, All, Board, Net, Connected Copper
+  (Ctrl+H), Physical Connection and additional methods.
 
-Доступный Computer Use поддерживает щелчки, клавиатурные сочетания и левый drag,
-но не предоставляет документированный ввод удерживаемого модификатора вместе
-с мышью или правого drag. Поэтому сочетания Alt/Shift/Ctrl с мышью ниже
-подтверждены официальной документацией и тестами событий PCBCraft;
-их отдельная живая проверка в AD 24.4.1 не заявляется.
+Available Computer Use supports clicks, keyboard shortcuts and left-drag, but
+provides no documented input for holding a modifier while using the mouse or for
+right-drag. Therefore Alt/Shift/Ctrl mouse combinations below are supported by
+official documentation and PCBCraft event tests; separate live verification in
+AD 24.4.1 is not claimed.
 
-## Источники правил
+## Rule sources
 
 - [Schematic shortcuts](https://www.altium.com/documentation/altium-designer/shortcut-keys/schematic-editors)
 - [PCB shortcuts](https://www.altium.com/documentation/altium-designer/shortcut-keys/pcb-editors)
 - [Design object selection](https://www.altium.com/documentation/altium-designer/design-object-selection)
 - [Route selection techniques](https://www.altium.com/documentation/altium-designer/pcb/routing/interactive)
 
-Официальные страницы обновляются независимо от установленного AD24. Их правила
-отделены от наблюдений конкретной версии выше.
+Official pages are updated independently of installed AD24. Their rules are kept
+separate from the version-specific observations above.
 
-## Реализация
+## Implementation
 
-| Действие | SCH | PCB |
+| Action | SCH | PCB |
 | --- | --- | --- |
-| ЛКМ по объекту | Выбор; повторный клик снимает выбор компонента, у Wire уточняет сегмент | Выбор; повторные клики перебирают перекрывающиеся объекты, одиночный объект снимается |
-| Shift+ЛКМ | Добавление/снятие без очистки остальных; сохраняется уточнение Wire | Добавление/снятие без очистки остальных |
-| ЛКМ с пустого места, слева направо | Только полностью охваченные объекты; дочерний текст доступен отдельно | Полное охватывание |
-| Рамка справа налево | Пересечение, включая частично охваченные объекты | Пересечение медной геометрии отдельных объектов, а не только их AABB |
-| Shift+рамка | Дополнение; жест может начинаться поверх объекта | Дополнение; не начинает перемещение корпуса поверх нужных дорожек |
-| Ctrl+рамка | Обычный выбор | Площадки отдельно от родительских компонентов |
-| Alt+ЛКМ | Выбирает указанный сетевой объект, подсвечивает электрическую группу в открытых листах проекта | Выбор видимой воздушной связи |
-| Alt+Shift+ЛКМ | Отдельный накопительный режим подсветки не заявляется | Дополнение выбранных воздушных связей |
-| Alt+рамка справа налево | Отдельный режим не заявляется | Выбор пересекающих рамку видимых воздушных связей; Shift дополняет |
-| ПКМ с удержанием | Панорамирование | Панорамирование |
-| Колесо / Shift+колесо | Вертикальное / горизонтальное перемещение вида | То же; существующая настройка wheel zoom сохранена |
-| Ctrl+колесо, pinch | Масштабирование у указателя | То же |
-| Средняя кнопка с удержанием; Ctrl+ПКМ | Масштабирование движением мыши | То же |
-| PgUp / PgDn, Home | Масштабирование у указателя; центрирование вида | То же |
-| ЛКМ с удержанием на объекте | Перемещение/существующий связанный Drag; предпросмотр до отпускания | Перемещение группы, локальный Drag дорожки, ручки объектов |
-| Alt при перемещении | Ограничение смещения одной осью | То же |
-| Ctrl+Shift при перемещении | Временный обход сетки и электрической привязки | Существующий обход привязки |
-| Ctrl+стрелка / Ctrl+Shift+стрелка | Один / десять шагов сетки, одна команда истории | То же |
-| Ctrl+1..8, Shift+1..8 | Запись / дополнение памяти выделения | То же |
-| Alt+1..8, Alt+Shift+1..8 | Восстановление / дополнение из памяти; удалённые ID отбрасываются | То же |
-| Shift+C | Снять подсветку сети без изменения модели | Снять фильтр подсветки сети |
-| S / X, S,A / X,A | Меню выбора/снятия; выбор/снятие всего | То же, с подмножеством команд PCB |
-| Tab в режиме выбора | Существующее поведение редактора | Связанная медь слоя → связанных слоёв → вся сеть → исходный набор; одинаковые ступени пропускаются |
-| Ctrl+H | Не переназначается на команду PCB | Указать объект для выбора физически связанной меди |
+| Left-click object | Select; repeat click deselects a component or refines a Wire to a segment | Select; repeated clicks cycle overlaps, deselecting a single object |
+| Shift+left-click | Add/remove without clearing others; Wire refinement is retained | Add/remove without clearing others |
+| Left-drag from empty space, left to right | Only fully enclosed objects; child text is independently selectable | Full enclosure |
+| Right-to-left rectangle | Intersection, including partially enclosed objects | Intersection with individual objects' copper geometry, not just their AABBs |
+| Shift+rectangle | Additive; gesture may start over an object | Additive; does not start moving a component body over desired tracks |
+| Ctrl+rectangle | Ordinary selection | Pads independently of parent components |
+| Alt+left-click | Select pointed net object, highlight electrical group in open project sheets | Select visible airwire |
+| Alt+Shift+left-click | No separate cumulative highlight mode claimed | Add to selected airwires |
+| Alt+right-to-left rectangle | No separate mode claimed | Select visible airwires crossing the rectangle; Shift adds |
+| Hold right button | Pan | Pan |
+| Wheel / Shift+wheel | Vertical / horizontal view movement | Same; existing wheel-zoom preference retained |
+| Ctrl+wheel, pinch | Zoom at pointer | Same |
+| Hold middle button; Ctrl+right button | Zoom by mouse movement | Same |
+| PgUp / PgDn, Home | Zoom at pointer; center view | Same |
+| Hold left button on object | Move/existing connected Drag; preview until release | Group move, local track Drag, object handles |
+| Alt while moving | Constrain displacement to one axis | Same |
+| Ctrl+Shift while moving | Temporarily bypass grid and electrical snapping | Existing snap bypass |
+| Ctrl+arrow / Ctrl+Shift+arrow | One / ten grid steps, one history command | Same |
+| Ctrl+1..8, Shift+1..8 | Store / add to selection memory | Same |
+| Alt+1..8, Alt+Shift+1..8 | Restore / add from memory; deleted IDs discarded | Same |
+| Shift+C | Clear net highlight without model changes | Clear net highlight filter |
+| S / X, S,A / X,A | Select/deselect menu; select/deselect all | Same, with a PCB command subset |
+| Tab in selection mode | Existing editor behavior | Connected copper on layer → connected layers → entire net → original set; identical stages skipped |
+| Ctrl+H | Not reassigned to a PCB command | Pick object to select physically connected copper |
 
-Выбор и подсветка живут в состоянии вида. Геометрические вычисления
-электрической связности и выбора меди находятся в `eda-core`; ввод и камера —
-в `eda-render`; любые перемещения проходят валидацию и историю в приложении.
+Selection and highlighting live in view state. Electrical-connectivity and copper
+selection geometry calculations live in `eda-core`; input and camera in
+`eda-render`; every move goes through validation and history in the application.
 
-Для подсветки схемы используются `electrical_islands` общего компилятора,
-включая группы без выводов компонентов и неназванные цепи. Текстовое совпадение
-имён вне разрешённой области проекта не заменяет электрическую связность.
-Закрытые листы читаются в снимки, но редакторные вкладки автоматически не
-открываются. Сложные неподдержанные входные данные компилятора дают сообщение.
+Schematic highlighting uses the shared compiler's `electrical_islands`, including
+groups without component pins and unnamed nets. Textual name matches outside the
+resolved project scope do not substitute for electrical connectivity.
+Closed sheets are read into snapshots without automatically opening editor tabs.
+Complex unsupported compiler inputs produce a message.
 
-Физический выбор PCB учитывает медь на слоях, фактические пролёты переходных
-отверстий, металлизированные площадки и сверления. Отдельная воздушная связь
-не соединяет медные острова. Tab не превращает вывод компонента в выбор всего
-корпуса вместо сети. Все эти операции не создают записей Undo.
+Physical PCB selection accounts for layer copper, actual via spans, plated pads
+and holes. An individual airwire does not connect copper islands.
+Tab does not turn a component pin into selection of the whole package instead of
+the net. None of these operations creates Undo entries.
 
-## Проверка и границы
+## Verification and boundaries
 
-Проверяются реальные egui-события, включая press/move/release в одном кадре,
-направление рамки, Shift на нажатии с отпусканием модификатора перед release,
-фильтры типов, потерю фокуса, изоляцию колеса от панелей и привязку масштаба.
-Контроллерные тесты проверяют память, сетевую подсветку без группового выбора,
-Ctrl-стрелки/Undo, циклический выбор PCB, Alt+Shift-связи и ступени Tab.
-Отдельный многошаговый тест проверяет Tab/Shift+Tab, регистрацию поля свойств и
-следующую клавишу S: расширение выбора не должно передавать фокус полю ввода.
+Tests use real egui events, including press/move/release within one frame,
+rectangle direction, Shift on press released before mouse release, type filters,
+focus loss, wheel isolation from panels and zoom anchoring.
+Controller tests cover memory, net highlighting without group selection,
+Ctrl+arrows/Undo, PCB cycling, Alt+Shift airwires and Tab stages.
+A separate multistep test checks Tab/Shift+Tab, property-field registration and
+the next S key: selection expansion must not transfer focus into an input field.
 
-В извлечённой Windows portable-сборке проверены обычная рамка SCH, охватывающая
-и пересекающая рамки PCB, выбор R1 без изменения документа, Track → Tab с выбором
-физически присоединённой площадки и отображение S-меню. Пустая область незалитого
-полигона больше не запускает перемещение его определения. Сборка запущена из
-временного каталога с PATH только на Windows; настройки создаются в Data рядом с EXE.
-Строгий Clippy и fmt прошли; 677 тестов прошли, один прежний GPU-тест сравнения
-пикселей падает (разница 4 при допуске 3). Подробности и журнал: PLAN.md.
+The extracted Windows portable build was checked for an ordinary SCH rectangle,
+enclosing/crossing PCB rectangles, R1 selection without document changes,
+Track → Tab selecting a physically attached pad and displaying the S menu.
+Empty space inside an unpoured polygon no longer starts moving its definition.
+The build ran from a temporary directory with only Windows on PATH; settings are
+created in Data next to the EXE. Strict Clippy and fmt passed; 677 tests passed,
+one pre-existing GPU pixel-comparison test fails (difference 4 with tolerance 3).
+Details and log: PLAN.md.
 
-Оставшиеся расхождения: не воспроизведены все диалоги и настройки Click Clears
-Selection, Shift Click to Select для отдельных типов, Use Left/Right Selection,
-Always Drag и electrical hotspot; скорость zoom-drag не измерена в AD24.
-Нет полного нативного контекстного меню ПКМ, автоматического edge-pan, всех
-вариантов Physical/Component/Room selection и фильтрации Ctrl+Shift+1..8.
-X-меню поддерживает All, остальные его области отключены. S-меню PCB содержит
-рабочее подмножество. Точная графика маркеров частично выбранных символов,
-геометрия выбора текста и все исключительные случаи перекрытий требуют
-дальнейшего сравнения. Connected Drag остаётся локальным решателем, без
-нативного shove/gloss. Полный паритет 3D-ввода этим этапом не подтверждается.
+Remaining differences: not every dialog and preference is reproduced, including
+Click Clears Selection, per-type Shift Click to Select, Use Left/Right Selection,
+Always Drag and electrical hotspot; zoom-drag speed was not measured in AD24.
+No complete native right-click context menu, automatic edge-pan, all Physical/
+Component/Room selection variants or Ctrl+Shift+1..8 filtering.
+The X menu supports All; its other regions are disabled. The PCB S menu has a
+working subset. Exact markers for partially selected symbols, text-selection
+geometry and every overlap edge case require further comparison.
+Connected Drag remains a local solver without native shove/gloss.
+This stage does not confirm full 3D-input parity.
 
-Результаты финальных проверок и живого окна фиксируются в PLAN.md.
+Final check and live-window results are recorded in PLAN.md.

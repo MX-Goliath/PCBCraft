@@ -1,800 +1,810 @@
-# План реализации PCBCraft
+# PCBCraft implementation plan
 
-### Прямое обновление footprint из PcbLib — 08.11.2026
+### Pre-publication privacy review — November 8, 2026
 
-Продолжение §9/§11 исходного `ALTIUM_RUST_AGENT_PLAN.md`.
-В AD 24.4.1 проверены Update PCB With Current Footprint и диалог
-Component(s) Update Options 424 × 458. Изолированный PCBCraft_Update_6CF7B9E1:
-поворот 90°, U1 / LOCAL_VALUE, pad 1 из 2 × 2 в 3 × 2 mm; native UniqueID
-LRMUVKPG, позиция и надписи сохраняются. Обновление параметров заменяет старый
-Parameter 1 на LibraryVendor=LibraryVendor; Text / On Any Layer сохраняет
-обозначение/комментарий компонента. Выбранные опции сохраняются между вызовами.
-Контрольные native-файлы лежат в `target/library-observations/footprint-update-20261108`.
-Пользовательские проекты в Altium не сохранялись.
+Reviewed tracked files, synthetic fixtures, contributor metadata and all locally
+reachable Git objects. Removed residual private reference names and a local report
+path from current documentation, retaining neutral reference labels and evidence.
+No personal home-account names, private network addresses, personal emails or
+credential findings were detected in the reviewed publication content. Public
+GitHub attribution and third-party license attribution are retained.
 
-Реализовано GUI-независимое `footprint_update`: нормализация геометрии, сторона,
-поворот и позиция экземпляра, цепи по номерам площадок, сохранение идентичности,
-надписей и локальных масок; отдельное обновление масок без замены геометрии.
-Параметры footprint заменяются выбранной опцией и хранятся отдельно от параметров
-схемы: поле `footprint_parameters`,
-native APPURTENANCE=Footprint / VARIANTGUID=Footprint, сохранение base/System/variant
-групп и восстановление старых JSON по native UID. Properties показывает источник
-Component / Footprint. Tools / Current / All и контекстное
-меню PCB Library охватывают все совпадающие открытые платы. Все замены готовятся
-до изменения первой истории; каждая плата получает Undo без неявной записи.
-Проверяются ревизии, пути, состав открытых плат, pending edits и read-only.
-Неоднозначные цепи, удаление подключённой площадки, locked/unsupported данные
-отклоняются. Thermal Relief Overrides отключён: межархивное копирование пока
-не моделируется, matched native pads сохраняют исходные непрочитанные байты.
+The history scanner now recognizes the historical public service no-reply address
+only in commit author/committer headers and .mailmap. Four regression tests cover
+the exact contributor address, header/message boundaries, unrelated emails,
+private paths, credentials and unreviewed design locations. CI includes these
+tests alongside the release tests. All 10 Python tests and the full-history
+privacy scan pass.
 
-Исправлен импорт U1 из Texts6 при отсутствии SOURCEDESIGNATOR в Components6;
-заполненное source-поле сохраняет прежний приоритет. Binary-регрессия покрывает
-ASCII/Unicode, точный неизменённый Save и изменение посторонней геометрии без
-перезаписи Components6. В PcbLib устранено неприменимое предупреждение об отсутствии
-Board6 outline. Проверка реального окна обнаружила увеличение диалога на 7 px
-из-за close box; layout исправлен и повторно проверен в окне.
+Older reachable snapshots still contain previous private reference labels;
+this normal commit does not erase them. History was not rewritten. The local
+audit report is kept in ignored target/privacy-audit-2026-11-08.json.
 
-Промежуточный GUI-контроль: Current / Cancel без изменения платы; All / OK,
-Undo до чистого baseline, Redo, таблица LibraryVendor / LibraryVendor / Footprint,
-Save As в `GuiFootprintNamespaced_v1.PcbDoc`. AD открыл v1 чистым; native-группы
-Footprint/System/base раздельны. Побайтовое сравнение выявило служебный префикс
-пути и сохранение старой HEIGHT=212.9921mil вместо библиотечного HEIGHT=0mil.
-Исправлены native-path conversion, запись/удаление HEIGHT и FOOTPRINTDESCRIPTION,
-их read-back-проверка и отображение высоты в Properties. v1 остаётся промежуточным
-файлом; итоговый прогон выполнен после фиксации исходников и тестов.
+### English documentation and contributor identity — November 8, 2026
 
-Итоговая проверка: `cargo fmt --all -- --check`, строгий workspace/all-target
-Clippy, Windows dev build и все 854 теста прошли через `scripts/dev.ps1`:
-app 225, core 344, geom 1, io 166, render 118, включая GPU. Лог:
-`footprint-update-20261108/final-854-rust-gates.log`. Новые проверки охватывают
-обе стороны платы/поворот, цепи, маски отдельно от геометрии, stale/atomic/Undo,
-разделение namespace параметров и legacy JSON, сохранение variant-группы,
-изменение и удаление высоты, описание и ordinary Win32 source link.
+Translated all 24 Markdown files containing Russian text, including this log,
+the full original target plan and AGENTS.md. Preserved example code blocks,
+link targets, task completion states, technical evidence and historical limitations.
+Existing English documentation remains in English.
 
-Финальный GUI-контроль: исходная высота 5.410 mm отображается правильно;
-Current Footprint → OK меняет pad 1 и высоту на 0.000 mm; Undo возвращает
-чистый baseline, Redo восстанавливает обновление. Save As записал отдельный
-`GuiFootprintVerified.PcbDoc`. Повторный импорт подтверждает U1 / LOCAL_VALUE,
-позицию (2461387000, 76835000) nm и 90°, pad 1 ≈ 3 × 2 mm, pad 2 ≈ 2 × 2 mm,
-base parameters = {}, footprint_parameters = {LibraryVendor: LibraryVendor}.
-Raw-проверка: UniqueID LRMUVKPG, HEIGHT=0mil, обычный путь библиотеки; Texts6/Data
-побайтово совпадает с baseline. AD 24.4.1 открыл итоговый файл без dirty marker;
-PCB/Components и Properties показывают U1 / LOCAL_VALUE, 90°, Height 0mil,
-правильную геометрию и LibraryVendor / LibraryVendor / Footprint. Открыт один
-экземпляр PCBCraft с чистым итоговым файлом и чистой библиотекой.
+Standardized project attribution on MX-Goliath in README, workspace/package
+authors, project copyright notices, Windows publisher and Debian maintainer.
+Repository-local Git identity uses the account's public GitHub no-reply address;
+.mailmap maps historical repository identities without rewriting commits.
+Third-party attribution is preserved. Privacy checks allow the exact public
+account address and scope the historical T3 mapping address to .mailmap only.
 
-Статус всего запроса остаётся partial.
-Полное соответствие не заявлено: PCB-side comparison/ECO, thermal overrides,
-PcbLib Place, native auxiliary/3D, все изменения pad mapping, точная типографика,
-иконки и Linux GUI остаются в `docs/features.json`.
+Validation: cargo fmt --all -- --check, strict workspace/all-targets Clippy and
+all 854 workspace tests passed through scripts/dev.ps1, including GPU tests.
+All 6 Python release tests, targeted privacy/author-inheritance assertions,
+documentation-preservation checks and the repository privacy scan passed.
+No application interface changes were made in this stage.
 
-### Обновление экземпляров из SchLib — 08.11.2026
+### Direct footprint update from PcbLib — November 8, 2026
 
-Продолжение §9/§11 исходного `ALTIUM_RUST_AGENT_PLAN.md`.
-Наблюдение: в AD Enterprise 24.4.1 на изолированном UpdateReference проверены
-Update From Library, Advanced, отдельные значения параметров и ECO. Исходные
-10k/47k заменяются библиотечным 12k, если не исключить значение из обновления.
-Результат AD сохранён отдельно как NativeUpdated.SchDoc; пользовательские
-проекты не сохранялись. Генератор: `eda-io/examples/library_update_probe.rs`.
+Continuation of §9/§11 of the original `ALTIUM_RUST_AGENT_PLAN.md`.
+AD 24.4.1 verified Update PCB With Current Footprint and the 424 × 458
+Component(s) Update Options dialog. Isolated PCBCraft_Update_6CF7B9E1:
+90° rotation, U1 / LOCAL_VALUE, pad 1 from 2 × 2 to 3 × 2 mm; native UniqueID
+LRMUVKPG, position and labels are preserved. Parameter update replaces old
+Parameter 1 with LibraryVendor=LibraryVendor; Text / On Any Layer preserves the
+component designator/comment. Selected options persist between calls.
+Native verification files: `target/library-observations/footprint-update-20261108`.
+User projects were not saved in Altium.
 
-Реализация: GUI-независимое `library_update`, сохранение идентичности, позиции,
-поворота, обозначения и выбранных локальных параметров; отдельные настройки
-графики/моделей/надписей/lock fields. Wizard из схемы и SchLib, выбор листов и
-экземпляров, grouped ECO и отчёт. Сравнение защищено ревизиями и fingerprint
-файлов; закрытые листы открываются с Undo без неявной записи. Проверки всех
-замен предшествуют изменениям истории. Неоднозначные источники отклоняются.
+Implemented GUI-independent `footprint_update`: normalized geometry, instance
+side/rotation/position, nets by pad number, identity/label/local-mask preservation;
+separate mask updates without geometry replacement. The selected option replaces
+footprint parameters, stored separately from schematic parameters in
+`footprint_parameters`, native APPURTENANCE=Footprint / VARIANTGUID=Footprint,
+preserving base/System/variant groups and recovering old JSON by native UID.
+Properties shows Component / Footprint provenance. Tools / Current / All and
+the PCB Library context menu cover all matching open boards. All replacements
+are prepared before changing any history; every board gets Undo without implicit
+writing. Revisions, paths, open-board membership, pending edits and read-only
+state are checked. Ambiguous nets, connected-pad removal and locked/unsupported
+data are rejected. Thermal Relief Overrides is disabled: cross-archive copying
+is not modeled; matched native pads preserve original unread bytes.
 
-Параметры приведены к наблюдаемой матрице AD: системные/пользовательские столбцы,
-выбор ячеек, Update/Reject Selected и All, Show all parts. Защищённые значения
-нельзя включить обратно массовой командой. Страница экземпляров разделяет колонки
-схемы, библиотеки и Actions; кнопки мастера имеют наблюдаемые размеры 75 × 23.
-Полные пути различают источники с одинаковыми именами файлов. Сохраняемые надписи
-не дублируются скрытыми скалярными записями Comment/Vendor; порядок тела и выводов
-проверяется в самом native-файле, а не нормализуется только в сравнении модели.
+Fixed U1 import from Texts6 when Components6 lacks SOURCEDESIGNATOR; a populated
+source field retains priority. Binary regressions cover ASCII/Unicode, exact
+unchanged Save and unrelated geometry changes without rewriting Components6.
+Removed an inapplicable missing Board6-outline warning in PcbLib.
+Real-window verification found a 7 px dialog expansion caused by the close box;
+layout was fixed and rechecked in the window.
 
-Проверка: финальные `cargo fmt --all -- --check`,
-`cargo clippy --workspace --all-targets -- -D warnings`, Windows dev build и
-`cargo test --workspace` прошли через `scripts/dev.ps1`. Всего 844 теста:
-app 222, core 340, geom 1, io 163, render 118, включая GPU. Новые проверки:
-атомарность/устаревшие источники, Undo закрытых листов без записи, блокировки,
-неизменность внешних проводов, native-повороты/UID/порядок графики, физическое
-количество Comment/Vendor, выбор отдельной ячейки и pending Properties перед
-прямым Update Schematics.
+Intermediate GUI check: Current / Cancel without board changes; All / OK,
+Undo to clean baseline, Redo, LibraryVendor / LibraryVendor / Footprint table,
+Save As to `GuiFootprintNamespaced_v1.PcbDoc`. AD opened v1 clean; native
+Footprint/System/base groups are separate. Byte comparison found a device-path
+prefix and retained old HEIGHT=212.9921mil instead of library HEIGHT=0mil.
+Fixed native-path conversion, HEIGHT and FOOTPRINTDESCRIPTION writing/removal,
+read-back checks and Properties height display. v1 remains an intermediate file;
+the final run followed source/test finalization.
 
-Реальное окно Windows 1707 × 1019: частичное обновление, U2 / Value → Reject
-Selected, ECO Validate/Execute, Check/Done, Undo/Redo и native Save As.
-Итоговый `update-20261108-v8/GuiUpdatedVerified.SchDoc` повторно прочитан:
-U1 = 12k, U2 = 47k, Vendor = Example, по одной записи Comment/Value/Vendor,
-два тела и четыре вывода, прежние позиции/повороты. AD 24.4.1 открыл этот
-GUI-файл без dirty marker; после Fit All Objects видны P1/P2 и 12k/47k.
-Промежуточные v6/v7 сохранены с описанием обнаруженных дефектов, а не подменены
-успешным результатом. Прямой SchLib / Update Schematics проверен отдельно:
-Information «Updated 2 components / In 1 Schematic Documents», копия
-`GuiDirectUpdate.SchDoc` содержит 12k/12k и Source = Parts.SchLib; один Undo
-возвращает чистый исходный лист с 12k/47k. Открыт один экземпляр PCBCraft.
+Final verification: `cargo fmt --all -- --check`, strict workspace/all-targets
+Clippy, Windows dev build and all 854 tests passed through `scripts/dev.ps1`:
+app 225, core 344, geom 1, io 166, render 118, including GPU. Log:
+`footprint-update-20261108/final-854-rust-gates.log`. New checks cover both board
+sides/rotation, nets, masks independent of geometry, stale/atomic/Undo, parameter
+namespaces and legacy JSON, variant-group preservation, height changes/removal,
+description and ordinary Win32 source links.
 
-Наблюдение следующего пути: уникальный PCBCraft_Update_6CF7B9E1 на отдельной
-синтетической PCB, поворот 90°, U1 / LOCAL_VALUE, pad 1 из 2 × 2 в 3 × 2 mm.
-PcbLib / Update PCB With Current Footprint применяет options сразу; native
-UniqueID, позиция, поворот и локальный комментарий сохранены. Последующая
-реализация этого пути и исправление импорта обозначения описаны в этапе выше.
-Пользовательские проекты в AD не сохранялись.
+Final GUI check: original 5.410 mm height displays correctly; Current Footprint →
+OK changes pad 1 and height to 0.000 mm; Undo restores clean baseline, Redo
+restores the update. Save As wrote separate `GuiFootprintVerified.PcbDoc`.
+Reimport confirms U1 / LOCAL_VALUE, position (2461387000, 76835000) nm and 90°,
+pad 1 ≈ 3 × 2 mm, pad 2 ≈ 2 × 2 mm, base parameters = {},
+footprint_parameters = {LibraryVendor: LibraryVendor}. Raw check: UniqueID
+LRMUVKPG, HEIGHT=0mil, ordinary library path; Texts6/Data matches baseline
+byte-for-byte. AD 24.4.1 opened the final file without a dirty marker;
+PCB/Components and Properties show U1 / LOCAL_VALUE, 90°, Height 0mil, correct
+geometry and LibraryVendor / LibraryVendor / Footprint. One PCBCraft instance
+is open with clean final file and library.
 
-Статус всего запроса остаётся partial: точное визуальное равенство, полные PCB updates,
-полные multipart/варианты, Choose Component, DbLib/Workspace и остальной исходный
-охват не объявлены завершёнными. Linux GUI/DPI в этом этапе не проверялись.
-Оставшиеся границы перечислены в `docs/interface/library-authoring.md` и
+The overall request remains partial. Full parity is not claimed: PCB-side
+comparison/ECO, thermal overrides, PcbLib Place, native auxiliary/3D, all pad
+mapping changes, exact typography/icons and Linux GUI remain in `docs/features.json`.
+
+### Instance updates from SchLib — November 8, 2026
+
+Continuation of §9/§11 of the original `ALTIUM_RUST_AGENT_PLAN.md`.
+Observation: AD Enterprise 24.4.1 on isolated UpdateReference verified Update From
+Library, Advanced, individual parameter values and ECO. Original 10k/47k become
+library 12k unless excluded from updating. AD output saved separately as
+NativeUpdated.SchDoc; user projects were not saved.
+Generator: `eda-io/examples/library_update_probe.rs`.
+
+Implementation: GUI-independent `library_update`, preserving identity, position,
+rotation, designator and selected local parameters; separate graphics/models/
+labels/lock-field settings. Wizard from schematic and SchLib, sheet/instance
+selection, grouped ECO and report. Comparison is guarded by revisions and file
+fingerprints; closed sheets open with Undo without implicit writing.
+All replacements are checked before histories change. Ambiguous sources are rejected.
+
+Parameters follow the observed AD matrix: system/user columns, cell selection,
+Update/Reject Selected and All, Show all parts. Bulk commands cannot reenable
+protected values. Instance page separates schematic, library and Actions columns;
+wizard buttons use observed 75 × 23 dimensions. Full paths distinguish sources
+with identical filenames. Preserved labels are not duplicated by hidden scalar
+Comment/Vendor records; body/pin order is checked in the native file itself,
+not merely normalized in model comparison.
+
+Verification: final `cargo fmt --all -- --check`,
+`cargo clippy --workspace --all-targets -- -D warnings`, Windows dev build and
+`cargo test --workspace` passed through `scripts/dev.ps1`. Total 844 tests:
+app 222, core 340, geom 1, io 163, render 118, including GPU. New checks:
+atomicity/stale sources, closed-sheet Undo without writing, locks, unchanged
+external wires, native rotations/UID/graphics order, physical Comment/Vendor
+counts, single-cell selection and pending Properties before direct Update Schematics.
+
+Real Windows window 1707 × 1019: partial update, U2 / Value → Reject Selected,
+ECO Validate/Execute, Check/Done, Undo/Redo and native Save As.
+Final `update-20261108-v8/GuiUpdatedVerified.SchDoc` reread: U1 = 12k, U2 = 47k,
+Vendor = Example, one Comment/Value/Vendor record each, two bodies and four pins,
+original positions/rotations. AD 24.4.1 opened this GUI file without dirty marker;
+Fit All Objects shows P1/P2 and 12k/47k. Intermediate v6/v7 remain with defect
+descriptions rather than being replaced by successful results. Direct SchLib /
+Update Schematics checked separately: Information “Updated 2 components / In 1
+Schematic Documents”; `GuiDirectUpdate.SchDoc` has 12k/12k and Source = Parts.SchLib;
+one Undo restores the clean source sheet with 12k/47k. One PCBCraft instance is open.
+
+Next-path observation: unique PCBCraft_Update_6CF7B9E1 on a separate synthetic PCB,
+90° rotation, U1 / LOCAL_VALUE, pad 1 from 2 × 2 to 3 × 2 mm.
+PcbLib / Update PCB With Current Footprint applies options immediately; native
+UniqueID, position, rotation and local comment are preserved. The implementation
+and designator-import fix for this path are described in the stage above.
+User projects were not saved in AD.
+
+The overall request remains partial: exact visual equality, complete PCB updates,
+full multipart/variants, Choose Component, DbLib/Workspace and remaining original
+scope are not declared complete. Linux GUI/DPI were not checked at this stage.
+Remaining boundaries: `docs/interface/library-authoring.md` and
 `docs/features.json` (`libraries.update_instances`).
 
-### Файловые библиотеки компонентов — 08.11.2026
+### File-based component libraries — November 8, 2026
 
-Работа по §9/§11 и визуальному контракту §7/§25 исходного
-`ALTIUM_RUST_AGENT_PLAN.md`. Полная эквивалентность Altium не заявляется.
+Work under §9/§11 and the §7/§25 visual contract in the original
+`ALTIUM_RUST_AGENT_PLAN.md`. Full Altium equivalence is not claimed.
 
-- Наблюдение: Altium Enterprise 24.4.1, только синтетические SchLib/PcbLib.
-  Проверены дерево секций, General/Pins, Tools/Mode, пустые новые варианты,
-  переименование режима, PCB Library и Edit → свойства footprint.
-  Отдельно сохранён NativeModes.SchLib с `CustomDisplayModeName1=Alternate QA`.
-  Исходные пользовательские проекты не сохранялись.
-- Реализация: удаление секции/режима во всех вариантах с перенумерацией и
-  Undo/Redo; защита Normal/последней секции; общие Type и имена режимов.
-  Native-имена читаются/записываются без сохранения удалённых ключей.
-  Библиотечный Designator отделён от суффикса размещённой секции: повторные
-  сохранения не накапливают A/B.
-- UI: один символ в списке, Part A/B, Description/search, Part в Properties,
-  Tools/Mode, Pins с видимостью/Edit/Delete, Hidden/Locked, свойства footprint
-  и высота в текущих единицах. После создания открывается Library.
-  Неподдержанные native Tools отключены; дополнительные команды отделены.
-- Исправлены замена переименованной footprint-модели вместо добавления,
-  сохранение остальных моделей/current-флагов/native-метаданных, source index
-  при правке pin, Cancel/Esc и ошибки имён без потери введённого текста.
-  2D preview использует однозначную модель и приоритет открытого PcbLib.
-- Available Libraries: Refresh/Remove, прежний snapshot при ошибке чтения,
-  сохранность файла при Remove. Открытая опубликованная библиотека обновляется
-  после applied revision и Undo/Redo; Save As переносит запись без дубликата.
-  Windows canonical/raw paths нормализуются.
-- Проверка: итоговые `cargo fmt --all -- --check`,
-  `cargo clippy --workspace --all-targets -- -D warnings`, Windows dev build
-  и `cargo test --workspace` прошли. 827 тестов: app 214, core 332, geom 1,
-  io 162, render 118, включая GPU. Команды — через локальный GNU toolchain
-  в `scripts/dev.ps1`. Первый прогон поймал canonical/raw-path дефект Remove;
-  после исправления повторные полные прогоны прошли.
-- Windows GUI 1707×1019: File/New/Library/Create, новая SchLib, pin и native
-  Save; дерево/Part A/B, Normal/Service GUI, Rename/Cancel, видимость вывода
-  и Undo, переключение заголовка SCH/PCB Library, свойства footprint,
-  2D preview открытой модели, Edit/двойной щелчок, замена имени одной строки
-  модели и Undo. Последние выравнивание и стрелка проверены после пересборки.
-  Экземпляры PCBCraft запускались последовательно; финальный оставлен открыт.
-- Native: созданная с нуля в GUI `GuiNew.SchLib` открылась в AD 24.4.1 с
-  Component_1, U? и pin 1. GUI-редактирование native-исходника сохранено
-  отдельно в `GuiVariants.SchLib`: AD показывает Part A/B, исходную графику,
-  модель TEST_2PAD и `Service GUI` в Tools/Mode. Rust example сформировал
-  AuthoringVariants/AuthoringReduced.SchLib и SchLib/PcbLib/IntLib без правок
-  байтов вручную. Артефакты — только в ignored target/library-observations.
-  Linux GUI/DPI и полное пиксельное равенство не проверены.
+- Observation: Altium Enterprise 24.4.1, synthetic SchLib/PcbLib only.
+  Checked part tree, General/Pins, Tools/Mode, empty new variants, mode renaming,
+  PCB Library and Edit → footprint properties. Separately saved NativeModes.SchLib
+  with `CustomDisplayModeName1=Alternate QA`. Original user projects were not saved.
+- Implementation: delete parts/modes across variants with renumbering and Undo/Redo;
+  protect Normal/last part; shared Type and mode names. Native names read/write
+  without retaining deleted keys. Library Designator is separate from the placed
+  part suffix: repeated saves do not accumulate A/B.
+- UI: one symbol per list entry, Part A/B, Description/search, Part in Properties,
+  Tools/Mode, Pins with visibility/Edit/Delete, Hidden/Locked, footprint properties
+  and height in current units. Creation opens Library. Unsupported native Tools
+  disabled; additional commands separated.
+- Fixed renamed footprint-model replacement instead of addition, preservation of
+  other models/current flags/native metadata, source index during pin edits,
+  Cancel/Esc and name errors without losing entered text. 2D preview uses an
+  unambiguous model and prioritizes an open PcbLib.
+- Available Libraries: Refresh/Remove, retain previous snapshot on read failure,
+  preserve file on Remove. Open published libraries refresh after applied revision
+  and Undo/Redo; Save As relocates the entry without duplicates.
+  Windows canonical/raw paths normalized.
+- Verification: final `cargo fmt --all -- --check`,
+  `cargo clippy --workspace --all-targets -- -D warnings`, Windows dev build and
+  `cargo test --workspace` passed. 827 tests: app 214, core 332, geom 1, io 162,
+  render 118, including GPU. Commands use local GNU toolchain in `scripts/dev.ps1`.
+  First run caught a canonical/raw-path Remove defect; repeated full runs passed after fixing it.
+- Windows GUI 1707×1019: File/New/Library/Create, new SchLib, pin and native Save;
+  tree/Part A/B, Normal/Service GUI, Rename/Cancel, pin visibility and Undo,
+  SCH/PCB Library header switching, footprint properties, open-model 2D preview,
+  Edit/double-click, renaming one model row and Undo. Final alignment/arrow checked
+  after rebuilding. PCBCraft instances ran sequentially; final instance left open.
+- Native: GUI-created `GuiNew.SchLib` opened in AD 24.4.1 with Component_1, U? and
+  pin 1. GUI edits of native source saved separately as `GuiVariants.SchLib`:
+  AD shows Part A/B, original graphics, TEST_2PAD model and `Service GUI` in Tools/Mode.
+  Rust example generated AuthoringVariants/AuthoringReduced.SchLib and
+  SchLib/PcbLib/IntLib without manual byte edits. Artifacts only in ignored
+  target/library-observations. Linux GUI/DPI and full pixel equality unverified.
 
-Остаются пиксельная/DPI/Linux GUI сверка, обновление размещённых экземпляров
-и конфликты, полная multipart-аннотация, DbLib/Workspace/PvLib, интегрированный
-проект библиотек, мастера/reports и неподдержанные native ресурсы/3D.
-Последний элемент файловой библиотеки пока нельзя удалить.
-Подробнее: `docs/interface/library-authoring.md`, `libraries.authoring`
-в `docs/features.json` остаётся partial.
+Remaining: pixel/DPI/Linux GUI comparison, placed-instance updates/conflicts,
+full multipart annotation, DbLib/Workspace/PvLib, integrated library projects,
+wizards/reports and unsupported native resources/3D.
+The last file-library member cannot yet be deleted.
+Details: `docs/interface/library-authoring.md`; `libraries.authoring`
+in `docs/features.json` remains partial.
 
-### Независимое перемещение панелей — уточнение 08.11.2026
+### Independent panel movement — November 8, 2026 clarification
 
-По прямому уточнению пользователя любая область заголовка и вкладка переносит
-только активную панель. Прежняя трактовка свободной части заголовка как захвата
-всей группы удалена. Соседние Git, Projects и остальные панели остаются на месте.
+The user's explicit clarification makes every header area and tab move only the
+active panel. The earlier interpretation of free header space as a whole-group
+drag was removed. Neighboring Git, Projects and other panels stay in place.
 
-Крестик, контекстные команды и pin тоже действуют отдельно. Для автоскрытия
-выбранная панель отделяется от дерева, сохраняя положение и видимость соседей;
-разрешённые направления docking сохраняются индивидуально и переживают
-перенос между группами и перезапуск. Старые root-настройки служат fallback.
+Close, context commands and pin also act individually. Autohide detaches the
+selected panel from the tree while preserving neighbors' position/visibility;
+allowed dock directions persist individually across group moves and restarts.
+Old root settings provide fallback.
 
-Добавлены регрессии переноса за свободную часть заголовка для каждой из восьми
-панелей, независимого закрытия/pin и сохранения Allow Dock. Все 818 workspace
-tests прошли: 209 app, 330 core, 1 geom, 160 io, 118 render. Форматирование,
-проверка типов всех targets, Windows dev build и строгий Clippy прошли.
-В реальном окне с прежней пользовательской группой справа захват свободной
-части заголовка отделил только Git; Projects/Properties/Components/Messages
-остались в группе. Следующим переносом отдельно пристыкован Projects слева;
-Git сохранил своё native окно, остальные остались справа. Исправленная сборка
-оставлена запущенной, единственный процесс PCBCraft. Предыдущий сеанс
-пользователь явно разрешил закрыть без сохранения.
+Added regressions for free-header dragging of each of eight panels, independent
+close/pin and Allow Dock persistence. All 818 workspace tests passed: 209 app,
+330 core, 1 geom, 160 io, 118 render. Formatting, all-targets type checks, Windows
+dev build and strict Clippy passed. In the real window with the user's existing
+right-hand group, dragging free header space detached only Git;
+Projects/Properties/Components/Messages stayed grouped. The next drag docked
+Projects separately on the left; Git retained its native window and others
+stayed right. Fixed build left running as the sole PCBCraft process.
+The user explicitly authorized closing the previous session without saving.
 
-### Перемещаемые панели — 08.11.2026
+### Movable panels — November 8, 2026
 
-Работа по §7 и §25 исходного `ALTIUM_RUST_AGENT_PLAN.md`.
+Work under §7 and §25 of the original `ALTIUM_RUST_AGENT_PLAN.md`.
 
-- Наблюдались Altium Enterprise 24.4.1: заголовки/вкладки, Allow Dock,
-  закрепление, боковые кнопки и popup; исходная раскладка Altium восстановлена.
-  Перенос заголовка автоматизацией в Altium не дал наблюдаемого результата;
-  остальные правила группировки дополнены официальной документацией.
-- Вместо двух фиксированных областей добавлено сохраняемое дерево вкладок и
-  разделителей: четыре края, перенос панели/группы, порядок вкладок, вложенное
-  разбиение, Ctrl/Esc, отдельные native viewport, автоскрытие, F4 и Allow Dock.
-- Закрытая панель сохраняет место; сохраняются состав групп, активные вкладки,
-  пропорции, размеры, native bounds и видимость. Старые настройки мигрируют.
-  Properties работает после перемещения и в Layer Stack Manager.
-- Windows GUI: отделение Projects, возврат Dock, объединение с Properties,
-  вертикальное разбиение, pin/боковые кнопки, перезапуск с восстановлением
-  раскладки и отделение из popup. В native bounds исправлено смещение от рамки
-  Windows; два последовательных наблюдения подтвердили стабильное положение.
-- Исправлены ширина при стартовом окне 0 px, перекрытие боковых кнопок широким
-  содержимым popup и координаты между viewport с разным DPI. Для глубоко
-  вложенных разделителей геометрия ограничивается фактически доступным местом.
-- Итоговый `cargo test --workspace`: 815 тестов прошли (206 app, 330 core,
-  1 geom, 160 io, 118 render), включая GPU-проверки. Форматирование проверено.
-  Переключение соседних popup-кнопок и преобразование DPI покрыты регрессиями.
-  `cargo fmt --all -- --check`,
-  `cargo clippy --workspace --all-targets -- -D warnings` и Windows dev build
-  текущего дерева прошли. Команды выполнялись через `scripts/dev.ps1`, который
-  подключает локальный GNU toolchain 1.90.0 и linker; Cargo.lock не менялся.
-- Итоговый executable повторно проверен в Windows: Messages → Properties →
-  Messages через боковые кнопки работает при уже открытом popup. F4 проверен
-  из native панели и из главного окна. Попытка native edge-resize через
-  Computer Use не дала наблюдаемого изменения размера; её не считаем успешной
-  GUI-проверкой. Экземпляры тестировали последовательно, на встроенном примере.
-- Linux cross-check остановился на отсутствии target OpenSSL у существующей
-  зависимости reqwest/native-tls. Linux GUI и разные DPI на реальных мониторах
-  не проверены. Wayland не сообщает eframe глобальные координаты окон.
+- Observed Altium Enterprise 24.4.1 headers/tabs, Allow Dock, pinning, side buttons
+  and popup; restored original Altium layout. Automated header dragging in Altium
+  produced no observed result; other grouping rules supplemented from official documentation.
+- Replaced two fixed areas with a persistent tab/split tree: four edges,
+  panel/group movement, tab order, nested splits, Ctrl/Esc, separate native
+  viewports, autohide, F4 and Allow Dock.
+- Closed panels retain position; group membership, active tabs, ratios, sizes,
+  native bounds and visibility persist. Old settings migrate. Properties works
+  after moving and in Layer Stack Manager.
+- Windows GUI: detach Projects, Dock back, merge with Properties, vertical split,
+  pin/side buttons, layout restoration after restart and detach from popup.
+  Fixed Windows-frame offset in native bounds; two successive observations
+  confirmed stable position.
+- Fixed width at initial 0 px window, wide popup content overlapping side buttons,
+  and coordinates between viewports with differing DPI. Deep split geometry is
+  constrained to actual available space.
+- Final `cargo test --workspace`: 815 passed (206 app, 330 core, 1 geom, 160 io,
+  118 render), including GPU. Formatting checked. Adjacent popup switching and
+  DPI conversion covered by regressions. `cargo fmt --all -- --check`,
+  `cargo clippy --workspace --all-targets -- -D warnings` and Windows dev build
+  passed on the current tree. Commands used `scripts/dev.ps1`, supplying local
+  GNU 1.90.0 and linker; Cargo.lock unchanged.
+- Final executable rechecked in Windows: Messages → Properties → Messages through
+  side buttons works with popup already open. F4 checked from native panel and
+  main window. Computer Use native edge-resize produced no observed size change;
+  it is not counted as successful GUI verification. Instances tested sequentially
+  on the built-in example.
+- Linux cross-check stopped at missing target OpenSSL for existing reqwest/native-tls.
+  Linux GUI and real monitors with different DPI unverified. Wayland does not
+  report global window coordinates to eframe.
 
-Полное соответствие Altium не заявлено: точные пиксельные метрики,
-прозрачность floating-панелей, анимация/preferences popup, desktop snapping,
-TLT и перемещение всего fractal-root отдельным общим заголовком остаются
-расхождениями. Подробности и управление: `docs/interface/docking.md`;
-статус `shell.docking` в `docs/features.json` — partial.
+Full Altium parity is not claimed: exact pixel metrics, floating-panel opacity,
+popup animation/preferences, desktop snapping, TLT and moving a complete fractal
+root by one shared header remain differences. Details/controls:
+`docs/interface/docking.md`; `shell.docking` in `docs/features.json` is partial.
 
-### Приватность репозитория — 04.11.2026
+### Repository privacy — November 4, 2026
 
-Имена частных эталонов заменены нейтральными обозначениями ReferenceA и далее.
-Личные пути, контрольные суммы исходных проектов и личные авторские email
-удалены также из истории Git. Синтетические fixtures и полный журнал плана
-сохранены. Добавлены правила исключения частных файлов и проверка приватности
-в CI; локальные отчёты по умолчанию создаются в target. См. docs/privacy.md.
+Private reference names were replaced with neutral ReferenceA and subsequent
+labels. Personal paths, source-project checksums and personal author emails were
+also removed from Git history. Synthetic fixtures and the complete plan log were
+preserved. Added private-file ignore rules and CI privacy checks; local reports
+default to target. See docs/privacy.md.
 
-История удалённых main/master и локальных служебных ссылок очищена; прежние
-объекты удалены из локальной базы Git. Проверки всей достижимой истории,
-негативные сценарии сканера (индекс, UTF-16, метаданные коммитов), cargo fmt,
-строгий Clippy и cargo test --workspace пройдены. Содержимое исходников после
-переписывания истории совпадает с проверенным деревом.
-Старый SHA ещё доступен через GitHub API вне веток: удаление серверных копий
-требует отдельного обращения в GitHub Support; локальный текст подготовлен,
-обращение не отправлялось.
+Remote main/master and local service-ref histories were cleaned; old objects
+removed from the local Git database. All-reachable-history checks, negative
+scanner scenarios (index, UTF-16, commit metadata), cargo fmt, strict Clippy and
+cargo test --workspace passed. Sources after history rewriting match the verified
+tree. An old SHA remains available through GitHub API outside branches: removing
+server copies requires a separate GitHub Support request; local text is prepared,
+but no request was sent.
 
-### Текущая отладка PCB — ReferenceA, 23.10.2026
+### Current PCB debugging — ReferenceA, October 23, 2026
 
-По указанию пользователя единственный текущий реальный эталон —
+At the user's instruction, the sole current real reference is
 `private-projects/ReferenceA/ReferenceA.PrjPcb`.
-Сверять с установленным и запущенным Altium Designer Enterprise 24.4.1.
-Исходные файлы не изменять; для сохранения результатов правок использовать копии.
+Compare with installed/running Altium Designer Enterprise 24.4.1.
+Do not change source files; use copies to save edit results.
 
-- [x] Подготовлена Windows MSVC-среда Rust 1.90.0, проверены сборка и запуск.
-- [x] Воспроизведён и исправлен отказ импорта региона `V7_LAYER=CONNECT`.
-- [x] Исправлено скрытие слоёв при native `SINGLELAYERMODESTATE=3` (Off).
-- [x] Подключены native range/layer mode/arc centre/board outline для привязки.
-- [x] Добавлено откладывание начальной подгонки к пустому viewport.
-- [ ] Полная визуальная и функциональная эквивалентность PCB-редактора Altium.
+- [x] Prepared Windows MSVC environment with Rust 1.90.0; build/launch checked.
+- [x] Reproduced/fixed `V7_LAYER=CONNECT` region import failure.
+- [x] Fixed hidden layers for native `SINGLELAYERMODESTATE=3` (Off).
+- [x] Connected native range/layer mode/arc centre/board outline snapping.
+- [x] Deferred initial fitting of an empty viewport.
+- [ ] Full visual/functional equivalence with Altium's PCB editor.
 
-Наблюдения, проверки и оставшиеся расхождения:
+Observations, checks and remaining differences:
 `docs/pcb-update/VISUAL_PARITY.md`, `docs/features.json`.
 
-19 октября 2026. Полная программа работ: `ALTIUM_RUST_AGENT_PLAN.md`.
-Этот файл задаёт очередность итераций и состояние текущего этапа.
+October 19, 2026. Full work program: `ALTIUM_RUST_AGENT_PLAN.md`.
+This file defines iteration order and current-stage status.
 
-## Обязательный визуальный контракт
+## Required visual contract
 
-По уточнению пользователя интерфейс должен быть точной визуальной копией
-доступного Altium Designer Enterprise 24.4.1, на Windows и Linux.
-Исходный `ALTIUM_RUST_AGENT_PLAN.md` остаётся основным полным планом;
-разделы ниже — только очередность и журнал выполнения его пунктов.
-Работы над визуальным соответствием разделов 7 и 25 начинаются сейчас
-и продолжаются в каждой итерации, а не только после инженерного ядра.
+The user's clarification requires an exact visual copy of available Altium
+Designer Enterprise 24.4.1 on Windows and Linux. Original
+`ALTIUM_RUST_AGENT_PLAN.md` remains the complete master plan; sections below only
+sequence/log its tasks. Visual-parity work in sections 7 and 25 starts now and
+continues in every iteration, rather than waiting for the engineering core.
 
-- [ ] Сопоставлять окна одного редактора, размера, DPI и состояния.
-- [ ] Довести меню, quick access, Projects, правую dock-область и вкладки.
-- [ ] Воспроизвести Active Bar, Properties, status bar и editor canvas.
-- [ ] Проверить общие шрифты, метрики, иконки, цвета и состояния на обеих ОС.
-- [ ] Зафиксировать измерения и сравнения; до этого точное совпадение не заявлять.
+- [ ] Compare windows of the same editor, size, DPI and state.
+- [ ] Complete menus, quick access, Projects, right dock area and tabs.
+- [ ] Reproduce Active Bar, Properties, status bar and editor canvas.
+- [ ] Check shared fonts, metrics, icons, colors and states on both operating systems.
+- [ ] Record measurements/comparisons; do not claim exact parity beforehand.
 
-Связь текущих работ с исходным планом: workspace — §2, координаты — §3,
-модель/история — §4, собственный IO — §5, canvas — §6,
-оболочка — §7, визуальная сверка — §25, критерии готовности — §26.
+Current-work mapping to original plan: workspace §2, coordinates §3,
+model/history §4, original IO §5, canvas §6, shell §7,
+visual comparison §25, completion criteria §26.
 
-## Исходное состояние
+## Initial state
 
-В каталоге был только архитектурный план; Rust workspace и Git отсутствовали.
-Доступен Altium Designer Enterprise 24.4.1, проект ReferenceB.PrjPcb.
-Наблюдены стартовая страница, PCB Editor, File и Properties.
-Остальные редакторы и команды требуют собственного обследования.
+The directory contained only an architectural plan; no Rust workspace or Git.
+Altium Designer Enterprise 24.4.1 is available with ReferenceB.PrjPcb.
+Home, PCB Editor, File and Properties observed.
+Other editors/commands need their own investigation.
 
-## Этап 1 — главное окно (текущая итерация)
+## Stage 1 — main window (current iteration)
 
-- [x] Создать Rust workspace: geom, core, io, render, app.
-- [x] Отделить документы от состояния представления и интерфейса.
-- [x] Создать меню, toolbar, вкладки, дерево документов, Properties,
-      Messages, строку состояния, управление видимостью и размером панелей.
-- [x] Создание пустого PCB/SCH документа, пример платы, переключение и закрытие.
-- [x] Canvas: pan/zoom, fit, сетка, координаты, видимость слоёв, выбор площадок.
-- [x] Изменение параметров площадки одной транзакцией, undo/redo.
-- [x] Собственный версионируемый JSON, Save / Save As / Open / Recent.
-- [x] Запрос Save / Discard / Cancel при закрытии изменённых документов.
-- [x] Настройки единиц и сетки, сохранение настроек и размеров панелей.
-- [x] Windows-сборка, fmt, clippy, тесты и базовый ручной сценарий в реальном окне — см. `docs/verification.md`.
-- [ ] Выполнить Linux CI и визуальный запуск в X11/Wayland.
-- [ ] Полный docking, autohide, отдельные нативные окна и восстановление сессии.
+- [x] Create Rust workspace: geom, core, io, render, app.
+- [x] Separate documents from view/interface state.
+- [x] Create menus, toolbar, tabs, document tree, Properties,
+      Messages, status bar, panel visibility/size controls.
+- [x] Empty PCB/SCH creation, sample board, switching/closing.
+- [x] Canvas: pan/zoom, fit, grid, coordinates, layer visibility, pad selection.
+- [x] Pad parameter changes in one transaction, undo/redo.
+- [x] Original versioned JSON, Save / Save As / Open / Recent.
+- [x] Save / Discard / Cancel prompt when closing changed documents.
+- [x] Unit/grid settings, settings/panel-size persistence.
+- [x] Windows build, fmt, clippy, tests and basic real-window manual scenario — see `docs/verification.md`.
+- [ ] Run Linux CI and visual X11/Wayland launch.
+- [ ] Full docking, autohide, separate native windows and session recovery.
 
-### Итерация визуальной сверки главного окна и Properties
+### Main-window and Properties visual comparison iteration
 
-- [x] Наблюдать Board и выбранную Pad в открытом Altium без правок проекта.
-- [x] Общий title strip, Quick Access, собственные векторные иконки,
-      оконные команды через переносимый eframe/winit.
-- [x] Properties: поиск, сворачиваемые Selection Filter, Snap Options,
-      Board Information, Net Information, Properties и Pad Stack.
-- [x] Реальные фильтр выбора pads, оси, настройки привязок и геометрические
-      привязки к собственным pads/tracks, без изменения модели рендерером.
-- [x] Правка координат/размера/слоя/Designator через историю;
-      применение при завершении ввода, ручная проверка X и Undo.
-- [x] Встроенные свободные шрифты для Linux, выбор системного Segoe UI
-      на Windows, пользовательские пути к шрифтам.
-- [x] fmt, clippy, 6 тестов, Windows build и просмотр реального окна;
-      cargo check всех targets workspace для x86_64-unknown-linux-gnu.
-- [ ] Закрыть оставшиеся расхождения из docs/interface/visual-parity.md;
-      точное визуальное соответствие этапа ещё не подтверждено.
+- [x] Observe Board and selected Pad in open Altium without project edits.
+- [x] Shared title strip, Quick Access, original vector icons,
+      window commands through portable eframe/winit.
+- [x] Properties: search, collapsible Selection Filter, Snap Options,
+      Board Information, Net Information, Properties and Pad Stack.
+- [x] Real pad-selection filter, axes, snap settings and geometric snapping to
+      original pads/tracks without renderer model mutation.
+- [x] Coordinate/size/layer/Designator edits through history;
+      apply on input completion, manual X/Undo check.
+- [x] Embedded free Linux fonts, system Segoe UI on Windows, custom font paths.
+- [x] fmt, clippy, 6 tests, Windows build and real-window inspection;
+      all workspace targets cargo-checked for x86_64-unknown-linux-gnu.
+- [ ] Resolve remaining docs/interface/visual-parity.md differences;
+      exact stage visual parity is not yet confirmed.
 
-Граница этапа: первое работающее окно с собственными документами.
-Наличие оболочки не означает функциональное соответствие всей Altium.
+Stage boundary: first working window with original documents.
+Having a shell does not imply functional parity with all of Altium.
 
-## Этап 2 — модель, геометрия и файлы
+## Stage 2 — model, geometry and files
 
-### Итерация открытия и просмотра Altium schematic (по приоритету пользователя)
+### Opening/viewing Altium schematics (user priority)
 
-- [x] Независимая модель Schematic, исходные записи и архив оригинала; ADR 0002.
-- [x] PrjPcb: ссылки на документы, относительные Windows-пути и переносимый поиск регистра.
-- [x] SchDoc CFB/ASCII 5.0: чтение записей, кодировки, дробные координаты,
-      компоненты/части/display modes и основные графические примитивы.
-- [x] Canvas схемы: лист, провода/символы/текст/изображения, zoom/pan/fit,
-      выбор компонентов/объектов, Properties и сообщения о неполной поддержке.
-- [x] Собственный Save As сохраняет сцену и native-оригинал; защита от записи JSON поверх Altium.
-- [x] Собственный минимальный fixture и headless инспектор; чтение нескольких реальных проектов.
-- [ ] Довести полную визуальную передачу шаблонов, port/IEEE styles и текста.
-- [x] Базовое редактирование сцены через команды/историю — см. итерацию ниже.
-- [ ] Полное редактирование, native-запись, электрическая связность и ERC.
+- [x] Independent Schematic model, original records/source archive; ADR 0002.
+- [x] PrjPcb: document references, relative Windows paths, portable case lookup.
+- [x] SchDoc CFB/ASCII 5.0: records, encodings, fractional coordinates,
+      components/parts/display modes and main graphical primitives.
+- [x] Schematic canvas: sheet, wires/symbols/text/images, zoom/pan/fit,
+      component/object selection, Properties and incomplete-support messages.
+- [x] Original-format Save As retains scene/native original; guard against JSON over Altium.
+- [x] Original minimal fixture/headless inspector; several real projects read.
+- [ ] Complete visual templates, port/IEEE styles and text.
+- [x] Basic scene editing through commands/history — see iteration below.
+- [ ] Full editing, native writing, electrical connectivity and ERC.
 
-### Визуальная сверка ReferenceB — 20 октября 2026
+### ReferenceB visual comparison — October 20, 2026
 
-- [x] Разделить точное имя Altium GOST Type A и GOST Type AU; системный
-      поиск семейств и свободный Liberation Sans fallback для Linux.
-- [x] Размер IEEE Dot, High Current, стрелки LED, раздельные шрифты выводов,
-      отступы pin names, GND и NoERC; цвет junction от примыкающего провода.
-- [x] Общие Designator/Comment в альтернативных режимах символов;
-      восстановлены XP1 и его Comment; pin-owned Net Name остаётся метаданными.
-- [x] Вписывание листа, нижняя полоса Editor, рамка/разделители зон,
-      системный шрифт и стандартная основная надпись; PgUp/PgDn.
-- [x] Сохранить исходные координаты проводов; толщина и привязка осевых
-      штрихов к физическим пикселям относятся только к renderer.
-- [ ] Подтвердить точное пиксельное совпадение всех фрагментов и Linux GUI;
-      оставшиеся различия и наблюдения — в docs/interface/visual-parity.md.
+- [x] Separate exact Altium GOST Type A and GOST Type AU names;
+      system family lookup and free Liberation Sans fallback for Linux.
+- [x] IEEE Dot size, High Current, LED arrows, separate pin fonts,
+      pin-name/GND/NoERC spacing; junction color from adjoining wire.
+- [x] Shared Designator/Comment in alternative symbol modes;
+      XP1 and Comment restored; pin-owned Net Name remains metadata.
+- [x] Sheet fit, Editor footer, border/zone dividers, system font,
+      standard title block; PgUp/PgDn.
+- [x] Preserve original wire coordinates; physical-pixel stroke width/alignment
+      for axis-aligned lines belongs only to the renderer.
+- [ ] Confirm exact pixel parity for every fragment and Linux GUI;
+      remaining differences/observations: docs/interface/visual-parity.md.
 
-Это частичная реализация §5 и §9–10 исходного плана; исходные критерии
-редактирования/native roundtrip ещё не выполнены. PCB импорт отложен по
-запросу пользователя. Границы совместимости: docs/altium-import.md.
+Partial implementation of original-plan §5 and §9–10; original editing/native
+roundtrip criteria remain unmet. PCB import deferred at user request.
+Compatibility boundaries: docs/altium-import.md.
 
-### Базовое редактирование schematic — 20 октября 2026
+### Basic schematic editing — October 20, 2026
 
-- [x] Типизированные команды eda-core: Insert/Delete/Transform/Properties/Text/Width/Batch;
-      проверка UUID/ревизии, атомарная валидация, Undo/Redo.
-- [x] Новая сцена схемы, R/C, wire, net label, text, GND, junction, graphic line;
-      preview, подтверждение и Esc без записи незавершённого действия.
-- [x] Одиночный выбор, Move мышью/командой, поворот группы компонента;
-      Copy/Cut/Paste/Duplicate с заменой UUID/владельцев/шрифтов.
-- [x] Properties: Designator/Comment, X/Y в mm/mil, текст, ширина линии/провода.
-- [x] Привязка к сетке, электрическим окончаниям выводов, GND/junctions и проводам.
-- [x] Собственный JSON сохраняет правки; source_modified помечает исторический
-      native-архив. Исходные records/байты не меняются.
-- [x] Windows GUI: размещение R1, 10k→47k, Move/drag/rotate/Undo/Redo, Ctrl+C/V,
-      провод между выводами, сохранение/перезапуск/открытие; 27 тестов,
-      fmt/clippy без предупреждений, Linux GNU all-targets compilation.
-- [ ] Групповой выбор, вершины проводов, stretching, автоматические junctions,
-      библиотеки/annotation/иерархия/compiler/ERC и native writer.
+- [x] Typed eda-core Insert/Delete/Transform/Properties/Text/Width/Batch commands;
+      UUID/revision checks, atomic validation, Undo/Redo.
+- [x] New schematic scene, R/C, wire, net label, text, GND, junction, graphic line;
+      preview, confirmation and Esc without committing unfinished actions.
+- [x] Single selection, mouse/command Move, component-group rotation;
+      Copy/Cut/Paste/Duplicate replacing UUIDs/owners/fonts.
+- [x] Properties: Designator/Comment, X/Y in mm/mil, text, line/wire width.
+- [x] Snapping to grid, electrical pin ends, GND/junctions and wires.
+- [x] Original JSON retains edits; source_modified marks the historical native
+      archive. Original records/bytes unchanged.
+- [x] Windows GUI: R1 placement, 10k→47k, Move/drag/rotate/Undo/Redo, Ctrl+C/V,
+      pin-to-pin wire, save/restart/open; 27 tests, warning-free fmt/clippy,
+      Linux GNU all-targets compilation.
+- [ ] Group selection, wire vertices, stretching, automatic junctions,
+      libraries/annotation/hierarchy/compiler/ERC and native writer.
 - [ ] 10 pm native roundtrip, durable journal, operation ID/idempotence,
-      восстановление после сбоя и проверка Linux GUI.
+      crash recovery and Linux GUI verification.
 
-Наблюдены Place/Drawing Tools открытого Altium; порядок меню сохранён,
-неподдержанные команды отключены. Part…/Active Bar/Properties ещё частичны.
-Контракт и управление: docs/schematic-editing.md, ADR 0003; расхождения — features.json.
+Observed Place/Drawing Tools in open Altium; menu order preserved, unsupported
+commands disabled. Part…/Active Bar/Properties remain partial.
+Contract/controls: docs/schematic-editing.md, ADR 0003; differences: features.json.
 
-Типизированные команды и единицы, идентичность, транзакции, preview/cancel,
-ревизии, миграции формата и восстановление. Примитивы, spatial index,
-hit testing, snapping и редактирование геометрии. Проверить native Altium
-контейнеры на минимальных fixtures до обещаний совместимости.
+Typed commands/units, identity, transactions, preview/cancel, revisions, format
+migrations and recovery. Primitives, spatial index, hit testing, snapping and
+geometry editing. Check native Altium containers on minimal fixtures before
+promising compatibility.
 
-Критерий: создать, разместить, изменить, переместить, отменить, повторить,
-сохранить и открыть реальные объекты через GUI и headless-команды.
+Criterion: create, place, edit, move, undo, redo, save and reopen real objects
+through GUI and headless commands.
 
-## Этап 3 — библиотеки и схемы
+## Stage 3 — libraries and schematics
 
-### Приоритетная итерация Properties schematic, 20.10.2026 — в работе
+### Priority schematic Properties iteration, October 20, 2026 — in progress
 
-Условие пользователя: Components и импорт/размещение из IntLib начинать только
-после полного совпадения Properties. Условие пока не выполнено; библиотеки
-этой итерацией не реализованы. Пример ReferenceB.IntLib указан пользователем
-и остаётся входным файлом следующей работы.
+User condition: start Components and IntLib import/placement only after full
+Properties parity. Not yet met; this iteration did not implement libraries.
+User-specified ReferenceB.IntLib remains input for the next work.
 
-- [x] Наблюдать Document General/Parameters, Component General/Pins,
+- [x] Observe Document General/Parameters, Component General/Pins,
       Parameter/Designator, Text, Net Label, Power Port, Wire, Text Frame,
-      Rectangle и Port в AD 24.4.1. Карта — docs/interface/schematic-properties.md.
-- [x] Отдельные формы контекстов, 12 фильтров выбора, исходный Comment,
-      скрытые параметры, их видимость/показ имени, семейство/размер/стили шрифта,
-      цвета, координаты/поворот, настройки листа и таблица вершин.
-- [x] Метаданные моделей из SchDoc, таблицы моделей/параметров/ссылок,
-      избранные и Show More; это чтение существующих экземпляров в схеме,
-      не импорт библиотек и не реализация Components.
-- [x] Проверяемые команды модели с историей; сохранение новых данных в своём
-      JSON без изменения source archive. Старые документы читаются через defaults.
-- [x] Регрессионные проверки: ширина dock при длинных именах/значениях;
-      hidden/raw parameters, модели, отдельные шрифты, atomic rejection и история.
-- [ ] Полная визуальная сверка всех контекстов, mixed selection, placement,
-      специальные объекты, шаблоны, advanced fields, compiled net metadata.
-- [ ] Завершить точное совпадение размеров/иконок/типографики и проверить Linux GUI.
-- [ ] Затем Components, SchLib/IntLib и размещение библиотечных компонентов.
+      Rectangle and Port in AD 24.4.1. Map: docs/interface/schematic-properties.md.
+- [x] Separate context forms, 12 selection filters, original Comment,
+      hidden parameters, visibility/name display, font family/size/styles,
+      colors, coordinates/rotation, sheet settings and vertex table.
+- [x] SchDoc model metadata, model/parameter/link tables, favorites and Show More;
+      reads existing schematic instances, not library import or Components implementation.
+- [x] Validated model commands/history; new data saved in original JSON without
+      source-archive changes. Old documents read through defaults.
+- [x] Regressions: dock width with long names/values; hidden/raw parameters,
+      models, separate fonts, atomic rejection and history.
+- [ ] Full visual comparison of all contexts, mixed selection, placement,
+      special objects, templates, advanced fields, compiled net metadata.
+- [ ] Complete exact dimensions/icons/typography and check Linux GUI.
+- [ ] Then Components, SchLib/IntLib and library-component placement.
 
-Символы и выводы, footprints и pads, компоненты, провода, метки,
-junctions, ports, compiler связности, ERC, иерархия и аннотация.
-Исследовать соответствующие редакторы Altium отдельно.
+Symbols/pins, footprints/pads, components, wires, labels, junctions, ports,
+connectivity compiler, ERC, hierarchy and annotation.
+Investigate corresponding Altium editors separately.
 
-Критерий: контрольная схема с независимо проверенным netlist и ERC.
+Criterion: verification schematic with independently checked netlist/ERC.
 
-## Этап 4 — PCB и первый путь изготовления
+## Stage 4 — PCB and first manufacturing workflow
 
-Слои и стек, компоненты, pads/vias/tracks/arcs/regions, nets и ratsnest,
-ECO, правила и DRC. Ручная трассировка → walkaround → shove,
-заливки с thermals. Gerber, Excellon, BOM, pick-and-place.
+Layers/stack, components, pads/vias/tracks/arcs/regions, nets/ratsnest,
+ECO, rules and DRC. Manual routing → walkaround → shove,
+pours with thermals. Gerber, Excellon, BOM, pick-and-place.
 
-Критерий: собственная схема → ECO → плата → DRC → выпуск;
-независимый reader проверяет полученные производственные файлы.
+Criterion: original schematic → ECO → board → DRC → outputs;
+independent reader checks resulting manufacturing files.
 
-## Этап 5 — расширенные подсистемы
+## Stage 5 — advanced subsystems
 
-HDI/rigid-flex, дифпары и tuning, high-speed/xSignals, 3D/STEP,
-варианты и BOM, simulation/SI/PI, OutJob, CAM, Draftsman,
-multi-board, harness, сервер Workspace. Для каждой подсистемы —
-собственные наблюдения, модель, операции, файлы и критерии.
+HDI/rigid-flex, differential pairs/tuning, high-speed/xSignals, 3D/STEP,
+variants/BOM, simulation/SI/PI, OutJob, CAM, Draftsman, multi-board, harness,
+Workspace server. Each subsystem gets its own observations, model, operations,
+files and criteria.
 
-## Этап 6 — соответствие и производительность
+## Stage 6 — parity and performance
 
-Постоянный реестр функций и расхождений. Windows/Linux CI, DPI и ввод,
-малые/средние/большие fixtures, release benchmarks, latency и память.
-Сроки и производительность не обещать без измерений.
+Continuous feature/difference registry. Windows/Linux CI, DPI/input,
+small/medium/large fixtures, release benchmarks, latency and memory.
+Do not promise schedules/performance without measurements.
 
-### Приоритет пользователя: Components и библиотеки — 20.10.2026
+### User priority: Components and libraries — October 20, 2026
 
-Новое прямое указание «Начинай components и библиотеки» разрешает этот этап
-до полного завершения Properties. Предыдущая условная последовательность
-выше сохранена как история; незакрытые расхождения Properties остаются.
+New explicit instruction “Start components and libraries” authorizes this stage
+before full Properties completion. The previous conditional sequence above
+remains as history; unresolved Properties differences remain.
 
-- [x] Наблюдать Components AD 24.4.1 с ReferenceB.IntLib: выбор библиотеки,
-      поиск, таблица/Results, Details/Symbol/Model и меню.
-- [x] Самостоятельное чтение SchLib Binary 5.0 и SchLib внутри IntLib;
-      31 компонент предоставленной библиотеки, варианты частей/отображения,
-      бинарные выводы, дробные координаты, UTF-16, параметры, шрифты и ресурсы.
-- [x] Панель Components, установка локальных библиотек, сохранение списка путей,
-      локальный поиск, сведения, предпросмотр и размещение. Существующие ссылки
-      SchLib/IntLib в PrjPcb читаются и доступны в дереве.
-- [x] Независимые экземпляры: UUID, свободный designator, поворот, повторная
-      вставка, Esc, проверка ревизии, история, собственное сохранение/чтение.
-- [x] Регрессии импорта/повреждений/лимитов, нескольких частей и режимов,
-      ресурсов, сохранения, preview скрытых параметров, размещения и истории.
-- [ ] Полное визуальное совпадение Components, drag-and-drop, обновление/
-      удаление подключений, редактор библиотек и обновление экземпляров.
-- [ ] Упаковка/аннотация многосекционных компонентов, managed/DbLib/SVNDbLib,
-      footprint/3D (в PCB-этапе), проверка Linux GUI.
+- [x] Observe Components AD 24.4.1 with ReferenceB.IntLib: library selection,
+      search, table/Results, Details/Symbol/Model and menus.
+- [x] Independent SchLib Binary 5.0 and embedded IntLib SchLib reading;
+      31 supplied-library components, part/display variants, binary pins,
+      fractional coordinates, UTF-16, parameters, fonts and resources.
+- [x] Components panel, local library installation, path-list persistence,
+      local search, details, preview and placement. Existing SchLib/IntLib
+      PrjPcb references are read and available in the tree.
+- [x] Independent instances: UUID, free designator, rotation, repeated placement,
+      Esc, revision check, history, original-format saving/loading.
+- [x] Import/corruption/limit regressions, multiple parts/modes, resources,
+      saving, hidden-parameter preview, placement and history.
+- [ ] Full Components visual parity, drag-and-drop, connection update/removal,
+      library editor and instance updates.
+- [ ] Multipart packing/annotation, managed/DbLib/SVNDbLib,
+      footprint/3D (PCB stage), Linux GUI verification.
 
-Карта наблюдений и границы: docs/interface/components-libraries.md.
+Observation map/boundaries: docs/interface/components-libraries.md.
 
-### Components: визуальная сверка и drag-and-drop — 20.10.2026
+### Components: visual comparison and drag-and-drop — October 20, 2026
 
-- [x] Повторно наблюдать IntLib в AD 24.4.1: Models с белой карточкой,
-      raw Comment, электрические маркеры LMV321, References и нижние секции;
-      уточнить отличие от ранее наблюдавшегося состояния Symbol/Model.
-- [x] Геометрия таблицы/Details/Models при dock 316; сортировка и ширины
-      колонок, разделитель, активный фильтр, избранное и Show More/Less.
-- [x] Preview с исходными серыми выражениями, скрытыми параметрами,
-      переносимыми шрифтами, подбором масштаба и input/output маркерами.
-- [x] Перенос строки и карточки на canvas: preview, одна атомарная вставка,
-      snap, отмена, guard сеанса/ревизии, Undo/Redo; без Windows-only API.
-- [x] Windows GUI: 1396 и 7086, drag C1/C2, Undo/Redo и save/reopen на
-      собственной проверочной схеме. 43 workspace tests; Linux GNU all-targets check.
-- [ ] Полная пиксельная совместимость всех символов/режимов/DPI, остальные
-      pin markers, native dialogs и Linux GUI. Оставшиеся отличия явно
-      перечислены в docs/features.json и docs/interface/components-libraries.md.
+- [x] Reobserve IntLib in AD 24.4.1: Models with white card, raw Comment,
+      LMV321 electrical markers, References and lower sections;
+      clarify differences from earlier Symbol/Model state.
+- [x] Table/Details/Models geometry at dock 316; column sorting/widths,
+      divider, active filter, favorites and Show More/Less.
+- [x] Preview with original gray expressions, hidden parameters, portable fonts,
+      fitted scale and input/output markers.
+- [x] Row/card drag onto canvas: preview, one atomic insertion, snap, cancellation,
+      session/revision guard, Undo/Redo; no Windows-only API.
+- [x] Windows GUI: 1396/7086, drag C1/C2, Undo/Redo and save/reopen on original
+      QA schematic. 43 workspace tests; Linux GNU all-targets check.
+- [ ] Full pixel compatibility for all symbols/modes/DPI, remaining pin markers,
+      native dialogs and Linux GUI. Differences explicitly listed in
+      docs/features.json and docs/interface/components-libraries.md.
 
-### Контрольная точка перед публикацией — 20.10.2026
+### Pre-publication checkpoint — October 20, 2026
 
-По прямому указанию пользователя разработка приостановлена, текущее состояние
-коммитится и публикуется в PCBCraft через remote upstream.
+At the user's explicit instruction, development paused; current state is
+committed/published to PCBCraft through remote upstream.
 
-- Реализован черновой connected Drag в eda-core: изменение компонента и
-  подключённых wires одной проверяемой транзакцией, ортогональные изгибы,
-  фиксированные ответвления/метки, общие узлы, группы и поворот.
-- Введены отдельные Drag и Move, меню M → D / M → M, выбор объекта командой,
-  отмена по Esc/потере фокуса/выходу за canvas/смене вкладки; preview скрывает
-  старую геометрию изменяемых объектов. Move сохраняет разрывающее поведение.
-- Наблюдены меню Edit → Move и native Drag корпуса R9 на отдельной копии ReferenceB;
-  исходный пользовательский проект для исследования не редактировался.
-- Проверены 52 workspace tests, fmt --check, Clippy -D warnings, Linux GNU
-  all-targets check. Обновлённая версия PCBCraft ещё не проверена в реальном окне.
-- Возобновление: проверить GUI на ReferenceB, углы/поворот/группы и save/reopen;
-  завершить сегментное перетаскивание wires, autojunction/слияние и cleanup.
-  Полное совпадение всех сценариев редактирования Altium пока не заявляется.
+- Draft connected Drag in eda-core: component/connected-wire changes in one
+  validated transaction, orthogonal bends, fixed branches/labels, shared nodes,
+  groups and rotation.
+- Separate Drag/Move, M → D / M → M menus, command object picking, cancellation
+  on Esc/focus loss/leaving canvas/tab change; preview hides original geometry
+  of modified objects. Move retains connection-breaking behavior.
+- Observed Edit → Move menus and native R9 body Drag on a separate ReferenceB
+  copy; original user project not edited for research.
+- 52 workspace tests, fmt --check, Clippy -D warnings, Linux GNU all-targets check
+  passed. Updated PCBCraft has not yet been checked in a real window.
+- Resume: verify GUI on ReferenceB, angles/rotation/groups and save/reopen;
+  complete wire-segment drag, autojunction/merging and cleanup.
+  Full parity with every Altium editing scenario is not yet claimed.
 
-### Интеграция PCB v2 — 21.10.2026
+### PCB v2 integration — October 21, 2026
 
-По запросу пользователя интегрирован накопительный PCB-пакет на базе bd76173:
-модель/команды PCB, импорт PCB6/ASCII, ручная трассировка, editable polygons,
-Properties и экспериментальное native-сохранение с backup и проверкой re-import.
-Исправлены ошибки компиляции/Clippy, обновлён lockfile. Пройдены 109 Rust-тестов,
-fmt, strict Clippy и Linux all-targets build. Linux GUI: Properties Apply,
-перезаливка, маршрут/Undo/Redo, Save с backup и повторное открытие.
-Подробности и ограничения: docs/pcb-update/VALIDATION.md и IMPLEMENTATION.md.
-Altium interoperability, Windows GUI, реальные платы, DRC/shove/ECO/fabrication
-и полное визуальное соответствие остаются непроверенными либо нереализованными.
+At user request, integrated the cumulative PCB package based on bd76173:
+PCB model/commands, PCB6/ASCII import, manual routing, editable polygons,
+Properties and experimental native saving with backup/reimport validation.
+Fixed compilation/Clippy errors, updated lockfile. 109 Rust tests, fmt, strict
+Clippy and Linux all-targets build passed. Linux GUI: Properties Apply, repour,
+route/Undo/Redo, Save with backup and reopen.
+Details/limitations: docs/pcb-update/VALIDATION.md and IMPLEMENTATION.md.
+Altium interoperability, Windows GUI, real boards, DRC/shove/ECO/fabrication and
+full visual parity remain unverified or unimplemented.
 
-### Текст схемы при масштабировании — 21.10.2026
+### Schematic text during zoom — October 21, 2026
 
-По сообщению пользователя устранены скачки метрик/привязок текста при zoom:
-фиксированная раскладка glyphs, масштабирование камерой и сохранение subpixel
-позиции; текстовые блоки сохраняют переносы строк. Добавлены две регрессии
-с реальной тесселяцией, до исправления падающие; 113 тестов, fmt, Clippy и build
-проходят. Linux GUI и совпадение canvas после zoom in/out проверены.
-Подробности и границы: docs/verification.md и docs/features.json.
+Fixed user-reported text metric/anchor jumps during zoom: fixed glyph layout,
+camera scaling and subpixel-position preservation; text blocks retain wrapping.
+Added two real-tessellation regressions that fail before the fix; 113 tests,
+fmt, Clippy and build pass. Linux GUI and canvas equality after zoom in/out checked.
+Details/boundaries: docs/verification.md and docs/features.json.
 
-### Рост памяти при редактировании — 21.10.2026
+### Editing memory growth — October 21, 2026
 
-Воспроизведён рост до 2,49 ГБ RSS после 200 visibility-правок native-схемы TI.
-Убрано дублирование source/records/images между снимками, ограничены Undo/Redo
-(128 шагов / 64 МиБ оценки editable snapshots на документ), очищаются устаревшие
-текстуры и PCB triangulations. Переиспользуются font slots, clipboard не держит
-посторонние изображения, удаление освобождает неиспользуемые image resources.
-Восемь memory-проб завершились без неограниченного роста; visibility 600 итераций
-держится около 31 МБ RSS в модельной пробе, GUI 200 переключений — около 159 МБ.
-122 теста, fmt, strict Clippy и build all-targets проходят. Подробнее: docs/memory.md.
+Reproduced 2.49 GB RSS after 200 visibility edits of a native TI schematic.
+Removed source/records/images duplication between snapshots, limited Undo/Redo
+(128 steps / 64 MiB estimated editable snapshots per document), cleared stale
+textures/PCB triangulations. Font slots reused, clipboard excludes unrelated
+images, deletion releases unused image resources.
+Eight memory probes finished without unbounded growth; 600 visibility iterations
+stay around 31 MB RSS in the model probe, GUI 200 toggles around 159 MB.
+122 tests, fmt, strict Clippy and all-targets build pass. Details: docs/memory.md.
 
-### Возобновление редактирования схем — 21.10.2026
+### Resumed schematic editing — October 21, 2026
 
-- [x] Сверен native Drag провода в AD 24.4.1 на отдельной копии ReferenceB:
-      закреплённые подключения, изгибы и растяжение Т-ответвлений. Изменение
-      отменено, пользовательский проект не редактировался.
-- [x] `Edit::DragWire`: сегменты/вершины, общая геометрия preview/commit,
-      сохранение UUID/стиля, проверка ревизии и атомарный Undo/Redo.
-- [x] Маркеры ручек провода; прямой mouse drag и M,D, отмена вне canvas,
-      по Esc/потере фокуса/смене вкладки. M,M сохраняет разрывающее перемещение.
-- [x] Автоматические точки Т-соединений/выводов по локальной геометрии,
-      включая preview. Пересечения середин без узла не соединяются;
-      ручные Junction сохраняются, кэш ограничен жизнью View.
-- [x] Backspace/Delete возвращает последнюю вершину прокладки;
-      щелчок по существующему соединению завершает провод одной транзакцией
-      и оставляет инструмент готовым к следующему проводу.
-- [x] Windows GUI: connected Drag R1, Drag сегмента с Т-ответвлением,
-      Undo/Redo, JSON Save/reopen собственной схемы. 131 workspace tests,
-      fmt, strict Clippy; Linux GNU all-targets check без выпуска Linux-билда.
-- [ ] Полная сверка на ReferenceB, все угловые режимы, wire-group drag, удаление
-      сегментов, overlap cleanup, предупреждение о смене цепи, compiler/ERC
-      и новая Linux GUI-проверка. Границы: docs/schematic-editing.md/features.json.
+- [x] Compared native wire Drag in AD 24.4.1 on a separate ReferenceB copy:
+      fixed connections, bends and stretching T-branches. Change undone;
+      user project not edited.
+- [x] `Edit::DragWire`: segments/vertices, shared preview/commit geometry,
+      UUID/style preservation, revision checks and atomic Undo/Redo.
+- [x] Wire-handle markers; direct mouse drag and M,D, cancellation outside
+      canvas/on Esc/focus loss/tab change. M,M retains connection-breaking movement.
+- [x] Automatic T/pin connection points from local geometry including preview.
+      Interior crossings without nodes do not connect; manual Junctions retained,
+      cache bounded by View lifetime.
+- [x] Backspace/Delete removes the last wiring vertex; clicking an existing
+      connection finishes the wire as one transaction and readies the next wire.
+- [x] Windows GUI: connected R1 Drag, segment Drag with T-branch, Undo/Redo,
+      original-schematic JSON Save/reopen. 131 workspace tests, fmt, strict Clippy;
+      Linux GNU all-targets check without a Linux build release.
+- [ ] Full ReferenceB comparison, all angle modes, wire-group drag, segment
+      deletion, overlap cleanup, net-change warnings, compiler/ERC and new Linux
+      GUI verification. Boundaries: docs/schematic-editing.md/features.json.
 
+### Group operations and Wire segments — October 21, 2026
 
-### Групповые операции и сегменты Wire — 21.10.2026
-
-- [x] Наблюдены зелёные маркеры Wire и красные маркеры повторного выбора
-      сегмента в AD 24.4.1 на копии ReferenceB. Native Delete и все preferences
-      отдельно не воспроизводились; использована официальная документация.
-- [x] Смешанные группы компонентов/wires/сегментов: Move, connected Drag,
-      поворот, Copy/Cut/Paste/Duplicate/Delete; один шаг истории, проверка
-      ревизии и принадлежности примитивов; свободные обозначения внутри группы.
-- [x] Выбор сегментов между изгибами/электрическими узлами, в том числе через
-      Shift. Удаление сохраняет остальные части; изменённая топология отменяет
-      устаревший выбор. Автоматические junctions обновляются.
-- [x] Локальное объединение перекрытий с сохранением стиля, Т-узлов и обычных
-      неподключённых пересечений. Preview и commit используют одну команду.
+- [x] Observed green Wire markers and red repeat-selection segment markers in
+      AD 24.4.1 on a ReferenceB copy. Native Delete/all preferences not reproduced
+      separately; official documentation used.
+- [x] Mixed component/wire/segment groups: Move, connected Drag, rotation,
+      Copy/Cut/Paste/Duplicate/Delete; one history step, revision/primitive-owner
+      checks; unused designators within groups.
+- [x] Segment selection between bends/electrical nodes, including Shift.
+      Deletion preserves other portions; changed topology rejects stale selection.
+      Automatic junctions update.
+- [x] Local overlap merging preserves style, T-nodes and ordinary unconnected
+      crossings. Preview/commit share a command.
 - [x] 145 workspace tests, fmt --check, strict Clippy, Windows debug build;
-      Linux GNU all-targets check без выпуска Linux-билда. Реальное окно:
-      выбор/Drag сегмента, Duplicate с перекрытием, Undo/Redo, JSON Save/reopen
-      собственной QA-схемы. Смешанные группы и Shift проверены egui-событиями.
-- [ ] Рамочное выделение, групповые Properties, все угловые режимы и locked
-      semantics, глобальный cleanup/preferences, net-change warning, compiler/ERC,
-      native SchDoc writer, полная Altium-сверка и новая Linux GUI-проверка.
-      Предыдущий список незавершённого выше относится к прошлой итерации.
+      Linux GNU all-targets check without a Linux release. Real window:
+      segment selection/Drag, overlapping Duplicate, Undo/Redo, original QA-scene
+      JSON Save/reopen. Mixed groups/Shift checked through egui events.
+- [ ] Rectangle selection, bulk Properties, all angle modes/locked semantics,
+      global cleanup/preferences, net-change warnings, compiler/ERC, native
+      SchDoc writer, full Altium comparison and new Linux GUI verification.
+      The earlier unfinished-work list above refers to the previous iteration.
 
+### ReferenceB PCB opening fix — October 21, 2026
 
-### Исправление открытия PCB из ReferenceB — 21.10.2026
-
-- [x] Воспроизведено `Invalid PCB Pad geometry` на проектном
-      `ReferenceBBoard.PcbDoc`: NPTH Pad 0 с нулевой медью и drill ~0,45 мм.
-- [x] Поддержан этот объект в модели без выдуманной меди: проверка геометрии,
-      bounds/picking, отображение контура и физический вырез при repour.
-- [x] Бинарный regression fixture, JSON и native round-trip после перемещения,
-      сохранение неизвестного хвоста и архива; невалидные нулевые Pad отклоняются.
-- [x] Windows GUI: открытие PcbDoc двойным щелчком из проекта, 15389 примитивов,
-      69 компонентов. Пользовательский файл не изменялся, прежнее окно с
-      несохранёнными правками сохранено открытым.
+- [x] Reproduced `Invalid PCB Pad geometry` on project `ReferenceBBoard.PcbDoc`:
+      NPTH Pad 0 with zero copper and drill ~0.45 mm.
+- [x] Supported this object without invented copper: geometry validation,
+      bounds/picking, outline display and physical cutout during repour.
+- [x] Binary regression fixture, JSON/native roundtrip after movement,
+      unknown-tail/archive preservation; invalid zero Pads rejected.
+- [x] Windows GUI: PcbDoc double-click from project, 15389 primitives,
+      69 components. User file unchanged; old unsaved window left open.
 - [x] 148 workspace tests, fmt --check, strict Clippy, Windows build,
-      Linux GNU all-targets check. Подробности: docs/pcb-update/VALIDATION.md.
+      Linux GNU all-targets check. Details: docs/pcb-update/VALIDATION.md.
 
+### PCB display against open Altium — October 21, 2026
 
-### Отображение PCB по открытому Altium — 21.10.2026
-
-- [x] Сверены текущая плата, палитра Top/Bottom и Object Visibility в AD 24.4.1;
-      настройки файла отделены от глобальной палитры приложения.
-- [x] Modern layer identities и V9 names, layer visibility/opacity/snap grid,
-      NAMEON/COMMENTON, font kind/bold/italic, зеркальность и стабильный zoom текста.
-- [x] Импорт 2D-проекций ComponentBodies, штриховка вырезов/корпусов; парные legacy
-      Regions/Bodies сохранены без повторного рисования (57 + 62 пары).
-- [x] Направление обхода contour arcs, швы без огромных miter-треугольников;
-      индивидуальные радиусы Pad для renderer/pour/picking; проход сверления.
+- [x] Compared current board, Top/Bottom palette and Object Visibility in
+      AD 24.4.1; file settings separated from application-wide palette.
+- [x] Modern layer identities/V9 names, layer visibility/opacity/snap grid,
+      NAMEON/COMMENTON, font kind/bold/italic, mirroring and stable text zoom.
+- [x] ComponentBodies 2D projection import, cutout/body hatching; paired legacy
+      Regions/Bodies retained without double rendering (57 + 62 pairs).
+- [x] Contour-arc traversal direction, seams without huge miter triangles;
+      individual Pad radii for renderer/pour/picking; drilling pass.
 - [x] 159 tests, fmt --check, strict Clippy, Windows build, Linux GNU all-targets
-      check. Исходный файл не изменялся; новые Linux-артефакты не собирались.
-- [ ] Полное визуальное совпадение: stroke fonts/embedded glyphs, text styles,
-      via-span/adaptive labels, точный raster/hatch и PCB Properties/tools/layer bar.
-      Наблюдения, реализация и границы: docs/pcb-update/VISUAL_PARITY.md.
+      check. Source unchanged; no new Linux artifacts built.
+- [ ] Full visual parity: stroke fonts/embedded glyphs, text styles, via-span/
+      adaptive labels, exact raster/hatch and PCB Properties/tools/layer bar.
+      Observations, implementation/boundaries: docs/pcb-update/VISUAL_PARITY.md.
 
+### PCB Properties — October 21, 2026
 
-### PCB Properties — 21.10.2026
-
-- [x] Наблюдение AD 24.4.1 Board General/Parameters, Component, Track, Pad,
-      Via, Text, Polygon; контекстная компоновка вместо общего Apply-редактора.
-- [x] Поддержанные поля через команды/History, координаты относительно origin,
-      исправленный Comment из Texts6, dirty/Save/Close и независимые drafts.
-- [x] Фильтры и реализованные привязки подключены к PCB canvas; Shift+E.
-- [x] 316 px layout regression всех контекстов, mm/mils Enter/Escape, stale/
-      invalid drafts, Undo/Redo/Save; Windows via 0.7 → 0.8 → Undo/Redo/Undo.
+- [x] Observed AD 24.4.1 Board General/Parameters, Component, Track, Pad,
+      Via, Text, Polygon; contextual layout replaces generic Apply editor.
+- [x] Supported fields through commands/History, origin-relative coordinates,
+      corrected Texts6 Comment, dirty/Save/Close and independent drafts.
+- [x] Filters/implemented snaps connected to PCB canvas; Shift+E.
+- [x] 316 px layout regressions for all contexts, mm/mils Enter/Escape,
+      stale/invalid drafts, Undo/Redo/Save; Windows via 0.7 → 0.8 → Undo/Redo/Undo.
 - [x] 169 workspace tests, fmt --check, strict Clippy, Windows debug build,
-      Linux GNU all-targets check без Linux сборки артефакта.
-- [ ] Полная pixel parity, 3D padstack/Full Stack/templates, masks/rules,
-      component area/opacity, advanced text и mixed Properties.
-      Статусы и ограничения: docs/pcb-update/PROPERTIES.md.
+      Linux GNU all-targets check without Linux artifact build.
+- [ ] Full pixel parity, 3D padstack/Full Stack/templates, masks/rules,
+      component area/opacity, advanced text and mixed Properties.
+      Status/limitations: docs/pcb-update/PROPERTIES.md.
 
+### PCB Properties: padstack, 3D and masks — October 21, 2026
 
-### PCB Properties: padstack, 3D и маски — 21.10.2026
+- [x] Compared Pad Stack modes and Copper/Hole/Paste/Solder rows,
+      Slot/offset and Top/Bottom tenting on a separate AD 24.4.1 copy.
+- [x] Typed per-layer eda-core stack, shared picking/render/pour geometry,
+      Round/Square/Slot, offset, Flip; PCB6 read/write and opaque-tail retention.
+- [x] Interactive eda-render 3D: surfaces/holes/barrel/masks, rotate/zoom/reset
+      without document changes; unified stack editor in Properties.
+- [x] Manual/Rule masks, priority/bounded scope evaluator, tenting/percentage/
+      hole edge; existing-mask rule editor through History and Rules6 writing.
+- [x] PCBCraft-written real-board copy with changed masks opened in Altium;
+      Top Tented confirmed with Bottom untented retained. Source unchanged.
+- [x] 188 tests, fmt --check, strict Clippy, Windows build, Linux GNU all-targets
+      check; no separate Linux release. Details: docs/pcb-update/PROPERTIES.md.
+- [ ] Full pixel/material parity, templates/custom apertures/thermal relief,
+      modern native independent masks, plane stack and native-reference remapping
+      after repour. Native Save continues to refuse unsupported remapping.
 
-- [x] На отдельной копии в AD 24.4.1 сверены режимы Pad Stack и строки
-      Copper/Hole/Paste/Solder, Slot/offset и Top/Bottom tenting.
-- [x] Типизированный послойный stack в eda-core, общая геометрия picking/render/
-      pour, Round/Square/Slot, offset, Flip; PCB6 read/write и сохранение opaque tails.
-- [x] Интерактивная 3D-геометрия в eda-render: поверхности/отверстия/barrel/маски,
-      вращение/zoom/reset без изменения документа; unified stack editor в Properties.
-- [x] Маски Manual/Rule, приоритет и ограниченный scope evaluator, tenting/percentage/
-      hole edge; редактор существующих mask rules через History и запись Rules6.
-- [x] PCBCraft-запись копии реальной платы с изменёнными масками открыта в Altium;
-      подтверждён Top Tented при сохранённом Bottom untented. Исходный файл не менялся.
-- [x] 188 tests, fmt --check, strict Clippy, Windows build, Linux GNU all-targets check;
-      отдельный Linux build не выпускался. Детали: docs/pcb-update/PROPERTIES.md.
-- [ ] Полная pixel/material parity, templates/custom apertures/thermal relief,
-      modern native independent masks, plane stack и перестройка native references
-      после repour. Native Save при неподдержанном remap сохраняет отказ.
+### PCB continuation: Pad Edges — October 22, 2026
 
+- [x] Fetched origin/main updates to e8f7ed7 without conflicts.
+- [x] Enabled Pad Edges in existing PCB Snap Options from recorded AD 24.4.1
+      observation; snap settings do not change document/history.
+- [x] Projection onto actual outer copper boundary with shape, corner radii,
+      rotation, Copper Offset, padstack and visible layers; analytical arcs.
+- [x] Geometry/radius/layer/switch regressions and real PCB canvas events,
+      including Ctrl+Shift bypass. Boundaries: pcb-update/PROPERTIES.md.
+- [ ] New live Altium comparison of snap priorities/custom shapes/all DPI;
+      other unfinished PCB stages above remain.
 
-### Продолжение PCB: Pad Edges — 22.10.2026
+193 workspace tests, fmt, strict Clippy and Linux debug build verified.
+Linux GUI: Pad Edges toggle switches edge/grid snapping without dirty state.
+TI PMP23595 imports; PMP22650 remains blocked by padstack validation.
+No new live Altium comparison yet.
 
-- [x] Получены обновления origin/main до e8f7ed7 без конфликтов.
-- [x] В существующих PCB Snap Options включён Pad Edges по сохранённому
-      наблюдению AD 24.4.1; настройки привязки не изменяют документ/историю.
-- [x] Проекция на реальную внешнюю границу меди с учётом формы, угловых радиусов,
-      поворота, Copper Offset, padstack и видимых слоёв; аналитические дуги.
-- [x] Регрессии геометрии/радиуса/слоёв/переключателей и настоящих событий
-      PCB canvas, включая Ctrl+Shift bypass. Границы: pcb-update/PROPERTIES.md.
-- [ ] Новая живая Altium-сверка приоритетов snap/custom shapes и всех DPI;
-      остальные незавершённые PCB-этапы выше сохраняются.
+### PCB controls — October 22, 2026
 
-Проверены 193 workspace tests, fmt, strict Clippy и Linux debug build.
-Linux GUI: переключение Pad Edges с привязкой к краю / возвратом к сетке,
-без dirty state. TI PMP23595 импортируется; PMP22650 по-прежнему блокирует
-валидация padstack. Новая живая Altium-сверка пока отсутствует.
+Fixed separate PCB input path after user report: Ctrl+wheel handles egui
+zoom_delta; pinch/PgUp/PgDn preserve pointer anchor; right/middle pan,
+fit document/board/selection and Home. Small 90 replaces unconditional full
+crosshairs, with persisted cursor/wheel settings. Fixed fast drag-release,
+M,M/M,D command object picking, gesture cancellation on focus loss/tab switching,
+grid-off drag, rotation during mouse move/paste. Added event/history regressions.
+New live AD 24.4.1 comparison unavailable; full parity not claimed.
+Controls/boundaries: docs/pcb-update/CONTROLS.md.
 
+Controls validation: 210 workspace tests, fmt and strict Clippy. Real Linux GUI
+checked Ctrl-wheel roundtrip, pan, V,F, move + Space, Undo/Redo, Esc and exact
+PcbDoc coordinate/angle persistence; Ctrl+W adds a conductor with expected net/ends.
+Fixed discovered ScrollArea conflict between two component Descriptions.
+Test boards remain outside the repository. Cancellation also suppresses same-frame
+mouse press/release events until release; added a regression for this event race.
+Locally built PCBCraft-0.1.0-controls-20261022-x86_64.AppImage (x86_64,
+glibc >= 2.39, outside Git). Package launch, zoom, component selection, absence
+of Description conflict and Esc + mouse release checked with byte-identical
+saved PcbDoc.
 
-### Управление PCB — 22.10.2026
+### Schematic/board Cross Probe — October 22, 2026
 
-По сообщению пользователя исправлен отдельный PCB input path: Ctrl+wheel
-обрабатывает egui zoom_delta; pinch/PgUp/PgDn сохраняют anchor под курсором;
-pan правой/средней кнопкой, fit document/board/selection и Home. Вместо
-безусловных полос введён Small 90 с сохраняемыми настройками курсора/колеса.
-Исправлены быстрый drag-release, выбор объекта командами M,M/M,D, отмена
-mouse gesture при потере фокуса/смене вкладки, grid-off drag, поворот во время
-mouse move и paste. Добавлены регрессии событий и истории. Новая живая сверка
-с AD 24.4.1 недоступна; полное совпадение не заявляется.
-Карта управления и границы: docs/pcb-update/CONTROLS.md.
+- [x] Tools > Cross Probe / T,C, persistent mode, Ctrl+click for a one-shot jump;
+      Esc/right-click ends mode.
+- [x] Components by native ID with designator fallback, pins/pads by number;
+      nets by wire/pin connectivity, junctions and labels.
+- [x] PrjPcb search scope, opposite-document opening on demand,
+      choice among multiple tabs and ambiguity messages.
+- [x] View state only: centering, layers, selection/highlight;
+      model, dirty state and Undo unchanged.
+- [x] Automated tests/Linux GUI for both directions, pin and net.
+- [ ] Hierarchical-net compilation, harness/bus/variants and split-view;
+      exact live behavior/scale comparison with AD 24.4.1.
 
-Валидация управления: 210 workspace tests, fmt и strict Clippy. В настоящем
-Linux GUI проверены Ctrl-wheel туда/обратно, pan, V,F, перенос + Space,
-Undo/Redo, Esc и сохранение точных координат/угла в PcbDoc; Ctrl+W добавляет
-проводник с ожидаемой сетью и концами. Исправлен обнаруженный конфликт
-ScrollArea двух Description компонента. Тестовые платы находятся вне репозитория.
-Отмена также подавляет события нажатия/отпускания мыши в том же кадре до
-отпускания кнопки; добавлена отдельная регрессия этой гонки событий.
-Локально собран PCBCraft-0.1.0-controls-20261022-x86_64.AppImage (x86_64,
-glibc >= 2.39, вне Git). Проверены запуск пакета, zoom, выбор компонента,
-отсутствие конфликта Description и Esc + отпускание мыши с побайтово
-неизменным сохранённым PcbDoc.
+Description/boundaries: docs/pcb-update/CROSS_PROBE.md. Test project uses only
+original fixtures; TI files remain outside Git.
+Local TI PMP23595: 164/167 components match; explicit physical-instance selection
+added for 36 repeated-channel components. Native SOURCEUNIQUEID accepts both
+path separators, / and \.
+Repeated nets without an unambiguous PCB net remain unsupported;
+name matching does not substitute for a hierarchical compiler.
+Final: 219 workspace tests, fmt, strict Clippy and debug build pass.
+Linux GUI also checked physical-instance selection CHANNEL1/CHANNEL2.
 
-### Cross Probe между схемой и платой — 22.10.2026
+### PCB 3D Layout Mode — October 22, 2026
 
-- [x] Tools > Cross Probe / T,C, постоянный режим, Ctrl+click для разового
-      перехода; Esc/правая кнопка завершают режим.
-- [x] Компоненты по native ID с fallback на designator, pins/pads по номеру;
-      цепи по связности проводов/выводов, junction и labels.
-- [x] Область поиска PrjPcb, открытие противоположных документов по запросу,
-      выбор при нескольких вкладках и сообщения о неоднозначности.
-- [x] Только состояние вида: центрирование, слои, выделение/подсветка;
-      модель, dirty state и Undo не меняются.
-- [x] Автотесты и Linux GUI для обоих направлений, pin и net.
-- [ ] Компиляция иерархических цепей, harness/bus/variants и split-view;
-      точная живая сверка поведения и масштаба с AD 24.4.1.
+- [x] Keys 3/2 and View menu, separate camera, orbit/pan/zoom, Top/Bottom/Fit.
+- [x] Volumetric board with thickness, through-holes/cutouts and outer-layer
+      geometry; body projections with height/standoff and pad fallback.
+- [x] Depth picking, selection/Properties, rotation about component origin,
+      Undo, Cross Probe and component-visibility switch.
+- [x] Scene/texture cache, model immutability during navigation, fast-gesture/
+      occlusion/2D-return/pending-edit regressions.
+- [ ] STEP/Parasolid meshes, exact materials/masks/overlay, collision,
+      rigid-flex and complete live AD comparison. Bodies explicitly simplified.
 
-Описание и границы: docs/pcb-update/CROSS_PROBE.md. Тестовый проект использует
-только собственные fixtures; файлы TI остаются вне Git.
-Проверка на локальном TI PMP23595: 164/167 компонентов имеют соответствие,
-для 36 repeated-channel компонентов добавлен явный выбор физического
-экземпляра. Native SOURCEUNIQUEID принимает оба разделителя пути, / и \.
-Повторяемые цепи без однозначного PCB net остаются неподдержанными;
-иерархический компилятор не подменяется совпадением названия.
-Итог: 219 workspace tests, fmt, strict Clippy и debug build проходят.
-Linux GUI дополнительно проверен выбор физического экземпляра CHANNEL1/CHANNEL2.
+Description/limitations: docs/pcb-update/3D_VIEW.md.
 
-### PCB 3D Layout Mode — 22.10.2026
+3D checks: 228 workspace tests, fmt and strict Clippy pass. Local release
+AppImage checked on TI PMP23595: selection/Properties, orbit/zoom, bottom view
+with through-holes and return to 2D. TI files outside Git.
 
-- [x] Клавиши 3/2 и меню View, отдельная камера, orbit/pan/zoom, Top/Bottom/Fit.
-- [x] Объёмная плата с толщиной, сквозными отверстиями/вырезами и геометрией
-      наружных слоёв; проекции корпусов с высотой/standoff и fallback по pads.
-- [x] Depth picking, выбор/Properties, поворот вокруг component origin, Undo,
-      Cross Probe и переключатель видимости компонентов.
-- [x] Кэш сцены/текстуры, неизменность модели при навигации, регрессии быстрых
-      жестов/окклюзии/возврата 2D и незавершённых правок.
-- [ ] STEP/Parasolid meshes, точные материалы/маски/шелкография, collision,
-      rigid-flex и полная живая сверка AD. Корпуса явно упрощённые.
+### Layer Stack Manager — October 22, 2026
 
-Описание и ограничения: docs/pcb-update/3D_VIEW.md.
-
-Проверка 3D: 228 workspace tests, fmt и strict Clippy проходят. Локальный
-release AppImage проверен на TI PMP23595: выбор/Properties, orbit/zoom,
-вид снизу со сквозными отверстиями и возврат в 2D. TI файлы вне Git.
-
-### Layer Stack Manager — 22.10.2026
-
-Предыдущие изменения 3D зафиксированы отдельным коммитом eb513d9.
+Previous 3D changes committed separately as eb513d9.
 
 - [x] Design > Layer Stack Manager, Stackup/Via Types/Impedance, Properties,
-      поперечное сечение, мм/mil, Apply/Discard и атомарный Undo.
-- [x] Изменение/добавление/порядок слоёв, материалы, Dk/Df, толщины;
-      стабильные copper IDs и проверки ссылок при удалении.
-- [x] Through/Blind-Buried/Micro presets с диапазонами, диаметром/отверстием,
-      использование при размещении via.
-- [x] Профили одиночного/дифференциального импеданса, аналитическая оценка,
-      подбор ширины и применение одиночной ширины для трассировки.
-- [x] JSON persistence, сохранение исходного архива, согласованная толщина 3D.
-- [ ] Native stack serialization/custom-data import, полевой решатель,
-      rigid-flex/backdrill, auto symmetry, native rules и точная живая сверка AD.
+      cross-section, mm/mil, Apply/Discard and atomic Undo.
+- [x] Edit/add/reorder layers, materials, Dk/Df, thicknesses;
+      stable copper IDs and removal reference checks.
+- [x] Through/Blind-Buried/Micro presets with spans, diameter/hole,
+      used during via placement.
+- [x] Single/differential impedance profiles, analytical estimate,
+      width solving and single-ended width application to routing.
+- [x] JSON persistence, original archive preservation, consistent 3D thickness.
+- [ ] Native stack serialization/custom-data import, field solver,
+      rigid-flex/backdrill, auto symmetry, native rules and exact live AD comparison.
 
-Подробные ограничения: docs/pcb-update/LAYER_STACK_MANAGER.md.
+Detailed limitations: docs/pcb-update/LAYER_STACK_MANAGER.md.
 
-Проверка LSM: 236 workspace tests, fmt, strict Clippy и debug build. Linux GUI:
-слои/via/импеданс 50 Ω/Apply/Undo; TI PMP23595 — исходные 6 слоёв и материалы,
-2.2082 мм; открытие/Apply без изменений сохраняет clean state.
+LSM checks: 236 workspace tests, fmt, strict Clippy and debug build. Linux GUI:
+layers/via/50 Ω impedance/Apply/Undo; TI PMP23595 — original 6 layers/materials,
+2.2082 mm; open/Apply without changes stays clean.
 
-### Schematic Annotation — 22.10.2026
+### Schematic Annotation — October 22, 2026
 
-- [x] Tools > Annotation > Annotate Schematics..., Annotate и отдельный ECO.
-- [x] Проектные листы/область выделения, порядок обхода и листов, Start Index,
-      сохранение заблокированных номеров, сброс/дубликаты и предпросмотр.
-- [x] Общий номер многосекционных корпусов, совместимая упаковка новых секций,
-      защита от коллизий/устаревшего проекта и валидация всех листов до Apply.
-- [x] Обновление видимого/скрытого текста, Unique ID неизменны, Undo по листам.
-- [ ] Живая сверка AD, compiled channels, advanced sorting/part swapping,
-      back annotation/quiet mode/native SchDoc writer и общий project Undo.
+- [x] Tools > Annotation > Annotate Schematics..., Annotate and separate ECO.
+- [x] Project sheets/selection scope, traversal/sheet order, Start Index,
+      locked-number preservation, reset/duplicates and preview.
+- [x] Shared multipart package number, compatible new-part packing,
+      collision/stale-project guards and all-sheet validation before Apply.
+- [x] Visible/hidden text update, unchanged Unique IDs, per-sheet Undo.
+- [ ] Live AD comparison, compiled channels, advanced sorting/part swapping,
+      back annotation/quiet mode/native SchDoc writer and project-wide Undo.
 
-Поведение и ограничения: docs/ANNOTATION.md.
+Behavior/limitations: docs/ANNOTATION.md.
 
-Проверка Annotation: 247 workspace tests, fmt и strict Clippy. Linux GUI:
-меню/предпросмотр/ECO/Undo/Redo/JSON; TI PMP23595 — 5 листов, 167 компонентов,
-сохранение существующих номеров и Validate полной перенумерации без Apply.
+Annotation checks: 247 workspace tests, fmt and strict Clippy. Linux GUI:
+menu/preview/ECO/Undo/Redo/JSON; TI PMP23595 — 5 sheets, 167 components,
+existing-number preservation and full-renumbering Validate without Apply.
 
 ### PCB View Configuration and connections — 22.10.2026
 
@@ -813,24 +823,24 @@ Validation: 255 workspace tests; fmt, strict Clippy, debug build. Linux GUI:
 fixture connection lines and view toggles; TI PMP23595 Layers & Colors and
 3D View Options. No TI project files committed or modified.
 
-### View Configuration — живая сверка AD 24.4.1, 22.10.2026
+### View Configuration — live AD 24.4.1 comparison, October 22, 2026
 
-- [x] Сверены Layers & Colors, System Colors, 2D/3D View Options,
-      Object Visibility и Section View на исследовательской копии PcbDoc.
-- [x] Левая панель 330 px, независимые Properties справа, вкладки/строки/отступы,
-      дерево ролей и пар механических слоёв, Used On и настроенные пустые слои.
-- [x] Независимые visibility/draft/opacity, матрица Apply/Cancel, цвета,
-      зеркальный вид снизу, подписи и режимы соединений; быстрые жесты мыши.
-- [x] Native 3D colors/opacity/background, перспектива, масштаб толщины,
-      материалы и прозрачность, независимый single-layer и dim/highlight.
-- [ ] Полное совпадение: профили/import/export, Section View, native color picker,
-      docking/autohide, категории без модели/рендерера, text draft, via-span,
-      native range/parent matrix editing и точные состояния/метрики Linux.
+- [x] Compared Layers & Colors, System Colors, 2D/3D View Options,
+      Object Visibility and Section View on a research PcbDoc copy.
+- [x] Left panel 330 px, independent right Properties, tabs/rows/spacing,
+      mechanical-layer role/pair tree, Used On and configured empty layers.
+- [x] Independent visibility/draft/opacity, Apply/Cancel matrix, colors,
+      mirrored bottom view, labels/connection modes; fast mouse gestures.
+- [x] Native 3D colors/opacity/background, perspective, thickness scale,
+      materials/transparency, independent single-layer and dim/highlight.
+- [ ] Full parity: profiles/import/export, Section View, native color picker,
+      docking/autohide, categories without model/renderer, text draft, via-span,
+      native range/parent matrix editing and exact Linux states/metrics.
 
-Статус остаётся partial; наличие отключённых элементов не считается реализацией.
-Границы и проверки: docs/pcb-update/VIEW_CONFIGURATION.md, docs/features.json.
-Проверка: 267 workspace tests, fmt --check, strict Clippy, Windows debug build,
-Linux GNU all-target cross-check. Linux GUI/артефакты не запускались и не собирались.
+Status remains partial; disabled elements do not count as implementation.
+Boundaries/checks: docs/pcb-update/VIEW_CONFIGURATION.md, docs/features.json.
+Checks: 267 workspace tests, fmt --check, strict Clippy, Windows debug build,
+Linux GNU all-targets cross-check. Linux GUI/artifacts not run/built.
 
 ### PCB editor performance — 22.10.2026
 
@@ -1158,700 +1168,654 @@ Cause, implementation and validation: docs/pcb-update/INTERACTIVE_ROUTING.md.
   See `docs/pcb-update/PERFORMANCE.md` for reproduction and limits.
 
 
-### PCB performance, 25.10.2026
+### PCB performance, October 25, 2026
 
-- [x] Замерены движение и перестройка 3D на ReferenceA и ReferenceM.
-- [x] Переиспользуемый проверенный черновик перемещения, неизменяемые снимки
-  для фоновых задач, частичная перерисовка и обновление пространственного индекса.
-- [x] Подготовка преобразования 3D на экземпляр модели; кэш геометрии основания,
-  масок и незатронутых объектов, индекс вырезов и ускорение построения BVH.
-- [x] 398 тестов, fmt, строгий Clippy; реальные окна 2D/3D, снимки и GPU readback;
-  release-сборка и обновлённый Linux AppImage.
-- [ ] Первые тяжёлые кадры и глобальная перестройка основания/масок большой платы
-  остаются дорогими. Постоянные 60 FPS для всех операций не подтверждены.
+- [x] Measured movement and 3D rebuilds on ReferenceA/ReferenceM.
+- [x] Reusable validated move draft, immutable background snapshots,
+  partial redraw and spatial-index updates.
+- [x] Per-model-instance 3D transform preparation; base/mask/unaffected-object
+  geometry caches, cutout index and accelerated BVH construction.
+- [x] 398 tests, fmt, strict Clippy; real 2D/3D windows, captures/GPU readback;
+  release build and updated Linux AppImage.
+- [ ] First heavy frames and global base/mask rebuilds of large boards remain
+  expensive. Sustained 60 FPS for every operation is not confirmed.
 
-Измерения и границы проверки: `docs/pcb-update/PERFORMANCE.md`,
-`docs/pcb-update/performance-2026-10-25.json`. Исходные платы не изменены.
+Measurements/check boundaries: `docs/pcb-update/PERFORMANCE.md`,
+`docs/pcb-update/performance-2026-10-25.json`. Source boards unchanged.
 
-### Перетаскивание дорожек PCB, 25.10.2026
+### PCB track dragging, October 25, 2026
 
-- [x] Исправлен обычный drag дорожки, ранее разрывавший соединения. Drag M,D
-  и ручки концов свободных медных дорожек используют маршрутизатор eda-core.
-- [x] Перестраиваются соседние сегменты, сохраняются контакты площадок/via,
-  Т-ответвления и пересечения прямых дорожек. Углы 45°/90°, обход препятствий,
-  проверка зазоров, заблокированных объектов и атомарный отказ.
-- [x] Commit совпадает с предпросмотром, одна операция Undo/Redo; отмена и
-  ошибка убирают черновик. Изменение preview/commit запрашивает перерисовку.
-- [x] 414 workspace tests, fmt check, строгий all-target Clippy и dev-сборка
-  на закреплённом Rust 1.90.0. Новых регрессионных проверок 16.
-- [x] Реальное Linux X11 окно, primary-button drag без модификаторов:
-  дорожка 20 мм между двумя площадками перемещена на 5 мм, видны оба подвода
-  в preview и после отпускания. Save, Undo и точный Redo проверены по JSON;
-  площадки неизменны. Использован собственный временный документ.
-- [ ] Shove, gloss, удаление петель, смешанные группы, произвольные дуговые
-  контакты и совпадение с Altium требуют дальнейшей реализации/проверки.
+- [x] Fixed ordinary track drag previously breaking connections. M,D Drag and
+  free-copper-track endpoint handles use the eda-core router.
+- [x] Neighboring segments rebuilt; pad/via contacts, T-branches and straight-track
+  crossings preserved. 45°/90° corners, obstacle avoidance, clearance/locked-object
+  checks and atomic refusal.
+- [x] Commit matches preview, one Undo/Redo operation; cancellation/errors remove
+  draft. Preview/commit changes request repaint.
+- [x] 414 workspace tests, fmt check, strict all-targets Clippy and dev build on
+  pinned Rust 1.90.0. 16 new regressions.
+- [x] Real Linux X11 window, primary-button drag without modifiers: a 20 mm track
+  between two pads moved 5 mm; both connecting tracks visible in preview/after
+  release. Save, Undo and exact Redo checked through JSON; pads unchanged.
+  Used an original temporary document.
+- [ ] Shove, gloss, loop removal, mixed groups, arbitrary arc contacts and Altium
+  parity need further implementation/verification.
 
-Подробности: `docs/pcb-update/INTERACTIVE_ROUTING.md`, `pcb.track_drag` в
-`docs/features.json`. Нового наблюдения Altium и сборки AppImage не было.
+Details: `docs/pcb-update/INTERACTIVE_ROUTING.md`, `pcb.track_drag` in
+`docs/features.json`. No new Altium observation or AppImage build.
 
-### Выбор и перемещение компонентов ReferenceM, 25.10.2026
+### ReferenceM component selection/movement, October 25, 2026
 
-- [x] На пользовательской ReferenceM определены две причины: отсутствие выбора
-  середины корпуса и блокировка целого компонента из-за закреплённых деталей.
-  Из 37 корпусов с такими деталями 31 сам не заблокирован.
-- [x] Выбор корпуса по видимым границам посадочного места, независимый фильтр
-  Components, общая логика для щелчка и drag, обновление выделения/Properties
-  сразу после щелчка. Сохранён выбор по стороне монтажа.
-- [x] Move/Drag/Rotate/Flip/Delete целого незаблокированного компонента сохраняют
-  флаги блокировки дочерних объектов. Самостоятельное редактирование закреплённой
-  детали и перемещение заблокированного компонента остаются запрещены.
-  Заблокированный компонент доступен для просмотра и явной разблокировки.
-- [x] 420 тестов workspace, fmt, строгий Clippy/all-targets на Rust 1.90.0.
-  Read-only probe на полной исходной плате: R189/U10/C62, выбор и move/rotate.
-- [x] Реальное окно AppImage на собственной копии U10: выбор корпуса, drag,
-  JSON Save, Undo/Redo; сохранены обе блокировки и все ID дочерних объектов.
-  Обновлён AppImage, проверен SHA256. Исходный PcbDoc не сохранён, хеш прежний.
-- [ ] Выбор по точному произвольному контуру, полное совпадение предпочтений
-  Altium, Windows runtime и задержки drag на полной плате ещё не проверены.
+- [x] Identified two causes on user ReferenceM: no body-center selection and
+  whole-component blocking due to locked children. Of 37 such bodies, 31 parents
+  are themselves unlocked.
+- [x] Body selection by visible footprint bounds, independent Components filter,
+  shared click/drag logic, immediate selection/Properties updates.
+  Mounting-side selection retained.
+- [x] Whole unlocked-component Move/Drag/Rotate/Flip/Delete preserves child lock
+  flags. Independent locked-child editing and locked-parent movement remain
+  prohibited. Locked components remain inspectable/explicitly unlockable.
+- [x] 420 workspace tests, fmt, strict Clippy/all-targets on Rust 1.90.0.
+  Read-only full-source-board probe: R189/U10/C62, selection and move/rotate.
+- [x] Real AppImage window on an original U10 copy: body selection, drag,
+  JSON Save, Undo/Redo; both locks and all child IDs preserved.
+  AppImage updated, SHA256 checked. Source PcbDoc unsaved, hash unchanged.
+- [ ] Exact arbitrary-outline selection, full Altium preference parity,
+  Windows runtime and full-board drag latency remain unverified.
 
-Подробности и границы проверки: `docs/pcb-update/CONTROLS.md`,
-`pcb.component_selection_editing` в `docs/features.json`.
+Details/check boundaries: `docs/pcb-update/CONTROLS.md`,
+`pcb.component_selection_editing` in `docs/features.json`.
 
-### Общая область камеры 2D/3D, 25.10.2026
+### Shared 2D/3D camera area, October 25, 2026
 
-- [x] По выбору пользователя режимы передают центр области платы и масштаб,
-  сохраняя выбранный угол 3D. Панорамирование и zoom работают в обе стороны.
-- [x] Передача ждёт готовой сцены и реального размера viewport. Возврат во время
-  подготовки сохраняет исходную камеру. Отложенный Fit не переходит между режимами.
-- [x] Повторные переключения сохраняют точные параметры без накопления сдвига;
-  изменение размеров панелей не меняет масштаб. Вид с ребра сохраняет опорную
-  точку платы. Модель и Undo не меняются при навигации.
-- [x] 429 workspace tests, fmt, строгий all-target Clippy на Rust 1.90.0.
-- [x] Реальное окно Linux AppImage на отдельной копии U10: pan/zoom, наклон 3D
-  и пять повторных переключений. Возврат 2D и наклонного 3D совпал по всем пикселям.
-  AppImage обновлён, SHA256 проверен. Исходный ReferenceM не изменён.
-- [ ] Полное совпадение камеры/проекции Altium и Windows runtime не проверены.
+- [x] Following user preference, modes transfer board-area center/scale while
+  retaining the chosen 3D angle. Pan/zoom transfer both ways.
+- [x] Transfer waits for ready scene/actual viewport dimensions. Returning during
+  preparation preserves source camera. Deferred Fit does not cross modes.
+- [x] Repeated switching retains exact parameters without drift; panel resizing
+  does not alter scale. Edge-on view preserves board anchor. Navigation does not
+  change model/Undo.
+- [x] 429 workspace tests, fmt, strict all-targets Clippy on Rust 1.90.0.
+- [x] Real Linux AppImage window on separate U10 copy: pan/zoom, tilted 3D and five
+  repeat switches. Returned 2D/tilted 3D match every pixel. AppImage updated,
+  SHA256 checked. Source ReferenceM unchanged.
+- [ ] Full Altium camera/projection parity and Windows runtime unverified.
 
-Подробности: `docs/pcb-update/3D_VIEW.md`, `pcb.shared_camera` в
-`docs/features.json`.
+Details: `docs/pcb-update/3D_VIEW.md`, `pcb.shared_camera` in `docs/features.json`.
 
-### Трассировка ReferenceB и индекс препятствий, 25.10.2026
+### ReferenceB routing and obstacle index, October 25, 2026
 
-- [x] Воспроизведён отказ запуска на полной ReferenceB (15 513 объектов): отсутствовали
-  CompParameterValue/Like и HasPad; параметры PrimitiveParameters не читались.
-- [x] Импорт базовых параметров отдельно от native metadata; проверка владельцев,
-  границ и дубликатов. Восстановление старого JSON по native UNIQUEID, сохранение
-  параметров в модели/JSON; отказ неподдерживаемой нативной записи изменений.
-- [x] CompParameterValue/Like, HasPad и wildcard HasFootprint; проверки приоритета
-  зазоров, ошибок и неизвестных условий. На ReferenceB найдены все 24 pads с ID=216.
-- [x] Пространственный индекс вместо повторных полных обходов препятствий;
-  сохранён порядок, room/matrix зазоры, допуск 1 нм и отказ по ошибке правила.
-- [x] Windows, 40 001 дорожка: медиана Stop 4,0011 -> 0,0084 мс, Walkaround
-  1,9503 -> 0,0056 мс. Подготовка 12,234 -> 27,768 мс. Это CPU solver, не FPS.
-- [x] 438 workspace tests, fmt --check, строгий all-target Clippy, Windows build.
-  Реальное окно полной ReferenceB: NetC13_2, сегмент, Finish, Undo до чистого документа.
-  Исходный PcbDoc не сохранён, SHA256 прежний.
-- [ ] Копии/валидация и графика route preview, дорогие расстояния до больших
-  заливок, полный язык правил/варианты, shove/gloss и точное совпадение Altium.
-  PCB Filter Altium 24.4.1 вернул ошибку скрипта; live query parity не доказан.
+- [x] Reproduced startup failure on full ReferenceB (15 513 objects): missing
+  CompParameterValue/Like and HasPad; PrimitiveParameters were not read.
+- [x] Base parameters imported separately from native metadata; owner/bounds/
+  duplicate checks. Old JSON recovered by native UNIQUEID, parameters retained in
+  model/JSON; unsupported native writing of changes refused.
+- [x] CompParameterValue/Like, HasPad and wildcard HasFootprint; clearance-priority,
+  error/unknown-condition checks. Found all 24 ReferenceB pads with ID=216.
+- [x] Spatial index replaces repeated full obstacle scans; preserves order,
+  room/matrix clearances, 1 nm tolerance and refusal on rule error.
+- [x] Windows, 40 001 tracks: median Stop 4.0011 -> 0.0084 ms, Walkaround
+  1.9503 -> 0.0056 ms. Preparation 12.234 -> 27.768 ms. CPU solver, not FPS.
+- [x] 438 workspace tests, fmt --check, strict all-targets Clippy, Windows build.
+  Real full-ReferenceB window: NetC13_2, segment, Finish, Undo to clean.
+  Source PcbDoc unsaved, SHA256 unchanged.
+- [ ] Copies/validation and route-preview graphics, costly large-pour distances,
+  full rule language/variants, shove/gloss and exact Altium parity.
+  Altium 24.4.1 PCB Filter returned a script error; live query parity unproven.
 
-Данные и границы: `docs/pcb-update/routing-performance-2026-10-25.json`,
+Data/boundaries: `docs/pcb-update/routing-performance-2026-10-25.json`,
 `docs/pcb-update/INTERACTIVE_ROUTING.md`, `docs/pcb-update/PERFORMANCE.md`.
 
-### Предпросмотр трассы без пересборки всей платы, 25.10.2026
+### Route preview without rebuilding the entire board, October 25, 2026
 
-- [x] Закрытый валидированный draft RouteSession; повторно используемый immutable
-  preview, стабильные ID активных сегментов, проверка новой геометрии при hover.
-  Полная валидация place/via/backtrack/History и неизменность удержанных снимков.
-- [x] Пропуск одинаковых запросов; отдельный geometry snapshot для connectivity,
-  без удержания Arc редактора и повторной полной копии платы на каждом движении.
-- [x] Исходное дерево/контуры сохранены, разрезанные дорожки refit; tail меняет
-  длину и состав независимо от stationary artwork. Повторное использование
-  геометрии исходной платы при входе; чужой preview/revision сбрасывают кэш.
-- [x] Общий document anchor live/cached tessellation устраняет сдвиг на пиксель.
+- [x] Private validated RouteSession draft; reusable immutable preview,
+  stable active-segment IDs, new-geometry validation on hover.
+  Full place/via/backtrack/History validation and retained-snapshot immutability.
+- [x] Skip identical requests; separate connectivity geometry snapshot without
+  retaining editor Arc or copying the whole board on every movement.
+- [x] Source tree/contours retained, split tracks refitted; tail length/membership
+  changes independently of stationary artwork. Source-board geometry reused at
+  entry; foreign preview/revision invalidates cache.
+- [x] Shared document anchor for live/cached tessellation removes a one-pixel shift.
   GPU readback linear/sRGB, masks/highlight/draft/mirror/single-layer/via/backtrack:
-  <=1 уровень канала без dithering, <=3 с production dithering на перекрытиях.
-- [x] ReferenceB, 60 CPU samples: медиана 57,5230 -> 5,7226 мс, p95 64,6967 -> 9,0993.
-  Меняющиеся хвосты: 6,3729/9,2021 мс. Первый кадр до 90,7778 мс, 1/60 >33 мс.
-  Повторные замеры после source reuse записаны отдельно; это не presented FPS.
-- [x] Финальный source reuse: 7,1928/9,6066 мс, максимум 72,3750 мс;
-  меняющийся tail: 7,6839/10,3159, максимум 62,3378 мс. Полная перерисовка
-  в том же финальном executable: 83,2955/103,6451, максимум 112,6602 мс.
-  Разброс между прогонами сохранён в данных; cold frame всё ещё 1/60 >33 мс.
-- [x] 449 workspace tests, fmt, strict all-target Clippy, Windows build;
-  Linux GNU all-target compilation. Windows GUI: place/Backspace/Finish,
-  Undo/Redo/Undo до чистой платы; source PcbDoc не сохранён, SHA256 прежний.
-- [ ] Устранение cold artwork/snapping и задержек place/Finish/repour,
-  произвольные большие платы/длинные трассы, Linux runtime и полное совпадение
-  функционала, поведения и интерфейса Altium остаются в исходном охвате.
+  <=1 channel level without dithering, <=3 with production dithering at overlaps.
+- [x] ReferenceB, 60 CPU samples: median 57.5230 -> 5.7226 ms, p95 64.6967 -> 9.0993.
+  Varying tails: 6.3729/9.2021 ms. First frame up to 90.7778 ms, 1/60 >33 ms.
+  Repeat measurements after source reuse recorded separately; not presented FPS.
+- [x] Final source reuse: 7.1928/9.6066 ms, max 72.3750 ms;
+  varying tail: 7.6839/10.3159, max 62.3378 ms. Full redraw in the same final
+  executable: 83.2955/103.6451, max 112.6602 ms. Between-run variation retained
+  in data; cold frame still 1/60 >33 ms.
+- [x] 449 workspace tests, fmt, strict all-targets Clippy, Windows build;
+  Linux GNU all-targets compilation. Windows GUI: place/Backspace/Finish,
+  Undo/Redo/Undo to clean; source PcbDoc unsaved, SHA256 unchanged.
+- [ ] Cold artwork/snapping and place/Finish/repour delays, arbitrary large
+  boards/long routes, Linux runtime and full Altium functionality/behavior/UI
+  parity remain in the original scope.
 
-Данные: `docs/pcb-update/route-preview-performance-2026-10-25.json`.
+Data: `docs/pcb-update/route-preview-performance-2026-10-25.json`.
 
-### Общий индекс исходной платы для привязки preview, 25.10.2026
+### Shared source-board index for preview snapping, October 25, 2026
 
-- [x] Вместо второго полного display cache хранится Arc пространственного
-  дерева исходной платы. Source frame передаёт готовое дерево; refit preview
-  отделяет копию и не меняет исходные координаты/индексы привязки.
-- [x] Истечение по revision, spatial-only fallback до первого source frame;
-  Off пропускает поиск объектов, сохраняя сетку; Ctrl+Shift возвращает raw point.
-- [x] Реальные canvas events: All/Current/Off, grid/bypass, cold/warm preview,
-  исходный конец дорожки и отсутствие snap к собственному preview. Проверки
-  multilayer pad, split refit, удержанных снимков, fallback и смены revision.
-- [x] 451 workspace tests, fmt, strict all-target Clippy, Windows build,
-  Linux GNU all-target compilation. Windows ReferenceB: Off -> Current, NetC13_2,
-  движение/размещение/Finish/Undo до чистого документа, возврат Off.
-  PcbDoc не сохранён; SHA256 исходного файла прежний.
-- [ ] Дополнительное ускорение полного кадра этим изменением не доказано:
-  baseline median/p95/first 4,8551/6,4533/51,1992 мс, после изменения
-  6,7688/9,2336/65,6447; varied 7,7865/10,9781/42,9343. Неуправляемые
-  частота CPU/background scheduling, разные состояния GUI; все данные сохранены.
-  Cold artwork/model, итоговая presentation latency и точность Altium открыты.
+- [x] An Arc of the source spatial tree replaces a second full display cache.
+  Source frame supplies the ready tree; preview refit detaches its copy without
+  modifying original snap coordinates/indices.
+- [x] Revision expiry, spatial-only fallback before the first source frame;
+  Off skips object search but retains grid; Ctrl+Shift returns raw point.
+- [x] Real canvas events: All/Current/Off, grid/bypass, cold/warm preview,
+  source track endpoint and no self-preview snap. Multilayer pad, split refit,
+  retained snapshots, fallback and revision-change checks.
+- [x] 451 workspace tests, fmt, strict all-targets Clippy, Windows build,
+  Linux GNU all-targets compilation. Windows ReferenceB: Off -> Current, NetC13_2,
+  move/place/Finish/Undo to clean, restore Off. PcbDoc unsaved; SHA256 unchanged.
+- [ ] Extra full-frame speedup is not proven: baseline median/p95/first
+  4.8551/6.4533/51.1992 ms, after change 6.7688/9.2336/65.6447;
+  varied 7.7865/10.9781/42.9343. CPU frequency/background scheduling uncontrolled,
+  GUI states differ; all data retained. Cold artwork/model, final presentation
+  latency and Altium accuracy remain open.
 
-Данные: `docs/pcb-update/route-snapping-performance-2026-10-25.json`.
+Data: `docs/pcb-update/route-snapping-performance-2026-10-25.json`.
 
-### Повторное использование неподвижного artwork при старте трассы, 25.10.2026
+### Reusing stationary artwork at route start, October 25, 2026
 
-- [x] Группы board/layer/type/masks/details/polygon outlines в прежнем порядке
-  рисования. Source capture содержит места для route tail; stale copper и
-  разрезанные исходные tracks перестраивают затронутые группы, остальные
-  mesh/atlas/GPU scenes разделяются. Revision/style/font/DPI/scale проверяются.
-- [x] Камера обновляется и для сохранённой GPU scene без mesh zero; одинаковые
-  uniforms повторно не пишутся. CPU refinement remap выполняется один раз на
-  общий mesh; weak-reference тест проверяет освобождение старых GPU resources.
-- [x] Полный ReferenceB: 151/155 групп сохранены при stale переходе; final artwork
-  1,99/2,62 мс. Final combined regular median/p95/first 7,2775/10,5462/37,1903,
-  varied 8,1933/10,3123/33,3280 мс. Ранние first 21,6751/22,0493 тоже сохранены;
-  частота/background не контролировались, это CPU submissions без GPU/FPS.
-- [x] 452 workspace tests, fmt, strict all-target Clippy, Windows build,
-  Linux GNU all-target compilation. GPU linear/sRGB, pads/labels/masks/holes,
-  split/stale/via/backtrack/highlight/draft/mirror и камера без mesh zero;
-  <=1 уровень канала без dither, <=3 с production dither.
+- [x] Board/layer/type/masks/details/polygon-outline groups retain drawing order.
+  Source capture contains route-tail slots; stale copper/split source tracks
+  rebuild affected groups; other mesh/atlas/GPU scenes are shared.
+  Revision/style/font/DPI/scale checked.
+- [x] Camera also updates retained GPU scenes without mesh zero; identical uniforms
+  are not rewritten. CPU refinement remap runs once per shared mesh;
+  weak-reference test verifies old GPU-resource release.
+- [x] Full ReferenceB: 151/155 groups retained at stale transition; final artwork
+  1.99/2.62 ms. Final combined regular median/p95/first 7.2775/10.5462/37.1903,
+  varied 8.1933/10.3123/33.3280 ms. Early first 21.6751/22.0493 retained too;
+  frequency/background uncontrolled; CPU submissions, excluding GPU/FPS.
+- [x] 452 workspace tests, fmt, strict all-targets Clippy, Windows build,
+  Linux GNU all-targets compilation. GPU linear/sRGB, pads/labels/masks/holes,
+  split/stale/via/backtrack/highlight/draft/mirror, camera without mesh zero;
+  <=1 channel level without dither, <=3 with production dither.
 - [x] Windows GUI: Fit/refinement, NetC13_2 route motion/place/Backspace/place,
-  Finish/Undo до чистой платы. Entry 155/155 (3,52 мс), stale 151/155 (5,39 мс).
-  Исходный PcbDoc не сохранён, SHA256 прежний.
-- [ ] Finish/repour/Undo и смена глобальных состояний всё ещё строят все группы;
-  в native log artwork до 67,69 мс. Cold model/validation, split-группы, другие
-  платы, RAM/VRAM, Linux runtime и весь исходный функционал/Altium parity открыты.
+  Finish/Undo to clean. Entry 155/155 (3.52 ms), stale 151/155 (5.39 ms).
+  Source PcbDoc unsaved, SHA256 unchanged.
+- [ ] Finish/repour/Undo and global state changes still rebuild all groups;
+  native-log artwork up to 67.69 ms. Cold model/validation, split groups, other
+  boards, RAM/VRAM, Linux runtime and full original functionality/Altium parity open.
 
-Данные: `docs/pcb-update/artwork-groups-performance-2026-10-25.json`.
+Data: `docs/pcb-update/artwork-groups-performance-2026-10-25.json`.
 
+### 2026-10-26 — PCB Rules continuation after main update
 
-### 2026-10-26 — продолжение PCB Rules после обновления main
-
-- Продолжено с `9c60e1c`; существующие Wizard/Query Builder и ускорение маршрута
-  сохранены. Добавлен рабочий Hole Size Percent: поля режима и сводка, отдельное
-  хранение абсолютных/процентных значений, проверки диапазона, общая проверка
-  DRC/interactive via, атомарный Apply/Undo, нативный PcbDoc roundtrip.
-- База процента для прямоугольных/разных по слоям площадок пока является явно
-  отмеченной гипотезой реализации (меньший номинальный размер каждого слоя).
-  Без новой сверки в AD полное соответствие этих случаев не заявляется.
-- Проверка отверстий кеширует геометрию и отсекает дальние пары; сравнение с
-  полным перебором включает повёрнутые пазы, приоритеты и области правил.
-- Профилирование исходного ReferenceA выявило реальную причину 49-секундного DRC:
-  три полные окружности шелкографии с внутренним радиусом 1 нм. Общий buffer
-  строил каждую почти 8 секунд дважды. Для полных окружностей построение заменено
-  прямым кольцом/диском с сохранением отверстия и 256 сегментами; частичные дуги
-  используют прежний путь. Проверены площадь, границы, очень тонкие кольца и диски.
-- ReferenceA: 49.7204 s до -> 1.0234 s после; повтор под нагрузкой Clippy/roundtrip
-  2.4197 s. Во всех случаях 335 нарушений с теми же счётчиками по типам,
-  22 диагностических сообщения, без усечения. Это не доказательство совпадения
-  координат всех маркеров. Roundtrip: 3,331,072 bytes, все поля rules совпали.
-- Исходный ReferenceA не записывался; SHA256
-  `redacted-source-sha256` сохранён.
-- Новые экземпляры PCBCraft не запускались. Проверка настоящего окна заблокирована
-  ошибкой Computer Use `window.app must be a non-empty string and window.id must
-  be an integer >= 0`, повтор выбора окна не помог. Новая визуальная проверка
-  остаётся незавершённой. Подробности и оставшиеся расхождения: `docs/pcb-update/RULES.md`.
-- Проверки: fmt и строгий Clippy прошли; workspace — 458 unit tests passed,
-  1 failed. Все 7 новых тестов прошли. Сбой существующего GPU-теста
+- Continued from `9c60e1c`; existing Wizard/Query Builder and routing acceleration
+  preserved. Working Hole Size Percent added: mode fields/summary, separate
+  absolute/percentage values, range checks, shared DRC/interactive-via validation,
+  atomic Apply/Undo, native PcbDoc roundtrip.
+- Percentage basis for rectangular/per-layer-varying pads remains an explicitly
+  marked implementation hypothesis (smaller nominal size on each layer).
+  Without new AD comparison, full parity for these cases is not claimed.
+- Hole checks cache geometry and cull distant pairs; comparison with exhaustive
+  enumeration includes rotated slots, priorities and rule scopes.
+- Profiling original ReferenceA found the true cause of 49-second DRC: three full
+  overlay circles with a 1 nm inner radius. Generic buffer built each nearly
+  8 seconds twice. Full circles now use direct rings/disks, retaining holes and
+  256 segments; partial arcs keep the old path. Area, bounds, very thin rings/disks checked.
+- ReferenceA: 49.7204 s before -> 1.0234 s after; repeat under Clippy/roundtrip load
+  2.4197 s. All runs: 335 violations with identical per-type counts,
+  22 diagnostics, no truncation. This does not prove every marker coordinate
+  matches. Roundtrip: 3,331,072 bytes, all rules fields match.
+- Original ReferenceA not written; SHA256 `redacted-source-sha256` preserved.
+- No new PCBCraft instances launched. Real-window verification blocked by Computer
+  Use error `window.app must be a non-empty string and window.id must be an integer >= 0`;
+  reselecting the window did not help. New visual verification remains incomplete.
+  Details/remaining differences: `docs/pcb-update/RULES.md`.
+- Checks: fmt/strict Clippy passed; workspace 458 unit tests passed, 1 failed.
+  All 7 new tests passed. Existing GPU-test failure
   `routing_tail_matches_full_gpu_pixels_and_keeps_buffers_across_bends_vias_and_backtrack`
-  (Rgba8Unorm, frame 13, dither=true: 4 вместо допуска 3) воспроизведён и на
-  неизменённом `9c60e1c` в `target/rules-head-validation`. Допуск не ослаблен,
-  рендерер не менялся; полностью зелёный workspace-прогон не заявляется.
+  (Rgba8Unorm, frame 13, dither=true: 4 vs tolerance 3) also reproduced on
+  unchanged `9c60e1c` in `target/rules-head-validation`. Tolerance not relaxed,
+  renderer unchanged; a fully green workspace run is not claimed.
 
+### 2026-10-26 — Rules continuation: Layer Pairs
 
-### 2026-10-26 — продолжение Rules: Layer Pairs
+- Reinspected Manufacturing → Layer Pairs in AD 24.4.1 on original ReferenceA:
+  one scope field, Constraints and Enforce layer pairs settings, label left of
+  checkbox. Source pair: LAYERPAIR0LOW=TOP / HIGH=BOTTOM.
+- Implemented ENFORCE editing, summary, wizard and Online/Batch checking,
+  shared DRC/interactive-via rule resolution. Physical spans checked in either
+  direction; via size is a separate rule.
+- Definitions come from edited typed stack, otherwise original legacy drill
+  pairs. Empty table matches manager's existing default Thru. Unknown/incomplete
+  tables and multiple substacks produce explicit diagnostics. Disallowed
+  transitions leave route/backtrack unchanged.
+- 5 new core tests passed. ReferenceA: 335 violations, 21 diagnostics, 1.0222 s,
+  no truncation. ENFORCE roundtrip: 3,331,072 bytes, all rules equal after import.
+- Windows build/strict Clippy passed; full workspace: 463 pass, 1 existing GPU
+  dithering mismatch (same baseline 9c60e1c failure, tolerance unchanged).
+- Real PCBCraft checked form, Enforce toggle and Cancel without applying.
+  Sole instance closed before build update; one new instance launched.
+  Original ReferenceA not saved.
+- Full Rules parity not achieved: outer-dialog/font/icon metrics, native
+  blind/buried via-type presentation/save, multiple substacks and technology
+  metadata remain in RULES.md. Altium modal Cancel timed out twice; further
+  Altium input stopped. The form itself was inspected successfully without edits.
 
-- В AD 24.4.1 на исходном ReferenceA повторно осмотрен Manufacturing → Layer Pairs:
-  одно поле области, Constraints и Enforce layer pairs settings, подпись слева
-  от checkbox. Пара исходного файла: LAYERPAIR0LOW=TOP / HIGH=BOTTOM.
-- Реализованы редактирование ENFORCE, сводка, мастер и Online/Batch-проверка,
-  единое разрешение правил для DRC и interactive via. Проверяется физический
-  диапазон слоёв с поддержкой обратного направления; размер via — отдельное правило.
-- Определения берутся из отредактированного typed stack; без него читаются
-  исходные legacy drill pairs. Пустая таблица соответствует существующему default
-  Thru в manager. Неизвестные/неполные таблицы и несколько substacks дают явную
-  диагностику. Запрещённый переход не меняет трассу и backtrack.
-- 5 новых core-тестов прошли. ReferenceA: 335 нарушений, 21 диагностика, 1.0222 s,
-  без усечения. ENFORCE roundtrip: 3,331,072 bytes, все rules равны после импорта.
-- Windows build и строгий Clippy прошли; полный workspace: 463 pass, 1 existing
-  GPU dithering mismatch (тот же исходный сбой 9c60e1c, допуск не менялся).
-- В реальном PCBCraft проверены форма, переключение Enforce и Cancel без
-  применения изменений. Единственный экземпляр перед обновлением сборки закрыт;
-  затем запущен один новый. Исходный ReferenceA не сохранялся.
-- Полное соответствие Rules пока не достигнуто: outer-dialog/font/icon metrics,
-  native blind/buried via-type presentation/save, multiple substacks и technology
-  metadata остаются в RULES.md. Altium modal Cancel дважды дал timeout; дальнейший
-  ввод в Altium прекращён. Сама форма успешно осмотрена без редактирования.
+## 2026-10-26 — Schematic ↔ PCB / ECO (in progress)
 
+- Observed both Design commands on original ReferenceA in AD 24.4.1. Forward ECO:
+  Add Components (12), Add Pins To Nets (22), separate Check/Done, missing
+  footprint/pin errors on Validate. Reverse comparator: 47 differences,
+  34 proposed ECO actions, first group Remove Pins From Nets (22).
+  Execute/Save were not pressed in source Altium.
+- Added independent eda-core design_sync: comparison, Unique ID, multipart,
+  flat net compilation, real components/pads/footprints, metadata/nets, reverse
+  properties and bijective net rename. Dependency/stale-source errors are not
+  disguised as successful operations; successful actions have History/Undo.
+- App: Design Import/Update, Project Show Differences, project-board selection,
+  grouped ECO, Validate/Execute, error filter, report. Executed rows excluded
+  from reapplication; remaining rows can be revalidated.
+- Binary native writer extended with component base parameters, Unicode and
+  source links with read-back; variant/system namespaces retained.
+  Five targeted native parameter tests passed.
+- Initial description tests exposed an incomplete fixture; description added.
+  DisableSync test corrected to use a real hidden parameter, since a new-name
+  ParameterValue creates a value without a presentation object.
+- Scope/gaps listed in docs/pcb-update/DESIGN_SYNC.md; feature remains partial.
+  Native SchDoc writer, footprint libraries, hierarchy, wire back annotation,
+  classes/rooms/variants and exact UI parity unfinished.
+- Final checks/real window: verified below after the current build.
 
-## 2026-10-26 — Schematic ↔ PCB / ECO (в работе)
+- GUI comparison found egui table compression and missing ✓ font glyph.
+  Fixed width retention, row height, backdrop and drawn Check/Done.
+  First check executed 51 applicable in-memory operations; one Undo restored
+  clean PCB. Source native file unsaved.
+- New components now pack by actual footprint bounds beside the board;
+  position is independent of already placed schematic-element count.
+- BQ1 diagnosis found a 1 nm gap from separately rounding native position/pin
+  length. Import now rounds the absolute electrical endpoint once and derives
+  length_nm. Net membership does not use expanded tolerance.
+  Test of 4 directions × 2 signs passed; artificial 1 nm gaps remain disconnected.
+- After fixing, ReferenceA: 60 changes / 49 applicable, 1.3786 s; Add Components
+  (12), Add Pins To Nets (22); false Remove Pins C2/C20/BQ1 disappeared. This is
+  not equality with all 47 native comparator differences: comparison settings
+  and footprint-geometry sources still differ. Copy of ReferenceA: 97 / 88, 2.3110 s.
 
-- Наблюдены обе команды Design на исходном ReferenceA в AD 24.4.1. Прямой ECO:
-  Add Components (12), Add Pins To Nets (22), отдельные Check/Done, missing
-  footprint/pin errors при Validate. Обратный comparator: 47 differences,
-  34 предлагаемых ECO, первая группа Remove Pins From Nets (22).
-  Execute/Save в исходном Altium не нажимались.
-- Добавлен независимый design_sync в eda-core: сравнение, Unique ID, multipart,
-  flat net compilation, реальные компоненты/площадки/корпуса, metadata и nets,
-  обратные свойства и bijective net rename. Ошибки зависимостей и stale sources
-  не подменяются успешными операциями; успешные действия имеют History/Undo.
-- App: Design Import/Update, Project Show Differences, выбор платы внутри
-  проекта, группировка ECO, Validate/Execute, фильтр ошибок, report. Выполненные
-  строки исключены из повторного применения; оставшиеся можно проверить снова.
-- Binary native writer дополнен базовыми параметрами компонентов, Unicode и
-  source links с обратным чтением; вариантные/системные namespaces сохраняются.
-  Пять направленных native parameter tests прошли.
-- Первые тесты после добавления description показали неполный fixture; описание
-  добавлено в fixture. Тест DisableSync исправлен на реальный скрытый параметр,
-  поскольку ParameterValue нового имени создаёт значение без presentation object.
-- Охват и незавершённые функции перечислены в docs/pcb-update/DESIGN_SYNC.md,
-  feature имеет partial. Native SchDoc writer, библиотеки корпусов, иерархия,
-  wire back annotation, classes/rooms/variants и точное UI-соответствие не готовы.
-- Итоговые проверки и реальное окно: проверяются ниже после текущей сборки.
+- Final native-endpoint-fix checks: fmt --check, strict workspace/all-targets
+  Clippy and Windows dev build passed. cargo test --workspace: 488 pass / 1 fail.
+  Sole failure is baseline GPU routing pixel test, Rgba8Unorm/frame13/dither=true,
+  max channel difference 4 vs tolerance 3; previously reproduced on unchanged
+  9c60e1c. Tolerance not relaxed. Workspace doc-tests also passed (0 examples).
+  New ECO/IO tests pass; log target/eco-native-endpoints-workspace.txt.
+- Latest Windows build checked both entry points: SCH Update with PCB selection
+  and direct PCB Import, widths/groups/Check/Done, Only Show Errors and report.
+  Source PCB SHA256 remains redacted-source-sha256. One PCBCraft process;
+  Altium modal closed without Execute/Save.
 
-- GUI сверка обнаружила сжатие таблицы egui и отсутствующий glyph ✓ в шрифте.
-  Исправлены удержание ширин, высота строк, backdrop и рисованные Check/Done.
-  В первой проверке успешно выполнены 51 применимая операция в памяти, потом
-  один Undo вернул чистый PCB. Исходный native файл не сохранялся.
-- Новые компоненты теперь упаковываются по реальным bounds корпусов рядом с
-  платой; их положение не зависит от числа уже размещённых элементов схемы.
-- Диагностика BQ1 обнаружила 1 nm разрыв: отдельное округление native position
-  и pin length. Импортёр теперь округляет абсолютный electrical endpoint один
-  раз и выводит из него length_nm. Состав цепей не использует расширенный допуск.
-  Тест 4 направлений × 2 знака прошёл; искусственный 1 nm зазор не соединяется.
-- После исправления ReferenceA: 60 изменений / 49 применимых, 1.3786 s; Add Components
-  (12), Add Pins To Nets (22), ложные Remove Pins C2/C20/BQ1 исчезли. Это не
-  равенство всем 47 native comparator differences: настройки сравнения и
-  источник footprint geometry пока отличаются. Copy of ReferenceA: 97 / 88, 2.3110 s.
+- Latest executable after native pin-rounding fix repeated Validate/Execute:
+  49 applicable operations, correct Check/Done and Report. Home shows new bodies
+  beside the board; one Undo restores clean original ReferenceA.
+  Latest PCBCraft PID 9212, sole live process.
 
-- Итоговая проверка после native endpoint fix: fmt --check и строгий workspace
-  all-target Clippy прошли, Windows dev build прошёл. cargo test --workspace:
-  488 pass / 1 fail. Единственный сбой — исходный GPU routing pixel test,
-  Rgba8Unorm/frame13/dither=true, max channel difference 4 при допуске 3;
-  он ранее воспроизведён на неизменённом 9c60e1c. Допуск не ослаблялся.
-  Дополнительно workspace doc-tests прошли (0 примеров). Новые ECO/IO тесты
-  проходят; лог target/eco-native-endpoints-workspace.txt.
-- На последней Windows-сборке проверены обе точки входа: SCH Update с выбором
-  PCB и прямой PCB Import, ширины/группы/Check/Done, Only Show Errors и report.
-  Исходный PCB SHA256 по-прежнему redacted-source-sha256.
-  Один процесс PCBCraft; модальное окно Altium закрыто без Execute/Save.
+- Additional GUI check after Undo: Home/Fit Document produced an empty viewport.
+  View → Fit Board restored the original visible board without dirty state.
+  Cause unknown; recorded in DESIGN_SYNC.md as open difference.
+  Last view left at Fit Board, source ReferenceA unchanged.
 
-- На последнем executable после исправления native pin rounding повторены
-  Validate/Execute: 49 применимых операций, корректные Check/Done и Report.
-  Home показывает новые корпуса рядом с платой; однократный Undo возвращает
-  чистый исходный ReferenceA. Последний процесс PCBCraft PID 9212, единственный живой.
+## 2026-10-26 — ECO continuation: footprint libraries and native SchDoc
 
-- При дополнительной GUI проверке после Undo команда Home/Fit Document дала
-  пустой viewport. View → Fit Board восстановила исходную видимую плату, без
-  dirty-state. Причина не установлена; внесено в DESIGN_SYNC.md как открытое
-  расхождение. Последний оставленный вид — Fit Board, исходный ReferenceA без изменений.
+- Added supported-property writing in ASCII/CFB SchDoc: designator/comment,
+  description/type, base parameters, current/new footprint models, label names.
+  Original container/untouched payloads retained; result reimported/compared with
+  scene before atomic destination replacement. Unchanged archive returned
+  byte-for-byte; unsupported geometry/unknown index dependencies are not saved
+  under a false supported claim.
+- Comparing a separate ReferenceA copy in AD24 caught an error our importer
+  missed: globally appended records beyond old Weight were invisible in Altium.
+  Fixed Weight from actual record count, owner-tree insertion and OWNERINDEX
+  remapping. AD24 confirmed new footprint, Unicode parameter, WA1 comment and
+  description. Original ReferenceA was neither saved nor executed in Altium.
+- A multiline diagnostic parameter displayed `~1` literally in Properties.
+  Until native encoding is confirmed, SchDoc Save rejects modified multiline
+  parameters; JSON retains them. This is a limitation, not parity.
+- Independent PCB6 PcbLib/IntLib reader: pads, layers, stack/masks, graphics,
+  text and available embedded models. Unknown tag/count/encoding does not create
+  partial footprints. ReferenceLibraryA: 29 footprints with pads, 4 explicit graphical/
+  no-pad refusals. TPS22929 PcbLib/IntLib: 3 footprints each; STEP assembly transforms
+  warned as unsupported. PcbLib installation through File Open checked in real
+  PCBCraft; source board stayed clean.
+- App ECO uses project/installed local libraries. Copying a footprint from an
+  existing instance no longer hides missing-library errors. Original ReferenceA
+  now 60 changes / 26 applicable, 1.0121 s; all 12 missing-footprint operations
+  fail as observed in Altium. Previous 49 applicable belonged to explicit
+  board-reuse experiment; CLI retains that behind a separate flag.
+- GUI repeated Validate/Execute (26 in memory), single Undo and actual Fit
+  Document (Ctrl+PageDown). Board stays visible/clean. Previous log incorrectly
+  called Home Fit: Home centers at pointer. No bounds/cache defect after Undo proven.
+- Clarified native reverse ECO: Remove Pins From Nets (22) followed by Remove
+  Component Class Members (12), not symbol deletion. Altium Validate again gave
+  failed-to-activate; Execute not invoked, window closed with Close. General
+  properties/net renames supported by core are not presented as native back
+  annotation: app disables them, retaining designator/comment/footprint.
+  Classes, compiled pin changes and swapping not yet reconstructed.
+- ECO uses natural BQ1…TP9…TP17…WA1 order without changing execution dependencies.
+  Added tests for native reverse policy, app library dependencies, owner/Weight/
+  legacy Unicode and actual ECO footprint geometry installation from containers.
+  Before final multiline guard: 500 pass / 1 existing GPU fail, fmt/strict Clippy
+  passed. Latest-build final results below.
 
-## 2026-10-26 — продолжение ECO: библиотеки корпусов и native SchDoc
+- Final run after guard, stable Unique IDs and moving irrelevant library warnings
+  from ECO to Messages: fmt --check, strict all-targets Clippy and Windows build
+  passed. Workspace 500 pass / 1 existing GPU fail (same Rgba8Unorm/frame13/
+  dither=true/max-channel=4; tolerance 3 unchanged).
+  Log target/eco-completed-stage-tests.txt. Repeated SchDoc saves retain identical
+  new IDs/bytes; ASCII and CFB tests pass.
+  SchDoc SHA256 redacted-source-sha256, PcbDoc SHA256 redacted-source-sha256.
+  Full parity remains partial: Comparator/ECO options, classes/rooms/directives/
+  rules/variants, Component Links, hierarchy/buses/hidden pins/swaps, full native
+  saving and exact all-state visual verification unfinished.
 
-- Добавлена запись поддержанных свойств в ASCII/CFB SchDoc: designator/comment,
-  description/type, base parameters, текущие/новые модели корпуса, имена меток.
-  Исходный контейнер и нетронутые payloads сохраняются; результат повторно
-  импортируется и сравнивается со сценой до атомарной замены destination.
-  Неизменённый archive возвращается побайтно, неподдерживаемая геометрия и
-  неизвестные index dependencies не сохраняются под видом поддержанных.
-- Сверка отдельной копии ReferenceA в AD24 поймала ошибку, которую не ловил наш import:
-  глобально добавленные записи за старым Weight не были видны в Altium.
-  Исправлены Weight по фактическому числу записей, вставка внутри owner tree и
-  OWNERINDEX remapping. В AD24 подтверждены новый корпус, Unicode-параметр,
-  comment и description WA1. Родной ReferenceA не сохранялся и не выполнялся в Altium.
-- Многострочный диагностический параметр показывал `~1` буквально в Properties.
-  Пока native encoding не подтверждён, изменённые многострочные параметры
-  отклоняются при SchDoc Save; JSON сохраняет их. Это ограничение, не паритет.
-- Независимый PCB6 PcbLib/IntLib reader: площадки, слои, stack/masks, графика,
-  тексты и доступные встроенные модели. Неизвестный tag/count/encoding не создаёт
-  частичный корпус. ReferenceLibraryA: 29 корпусов с pads и 4 явных graphical/no-pad
-  отказа. TPS22929 PcbLib и IntLib: по 3 корпуса; STEP assembly transforms
-  предупреждаются как неподдержанные. Установка PcbLib проверена через File Open
-  в реальном PCBCraft; исходная плата оставалась чистой.
-- App ECO использует проектные и установленные локальные библиотеки. Копирование
-  footprint из существующего экземпляра больше не скрывает missing-library error.
-  На исходном ReferenceA теперь 60 изменений / 26 применимых, 1.0121 s; все 12 missing
-  footprint операций ошибочны, как в наблюдённом Altium. Предыдущие 49 применимых
-  относились к явному board-reuse эксперименту; CLI оставляет его отдельным флагом.
-- В GUI повторены Validate/Execute (26 в памяти), Undo одним действием и настоящий
-  Fit Document (Ctrl+PageDown). Плата остаётся видимой и чистой. Прежняя запись
-  журнала ошибочно называла Home командой Fit: Home центрирует по указателю.
-  Доказательств ошибки bounds/cache после Undo не получено.
-- Уточнён обратный native ECO: после Remove Pins From Nets (22) идут Remove
-  Component Class Members (12), а не удаление символов. Validate Altium снова дал
-  failed-to-activate; Execute не вызывался, окно закрыто Close. Общие свойства/
-  net renames, которые умеет core, не выдаются за native back annotation: в app
-  они отключены, остаются designator/comment/footprint. Классы, компилированные
-  pin changes и swap-механизм пока не восстановлены.
-- ECO отображает BQ1…TP9…TP17…WA1 в natural order, не меняя execution dependencies.
-  Добавлены проверки native reverse policy, библиотечной зависимости в app,
-  owner/Weight/legacy Unicode и фактической ECO-установки геометрии из контейнеров.
-  До последнего guard многострочных параметров: 500 pass / 1 прежний GPU fail,
-  fmt и строгий Clippy прошли. Финальные результаты последней сборки — ниже.
+### 2026-10-26 — local Windows portable release
 
-- Финальный проход после guard, стабильных Unique ID и переноса нерелевантных
-  library warnings из ECO в Messages: fmt --check, строгий all-target Clippy и
-  Windows build прошли. Workspace: 500 pass / 1 прежний GPU fail (тот же
-  Rgba8Unorm/frame13/dither=true/max-channel=4, допуск 3 не менялся).
-  Лог target/eco-completed-stage-tests.txt. Повторные SchDoc save сохраняют
-  идентичные новые ID/байты; тесты проходят для ASCII и CFB.
-  SchDoc SHA256 redacted-source-sha256,
-  PcbDoc SHA256 redacted-source-sha256.
-  Полное соответствие остаётся partial: Comparator/ECO options, классы/rooms/
-  directives/rules/variants, Component Links, hierarchy/buses/hidden pins/swaps,
-  полный native save и точная визуальная проверка всех состояний не завершены.
-
-### 2026-10-26 — локальная Windows portable release
-
-- По запросу пользователя собран Windows x64 MSVC release с Cargo.lock.
-  Добавлен portable.flag: настройки eframe сохраняются в Data/app.ron рядом
-  с исполняемым файлом. Без маркера используется обычное хранилище системы.
-- scripts/build-windows-portable.py создаёт ZIP, SHA256, build-info, лицензии
-  зависимостей и шрифтов, проверяет PE imports и добавляет redistributable CRT
-  из Visual Studio. Системные DLL и графический драйвер не копируются.
-  Архив проверяется testzip; пользовательские настройки в архив не включаются.
-- Результат: dist/PCBCraft-0.1.0-windows-x64-portable.zip, 12 284 166 байт.
+- At user request, built Windows x64 MSVC release with Cargo.lock.
+  Added portable.flag: eframe settings save to Data/app.ron beside executable.
+  Without marker, normal system storage is used.
+- scripts/build-windows-portable.py creates ZIP, SHA256, build-info, dependency/
+  font licenses, checks PE imports and includes Visual Studio redistributable
+  CRT. System DLLs/graphics driver not copied. Archive checked with testzip;
+  user settings excluded.
+- Output: dist/PCBCraft-0.1.0-windows-x64-portable.zip, 12 284 166 bytes.
   SHA256 redacted-source-sha256.
-- Распакованный exe запущен из другого рабочего каталога (TEMP), единственным
-  экземпляром. В реальном окне открыты исходные ReferenceA SchDoc и PcbDoc, после
-  штатного закрытия создан локальный Data/app.ron. Документы не сохранялись.
-- fmt --check, строгий workspace/all-targets Clippy и release build прошли.
-  Workspace tests: 500 pass / 1 прежний GPU fail (routing pixels differ by 4,
-  frame13/dither=true). Логи target/windows-portable-*.txt. На чистой Windows
-  без инструментов разработки запуск отдельно не проверен.
+- Extracted exe launched from another working directory (TEMP), sole instance.
+  Source ReferenceA SchDoc/PcbDoc opened in real window; normal close created
+  local Data/app.ron. Documents unsaved.
+- fmt --check, strict workspace/all-targets Clippy and release build passed.
+  Workspace 500 pass / 1 existing GPU fail (routing pixels differ by 4,
+  frame13/dither=true). Logs target/windows-portable-*.txt.
+  Launch on clean Windows without developer tools not separately checked.
 
-### 2026-10-26 — зависание при открытии сложных PCB
+### 2026-10-26 — hang opening complex PCBs
 
-- Сообщённая пользователем плата находится на другом устройстве и здесь
-  недоступна. На локальной ReferenceCRevision2 воспроизведено отдельное зависание
-  до первого кадра: robust_triangulation, BOURNS_INDM135125X65N_SRP1265A.STEP,
-  shell 2353. Исходный probe потребил более 56 CPU seconds без результата.
-- Ограничения исходных edges не покрывали внутренние trimming PCurves.
-  Добавлен адаптер поверхностей с общим для модели бюджетом 250 000 вычислений,
-  трёхсекундным deadline и ограниченным surface grid. Ошибка модели даёт
-  предупреждение и прежнюю body projection, STEP сохраняется в source archive.
-  Результаты неудачного импорта также кэшируются; после 15 s модельной библиотеки
-  не запускается следующая модель. Это кооперативные ограничения, не изоляция
-  произвольного parser/topology кода в отдельном принудительно завершаемом процессе.
-- Открытие через File, Recent, Projects tree и аргумент запуска перенесено
-  в один worker; очередь ограничена и объединяет одинаковые пути. Окно загрузки
-  показывает файл, фазу и время; Cancel останавливает очередь и запрещает
-  публикацию результата. До выхода отменённой задачи новый worker не создаётся.
-- Реальный portable release: наблюдалось окно ReferenceC на фазе 3D model 20/141,
-  2.7 s; Cancel убрал загрузку без публикации частичного документа. Следующий
-  клик Recent успешно открыл и отобразил ReferenceA PCB. Приложение штатно закрыто,
-  одновременно запускался только один экземпляр. Первый полный ReferenceC GUI import
-  вернулся с отдельной ошибкой Invalid PCB Region geometry, окно осталось рабочим.
-- Другие крупные локальные файлы выявляют независимые ошибки совместимости:
-  padstack land, parameter group owner, PLANE2. Их исправление не имитировалось
-  отключением валидации. Подробности и границы проверки в PERFORMANCE.md/features.json.
-- Portable ZIP пересобран; Diagnose.cmd включает import/STEP tracing в
-  Data/diagnostic.log для проверки на другом устройстве. Настройки/проекты
-  пользователя в ZIP не включены. ReferenceC SHA256 остаётся
-  redacted-source-sha256,
+- User-reported board is on another device, unavailable here. Local
+  ReferenceCRevision2 reproduced a separate pre-first-frame hang:
+  robust_triangulation, BOURNS_INDM135125X65N_SRP1265A.STEP, shell 2353.
+  Original probe consumed over 56 CPU seconds without a result.
+- Original-edge limits did not cover internal trimming PCurves. Added surface
+  adapter with model-wide 250 000 evaluation budget, three-second deadline and
+  bounded surface grid. Model errors produce warnings and existing body
+  projection; STEP stays in source archive. Failed imports cached too; after
+  15 s model-library budget, no next model starts. These are cooperative limits,
+  not isolation of arbitrary parser/topology code in a forcibly terminated process.
+- File, Recent, Projects tree and startup-argument opening moved into one worker;
+  bounded queue coalesces identical paths. Loading window shows file, phase/time;
+  Cancel stops queue and prevents publication. No new worker starts until a
+  cancelled task exits.
+- Real portable release: ReferenceC loading at 3D model 20/141, 2.7 s observed;
+  Cancel removed loading without partial-document publication. Next Recent click
+  successfully opened/displayed ReferenceA PCB. App closed normally; one instance
+  at a time. First full ReferenceC GUI import returned separate Invalid PCB Region
+  geometry error; window stayed responsive.
+- Other large local files reveal independent padstack-land, parameter-group-owner
+  and PLANE2 compatibility errors. Validation was not disabled to simulate fixes.
+  Details/check boundaries: PERFORMANCE.md/features.json.
+- Portable ZIP rebuilt; Diagnose.cmd enables import/STEP tracing in
+  Data/diagnostic.log for another-device diagnosis. User settings/projects excluded.
+  ReferenceC SHA256 remains redacted-source-sha256,
   ReferenceA PCB SHA256 redacted-source-sha256.
-- fmt --check, строгий Clippy и release build прошли; workspace: 506 pass /
-  1 прежний GPU fail, тот же routing frame13/dither=true/channel difference 4.
-  Проверены реальный Truck PCurve, curved/planar grids, invalid/deadline budgets,
-  отмена импорта, очередь и сохранение worker slot. Логи target/complex-pcb-*.
-  Точный случай пользователя на другом устройстве остаётся непроверенным.
+- fmt --check, strict Clippy/release build passed; workspace 506 pass / 1 existing
+  GPU fail, same routing frame13/dither=true/channel difference 4.
+  Real Truck PCurve, curved/planar grids, invalid/deadline budgets, import cancel,
+  queue/worker-slot retention checked. Logs target/complex-pcb-*.
+  Exact user case on the other device remains unverified.
 
-### 2026-10-26 — ложный Invalid PCB Region geometry на корректных платах
+### 2026-10-26 — false Invalid PCB Region geometry on valid boards
 
-- Уточнена диагностика core: source stream/index, размер внешнего контура и
-  индексы/размеры непригодных внутренних контуров вместо одной общей ошибки.
-  На ReferenceCRevision2 найден Regions6 record 401: внешний контур 2386 точек,
-  71 interior; interior 32 сводится к одной точке (250987781,70407355) nm.
-  Та же особенность есть в record 546 и дублирующих ShapeBasedRegions6.
-- Нативный декодер исключает из редактируемой геометрии только interiors,
-  содержащие менее трёх различных целочисленных nm-точек, с предупреждением.
-  Строгая core/JSON проверка не ослаблена; реальные отверстия, в том числе
-  треугольник 1 nm, остаются. Неисправные внешние контуры, NaN и усечённые
-  блоки по-прежнему отклоняются. Исходные native bytes остаются в archive.
-- Два новых CFB regression tests: legacy/modern region families, пустые,
-  одноточечные, повторяющиеся и двухточечные interiors, обычное и минимальное
-  отверстие. Unmodified native save побайтно равен original; после добавления
-  track оба исходных region streams, включая их opaque tails, побайтно сохранены.
+- Refined core diagnostics: source stream/index, outer-contour size and invalid
+  inner-contour indices/sizes instead of a generic error. ReferenceCRevision2
+  Regions6 record 401 has 2386 outer points, 71 interiors; interior 32 collapses
+  to one point (250987781,70407355) nm. Same in record 546/duplicate ShapeBasedRegions6.
+- Native decoder excludes only interiors with fewer than three distinct integer-nm
+  points from editable geometry, with warnings. Strict core/JSON validation not
+  relaxed; real holes, including 1 nm triangles, retained. Invalid outer contours,
+  NaN/truncated blocks still rejected. Original native bytes stay archived.
+- Two new CFB regressions: legacy/modern region families, empty/single-point/
+  repeated/two-point interiors, ordinary/minimal holes. Unmodified native Save is
+  byte-identical; after adding a track, both source region streams including
+  opaque tails are preserved byte-for-byte.
 - Read-only probes: ReferenceC 3.0.7 — 27202 items / 1116 components / 24 layers,
   11125.64 ms; ReferenceC 3.0.1 — 18128 items / 790 components / 23 layers,
-  17676.31 ms под параллельной сборкой, с предупреждением о 3D time budget.
-  В pcb_frame_profile добавлен --load-only; это время без первого render.
-- Новый portable release открыл ReferenceC 3.0.7 в реальном окне, плата отображается,
-  выбор и PageUp zoom работают, документ чистый. Приложение закрыто без Save;
-  одновременно был только один экземпляр. SHA256 ReferenceC 3.0.7 остаётся
-  redacted-source-sha256.
-- fmt --check, строгий Clippy и release build прошли; 508 workspace tests pass /
-  1 прежний GPU fail (frame13/dither=true/max-channel=4). Первый test build
-  упёрся в Windows file lock запущенного pcb_frame_profile; после завершения
-  probe повторный workspace run выполнен. Логи target/region-*.
-- ZIP пересобран: SHA256
-  redacted-source-sha256.
-  Исправлен подтверждённый вариант interiors, а не все возможные native-region
-  виды/топология. Иные padstack/layer/parameter ограничения остаются отдельными.
+  17676.31 ms under parallel build, with 3D time-budget warning.
+  Added --load-only to pcb_frame_profile; timing excludes first render.
+- New portable release opened/displayed ReferenceC 3.0.7 in real window;
+  selection/PageUp zoom work, document clean. App closed without Save;
+  only one instance. ReferenceC 3.0.7 SHA256 remains redacted-source-sha256.
+- fmt --check, strict Clippy/release build passed; 508 workspace tests pass /
+  1 existing GPU fail (frame13/dither=true/max-channel=4). First test build hit
+  Windows file lock from running pcb_frame_profile; workspace rerun after probe
+  finished. Logs target/region-*.
+- ZIP rebuilt: SHA256 redacted-source-sha256.
+  Fixed the confirmed interior variant, not every native-region type/topology.
+  Other padstack/layer/parameter limits remain separate.
 
-### 2026-10-27 — точный ReferenceGWorkspace/ReferenceGRevision1.PcbDoc
+### 2026-10-27 — exact ReferenceGWorkspace/ReferenceGRevision1.PcbDoc
 
-- Воспроизведена ошибка на указанном пользователем файле (21 056 512 bytes):
-  Invalid PCB Region geometry, Regions6 record 11, outer vertices=2.
-  Read-only разбор исходных streams показал 13 legacy вершин с двумя различными
-  x на одном y и повторами, а не повреждённую рамку записи. Modern counterpart
-  содержит те же вершины с дополнительным замыканием. Проблема возникала при
-  dedup/удалении closing vertex в импортёре.
-- Если нормализация внешнего контура оставляет <3 вершин, исходная нативная
-  последовательность сохраняется с предупреждением. Core validation размеров
-  и координат не ослаблена. is_empty_region проверяет точную коллинеарность;
-  только такие записи не дают материал/соединения, вырезы, artwork, picking и
-  влияние на Fit. Signed-area=0 не используется как критерий пустоты.
-- Regression CFB legacy/modern: byte-identical unmodified Save, точные исходные
-  region streams после добавления track. Core: remnant не замыкает разорванную
-  цепь, неколлинеарный контур с signed-area cancellation не отбрасывается.
-  Render: пустой контур не видим и не выбирается. pcb_regions — bounded
-  диагностический example для region framing/координат без импорта STEP.
+- Reproduced error on user-specified file (21 056 512 bytes): Invalid PCB Region
+  geometry, Regions6 record 11, outer vertices=2. Read-only stream analysis found
+  13 legacy vertices with two distinct x values on one y and repetitions, not
+  damaged record framing. Modern counterpart has the same vertices plus closing
+  point. Problem arose during importer dedup/closing-vertex removal.
+- If outer-contour normalization leaves <3 vertices, preserve original native
+  sequence with warning. Core dimension/coordinate validation unchanged.
+  is_empty_region tests exact collinearity; only these records contribute no
+  material/connectivity, cutouts, artwork, picking or Fit bounds.
+  Signed-area=0 is not used as the empty criterion.
+- Legacy/modern CFB regressions: byte-identical unchanged Save, exact original
+  region streams after adding a track. Core: remnant does not short a broken
+  net; noncollinear signed-area-cancelling contour retained. Render: empty contour
+  invisible/unpickable. pcb_regions is a bounded diagnostic example for region
+  framing/coordinates without STEP import.
 - Exact read-only import: 8494.63 ms, 20261 items, 1271 components, 26 layers,
-  98 meshes. Исходник не менялся: SHA256
-  redacted-source-sha256.
-- fmt --check, строгий workspace/all-target Clippy, release build проходят.
-  Workspace: 511 pass / 1 прежний GPU routing fail (Rgba8Unorm/frame13/
-  dither=true/channel difference 4). Логи target/ReferenceG-gaz-*.
-- Новый portable ZIP собран и проверен упаковщиком, SHA256
-  redacted-source-sha256.
-  Работающий старый portable exe не перезаписывался/не перезапускался: в реальном
-  окне есть несохранённый Controller.pcbcraft.json, активен ReferenceK.SchDoc. Поэтому
-  GUI нового exe на этой плате не проверен; второй экземпляр не запускался.
-  Для применения исправления нужен пользовательский перезапуск новой сборки.
+  98 meshes. Source unchanged: SHA256 redacted-source-sha256.
+- fmt --check, strict workspace/all-targets Clippy, release build pass.
+  Workspace 511 pass / 1 existing GPU routing fail (Rgba8Unorm/frame13/
+  dither=true/channel difference 4). Logs target/ReferenceG-gaz-*.
+- New portable ZIP built/packager-verified, SHA256 redacted-source-sha256.
+  Existing portable exe not overwritten/restarted: real window has unsaved
+  Controller.pcbcraft.json, ReferenceK.SchDoc active. Therefore new-exe GUI on this
+  board unverified; no second instance launched. User must restart with new build.
 
-### 2026-10-27 — повторный удалённый Region-сбой и аудит PCB-импорта
+### 2026-10-27 — recurring remote Region failure and PCB import audit
 
-- Пользователь подтвердил текст Invalid PCB Region geometry, но проблемная плата
-  отсутствует на этом компьютере. Точное воспроизведение этого файла невозможно;
-  устранение именно его сбоя не объявляется проверенным.
-- Короткие нативные внешние контуры с 1/2 вершинами замыкаются повтором исходной
-  вершины без создания площади. Полностью пустые Region хранятся как source-only
-  записи empty_region_records с исходным CFB в архиве; фиктивная геометрия не
-  создаётся. Пустой outer с реальными holes, NaN/Inf, выход за координатные пределы,
-  oversized counts и обрезанные payload по-прежнему отклоняются.
-- Native Save сохраняет содержащие пустые слоты семейства побайтно, включая
-  расположенную после пустого слота обычную region-запись. Правки такого семейства
-  и native reindexing блокируются с предложением JSON. Проверены byte-identical
-  Save, JSON recovery, посторонняя track-правка и запрет потери пустых записей.
-- В локальной подборке из 18 различных по SHA256 файлов до правок импортировались
-  14: ReferenceM требовал поддержку UID-only PrimitiveParameters, ReferenceGTest — PLANE2;
-  ReferenceD/ReferenceE содержали дуги нулевой толщины. Добавлено однозначное разрешение владельца
-  по PRIMITIVEID и сохранение UID-only заголовков без дублей; PLANE1..16; нулевые
-  дуги без подмены ширины и без меди/connectivity. Отрицательные ширины запрещены.
-- Ошибки примитивов содержат поток/запись/byte offset; ошибки model validation —
-  item/layer/source, для padstack также размеры/форма/drill. Загрузка файла
-  дополняет сообщение фазой и путём. Логгер включает реальный модуль pcbcraft.
-- fmt --check и строгий workspace/all-target Clippy проходят. Workspace tests:
-  516 pass / 1 прежний GPU routing fail (frame 13, Rgba8Unorm, dither=true,
-  difference 4). Все 98 IO тестов проходят. Логи target/import-audit-*.
-- UI не менялся и второй экземпляр не запускался. Работающий portable PID 45684
-  оставлен без перезапуска и без перезаписи его executable.
-- Итоговый read-only прогон: 18/18 файлов импортированы (до правок 14/18).
-  Все SHA256 до/после совпадают. Машиночитаемый отчёт:
-  docs/pcb-update/import-compatibility-2026-10-27.json. Прогон выполнялся параллельно
-  с release build и не является замером пользовательской задержки открытия.
-- Проверка source-only ссылок использует индекс обычных записей, а не повторный
-  перебор всех items для каждой пустой записи. Финальные fmt/Clippy/workspace
-  проверки после этой правки повторены; 516 pass и тот же GPU fail.
-- Portable release собран и CRC/SHA проверены. Отдельная копия архива:
+- User confirmed Invalid PCB Region geometry text, but problematic board is absent
+  here. Exact reproduction impossible; fixing that specific file is not claimed verified.
+- Short native outer contours with 1/2 vertices are closed by repeating an original
+  vertex without adding area. Fully empty Regions remain source-only
+  empty_region_records with original CFB archived; no fictitious geometry.
+  Empty outer with real holes, NaN/Inf, out-of-range coordinates, oversized counts
+  and truncated payloads still rejected.
+- Native Save preserves families containing empty slots byte-for-byte, including
+  ordinary regions after empty slots. Editing such families/native reindexing
+  refused with JSON suggestion. Byte-identical Save, JSON recovery, unrelated
+  track edit and refusal to lose empty records checked.
+- Of 18 locally distinct SHA256 files, 14 imported before changes: ReferenceM
+  needed UID-only PrimitiveParameters, ReferenceGTest PLANE2; ReferenceD/ReferenceE
+  had zero-width arcs. Added unambiguous PRIMITIVEID owner resolution and UID-only
+  header preservation without duplicates; PLANE1..16; zero-width arcs without
+  invented width/copper/connectivity. Negative widths prohibited.
+- Primitive errors include stream/record/byte offset; model-validation errors
+  include item/layer/source, plus padstack dimensions/shape/drill. Loading adds
+  phase/path. Logger enables actual pcbcraft module.
+- fmt --check/strict workspace/all-targets Clippy pass. Workspace 516 pass /
+  1 existing GPU routing fail (frame 13, Rgba8Unorm, dither=true, difference 4).
+  All 98 IO tests pass. Logs target/import-audit-*.
+- UI unchanged; no second instance launched. Existing portable PID 45684 left
+  running without restart/executable overwrite.
+- Final read-only run: 18/18 imported (previously 14/18). All before/after SHA256
+  match. Machine-readable report: docs/pcb-update/import-compatibility-2026-10-27.json.
+  Run concurrent with release build; not a user-perceived opening-latency measurement.
+- Source-only reference checks use an ordinary-record index rather than rescanning
+  all items per empty record. Final fmt/Clippy/workspace checks repeated after
+  this change; 516 pass and same GPU fail.
+- Portable release built, CRC/SHA checked. Separate archive:
   PCBCraft-0.1.0-windows-x64-portable-2026-10-27-import-fix.zip,
-  12 317 060 bytes, SHA256
-  redacted-source-sha256.
-  build-info.json включает UTC-время сборки и SHA256 exe. Старый запущенный
-  экземпляр не заменялся; пользователю требуется открыть новый ZIP отдельно.
+  12 317 060 bytes, SHA256 redacted-source-sha256.
+  build-info.json includes UTC build time/exe SHA256. Existing running instance
+  not replaced; user needs to open the new ZIP separately.
 
-### 2026-10-27 — только тёмная тема интерфейса
+### 2026-10-27 — dark interface theme only
 
-- Отдельной светлой палитры и переключателя в приложении нет. Однако egui по
-  умолчанию следует теме ОС, а set_visuals меняет только текущий стиль.
-- theme::apply теперь явно выбирает Theme::Dark до настройки палитры/типографики.
-  Это применяется при запуске и Restore Default Layout и исключает автоматическое
-  переключение интерфейса вслед за светлой темой ОС.
-- Внешний вид существующей тёмной палитры не менялся; работающий экземпляр с
-  пользовательскими документами не перезапускался. Portable ZIP этим изменением
-  не пересобирался.
-- Проверки: fmt и строгий Clippy проходят; workspace tests — 516 pass / 1 прежний GPU routing fail (difference 4 при допуске 3).
+- The application has no separate light palette or switch. However, egui follows
+  the OS theme by default, while set_visuals changes only the current style.
+- theme::apply now explicitly selects Theme::Dark before palette/typography setup.
+  Applied at startup/Restore Default Layout, preventing automatic light-OS-theme
+  switching of the interface.
+- Existing dark palette appearance unchanged; running instance with user documents
+  not restarted. Portable ZIP not rebuilt for this change.
+- Checks: fmt/strict Clippy pass; workspace 516 pass / 1 existing GPU routing fail
+  (difference 4 vs tolerance 3).
 
-### 2026-10-27 — иерархическая схема ReferenceG, продолжаемый этап
+### 2026-10-27 — ReferenceG hierarchical schematic, continuing stage
 
-- Перед началом изменения импорта/portable/темы закоммичены: 68eb55e. Новые
-  изменения иерархии остаются в рабочем дереве; отдельного push пользователь
-  в этом запросе не поручал.
-- Источник: ReferenceGWorkspace/ReferenceG.PrjPcb. Импортированы все 9 SchDoc, верхний
-  Main содержит 8 Sheet Symbols, 410 Entries и 410 wires; дочерние листы —
-  410 Ports. Keys ранее отклонялся из-за четырёх 13-точечных Bezier: теперь
-  поддержаны цепочки кубических сегментов 3n+1.
-- Sheet Symbol/Entry получили типизированную модель и parent identity,
-  принадлежащие подписи имени/файла, корректные единицы DistanceFromTop
-  (100 mil, _FRAC1 / 1e6), однократное округление абсолютной координаты.
-  Перемещение/resize/редактирование имени, групповое копирование/удаление,
-  перетаскивание с проводами проходят через core History.
-- Native SchDoc writer сохраняет поддержанные изменения существующих Symbol,
-  Entry, подписей и wires; проверяет parent ID и точные связи после повторного
-  импорта. Добавлены ASCII/CFB roundtrip, Unicode filename, group move/delete
-  и copy identity regression tests. Вставка новых native hierarchy пока не
-  поддержана; размещение и синхронизация Entries отключены.
-- Навигация Tools > Up/Down Hierarchy и Ctrl+double-click связывает блок/Entry
-  с дочерним листом/Port и Port с родительским Entry. Используется только
-  текущий проект, относительный путь владельца, загружаются только необходимые
-  листы. Неоднозначные экземпляры отклоняются явно. PrjPcbStructure задаёт
-  исходные номера листов в Projects и вкладках, Main открывается первым.
-- 27 октября Computer Use восстановился после остановки по Escape. На живом
-  Altium 24.4.1 просмотрены U_Connector и Entry KL30, 4 формы Kind; Up/Down
-  Hierarchy открыл Connector.SchDoc на KL30. В PCBCraft проверено отображение
-  Main (все 8 блоков), выбор блока и переход Entry ACC → Connector Port ACC.
-  По наблюдениям исправляются Properties и порядок меню; Parameters Symbol,
-  неотрисованные формы Kind, Device/Managed и прочие неподдержанные действия
-  показаны отключёнными. Оригиналы SchDoc в Altium не изменялись.
-- Компилятор соединяет Entry/Port по явному owner/имени; повторные локальные
-  designators разных листов больше не замыкают pins между собой. Тест с двумя
-  дочерними R1 и одинаковыми именами локальных Ports проверяет разделение.
-  Multichannel/buses/harness не объявлены поддержанными.
-- Полная электрическая проверка ReferenceG пока не завершена: compile сообщает
-  конфликт GND/1V8; 68 Entries не совпадают точно с концами wires (например
-  ширина блока даёт x=199999600 nm против wire x=200000006 nm). Автоматического
-  объединения по близости нет. Полное соответствие Altium не заявляется.
+- Import/portable/theme changes committed before starting: 68eb55e. New hierarchy
+  changes remain in the working tree; user did not request a separate push.
+- Source: ReferenceGWorkspace/ReferenceG.PrjPcb. All 9 SchDoc imported; top Main has
+  8 Sheet Symbols, 410 Entries and 410 wires; child sheets have 410 Ports.
+  Keys previously rejected four 13-point Beziers: cubic chains 3n+1 now supported.
+- Sheet Symbol/Entry gained typed models/parent identity, owned name/file labels,
+  correct DistanceFromTop units (100 mil, _FRAC1 / 1e6), single rounding of absolute
+  coordinates. Move/resize/name edits, group copy/delete and connected-wire drag
+  go through core History.
+- Native SchDoc writer preserves supported existing Symbol/Entry/label/wire edits;
+  verifies parent ID/exact connections after reimport. Added ASCII/CFB roundtrip,
+  Unicode filename, group move/delete and copy-identity regressions.
+  New native hierarchy insertion unsupported; placement/Entry synchronization disabled.
+- Tools > Up/Down Hierarchy and Ctrl+double-click link block/Entry to child sheet/
+  Port and Port to parent Entry. Current project only, owner-relative paths,
+  only necessary sheets loaded. Ambiguous instances explicitly rejected.
+  PrjPcbStructure supplies initial sheet numbers in Projects/tabs; Main opens first.
+- October 27 Computer Use recovered after Escape stop. Live Altium 24.4.1 inspected
+  U_Connector, KL30 Entry and 4 Kind forms; Up/Down Hierarchy opened Connector.SchDoc
+  at KL30. PCBCraft checked Main display (all 8 blocks), block selection and Entry
+  ACC → Connector Port ACC. Properties/menu order being corrected from observations;
+  Symbol Parameters, unrendered Kind shapes, Device/Managed and other unsupported
+  actions disabled. Original SchDoc files in Altium unchanged.
+- Compiler joins Entry/Port by explicit owner/name; repeated local designators
+  on different sheets no longer short pins. Test with two child R1 and identical
+  local Port names checks separation. Multichannel/buses/harness support not claimed.
+- Full ReferenceG electrical verification incomplete: compile reports GND/1V8
+  conflict; 68 Entries do not exactly meet wire ends (e.g. block width gives
+  x=199999600 nm vs wire x=200000006 nm). No automatic proximity merge.
+  Full Altium parity not claimed.
 
-- Дополнительный read-only trace нашёл путь ложного GND/1V8 объединения:
-  ReferenceJ record 24078 GND → wire 27710 → C386-1 record 24353 → другой
-  C386-1 record 22702 → wire 27585 → 1V8 record 22759. Это два отдельных
-  односекционных компонента с одинаковым локальным designator. Компилятор
-  теперь явно отклоняет такую неоднозначность до объединения pins; отдельный
-  regression проверяет отказ и сохранение поддержки настоящих разных parts.
-  Полная compiled annotation/Component Links для этого проекта ещё не восстановлена.
-- Первый полный прогон после навигации: 520 pass / тот же прежний GPU routing
-  failure (Rgba8Unorm frame 13, dither=true, difference 4). После проверки
-  дубликатов и исправления ширины таблицы Sheet Entries выполняется повторный
-  финальный прогон. Строгий Clippy и fmt проходят.
+- Additional read-only trace found false GND/1V8 merge path: ReferenceJ record
+  24078 GND → wire 27710 → C386-1 record 24353 → another C386-1 record 22702 →
+  wire 27585 → 1V8 record 22759. Two distinct single-part components share a local
+  designator. Compiler now rejects ambiguity before merging pins; separate
+  regression checks refusal while retaining genuine distinct-part support.
+  Full compiled annotation/Component Links for this project not yet reconstructed.
+- First full run after navigation: 520 pass / same existing GPU routing failure
+  (Rgba8Unorm frame 13, dither=true, difference 4). After duplicate checks and
+  Sheet Entries table-width fix, final rerun underway. Strict Clippy/fmt pass.
 
-- Финальный повтор: fmt --check и строгий workspace/all-target Clippy проходят;
-  cargo test --workspace — 521 pass, 1 прежний GPU fail с теми же параметрами.
-  Dev executable собран; Computer Use проверил в финальном окне Main [1],
-  U_Connector Properties, исправленные колонки Entries и выбор KL30 из таблицы.
-  Новая сборка оставлена в одном экземпляре, без записи исходного проекта.
-  Логи: target/hierarchy-{clippy,workspace-tests,build,navigation-tests,trace}.txt.
+- Final rerun: fmt --check/strict workspace/all-targets Clippy pass;
+  cargo test --workspace: 521 pass, 1 existing GPU fail with same parameters.
+  Dev executable built; Computer Use checked Main [1], U_Connector Properties,
+  corrected Entries columns and KL30 selection from table in final window.
+  New build left as one instance, no source-project writing.
+  Logs: target/hierarchy-{clippy,workspace-tests,build,navigation-tests,trace}.txt.
 
-- Последняя живая сверка дочернего Connector/KL30 обнаружила старый Port bug:
-  Output рисовался вправо вместо влево, Unspecified имел стрелку, высота 2.5 mm
-  подменялась 2.54 mm, игнорировались BorderWidth/Alignment/fill. Исправлены
-  импорт и отрисовка; Alignment показан в Properties вместо неподходящего Style.
-  Учитываются обе концевые точки Port в connectivity RTree, cross-probe,
-  wire handles/junctions, snapping и drag; I/O type не меняет электрические точки.
-  Разные типы net identifiers не соединяются только по одинаковому имени.
-  Официальная справка (поведение I/O и Direction, net scope):
+- Last live Connector/KL30 comparison found an old Port bug: Output pointed right
+  instead of left, Unspecified had an arrow, 2.5 mm height replaced with 2.54 mm,
+  BorderWidth/Alignment/fill ignored. Import/rendering fixed; Properties shows
+  Alignment instead of inappropriate Style. Both Port endpoints participate in
+  connectivity RTree, cross-probe, wire handles/junctions, snapping/drag;
+  I/O type does not change electrical points. Different net-identifier types do
+  not connect merely by matching names. Official I/O/Direction/net-scope references:
   https://www.altium.com/documentation/altium-designer/schematic/multi-sheet-hierarchical-designs
   https://www.altium.com/documentation/altium-designer/schematic/creating-circuit-connectivity
-- После Port: fmt --check и строгий Clippy проходят. Полный workspace прогон:
-  523 pass / один прежний GPU routing fail (difference 4). Native KL30 far-end
-  roundtrip и горизонтальный/вертикальный Port snap/drag со всеми I/O проходят.
-  Port Direction preference, legacy styles, полные project naming/net-scope
-  настройки и локализация power ports остаются отдельными расхождениями.
+- After Port: fmt --check/strict Clippy pass. Full workspace: 523 pass /
+  1 existing GPU routing fail (difference 4). Native KL30 far-end roundtrip and
+  horizontal/vertical Port snap/drag with every I/O pass. Port Direction preference,
+  legacy styles, full project naming/net-scope settings and power-port localization
+  remain separate differences.
 
-- В окне финальной сборки повторен Entry KL30 → Connector/KL30: открылись
-  только Main [1] и Connector [7]; стрелка Output направлена влево, Gnd без
-  стрелки, Properties показывает 12.5 × 2.5 mm, Small border, Right alignment.
-  Повторный read-only ReferenceG probe теперь останавливается на первом дубликате VD12
-  в ReferenceL.SchDoc до расчёта связей (в ReferenceJ также есть ранее найденный C386).
-  Все 9 листов загружаются; исходные документы не записывались.
+- Final-build window repeated Entry KL30 → Connector/KL30: only Main [1] and
+  Connector [7] opened; Output arrow points left, Gnd has no arrow, Properties
+  shows 12.5 × 2.5 mm, Small border, Right alignment.
+  Repeat read-only ReferenceG probe now stops at first VD12 duplicate in
+  ReferenceL.SchDoc before connectivity calculation (ReferenceJ also contains the
+  earlier C386). All 9 sheets load; source documents not written.
 
 ### 2026-10-27 — Synchronize Sheet Entries and Ports
 
-- Эталон: живой AD Enterprise 24.4.1, Design > Synchronize Sheet Entries
-  and Ports и all-matched состояние исходного ReferenceG. Диалог 864×511, три списка,
-  вкладки блоков, фильтр unmatched, направленный перенос, unlink, add/delete
-  и немедленный Undo в изменённом документе. Поведение дополнительно сверено
-  с официальной Multi-sheet & Hierarchical Designs (Synchronizing the Ports
-  and Sheet Entries):
+- Reference: live AD Enterprise 24.4.1, Design > Synchronize Sheet Entries and
+  Ports, original ReferenceG all-matched state. Dialog 864×511, three lists,
+  block tabs, unmatched filter, directional transfer, unlink, add/delete and
+  immediate Undo in changed document. Behavior also checked against official
+  Multi-sheet & Hierarchical Designs (Synchronizing the Ports and Sheet Entries):
   https://www.altium.com/documentation/altium-designer/schematic/multi-sheet-hierarchical-designs
-- eda-core сравнивает Name/I/O Type/Harness Type, готовит транзакции переноса
-  без изменения геометрии существующего объекта и проводов; размещает
-  отсутствующие Ports и Entries группой на выбранной стороне владельца.
-- Приложение: весь проект или один Sheet Symbol, три списка и вкладки,
-  Ctrl/Shift/drag/Select All, unlink/relink, перенос в обе стороны, add/delete.
-  Preview не меняет документ; click/Enter размещает, Esc/right-click отменяет
-  и возвращает диалог. История отдельная для каждого листа; session/revision
-  guards отклоняют устаревшее размещение. При добавлении Entries камера
-  фокусируется на нужном блоке. Harness Type редактируется в Properties.
-- Native SchDoc: новые записи 16/18, существующие Name/IO/Harness и геометрия
-  Port, удаление, tree insertion/Weight/owner remap, стабильный UID при повторном
-  Save и rename без перезагрузки source archive. Text frames 209 и Additional
-  drawing regions 225 сохраняются; неизвестные index dependencies по-прежнему
-  блокируют небезопасную запись. Проверка точных электрических касаний
-  выполняется до допустимой нормализации округления координат.
-- Исходный ReferenceG: все 410 Entry/Port пар совпали. В отдельном каталоге
-  target/entry-sync-qa-20261027-a сохранены копии девяти SchDoc. В живом PCBCraft
-  Add Ports создал QA_ENTRY_ONLY, P → E согласовал KL30 (Output → Input),
-  Add Sheet Entries создал QA_PORT_ONLY на U_Connector. Диалог показал all
-  matched; Save All записал обе копии. Свежий импорт с диска подтвердил
-  412 пар / 0 unmatched. Исходные пользовательские SchDoc не записывались.
-- GUI QA обнаружила раздувание Links по горизонтали, конфликт Esc и deadlock
-  context input/memory при открытии подменю. Исправлены вертикальная компоновка,
-  обработка Esc и получение состояния popup до input closure; регрессии
-  проверяют длинный список, Esc, клики подменю, перенос в обе стороны,
-  unlink/relink, отмену, stale guards и Undo. Native тесты также проверяют
-  ASCII/CFB/Unicode, insert/update/delete и сохранность Additional payload.
-- Полное визуальное совпадение не объявляется: остаются native icons,
-  типографика и изменение ширины колонок. Live Altium reopen этой QA копии
-  не подтверждён: файловый диалог возвращал тайм-ауты activate_window/click;
-  после recovery дальнейший ввод в Altium остановлен. Linux не проверялся.
-  Metadata Harness Type не означает готовность bus/harness compilation.
-- Финальные проверки синхронизации: cargo fmt --all -- --check и строгий
-  workspace/all-target Clippy проходят. cargo test --workspace --no-fail-fast:
-  534 pass / один прежний GPU routing fail (Rgba8Unorm, frame 13, dither=true,
-  difference 4). Все 6 новых app interaction tests, 3 core sync tests и
-  11 native writer tests проходят. Dev executable собран.
-  Логи: target/entry-sync-{fmt,clippy,workspace-tests,build,reopened-qa}.txt.
-- Последующая живая проверка: контекстный вызов одного U_Connector,
-  отображение его matched-списка, Esc и глобальные 8 вкладок работают;
-  исходный Main остаётся без изменений. Быстрое протягивание дополнено
-  обработкой press/move/release в одном кадре; один interaction test
-  проверяет как объединённые, так и раздельные события.
+- eda-core compares Name/I/O Type/Harness Type, prepares transfer transactions
+  without changing existing-object/wire geometry; places missing Ports/Entries
+  as a group on a selected owner side.
+- App: whole project or one Sheet Symbol, three lists/tabs, Ctrl/Shift/drag/
+  Select All, unlink/relink, bidirectional transfer, add/delete. Preview leaves
+  document unchanged; click/Enter places, Esc/right-click cancels and returns to
+  dialog. Per-sheet history; session/revision guards reject stale placement.
+  Adding Entries focuses camera on the relevant block. Harness Type editable in Properties.
+- Native SchDoc: new records 16/18, existing Name/IO/Harness and Port geometry,
+  deletion, tree insertion/Weight/owner remap, stable UID across repeated Save
+  and rename without source-archive reload. Text frames 209 and Additional
+  drawing regions 225 retained; unknown index dependencies still block unsafe
+  writing. Exact electrical-contact checks precede permissible coordinate-rounding normalization.
+- Original ReferenceG: all 410 Entry/Port pairs match. Copies of nine SchDoc saved
+  under target/entry-sync-qa-20261027-a. Live PCBCraft Add Ports created
+  QA_ENTRY_ONLY, P → E synchronized KL30 (Output → Input), Add Sheet Entries
+  created QA_PORT_ONLY on U_Connector. Dialog showed all matched; Save All wrote
+  both copies. Fresh disk import confirmed 412 pairs / 0 unmatched.
+  Original user SchDoc files not written.
+- GUI QA found horizontal Links expansion, Esc conflict and context input/memory
+  deadlock when opening submenu. Fixed vertical layout, Esc handling and popup
+  state retrieval before input closure; regressions cover long lists, Esc,
+  submenu clicks, bidirectional transfer, unlink/relink, cancellation, stale guards
+  and Undo. Native tests also cover ASCII/CFB/Unicode, insert/update/delete and
+  Additional payload preservation.
+- Full visual parity not claimed: native icons, typography and column resizing
+  remain. Live Altium reopen of QA copy not confirmed: file dialog timed out
+  on activate_window/click; after recovery, further Altium input stopped.
+  Linux untested. Harness Type metadata does not mean bus/harness compilation is ready.
+- Final sync checks: cargo fmt --all -- --check and strict workspace/all-targets
+  Clippy pass. cargo test --workspace --no-fail-fast: 534 pass / 1 existing GPU
+  routing fail (Rgba8Unorm, frame 13, dither=true, difference 4).
+  All 6 new app interaction, 3 core sync and 11 native writer tests pass.
+  Dev executable built. Logs:
+  target/entry-sync-{fmt,clippy,workspace-tests,build,reopened-qa}.txt.
+- Subsequent live check: single-U_Connector context invocation, matched list,
+  Esc and global 8 tabs work; original Main unchanged. Fast dragging now handles
+  press/move/release in one frame; one interaction test covers coalesced/separate events.
 
-- После закрытия блокирующего файлового окна Computer Use восстановился.
-  AD24.4.1 открыл SheetSync_QA.PrjPcb и обе сохранённые схемы: all matched,
-  8 вкладок; U_Connector/KL30 — Input. В Links присутствуют QA_ENTRY_ONLY и
-  QA_PORT_ONLY, оба Input. Новый Entry виден на Main, новый Port — на Connector
-  в 70 / 122.5 mm. Это живая проверка native reopen, не только наш reimport.
-- По живому диалогу уточнены 864×511, размеры/отступы трёх списков, строки
-  17 px, кнопки переноса и вкладки. Колонки теперь изменяют ширину;
-  interaction regression проверяет resize без случайного выбора строки.
-  Иконки нарисованы собственными векторами; точное растровое совпадение
-  и все настройки размещения не подтверждены.
-- Properties созданного Port в Altium подтвердил ALIGNMENT=0 как Center
-  (1 — Left, 2 — Right). Исправлены renderer и Properties. TEXTCOLOR теперь
-  независим от COLOR: импорт отсутствующего поля даёт native black,
-  новые синхронизированные Ports получают красную подпись, native save
-  сохраняет отдельный цвет. ASCII/CFB regression проверяет раздельные
-  изменения подписи/контура и выравнивание. FONTID=2 и SYSTEMFONT=2 в копии
-  корректно ссылаются на Altium GOST Type A; менять таблицу шрифтов не нужно.
-  В живом Altium Font combo пуст и у исходного KL30, поэтому это состояние
-  не свидетельствует об ошибке FONTID созданного Port.
-- Повторная проверка после правок Port: 536 unit tests проходят; остаётся
-  единственный прежний GPU routing/dither fail (frame 13, difference 4 при
-  допуске 3). Допуск не изменён. Новый renderer regression проверяет фактические
-  позиции подписей Left/Center/Right и независимый цвет текста.
-- Окно новой сборки проверено на исходном ReferenceG: диалог 864×511, all matched,
-  затем все восемь вкладок и заполненные Links. Быстрое CU-перетаскивание
-  разделителя выявило потерю изменения ширины при объединённых событиях;
-  добавлено отслеживание исходного press и последней координаты, тест
-  расширен на press/move/release в одном кадре. Документы остаются чистыми.
-- Финальная Windows-сборка: быстрый CU drag границы Links с x1242 на x1260
-  действительно изменяет ширину, строки не выбираются. Fmt и строгий Clippy
-  проходят, workspace сохраняет 536 pass / один прежний GPU fail. Запущен один
-  PCBCraft на исходном ReferenceG, пользовательские схемы не записывались.
-
+- Computer Use recovered after closing the blocking file window. AD24.4.1 opened
+  SheetSync_QA.PrjPcb and both saved schematics: all matched, 8 tabs;
+  U_Connector/KL30 Input. Links has QA_ENTRY_ONLY/QA_PORT_ONLY, both Input.
+  New Entry visible on Main, new Port on Connector at 70 / 122.5 mm.
+  This is live native reopen verification, not merely our reimport.
+- Live dialog refined 864×511, three-list dimensions/spacing, 17 px rows,
+  transfer buttons/tabs. Columns now resize; interaction regression checks
+  resizing without accidental row selection. Icons use original vectors;
+  exact raster parity/all placement settings unconfirmed.
+- Created Port Properties in Altium confirmed ALIGNMENT=0 Center (1 Left, 2 Right).
+  Renderer/Properties fixed. TEXTCOLOR now independent of COLOR: absent imported
+  field defaults to native black; new synchronized Ports get red labels; native
+  Save retains separate color. ASCII/CFB regressions check independent label/
+  outline changes and alignment. FONTID=2/SYSTEMFONT=2 in copy correctly reference
+  Altium GOST Type A; font table needs no change. Live Altium Font combo is blank
+  for original KL30 too, so this state does not prove a created-Port FONTID error.
+- After Port fixes: 536 unit tests pass; sole existing GPU routing/dither fail
+  remains (frame 13, difference 4 vs tolerance 3). Tolerance unchanged.
+  New renderer regression checks actual Left/Center/Right label positions and
+  independent text color.
+- New-build window checked on original ReferenceG: 864×511 dialog, all matched,
+  then all eight tabs/populated Links. Fast CU divider drag exposed lost width
+  changes on coalesced events; track initial press/last coordinate and expand
+  test to same-frame press/move/release. Documents stay clean.
+- Final Windows build: fast CU Links-divider drag x1242 to x1260 actually changes
+  width without selecting rows. Fmt/strict Clippy pass; workspace still 536 pass /
+  1 existing GPU fail. One PCBCraft on original ReferenceG; user schematics not written.
 
 ### 2026-10-27 — hierarchical schematic/PCB ECO on ReferenceG
 
@@ -3493,7 +3457,7 @@ Cause, implementation and validation: docs/pcb-update/INTERACTIVE_ROUTING.md.
 - Final Windows PCBCraft 1707x1019 QA: corrected shared component/parameter grid
   sizing, imported Cyrillic/alternate metadata, component child dialog, C2 Not
   Fitted, Undo/Redo, Detailed Report and GUI CSV export. GuiVariantBOM.csv contains
-  37 fitted rows, C1 library 1404 / resolved 10 нФ, and excludes C2. Manager OK and
+  37 fitted rows, C1 library 1404 / resolved 10 nF, and excludes C2. Manager OK and
   Ctrl+S saved the QA project and ordinary companion without error; native text
   contains C2 Kind=1. Physical view shows its red cross and C1 green modified
   value. SCH/PCB/IntLib hashes still match local/PDU-git-review. One updated GUI

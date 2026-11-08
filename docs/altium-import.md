@@ -1,79 +1,80 @@
-# Открытие Altium проектов и схем
+# Opening Altium projects and schematics
 
-Текущая стадия — импорт, просмотр и базовое редактирование сцены схемы.
-Управление и ограничения: [редактор схем](schematic-editing.md). Altium Designer для работы PCBCraft
-не требуется. File → Open принимает `.PrjPcb`, `.SchDoc` и собственный JSON;
-File → Open Project и кнопка папки в Projects открывают проект.
-Из проекта автоматически открывается первый существующий SchDoc, остальные
-листы загружаются при выборе в дереве. Повторное открытие активирует существующую
-вкладку. Отсутствующие файлы остаются в дереве с пояснением.
-PCB остаётся ссылкой с отключённым открытием; SchLib Binary 5.0 / IntLib открываются в Components. [Библиотеки и ограничения](interface/components-libraries.md).
+The current stage covers import, viewing and basic schematic scene editing.
+Controls and limitations: [schematic editor](schematic-editing.md). Altium Designer
+is not required to run PCBCraft. File → Open accepts `.PrjPcb`, `.SchDoc` and the
+application's JSON; File → Open Project and the folder button in Projects open a project.
+The first existing SchDoc opens automatically from a project; other sheets load
+when selected in the tree. Reopening activates the existing tab.
+Missing files remain in the tree with an explanation.
+PCB remains a reference with opening disabled; SchLib Binary 5.0 / IntLib open
+in Components. [Libraries and limitations](interface/components-libraries.md).
 
-## Уровни поддержки
+## Support levels
 
-| Область | Реализовано | Ограничения |
+| Area | Implemented | Limitations |
 |---|---|---|
-| PrjPcb | INI `[DocumentN]`, относительные Windows-пути, UTF8/BOM, UTF16 LE, legacy 1251/1252 | Legacy-кодировка угадывается по существующим путям; Windows absolute drive paths нужно исправлять при переносе на Linux. Нет записи проекта, компиляции, вариантов и проектных special strings |
-| SchDoc | CFB Binary / ASCII Version 5.0, FileHeader, сохранение Additional/unknown streams | Не все версии/record types реализованы. Additional сохраняется, но не рисуется |
-| Компоненты | Составные символы, текущая часть и display mode, designator/comment, параметры, скрытые поля, абсолютные координаты дочерних объектов; перемещение/поворот/копирование группы, правка обозначения и номинала; встроенные R/C | Локальные SchLib/IntLib — через Components; полной annotation и ECO нет; перемещение не растягивает провода |
-| Геометрия | Провода/шины/вводы шин, линии, полигоны (включая невыпуклые), прямоугольники, эллипсы/дуги, Bezier; открытые стрелки START/ENDLINESHAPE=1, размеры окончаний | Другие окончания, точная передача всех типов штриха и специальных фигур не завершены |
-| Текст | Кириллица/UTF8 override, повороты, justification, font table, bold/italic/underline, text frames, параметрические ссылки с кавычками и цепочками | Сложные выражения, встроенные динамические строки, построчное overbar и некоторые зеркальные/пользовательские позиции ещё требуют реализации |
-| Электрические обозначения | Раздельные шрифты pin names/numbers, базовые bubbles/clock, ports/power ports, junctions с цветом примыкающего провода, Thin Cross NoERC, IEEE Dot/Clock/High Current | Разные port/power/IEEE styles переданы частично; неподдержанные IEEE обозначаются явно. Это графика, не скомпилированная связность; custom pin positions пока не реализованы |
-| Лист | Стандартные/нестандартные размеры, ориентация, фон, сетка, рамка/разделители зон, системный шрифт, стандартная основная надпись 350×80 native units | Другие title block styles, нестандартные шаблоны и sheet entry отображаются частично; дата/путь отображаются из текущего сеанса, не являются native writer |
-| Изображения | CFB Storage zlib, встроенные PNG/JPEG/BMP/GIF/TIFF/ICO, aspect ratio | Внешние изображения автоматически не читаются. Лимит decode 8192×8192, 64 MiB; недоступные ресурсы имеют placeholder |
-| Properties | Выбор компонента/примитива, фильтры; правка X/Y, Designator/Comment, текста и ширины провода/линии; параметры и предупреждения | Остальные параметры доступны для чтения; изменение видимой сетки/единиц — состояние представления |
-| Сохранение | Собственный JSON с типизированной сценой, исходными полями и оригиналом SchDoc целиком | Нет native writer, сохранности после native-редактирования, ERC/netlist и обмена с PCB |
+| PrjPcb | INI `[DocumentN]`, relative Windows paths, UTF8/BOM, UTF16 LE, legacy 1251/1252 | Legacy encoding is inferred from existing paths; absolute Windows drive paths need correction when moving to Linux. No project writing, compilation, variants or project special strings |
+| SchDoc | CFB Binary / ASCII Version 5.0, FileHeader, Additional/unknown stream preservation | Not all versions/record types are implemented. Additional is preserved but not rendered |
+| Components | Composite symbols, current part and display mode, designator/comment, parameters, hidden fields, absolute child-object coordinates; group move/rotate/copy, designator/value editing; built-in R/C | Local SchLib/IntLib through Components; no full annotation or ECO; moving does not stretch wires |
+| Geometry | Wires/buses/bus entries, lines, polygons (including concave), rectangles, ellipses/arcs, Bezier; open START/ENDLINESHAPE=1 arrows, end sizes | Other endings, exact rendering of all dash types and special shapes remain incomplete |
+| Text | Cyrillic/UTF8 overrides, rotations, justification, font table, bold/italic/underline, text frames, parameter references with quotes and chains | Complex expressions, built-in dynamic strings, per-line overbars and some mirrored/custom positions still need implementation |
+| Electrical symbols | Separate pin-name/number fonts, basic bubbles/clock, ports/power ports, junctions colored from the adjoining wire, Thin Cross NoERC, IEEE Dot/Clock/High Current | Port/power/IEEE styles are partially rendered; unsupported IEEE symbols are explicitly marked. This is graphics, not compiled connectivity; custom pin positions are not yet implemented |
+| Sheet | Standard/custom sizes, orientation, background, grid, border/zone dividers, system font, standard title block of 350×80 native units | Other title-block styles, custom templates and sheet entries are partially displayed; date/path come from the current session, not a native writer |
+| Images | CFB Storage zlib, embedded PNG/JPEG/BMP/GIF/TIFF/ICO, aspect ratio | External images are not read automatically. Decode limit: 8192×8192, 64 MiB; unavailable resources have a placeholder |
+| Properties | Component/primitive selection, filters; X/Y, Designator/Comment, text and wire/line width editing; parameters and warnings | Other parameters are read-only; visible grid/unit changes are view state |
+| Saving | Application JSON with a typed scene, original fields and the complete original SchDoc | No native writer, preservation guarantees after native editing, ERC/netlist or PCB exchange |
 
-Предупреждения о неподдержанных записях находятся в Import Information и
-Messages. Отсутствие такого предупреждения не подтверждает пиксельное
-совпадение, корректность электрической схемы или полную поддержку версии файла.
-Исходные файлы не изменяются при открытии. Save As создаёт `.pcbcraft.json`;
-защита IO запрещает запись JSON поверх расширений Altium.
+Warnings about unsupported records appear in Import Information and Messages.
+The absence of a warning does not confirm pixel parity, electrical correctness
+or full support for a file version.
+Opening does not change source files. Save As creates `.pcbcraft.json`;
+IO guards prohibit writing JSON over Altium extensions.
 
-Шрифты документа ищутся по имени семейства, отдельно от UI. На наблюдаемой
-машине `Altium GOST Type A` отсутствует, а Altium показывает Arial-подобный
-fallback; PCBCraft больше не подменяет его установленным `GOST Type AU`.
-При отсутствии Arial встроен свободный Liberation Sans с кириллицей.
-Каталог `PCBCRAFT_SCHEMATIC_FONT_DIR` проверяется перед системными шрифтами.
-Точные метрики всех произвольных семейств и визуальный Linux запуск не проверены.
+Document fonts are looked up by family name separately from UI fonts. On the
+observed machine, `Altium GOST Type A` is absent and Altium displays an Arial-like
+fallback; PCBCraft no longer substitutes installed `GOST Type AU` for it.
+Free Liberation Sans with Cyrillic support is embedded when Arial is absent.
+`PCBCRAFT_SCHEMATIC_FONT_DIR` is checked before system fonts.
+Exact metrics for all arbitrary families and visual Linux runtime remain unverified.
 
-Тонкие осевые линии рисуются с целой толщиной в физических пикселях;
-дробное масштабирование захвата может скрывать отдельные линии в обоих
-приложениях. Геометрия проводов при этом не удаляется и не изменяется.
-PgUp/PgDn масштабируют schematic в 1.5 раза вокруг указателя; Home вписывает лист.
+Thin axis-aligned lines are drawn with integer physical-pixel widths;
+fractional capture scaling can hide individual lines in both applications.
+Wire geometry is not deleted or changed by this.
+PgUp/PgDn zoom the schematic by 1.5 around the pointer; Home fits the sheet.
 
-## Проверяемый пример и диагностика
+## Verifiable example and diagnostics
 
-`fixtures/schematic/minimal.PrjPcb` и `minimal.SchDoc` созданы для проекта,
-не содержат пользовательских разработок. SchDoc открыт в Altium 24.4.1:
-отобразились R1, провода, GND, кириллица и текстовая рамка.
-Первоначальный вариант fixture показал пустой лист; итоговый файл использует
-CRLF, MINORVERSION=9 и только известные записи. Точная причина первоначального
-расхождения отдельно не изолирована. Unknown record проверяется в тесте,
-а не добавляется в fixture, предназначенный для открытия в эталоне.
+`fixtures/schematic/minimal.PrjPcb` and `minimal.SchDoc` were created for the project
+and contain no user designs. The SchDoc was opened in Altium 24.4.1:
+R1, wires, GND, Cyrillic and a text frame were displayed.
+The initial fixture displayed a blank sheet; the final file uses CRLF,
+MINORVERSION=9 and only known records. The exact cause of the initial difference
+was not isolated separately. Unknown records are checked in tests rather than
+included in the fixture intended to open in the reference application.
 
 ```text
 cargo run -p eda-app -- fixtures/schematic/minimal.PrjPcb
 cargo run -p eda-io --example altium_inspect -- fixtures/schematic/minimal.SchDoc
 ```
 
-Локально проверен импорт ReferenceB, ReferenceI, TIDA-01597 и 25 листов
-AWR2944EVM. Пользовательские файлы и экспорт Altium остаются вне Git.
-Сводные числа проверяют полноту чтения записей, но не заменяют независимую
-проверку каждого символа и соединения. Подробный журнал: verification.md.
+Import was checked locally for ReferenceB, ReferenceI, TIDA-01597 and 25 sheets
+from AWR2944EVM. User files and Altium exports remain outside Git.
+Summary counts check record-reading completeness but do not replace independent
+verification of every symbol and connection. Detailed log: verification.md.
 
-## Основания реализации
+## Implementation basis
 
-Формат исследован по локальным файлам и ASCII-копии из Altium; сторонний
-исполнительный код Altium/KiCad не используется. Справочные источники:
+The format was studied using local files and an ASCII copy from Altium; no
+third-party Altium/KiCad execution code is used. Reference sources:
 
-- [Наблюдения автора reverse-engineering описания SchDoc](https://github.com/vadmium/python-altium/blob/master/format.md): CFB и структура записей; это не официальный стандарт.
-- [Altium Schematic API types](https://www.altium.com/documentation/altium-dxp-developer/schematic-api-types-reference?version=3.2): типы объектов и перечисления.
-- [Altium параметры](https://www.altium.com/documentation/altium-designer/schematic/parameters): назначение параметров и косвенные строки.
-- [rust-cfb](https://github.com/mdsteele/rust-cfb): общий reader OLE Compound File.
-- [earcutr](https://docs.rs/earcutr/0.5.0/earcutr/): тесселяция отображаемых контуров.
+- [SchDoc reverse-engineering observations](https://github.com/vadmium/python-altium/blob/master/format.md): CFB and record structure; not an official standard.
+- [Altium Schematic API types](https://www.altium.com/documentation/altium-dxp-developer/schematic-api-types-reference?version=3.2): object types and enumerations.
+- [Altium parameters](https://www.altium.com/documentation/altium-designer/schematic/parameters): parameter purposes and indirect strings.
+- [rust-cfb](https://github.com/mdsteele/rust-cfb): a general OLE Compound File reader.
+- [earcutr](https://docs.rs/earcutr/0.5.0/earcutr/): tessellation of displayed outlines.
 
-Дальнейший порядок: расширить golden corpus и визуальные проверки,
-закрыть нестандартные примитивы/шаблоны и шрифтовые метрики, расширить
-базовое редактирование до работы с вершинами и группами, ввести compiler связности/ERC. PCB импорт
-остаётся отдельным следующим этапом по запросу пользователя.
+Next steps: extend the golden corpus and visual checks, cover nonstandard
+primitives/templates and font metrics, extend basic editing to vertices and groups,
+and introduce a connectivity/ERC compiler. PCB import remains a separate next
+stage at the user's request.

@@ -1,5 +1,5 @@
 # Benchmarks
 
-Результатов пока нет. Перед заявлениями о производительности добавить
-зафиксированные малую/среднюю/большую платы, hardware profile, release
-сборку и измерения времени кадра, IO, памяти и инженерных операций.
+No results yet. Before making performance claims, add fixed small/medium/large
+boards, a hardware profile, a release build and measurements of frame time, IO,
+memory and engineering operations.

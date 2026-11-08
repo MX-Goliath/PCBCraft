@@ -1,30 +1,30 @@
 # PCBCraft JSON v1
 
-Текущий пример: `fixtures/controller.pcbcraft.json`.
+Current example: `fixtures/controller.pcbcraft.json`.
 
-Документ содержит schema_version=1, UUID id, name, kind (Board/Schematic),
-size {x,y}, pads и tracks. Координаты и размеры — i64 нанометры.
-Допустимый диапазон каждой координаты +/- 100 000 000 000 нм (расширен для больших листов).
-Размеры документа и площадок положительны. Ширина tracks положительна.
-ID объектов уникальны в документе. Ссылки на nets/footprints пока отсутствуют.
-Неизвестные поля и версии отклоняются; данные не отбрасываются при сохранении.
+A document contains schema_version=1, UUID id, name, kind (Board/Schematic),
+size {x,y}, pads and tracks. Coordinates and dimensions are i64 nanometers.
+Each coordinate must be within +/- 100 000 000 000 nm (expanded for large sheets).
+Document and pad dimensions are positive. Track widths are positive.
+Object IDs are unique within a document. Net/footprint references are not yet present.
+Unknown fields and versions are rejected; data is not discarded on save.
 
 Pad: id, name, position, size, layer.
 Track: id, start, end, width, layer.
 Layer: Top, Bottom, Overlay, Outline.
 
-Загрузка и запись ограничены 256 MiB. Перед записью модель валидируется;
-временный файл создаётся в каталоге назначения, синхронизируется и
-заменяет файл через tempfile::persist. Гарантия восстановления после
-потери питания и directory fsync ещё не проверена.
+Loading and writing are limited to 256 MiB. The model is validated before writing;
+a temporary file is created in the destination directory, synchronized and
+replaces the file through tempfile::persist. Recovery guarantees after power loss
+and directory fsync have not yet been verified.
 
-Опциональное поле `schematic` содержит лист, шрифты, компоненты, примитивы,
-исходные записи, встроенные изображения base64, предупреждения и оригинальный
-SchDoc в base64. Старые JSON v1 без этого поля продолжают открываться.
-Старые версии программы отклонят неизвестное поле вместо потери содержимого.
-У scene IDs и owner-ссылок есть проверка уникальности/существования;
-счётчики объектов и диапазоны геометрии ограничены.
+The optional `schematic` field contains the sheet, fonts, components, primitives,
+original records, base64 embedded images, warnings and the original SchDoc in
+base64. Older JSON v1 documents without this field still open.
+Older program versions reject the unknown field instead of losing content.
+Scene IDs and owner references are checked for uniqueness/existence;
+object counts and geometry ranges are bounded.
 
-Собственный формат отделён от SchDoc. Импорт не означает native-запись;
-сохранение в файлы с расширениями SchDoc/PrjPcb/PcbDoc/SchLib/SchDot отклоняется.
-Точность и сохранность исходных данных: ADR 0002 и altium-import.md.
+The application's format is separate from SchDoc. Import does not imply native
+writing; saving to SchDoc/PrjPcb/PcbDoc/SchLib/SchDot extensions is rejected.
+Source data precision and preservation: ADR 0002 and altium-import.md.

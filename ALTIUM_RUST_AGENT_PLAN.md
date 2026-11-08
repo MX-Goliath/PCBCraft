@@ -1,308 +1,317 @@
-# План для агента: собственная EDA на Rust с интерфейсом Altium Designer
+# Agent plan: independent Rust EDA with an Altium Designer interface
 
-Дата: 19 октября 2026 года.
+Date: October 19, 2026.
 
-Уточнение пользователя от 19 октября 2026 года: визуально приложение должно
-быть точной копией доступного Altium Designer. Разделы 7 и 25 задают
-обязательную цель интерфейса для Windows и Linux; визуальная сверка ведётся
-с первой оболочки. `PLAN.md` хранит текущую очередь и результаты, не заменяя
-этот полный план. Незавершённые критерии ниже остаются незавершёнными.
+User clarification of October 19, 2026: the application must visually be an exact
+copy of the available Altium Designer. Sections 7 and 25 define the required
+Windows/Linux interface target; visual comparison starts with the first shell.
+`PLAN.md` stores the current queue and results without replacing this full plan.
+Unfinished criteria below remain unfinished.
 
-## Принятое архитектурное решение
+## Accepted architectural decision
 
-Создать самостоятельное приложение с собственным ядром на Rust. Модель документов, электрическая связность, ERC, правила, DRC, интерактивная трассировка, заливки и команды принадлежат этому проекту. KiCad, его IPC, внутренние структуры и PNS не используются как исполнительное ядро. Это решение заменяет рекомендацию о fork KiCad из предыдущего исследования.
+Create a standalone application with its own Rust core. The document model,
+electrical connectivity, ERC, rules, DRC, interactive routing, pours and commands
+belong to this project. KiCad, its IPC, internal structures and PNS are not used
+as the execution engine. This supersedes the earlier research recommendation to fork KiCad.
 
-Общие библиотеки GUI, геометрии, сериализации, индексов и численных методов применять через собственные интерфейсы. Rust является выбором реализации. Превосходство по производительности подтверждать измерениями на определённых проектах и оборудовании.
+Use general GUI, geometry, serialization, indexing and numerical libraries through
+project-owned interfaces. Rust is the implementation choice. Demonstrate performance
+advantages through measurements on specified projects and hardware.
 
-Основные платформы: Linux и Windows. Не вводить зависимость ядра от Win32, чтобы сохранить возможность последующей сборки для macOS. Altium работает в отдельной Windows-сессии как эталон исследования. Готовая программа выполняет инженерные операции самостоятельно.
+Primary platforms: Linux and Windows. Keep the core independent of Win32 to allow
+later macOS builds. Altium runs in a separate Windows session as a research
+reference. The finished program performs engineering operations independently.
 
-Все флажки ниже обозначают будущую работу. Для пункта с несколькими требованиями флажок ставить после выполнения всех требований. При необходимости делить его на отдельные задачи, сохраняя исходные критерии.
+All checkboxes below represent future work. For an item with multiple requirements,
+check it only after satisfying all of them. Split items into tasks when necessary,
+preserving the original criteria.
 
-## 0. Организация работы агента
+## 0. Organize agent work
 
-- [x] Создать `AGENTS.md`, `PLAN.md`, `docs/architecture.md`, `docs/decisions/`, `docs/interface/`, `fixtures/` и `benchmarks/`. Записать принятое решение о собственном Rust-ядре и границы сторонних библиотек.
-- [ ] Вести один реестр функций. Для функции хранить источник сведений, состояние реализации, проверки, известные расхождения и зависимости. Раздельно учитывать `documented`, `observed`, `specified`, `implemented`, `verified` и `unsupported`.
-- [ ] Реализовывать завершённую операцию через модель, команду, интерфейс и проверку результата. Появление кнопки или возвращаемое без изменения проекта `success` не закрывает задачу.
-- [ ] Если эталон временно недоступен, продолжать независимые задачи ядра и документированные функции. Помечать ожидание наблюдений; не выдавать предположение за измеренное поведение Altium.
-- [ ] Разделить роли наблюдателя, разработчика и проверяющего. Только один процесс управляет конкретной GUI-сессией Altium. Параллельные агенты работают над разными модулями после фиксации общих контрактов.
-- [ ] После каждого рабочего этапа сохранять собираемый commit, инструкции запуска, минимальный пример проекта и результаты существенных проверок. Не переходить к расширению функции при нарушенных критериях её базового режима.
+- [x] Create `AGENTS.md`, `PLAN.md`, `docs/architecture.md`, `docs/decisions/`, `docs/interface/`, `fixtures/` and `benchmarks/`. Record the independent Rust-core decision and third-party library boundaries.
+- [ ] Maintain one feature registry. Record each feature's information source, implementation state, checks, known differences and dependencies. Track `documented`, `observed`, `specified`, `implemented`, `verified` and `unsupported` separately.
+- [ ] Implement complete operations through model, command, interface and result verification. A button or `success` returned without changing the project does not complete a task.
+- [ ] If the reference is temporarily unavailable, continue independent core tasks and documented features. Mark pending observations; do not present assumptions as measured Altium behavior.
+- [ ] Separate observer, developer and verifier roles. Only one process controls a particular Altium GUI session. Parallel agents work on different modules after shared contracts are fixed.
+- [ ] After each stage, preserve a buildable commit, launch instructions, minimal example project and results of substantive checks. Do not extend a feature while its basic-mode criteria fail.
 
-## 1. Снять эталон и создать карту интерфейса
+## 1. Capture the reference and map the interface
 
-- [ ] Зафиксировать версию и build Altium, расширения, доступные редакторы, язык, тему, DPI, размеры окна, настройки единиц, сеток, панелей и клавиатуры в `reference_profile.json`.
-- [ ] Создать `ui_inventory.json` с полями `editor`, `surface`, `observed_path`, `caption`, `shortcut`, `enabled_when`, `selection_context`, `tool_state`, `command_id`, `evidence` и `verification_status`.
-- [ ] Обследовать основной экран и редакторы отдельно. Записать фактические меню, панели, контекстные действия, вкладки свойств и режимы. Названия File, Edit, View, Place, Design, Tools, Route и Reports далее являются категориями обхода, а не гарантированными путями каждой сборки.
-- [ ] Для каждой команды наблюдать пустой документ, допустимое выделение, смешанное выделение, заблокированные объекты и незавершённую операцию. Записать доступность команды, значения по умолчанию, подтверждение и отмену.
-- [ ] Собирать экран, события ввода и структурное состояние проекта до и после действия. Проверить DelphiScript и доступные интерфейсы объектов; использовать `eda-agent` только после проверки нужных операций на выбранной сборке.
-- [ ] Создать минимальные эталонные проекты для проводов и меток, библиотеки компонентов, простой PCB, приоритетов правил, препятствий трассировки, заливок и вариантов. Не начинать с исследования всех функций на одной большой плате.
-- [ ] Проверить влияние регистратора на документ. Отделить чтение от compile, repour, обновления моделей и других действий, которые могут изменить результат измерения.
+- [ ] Record Altium version/build, extensions, available editors, language, theme, DPI, window size, units, grids, panels and keyboard settings in `reference_profile.json`.
+- [ ] Create `ui_inventory.json` with `editor`, `surface`, `observed_path`, `caption`, `shortcut`, `enabled_when`, `selection_context`, `tool_state`, `command_id`, `evidence` and `verification_status`.
+- [ ] Inspect the main screen and editors separately. Record actual menus, panels, context actions, property tabs and modes. File, Edit, View, Place, Design, Tools, Route and Reports below are exploration categories, not guaranteed paths in every build.
+- [ ] Observe every command with an empty document, valid selection, mixed selection, locked objects and an unfinished operation. Record availability, defaults, confirmation and cancellation.
+- [ ] Collect screen, input events and structural project state before/after actions. Check DelphiScript and available object interfaces; use `eda-agent` only after verifying required operations on the selected build.
+- [ ] Create minimal reference projects for wires/labels, component libraries, a simple PCB, rule priorities, routing obstacles, pours and variants. Do not investigate every feature on one large board first.
+- [ ] Check whether the recorder affects the document. Separate reads from compile, repour, model updates and other actions that may affect measurements.
 
-Источники организации интерфейса и наблюдения: [Altium design environment](https://www.altium.com/documentation/altium-designer/design-environment), [QuickNav Panels](https://www.altium.com/documentation/altium-designer/quicknav/panels), [scripting examples](https://www.altium.com/documentation/altium-designer/scripting/script-example-analysis), [eda-agent](https://github.com/salitronic/eda-agent).
+Interface organization and observation sources: [Altium design environment](https://www.altium.com/documentation/altium-designer/design-environment), [QuickNav Panels](https://www.altium.com/documentation/altium-designer/quicknav/panels), [scripting examples](https://www.altium.com/documentation/altium-designer/scripting/script-example-analysis), [eda-agent](https://github.com/salitronic/eda-agent).
 
-## 2. Создать минимальный Rust workspace
+## 2. Create a minimal Rust workspace
 
-- [ ] Начать с модулей `eda-core`, `eda-geom`, `eda-io`, `eda-render`, `eda-app` и `eda-automation`. Выделять самостоятельные crates правил, связности, трассировки, заливок и CAM по мере появления их контрактов; не создавать десятки пустых пакетов заранее.
-- [ ] Зафиксировать совместимые версии Rust toolchain и зависимостей в `rust-toolchain.toml` и `Cargo.lock`. Согласовать версии egui, eframe, egui_dock и wgpu; не обновлять их независимо по принципу максимального номера.
-- [ ] Использовать egui/eframe для оболочки и интегрировать собственный PCB/SCH canvas через совместимый wgpu backend. Оставить один согласованный цикл событий и одного владельца графического устройства.
-- [ ] Рано проверить выбранный GUI-стек на плотной таблице Properties, docking, нескольких нативных окнах и разных DPI. Плавающая панель внутри canvas и отдельное окно ОС имеют разные требования; недостающую поддержку реализовать до массовой сборки интерфейса.
-- [ ] Добавить сборки Linux и Windows, форматирование, clippy и проверки ядра без запуска GUI. Проверять выпускную конфигурацию при измерении производительности.
-- [ ] Добавить журналирование `tracing`, измерения Criterion и property-based проверки `proptest` для геометрии, транзакций и сохранения. Не создавать хрупкие snapshot-тесты для каждого декоративного изменения интерфейса.
-- [ ] Определить границы зависимостей. `eda-core` не зависит от GUI, окна, GPU и Python. UI и MCP вызывают команды; рендерер читает представление модели и не меняет её.
+- [ ] Start with `eda-core`, `eda-geom`, `eda-io`, `eda-render`, `eda-app` and `eda-automation` modules. Extract separate rules, connectivity, routing, pour and CAM crates as contracts emerge; do not create dozens of empty packages in advance.
+- [ ] Pin compatible Rust toolchain/dependency versions in `rust-toolchain.toml` and `Cargo.lock`. Align egui, eframe, egui_dock and wgpu versions; do not independently upgrade each to its highest number.
+- [ ] Use egui/eframe for the shell and integrate an original PCB/SCH canvas through a compatible wgpu backend. Keep one coordinated event loop and one graphics-device owner.
+- [ ] Test the GUI stack early with a dense Properties table, docking, multiple native windows and different DPIs. A floating canvas panel and a separate OS window have different requirements; implement missing support before constructing the interface at scale.
+- [ ] Add Linux/Windows builds, formatting, clippy and core checks without GUI launch. Use release configuration for performance measurements.
+- [ ] Add `tracing` logging, Criterion measurements and `proptest` property-based checks for geometry, transactions and persistence. Do not create fragile snapshot tests for every decorative UI change.
+- [ ] Define dependency boundaries. `eda-core` does not depend on GUI, windows, GPU or Python. UI/MCP call commands; the renderer reads the model view without modifying it.
 
-### Начальные зависимости
+### Initial dependencies
 
-| Задача | Кандидаты | Условие использования |
+| Task | Candidates | Usage condition |
 |---|---|---|
-| Desktop GUI | `egui`, `eframe`, `egui_dock` | Собственная стилизация и проверка сложных панелей; совместимые версии |
-| GPU | `wgpu` | Единая интеграция с GUI; вычислительная модель не хранится в GPU-буферах |
-| Полигонные операции | `i_overlay` | Собственная обёртка, проверка диапазонов, контуров и результатов |
-| Пространственный поиск | `rstar` | Консервативные bounding boxes и контроль арифметики индекса |
-| Тесселяция | `lyon` | Подготовка отображения; результат не является истинной геометрией DRC |
-| Документы | `serde`, `serde_json`, `uuid`, при необходимости `slotmap` | Стабильные внешние ID отделены от временных ключей хранения |
-| OLE-контейнеры | `cfb` | Только контейнер; записи Altium разбирает собственный код |
-| Параллельные вычисления | `rayon` | Задачи над неизменяемыми снимками и детерминированное объединение результатов |
-| Диагностика и проверки | `tracing`, `criterion`, `proptest` | Измерения и содержательные инварианты |
+| Desktop GUI | `egui`, `eframe`, `egui_dock` | Custom styling and complex-panel verification; compatible versions |
+| GPU | `wgpu` | Shared GUI integration; computational model is not stored in GPU buffers |
+| Polygon operations | `i_overlay` | Project-owned wrapper, range/contour/result checks |
+| Spatial search | `rstar` | Conservative bounding boxes and index-arithmetic checks |
+| Tessellation | `lyon` | Display preparation; result is not authoritative DRC geometry |
+| Documents | `serde`, `serde_json`, `uuid`, optionally `slotmap` | Stable external IDs separate from temporary storage keys |
+| OLE containers | `cfb` | Container only; project code parses Altium records |
+| Parallel computation | `rayon` | Immutable-snapshot jobs and deterministic result merging |
+| Diagnostics and checks | `tracing`, `criterion`, `proptest` | Measurements and substantive invariants |
 
-Ссылки: [egui](https://github.com/emilk/egui), [wgpu](https://github.com/gfx-rs/wgpu), [egui_dock](https://github.com/anhosh/egui_dock), [i_overlay](https://docs.rs/i_overlay/latest/i_overlay/), [rstar](https://docs.rs/rstar/latest/rstar/), [lyon](https://github.com/nical/lyon), [lyon_tessellation API](https://docs.rs/lyon_tessellation/latest/lyon_tessellation/), [serde](https://github.com/serde-rs/serde), [serde_json](https://github.com/serde-rs/json), [uuid](https://github.com/uuid-rs/uuid), [slotmap](https://github.com/orlp/slotmap), [cfb](https://github.com/mdsteele/rust-cfb), [rayon](https://github.com/rayon-rs/rayon), [tracing](https://github.com/tokio-rs/tracing), [criterion](https://github.com/criterion-rs/criterion.rs), [proptest](https://github.com/proptest-rs/proptest).
+Links: [egui](https://github.com/emilk/egui), [wgpu](https://github.com/gfx-rs/wgpu), [egui_dock](https://github.com/anhosh/egui_dock), [i_overlay](https://docs.rs/i_overlay/latest/i_overlay/), [rstar](https://docs.rs/rstar/latest/rstar/), [lyon](https://github.com/nical/lyon), [lyon_tessellation API](https://docs.rs/lyon_tessellation/latest/lyon_tessellation/), [serde](https://github.com/serde-rs/serde), [serde_json](https://github.com/serde-rs/json), [uuid](https://github.com/uuid-rs/uuid), [slotmap](https://github.com/orlp/slotmap), [cfb](https://github.com/mdsteele/rust-cfb), [rayon](https://github.com/rayon-rs/rayon), [tracing](https://github.com/tokio-rs/tracing), [criterion](https://github.com/criterion-rs/criterion.rs), [proptest](https://github.com/proptest-rs/proptest).
 
-## 3. Числа, единицы и собственная геометрия
+## 3. Numbers, units and project-owned geometry
 
-- [ ] Ввести типы `Coord`, `Length`, `Angle`, `LayerId` и преобразования единиц. Исключить неявное смешение экранных пикселей, mm, mil, градусов и внутренних координат.
-- [ ] Выбрать точный масштаб `Coord(i64)` в отдельном ADR. Начальный кандидат: 10 пм, при котором 1 мм равен 100 000 000 единицам, а 2,54 нм равны 254 единицам. Проверить пригодность по входным форматам, диапазону координат и стоимости арифметики.
-- [ ] Ограничить допустимую область координат и определить округление каждой операции. Для промежуточных вычислений использовать проверяемую широкую арифметику; доказать диапазоны предикатов и предусмотреть более широкий fallback там, где `i128` недостаточен.
-- [ ] Реализовать точки, векторы, отрезки, окружности, дуги, прямоугольники, контуры с отверстиями и преобразования локальных координат в мировые.
-- [ ] Реализовать расстояния, пересечения, ориентацию, принадлежность и преобразования с аналитическими контрольными случаями. Отдельно проверить касания, нулевые длины, почти совпадающие точки, границы диапазона и самопересечения.
-- [ ] Обернуть полигонную библиотеку собственным API. Проверять ограничения типа координат, winding, отверстия, offset и корректность результата. Не предполагать, что целочисленный тип автоматически исключает переполнение.
-- [ ] Задать погрешность преобразования кругов, дуг и offsets в полигоны. Для DRC использовать аналитические предикаты либо ограниченную аппроксимацию с консервативными границами; отдельно проверять случаи около границы погрешности.
-- [ ] Добавить spatial index. Проверить арифметику площадей и расстояний самого индекса; при необходимости использовать широкий тип или консервативное округление bounding boxes наружу.
-- [ ] Для рендеринга переводить координаты относительно камеры в подходящий GPU-формат. Масштабирование, DPI и тесселяция не изменяют исходные координаты документа.
+- [ ] Introduce `Coord`, `Length`, `Angle`, `LayerId` and unit conversions. Prevent implicit mixing of screen pixels, mm, mil, degrees and internal coordinates.
+- [ ] Select the exact `Coord(i64)` scale in a separate ADR. Initial candidate: 10 pm, where 1 mm is 100 000 000 units and 2.54 nm is 254 units. Check suitability against input formats, coordinate range and arithmetic cost.
+- [ ] Bound the coordinate domain and define rounding for each operation. Use checked wide arithmetic for intermediate calculations; prove predicate ranges and provide a wider fallback where `i128` is insufficient.
+- [ ] Implement points, vectors, segments, circles, arcs, rectangles, contours with holes and local-to-world transformations.
+- [ ] Implement distances, intersections, orientation, containment and transformations with analytical reference cases. Separately test tangencies, zero lengths, nearly coincident points, range limits and self-intersections.
+- [ ] Wrap the polygon library with a project-owned API. Check coordinate-type constraints, winding, holes, offsets and result validity. Integer types do not automatically prevent overflow.
+- [ ] Define error bounds for converting circles, arcs and offsets into polygons. DRC uses analytical predicates or bounded approximations with conservative limits; test cases near error boundaries separately.
+- [ ] Add a spatial index. Check the index's own area/distance arithmetic; use wider types or conservative outward bounding-box rounding where needed.
+- [ ] For rendering, convert camera-relative coordinates to a suitable GPU format. Zoom, DPI and tessellation do not change original document coordinates.
 
-Справка о масштабе ряда бинарных координат Altium: [описание формата импортера](https://dev-docs.kicad.org/en/import-formats/altium/index.html). Это источник сведений о формате, код и ядро KiCad не используются. Ограничения целочисленного диапазона библиотеки проверять по [i_overlay](https://docs.rs/i_overlay/latest/i_overlay/).
+Altium binary-coordinate scale reference: [import-format description](https://dev-docs.kicad.org/en/import-formats/altium/index.html). This is a format-information source; KiCad code/core are not used. Check the library's integer-range constraints against [i_overlay](https://docs.rs/i_overlay/latest/i_overlay/).
 
-## 4. Модель документов, команды и история
+## 4. Document model, commands and history
 
-- [ ] Реализовать Project, Schematic, Board, библиотечные определения, экземпляры компонентов, pins, pads, nets, layers и references. Допускать незавершённый, но структурно корректный проект.
-- [ ] Отделить UUID сохраняемых объектов от внутренних индексов и generational handles. Перемещение, переименование, undo и синхронизация не подменяют идентичность объекта.
-- [ ] Разделить состояние документа, проекта, камеры, выделения, панелей и активного инструмента. Смена масштаба или выделения не является изменением электрической модели.
-- [ ] Создать типизированные команды и запросы. Команда содержит аргументы с единицами, документ, ожидаемую ревизию и идентификатор операции; результат содержит изменения, диагностику и новую ревизию.
-- [ ] Определить идемпотентность `operation_id` для повторов после тайм-аута. Тот же ID с теми же аргументами возвращает записанный результат, не создавая повторный объект и шаг undo; другой payload с тем же ID отклоняется. Зафиксировать срок и границы сохранения этого журнала, включая восстановление сессии.
-- [ ] Выполнять изменения одной транзакцией. Проверять целостность ссылок до commit; ошибка не оставляет половину операции. Ошибки структуры отклонять, допустимые инженерные нарушения показывать как diagnostics.
-- [ ] Реализовать undo/redo по зафиксированным изменениям. Undo восстанавливает данные, но создаёт новую монотонно возрастающую ревизию; старые фоновые результаты не становятся вновь актуальными.
-- [ ] Реализовать отдельную модель preview. Движение мыши меняет предварительное состояние; commit создаёт один шаг истории; cancel уничтожает preview без изменений документа.
-- [ ] Привязать preview к исходной ревизии. Если другая команда изменила документ, пересчитать или отклонить commit; сохранить чужую подтверждённую правку. Отклонённый commit не меняет документ и историю.
-- [ ] Добавить запросы состояния и экспорт канонического снимка. GUI, CLI и MCP должны давать одинаковое изменение при вызове одной команды с одинаковыми входными данными.
+- [ ] Implement Project, Schematic, Board, library definitions, component instances, pins, pads, nets, layers and references. Allow incomplete but structurally valid projects.
+- [ ] Separate persisted-object UUIDs from internal indices and generational handles. Moving, renaming, undo and synchronization must not replace object identity.
+- [ ] Separate document, project, camera, selection, panel and active-tool states. Zoom/selection changes are not electrical-model changes.
+- [ ] Create typed commands and queries. Commands contain unit-aware arguments, document, expected revision and operation ID; results contain changes, diagnostics and new revision.
+- [ ] Define `operation_id` idempotence for timeout retries. The same ID/arguments returns the recorded result without a duplicate object or undo step; reject a different payload with the same ID. Specify journal retention duration/scope, including session recovery.
+- [ ] Make changes in one transaction. Check reference integrity before commit; errors leave no half-operation. Reject structural errors; report permissible engineering violations as diagnostics.
+- [ ] Implement undo/redo over committed changes. Undo restores data but creates a new monotonically increasing revision; old background results do not become current again.
+- [ ] Implement a separate preview model. Mouse movement changes provisional state; commit creates one history step; cancel destroys preview without document changes.
+- [ ] Bind preview to its source revision. If another command changes the document, recalculate or reject commit while preserving the other committed edit. Rejected commits leave document/history unchanged.
+- [ ] Add state queries and canonical snapshot export. GUI, CLI and MCP must produce identical changes for the same command and inputs.
 
-## 5. Сохранение, восстановление и ранняя проверка форматов
+## 5. Saving, recovery and early format verification
 
-- [ ] Определить собственный документированный формат с версией схемы, стабильными ID, ссылками на ресурсы и миграциями. Не использовать внутреннюю раскладку Rust-структур как долгосрочный формат.
-- [ ] Сохранять точные числа без промежуточного преобразования через JSON `f64`. Для транспорта в клиенты с ограниченной точностью использовать согласованное представление целых значений, например десятичные строки.
-- [ ] Реализовать атомарную запись с платформенной обработкой замены файла, dirty state, восстановлением после сбоя и понятным сообщением о недоступном ресурсе.
-- [ ] Проверить save/reopen, прерывание записи, неизвестную версию документа и повреждённые ссылки. Неподдерживаемые данные не исчезают молча.
-- [ ] Провести ранний native-эксперимент на нескольких объектах Altium: прочитать контейнер и записи, сохранить исходные поля, изменить поддержанный объект, записать и открыть результат в эталоне.
-- [ ] Выполнять native-исследование параллельно первому canvas. Отсутствие эталона не блокирует запуск собственной программы; нерешённые вопросы точности и представимости данных нужно закрыть до закрепления соответствующих частей файловой схемы.
-- [ ] Вести независимые уровни поддержки: импорт, native-запись, сохранность после изменения и межформатный обмен. Определить актуальность сохранённых неизвестных записей после редактирования связанных объектов.
+- [ ] Define an original documented format with schema version, stable IDs, resource references and migrations. Do not use Rust-structure memory layout as a long-term format.
+- [ ] Preserve exact numbers without intermediate JSON `f64` conversion. For limited-precision clients, agree on an integer representation such as decimal strings.
+- [ ] Implement atomic writing with platform-specific replacement handling, dirty state, crash recovery and clear unavailable-resource messages.
+- [ ] Check save/reopen, interrupted writes, unknown document versions and broken references. Unsupported data must not silently disappear.
+- [ ] Run an early native experiment on a few Altium objects: read container/records, retain original fields, modify a supported object, write and open the result in the reference.
+- [ ] Research native IO alongside the first canvas. Reference unavailability does not block the standalone program; resolve precision/representability questions before fixing relevant file-schema parts.
+- [ ] Track independent support levels: import, native writing, preservation after editing and cross-format exchange. Define validity of retained unknown records after related objects change.
 
-## 6. Первый работающий canvas
+## 6. First working canvas
 
-- [ ] Реализовать камеру, pan/zoom, сетку, оси, статус координат, единицы и точную связь screen-to-world. Проверить разные DPI и масштаб рабочего стола.
-- [ ] Добавить отрисовку линий, дуг, контуров, отверстий, площадок, подписей и выделения. Разделить слои документа и порядок графического отображения.
-- [ ] Реализовать hit-testing по реальным объектам с учётом масштаба, перекрытия и фильтра типов. Привязка возвращает точную точку модели, а не только визуальный индикатор.
-- [ ] Добавить culling, кэш тесселяции, пакетирование геометрии и частичное обновление GPU-буферов. Проверять эффект измерениями до усложнения структуры хранения.
-- [ ] Создать первый запускаемый пример: открыть документ, добавить объекты, выделить, изменить параметры, переместить, отменить, повторить, сохранить и открыть с теми же данными.
-- [ ] Закрыть этот этап после совпадения результатов GUI и headless-команд. Все дальнейшие инструменты должны работать с этой моделью, а не с отдельными демонстрационными объектами canvas.
+- [ ] Implement camera, pan/zoom, grid, axes, coordinate status, units and exact screen-to-world mapping. Check different DPI and desktop scaling.
+- [ ] Draw lines, arcs, contours, holes, pads, labels and selection. Separate document layers from graphics display order.
+- [ ] Implement hit testing against real objects with zoom, overlap and type filters. Snapping returns an exact model point, not only a visual indicator.
+- [ ] Add culling, tessellation caching, geometry batching and partial GPU-buffer updates. Measure benefits before complicating storage structures.
+- [ ] Create a first runnable example: open a document, add/select objects, edit parameters, move, undo, redo, save and reopen with identical data.
+- [ ] Close this stage only when GUI and headless-command results match. All subsequent tools must use this model rather than separate canvas demonstration objects.
 
-## 7. Оболочка Altium: File, View, Projects и Preferences
+## 7. Altium shell: File, View, Projects and Preferences
 
-- [ ] Воспроизвести наблюдаемую компоновку: меню, toolbars/Active Bar, вкладки документов, Projects, Properties, Messages, строку состояния и управление панелями.
-- [ ] Реализовать dock, resize, tab, float и autohide по наблюдаемым возможностям. Сохранять раскладку и восстанавливать окна с учётом изменения числа мониторов.
-- [ ] Реализовать создание, открытие, добавление, исключение и переименование документов проекта; Save, Save As, Save All, Close и предупреждения о несохранённых изменениях.
-- [ ] Реализовать меню последних проектов, восстановление рабочей сессии, свойства проекта и диагностируемые ошибки путей. Различать исключение документа из проекта и удаление файла.
-- [ ] Реализовать Preferences по наблюдаемым категориям: единицы, сетки, цвета, поведение редакторов, клавиатура и пути библиотек. Записать, какие параметры принадлежат приложению, проекту и документу.
-- [ ] Сделать Properties контекстным: параметры документа при пустом выборе, свойства выбранных объектов и настройки активной интерактивной операции. Поля должны менять реальную модель или preview.
-- [ ] Привязать каждое действие к `CommandId`. Пункт меню, кнопка, контекстное действие и shortcut вызывают один обработчик и используют одни условия доступности.
+- [ ] Reproduce observed layout: menus, toolbars/Active Bar, document tabs, Projects, Properties, Messages, status bar and panel management.
+- [ ] Implement observed docking, resizing, tabs, floating and autohide. Persist layouts and restore windows while accounting for monitor-count changes.
+- [ ] Implement project-document creation, opening, addition, exclusion and renaming; Save, Save As, Save All, Close and unsaved-change warnings.
+- [ ] Implement recent projects, workspace-session recovery, project properties and diagnosable path errors. Distinguish excluding a document from deleting its file.
+- [ ] Implement observed Preferences categories: units, grids, colors, editor behavior, keyboard and library paths. Record application/project/document ownership of settings.
+- [ ] Make Properties contextual: document settings for empty selection, selected-object properties and active interactive-operation settings. Fields must change the real model or preview.
+- [ ] Bind every action to `CommandId`. Menu entries, buttons, context actions and shortcuts call one handler with shared availability conditions.
 
-## 8. Edit, выделение, клавиатура и списки объектов
+## 8. Edit, selection, keyboard and object lists
 
-- [ ] Реализовать одиночное и рамочное выделение, добавление и исключение объектов, циклический выбор перекрытий и фильтры типов по наблюдаемым правилам.
-- [ ] Реализовать move, drag, rotate, mirror, delete, duplicate, copy и paste. Различать операции, сохраняющие соединения, и операции свободного перемещения.
-- [ ] Реализовать точный ввод координат и параметров во время инструмента. Обработать подтверждение, Esc, смену режима и последовательное размещение по состояниям эталона.
-- [ ] Реализовать смешанные значения Properties и пакетное изменение выбранных объектов. Недопустимая правка не должна незаметно применяться только к части выбора.
-- [ ] Реализовать SCH/PCB List, Filter и поиск с переходом к объекту. Видимость, маскирование, возможность выделения и участие в DRC являются отдельными свойствами.
-- [ ] Проверить клавиатуру при фокусе в canvas, таблице, поле ввода и диалоге. Глобальная команда не перехватывает текст, предназначенный редактору поля.
+- [ ] Implement observed single/rectangle selection, adding/removing objects, overlap cycling and type filters.
+- [ ] Implement move, drag, rotate, mirror, delete, duplicate, copy and paste. Distinguish connection-preserving operations from free movement.
+- [ ] Implement precise coordinate/parameter input while a tool is active. Handle confirmation, Esc, mode switching and repeated placement according to reference states.
+- [ ] Implement mixed Properties values and bulk selected-object edits. Invalid edits must not silently apply to only part of a selection.
+- [ ] Implement SCH/PCB List, Filter and search with object navigation. Visibility, masking, selectability and DRC participation are separate properties.
+- [ ] Check keyboard behavior with focus in canvas, tables, input fields and dialogs. Global commands must not intercept text intended for field editors.
 
-## 9. SCH Library: символы и выводы
+## 9. SCH Library: symbols and pins
 
-- [ ] Реализовать библиотечный документ, список символов, графику, выводы, параметры, designator, comment и единицы измерения.
-- [ ] Реализовать электрические типы выводов, скрытые выводы, ориентации и многосекционные компоненты. Разделить общий логический компонент и его размещённые секции.
-- [ ] Реализовать привязку footprints, SPICE- и 3D-моделей через собственные references. Модель pin-to-pad допускает явное соответствие и несколько pads для одного логического pin.
-- [ ] Реализовать копирование, переименование, проверку и сохранение символов, обновление экземпляров проекта и отчёт о конфликтующих изменениях.
-- [ ] Проверить, что редактирование экземпляра и определения библиотеки имеет разный, явно отображаемый эффект; обновление не теряет намеренные overrides экземпляра.
+- [ ] Implement library documents, symbol lists, graphics, pins, parameters, designator, comment and units.
+- [ ] Implement electrical pin types, hidden pins, orientations and multipart components. Separate the shared logical component from its placed parts.
+- [ ] Link footprints, SPICE and 3D models through project-owned references. Pin-to-pad mapping supports explicit correspondence and multiple pads per logical pin.
+- [ ] Implement symbol copying, renaming, checking and saving, project-instance updates and conflicting-change reports.
+- [ ] Verify that instance editing and library-definition editing have distinct, explicit effects; updates preserve intentional instance overrides.
 
-## 10. Schematic: Place, Properties, Tools и Navigator
+## 10. Schematic: Place, Properties, Tools and Navigator
 
-- [ ] Реализовать параметры листа, размещение компонентов, текст, графические объекты, designators и параметры экземпляров.
-- [ ] Реализовать wires, junctions, net labels, power ports, ports, sheet symbols/entries, buses и логические signal harnesses по наблюдаемым контрактам.
-- [ ] Создать собственный компилятор схемы. Различать геометрическое пересечение и электрическое соединение; учитывать область действия имён, скрытые pins и незавершённые цепи.
-- [ ] Добавить иерархию, повторённые каналы и аннотацию. Не смешивать идентичность определения листа с экземплярами листа и компонентов.
-- [ ] Реализовать ERC, Messages, Navigator и cross-probe. Диагностика хранит ссылки на реальные объекты и объясняет причину нарушения.
-- [ ] Проверить граф связей как множества логических выводов в цепях. Отдельно пройти пересечения без junction, одинаковые локальные имена на разных листах и повторённые каналы.
+- [ ] Implement sheet settings, component placement, text, graphical objects, designators and instance parameters.
+- [ ] Implement wires, junctions, net labels, power ports, ports, sheet symbols/entries, buses and logical signal harnesses according to observed contracts.
+- [ ] Create an original schematic compiler. Distinguish geometric crossings from electrical connections; account for name scope, hidden pins and unfinished nets.
+- [ ] Add hierarchy, repeated channels and annotation. Do not conflate sheet-definition identity with sheet/component instances.
+- [ ] Implement ERC, Messages, Navigator and cross-probe. Diagnostics reference real objects and explain violation causes.
+- [ ] Check the connectivity graph as sets of logical pins in nets. Separately cover crossings without junctions, identical local names on different sheets and repeated channels.
 
-## 11. PCB Library и Pad/Via Library
+## 11. PCB Library and Pad/Via Library
 
-- [ ] Реализовать библиотеку footprints, локальные координаты, начало компонента, слои, размеры, designator/comment и ссылки на модели.
-- [ ] Реализовать круглые, прямоугольные, скруглённые и пользовательские pads, металлизированные и неметаллизированные отверстия, слоты и формы по слоям.
-- [ ] Реализовать solder/paste mask, overrides, tenting и шаблоны pads/vias. Отдельно обследовать и реализовать нужные операции Pad Via Library, включая соответствующую `.PvLib` совместимость.
-- [ ] Реализовать преобразования на нижнюю сторону платы с корректными слоями, отверстиями и ориентациями. Текстовые поля и графика обрабатываются по собственным правилам эталона.
-- [ ] Добавить мастера footprints после определения параметров и проверяемой геометрии результата. Сгенерированный footprint сохраняется и редактируется обычными командами.
-- [ ] Проверить соответствие pin-to-pad, обновление footprint в проекте и сохранность размещения. Не предполагать, что одинаковые номера автоматически описывают все соединения.
+- [ ] Implement footprint libraries, local coordinates, component origin, layers, dimensions, designator/comment and model references.
+- [ ] Implement round, rectangular, rounded and custom pads, plated/unplated holes, slots and per-layer shapes.
+- [ ] Implement solder/paste mask, overrides, tenting and pad/via templates. Separately inspect/implement required Pad Via Library operations, including corresponding `.PvLib` compatibility.
+- [ ] Implement bottom-side transformations with correct layers, holes and orientations. Text fields and graphics follow their own reference rules.
+- [ ] Add footprint wizards after defining parameters and verifiable output geometry. Generated footprints save and edit through ordinary commands.
+- [ ] Check pin-to-pad mapping, project footprint updates and placement preservation. Identical numbers do not automatically describe all connections.
 
-## 12. PCB: размещение и базовые объекты
+## 12. PCB: placement and basic objects
 
-- [ ] Реализовать board outline, cutouts, компоненты, pads, vias, tracks, arcs, regions, polygons, текст и размеры с наблюдаемыми панелями Properties.
-- [ ] Создать минимальный двухслойный стек: порядок и роли проводящих слоёв, две стороны, физическая толщина и сквозные металлизированные vias с явным диапазоном слоёв. Этот минимум предшествует многослойной трассировке и первому производственному выпуску; расширенный стек реализуется в пункте 18.
-- [ ] Добавить nets, net classes, component classes, rooms, locks и selection filters. Сохранять принадлежность объектов при перемещении и изменении имени.
-- [ ] Реализовать перемещение, поворот, выравнивание, распределение и перенос компонентов между сторонами. Проверять локальные и мировые координаты отдельно.
-- [ ] Построить собственную фактическую связность меди. Совпадающий NetId означает намеренное соединение, но не доказывает наличие физического пути между площадками.
-- [ ] Реализовать ratsnest и обновление после изменения меди. Учитывать vias, реальные spans и проводящие слои, исключая непроводящие пересечения.
-- [ ] Проверить размещение и редактирование на платах с незавершённой разводкой и DRC-нарушениями. Такие проекты остаются редактируемыми и сохраняемыми.
+- [ ] Implement board outline, cutouts, components, pads, vias, tracks, arcs, regions, polygons, text and dimensions with observed Properties panels.
+- [ ] Create a minimal two-layer stack: conductive-layer order/roles, two sides, physical thickness and plated through vias with explicit spans. This minimum precedes multilayer routing and first manufacturing output; section 18 adds the advanced stack.
+- [ ] Add nets, net classes, component classes, rooms, locks and selection filters. Preserve object membership during moving and renaming.
+- [ ] Implement component moving, rotation, alignment, distribution and side changes. Check local/world coordinates separately.
+- [ ] Build original actual copper connectivity. Matching NetId means an intended connection but does not prove a physical path between pads.
+- [ ] Implement ratsnest and updates after copper changes. Account for vias, actual spans and conductive layers, excluding nonconductive crossings.
+- [ ] Check placement/editing on boards with unfinished routing and DRC violations. Such projects remain editable and saveable.
 
-## 13. Design: синхронизация схемы и PCB, ECO
+## 13. Design: schematic/PCB synchronization, ECO
 
-- [ ] Реализовать связь логического компонента схемы и физического экземпляра PCB по стабильной идентичности и явному mapping.
-- [ ] Построить сравнение проектов и список изменений: добавить, удалить, переименовать, заменить footprint, изменить назначение pin/pad или цепи.
-- [ ] Реализовать окно ECO с предварительной проверкой, применением выбранных изменений и отчётом о фактическом результате. Ошибка не оставляет неучтённые частичные изменения.
-- [ ] Сохранять допустимое размещение, ручные свойства и участки разводки при обновлении. Изменение имени не превращается в необоснованную пару delete/add.
-- [ ] Проверить идемпотентность: повторная синхронизация без новых изменений не предлагает лишний ECO. Проверить rename, remove, alternate footprint, undo и save/reopen.
+- [ ] Link logical schematic components to physical PCB instances using stable identity and explicit mapping.
+- [ ] Build project comparison and change lists: add, remove, rename, replace footprint, change pin/pad mapping or nets.
+- [ ] Implement an ECO window with prevalidation, selective application and actual-result reports. Errors leave no unaccounted partial changes.
+- [ ] Preserve valid placement, manual properties and routed portions during updates. Renaming does not become an unjustified delete/add pair.
+- [ ] Verify idempotence: resynchronizing without new changes offers no unnecessary ECO. Check rename, remove, alternate footprint, undo and save/reopen.
 
-## 14. Design Rules, Constraint Manager и DRC
+## 14. Design Rules, Constraint Manager and DRC
 
-- [ ] Реализовать собственный типизированный query parser/evaluator: типы объектов, цепи и классы, слои, области, логические операции и единицы.
-- [ ] Реализовать применение правил к объекту и паре объектов, приоритеты, overrides, наследование и объяснение выбранного эффективного правила.
-- [ ] Создать классическое дерево правил и object-centric constraints как разные представления наблюдаемых режимов. Не подменять Constraint Manager таблицей без модели наследования и сохранения.
-- [ ] Начать DRC с shorts, clearance, unconnected, width, drill и границ платы. Расширять проверками масок, annular rings, расстояний отверстий и остальных наблюдённых правил.
-- [ ] Добавить полный и инкрементальный DRC. Связать результат с ревизиями документа, правил и производных данных; отбрасывать устаревший фоновый результат.
-- [ ] Реализовать панель нарушений, фильтры, настройки проверки и переход к месту ошибки. Разделить запуск проверки и политику инструмента, запрещающую создавать определённые нарушения.
-- [ ] Проверить пересечение областей правил и границы допуска: чуть ниже, ровно на и чуть выше заданного значения. Сопоставить полный и инкрементальный результат на одном снимке.
-- [ ] Реализовать `.rul` и `Constraints.xml` только после собственного формата правил и проверки соответствия семантики. Отдельно учитывать состояние изменённых, но ещё не сохранённых constraints.
+- [ ] Implement an original typed query parser/evaluator: object types, nets/classes, layers, regions, logic and units.
+- [ ] Implement object/object-pair rule application, priorities, overrides, inheritance and explanations of effective-rule selection.
+- [ ] Create a classic rule tree and object-centric constraints as separate representations of observed modes. Do not substitute a table without inheritance/persistence for Constraint Manager.
+- [ ] Start DRC with shorts, clearance, unconnected, width, drill and board boundaries. Extend to masks, annular rings, hole distances and remaining observed rules.
+- [ ] Add full/incremental DRC. Bind results to document, rule and derived-data revisions; discard stale background results.
+- [ ] Implement violations panel, filters, check settings and error navigation. Separate checking from tool policies that prohibit creating particular violations.
+- [ ] Check overlapping rule scopes and tolerance boundaries: just below, exactly at and just above a value. Compare full/incremental results on the same snapshot.
+- [ ] Implement `.rul` and `Constraints.xml` only after the original rules format and semantic correspondence checks. Track changed but unsaved constraints separately.
 
-## 15. Route: собственная интерактивная трассировка
+## 15. Route: original interactive routing
 
-- [ ] Реализовать state machine инструмента: начало, выбор ширины и слоя, движение, угол, preview, подтверждение сегмента, завершение и отмена.
-- [ ] Реализовать ручную одиночную трассу на одном слое. Проверить snapping, ширину, форму меди, NetId, связи с конечными объектами и единый шаг undo.
-- [ ] Добавить остановку перед препятствием и явную политику разрешённых нарушений. Итоговая диагностика соответствует выбранному режиму инструмента.
-- [ ] Реализовать walkaround на одном слое через собственный поиск пути и clearance API. При отсутствии решения не менять документ и показать причину.
-- [ ] Реализовать drag существующей трассы с сохранением предусмотренных соединений. Обработать закреплённые объекты, ветвления, углы и невозможные перемещения.
-- [ ] Реализовать shove сначала на одном слое. Выполнять цепочку перемещений в preview, ограничить работу поиска, полностью откатывать неуспешную попытку.
-- [ ] Добавить многослойную трассировку после модели stackup и допустимых via spans. Проверять электрическую связь через переход и ограничения соседних слоёв.
-- [ ] Реализовать дифпары: полярность, совместную геометрию, зазор, paired vias, участки расплетения и длину каждой реальной трассы.
-- [ ] Добавить multi-routing, геометрическое length/skew tuning, gloss и retrace как самостоятельные команды.
-- [ ] Подключить delay tuning после проверенной модели задержек из пункта 20. Этот поздний режим не блокирует геометрические инструменты и первую рабочую плату.
-- [ ] Проверять router независимыми простыми геометрическими эталонами и инвариантами связности, дополнительно к общему clearance-коду. Одна ошибка не должна одновременно строить маршрут и подтверждать его корректность.
+- [ ] Implement tool state machine: start, width/layer selection, movement, angle, preview, segment confirmation, finish and cancel.
+- [ ] Implement manual single-track routing on one layer. Check snapping, width, copper shape, NetId, endpoint-object connections and a single undo step.
+- [ ] Add obstacle stopping and explicit allowed-violation policy. Final diagnostics match the chosen tool mode.
+- [ ] Implement single-layer walkaround with original pathfinding and clearance API. If no solution exists, leave the document unchanged and explain why.
+- [ ] Implement existing-track drag preserving intended connections. Handle fixed objects, branches, corners and impossible moves.
+- [ ] Implement shove on one layer first. Perform displacement chains in preview, bound search work and completely roll back failed attempts.
+- [ ] Add multilayer routing after stackup and valid via-span models. Check electrical connectivity through transitions and neighboring-layer constraints.
+- [ ] Implement differential pairs: polarity, joint geometry, gap, paired vias, uncoupled sections and each actual track's length.
+- [ ] Add multi-routing, geometric length/skew tuning, gloss and retrace as independent commands.
+- [ ] Add delay tuning after the verified delay model in section 20. This later mode does not block geometric tools or the first working board.
+- [ ] Check the router against independent simple geometric references and connectivity invariants in addition to shared clearance code. One bug must not both construct a route and certify it.
 
-## 16. Polygons, planes, stitching и shielding
+## 16. Polygons, planes, stitching and shielding
 
-- [ ] Разделить исходное задание полигона и рассчитанную медь. Сохранять контур, net, приоритет, thermal/island-параметры и настройки заливки независимо от кэша.
-- [ ] Реализовать вычитание препятствий и cutouts, зазоры по правилам, отверстия, пересечение полигонов и порядок их расчёта.
-- [ ] Реализовать thermal relief, direct connect, удаление островков и связь полученной меди с площадками и переходами.
-- [ ] Реализовать repour, shelve/restore и локальное обновление по наблюдаемым операциям. Изменение правил или стека инвалидирует зависимую медь.
-- [ ] Добавить внутренние planes, stitching и shielding после проверки связности и via spans. Эти команды создают обычные редактируемые объекты.
-- [ ] Проверить площадь, топологию, принадлежность цепям и DRC. Разный порядок вершин или разбиение на регионы допустимы при одинаковом инженерном результате.
+- [ ] Separate polygon definitions from computed copper. Persist outline, net, priority, thermal/island parameters and pour settings independently of cache.
+- [ ] Implement obstacle/cutout subtraction, rule-based clearances, holes, polygon intersections and calculation order.
+- [ ] Implement thermal relief, direct connect, island removal and resulting copper connectivity to pads/vias.
+- [ ] Implement observed repour, shelve/restore and local updates. Rule/stack changes invalidate dependent copper.
+- [ ] Add internal planes, stitching and shielding after verifying connectivity and via spans. Commands create ordinary editable objects.
+- [ ] Check area, topology, net membership and DRC. Different vertex order or region partitioning is acceptable when engineering results match.
 
-## 17. Первый полный путь создания платы
+## 17. First complete board-creation workflow
 
-- [ ] Собрать этот сценарий из готовых базовых возможностей пунктов 8–16. Иерархия, сложный shove, дифпары, plane-режимы и другие расширения не блокируют первую простую плату; их незавершённые задачи остаются в плане без флажков.
-- [ ] Подготовить контрольный проект с собственной схемой, библиотечными компонентами и двухслойной PCB. Число компонентов и особенности зафиксировать в fixture.
-- [ ] Пройти создание схемы, ERC, ECO, размещение, одиночную трассировку, vias, полигон и DRC через реальный интерфейс.
-- [ ] Реализовать начальный экспорт Gerber, Excellon, BOM и pick-and-place из собственной модели. Выходные файлы содержат фактические проектные данные.
-- [ ] Разобрать экспорт независимым читателем и сравнить контур, медь, отверстия, единицы, слои, позиции и повороты с исходной моделью.
-- [ ] Пройти undo/redo существенных операций, закрытие, повторное открытие и повторный выпуск без необъяснимого изменения результата.
-- [ ] Зафиксировать рабочую сборку и сценарий. Это контрольная точка перед расширением дорогих подсистем; конечная цель полного функционального охвата сохраняется.
+- [ ] Assemble this scenario from completed basic capabilities in sections 8–16. Hierarchy, complex shove, differential pairs, plane modes and other extensions do not block the first simple board; unfinished tasks remain unchecked in the plan.
+- [ ] Prepare a verification project with an original schematic, library components and two-layer PCB. Record component count/features in the fixture.
+- [ ] Complete schematic creation, ERC, ECO, placement, single-track routing, vias, polygon and DRC through the real interface.
+- [ ] Implement initial Gerber, Excellon, BOM and pick-and-place export from the project's model. Outputs contain actual project data.
+- [ ] Parse exports with an independent reader and compare outline, copper, holes, units, layers, positions and rotations with the source model.
+- [ ] Exercise undo/redo for substantive operations, close, reopen and regenerate outputs without unexplained changes.
+- [ ] Record a working build/scenario. This is a checkpoint before expanding expensive subsystems; full functional coverage remains the final goal.
 
-## 18. Layer Stack Manager, HDI и rigid-flex
+## 18. Layer Stack Manager, HDI and rigid-flex
 
-- [ ] Реализовать материалы, толщины, медные и диэлектрические слои, физические координаты по Z и наблюдаемую таблицу стека.
-- [ ] Добавить blind/buried/microvias, backdrill, допустимые пары слоёв, последовательности переходов и проверки сверловки.
-- [ ] Реализовать substacks, flex regions, bend lines и радиусы. Связать области платы с физическим стеком и сформированной геометрией.
-- [ ] Реализовать импорт/экспорт настроек стека и impedance profiles по явно заявленному подмножеству форматов.
-- [ ] Проверить связь stackup с DRC, router, 3D, задержками и производственными выходами. Изменение таблицы должно обновлять все зависимые результаты.
+- [ ] Implement materials, thicknesses, copper/dielectric layers, physical Z coordinates and the observed stack table.
+- [ ] Add blind/buried/microvias, backdrill, allowed layer pairs, transition sequences and drill checks.
+- [ ] Implement substacks, flex regions, bend lines and radii. Link board regions to physical stack and generated geometry.
+- [ ] Implement stack-setting and impedance-profile import/export for an explicitly declared format subset.
+- [ ] Check stackup integration with DRC, router, 3D, delays and manufacturing outputs. Table changes must update all dependent results.
 
-## 19. 3D Layout и ECAD/MCAD
+## 19. 3D Layout and ECAD/MCAD
 
-- [ ] Реализовать отдельное 3D-представление Board с теми же ID, координатами, слоями, отверстиями и компонентами, что использует 2D-редактор.
-- [ ] Добавить модели компонентов, локальные transforms, привязку к footprint и достоверное положение на верхней и нижней сторонах.
-- [ ] Реализовать камеру, разрезы, видимость, выбор и cross-probe между 2D и 3D по наблюдаемым операциям.
-- [ ] Разделить preview mesh и точную геометрию обмена. Для STEP выделить собственный адаптер; применение внешней геометрической библиотеки не заменяет Rust-модель платы.
-- [ ] Добавить проверки механических коллизий и высот. Проверить unfolded/folded представления rigid-flex и изменение модели после редактирования исходной платы.
+- [ ] Implement a separate 3D Board view with the same IDs, coordinates, layers, holes and components as the 2D editor.
+- [ ] Add component models, local transforms, footprint links and accurate top/bottom placement.
+- [ ] Implement observed camera, sections, visibility, selection and 2D/3D cross-probe operations.
+- [ ] Separate preview meshes from exact exchange geometry. Give STEP a project-owned adapter; an external geometry library does not replace the Rust board model.
+- [ ] Add mechanical collision/height checks. Check unfolded/folded rigid-flex views and model updates after source-board edits.
 
-## 20. High-speed, xSignals и импеданс
+## 20. High-speed, xSignals and impedance
 
-- [ ] Реализовать описание электрического пути, xSignals/xNets и ограничений. Отличать геометрическую длину объекта от длины выбранного пути между выводами.
-- [ ] Добавить длины переходов и pin-package contributions с явными единицами и происхождением параметров. Проверить ветвления и последовательные компоненты.
-- [ ] Реализовать Rust-модели типовых линий с объявленной областью применимости. Сопоставлять с аналитическими случаями и независимыми решателями при одинаковых материалах и предположениях.
-- [ ] Добавить матрицы/профили импеданса и задержки только после численной проверки расчётного пути. Панель не возвращает заранее заданные значения как результат вычисления.
-- [ ] Реализовать delay tuning и связанные DRC-ограничения поверх проверенных параметров. Обновлять результаты после изменения стека, пути и модели компонента.
+- [ ] Implement electrical paths, xSignals/xNets and constraints. Distinguish object geometric length from the selected pin-to-pin path length.
+- [ ] Add transition lengths and pin-package contributions with explicit units/provenance. Check branches and series components.
+- [ ] Implement Rust models of common transmission lines with declared applicability. Compare analytical cases and independent solvers using identical materials/assumptions.
+- [ ] Add impedance/delay matrices/profiles only after numerical verification of the calculation path. Panels must not return preset values as computed results.
+- [ ] Implement delay tuning and related DRC constraints over verified parameters. Update results after stack, path and component-model changes.
 
-## 21. Variants, BOM и компоненты
+## 21. Variants, BOM and components
 
-- [ ] Реализовать fitted/not fitted, альтернативные компоненты, параметры и наблюдаемые варианты повторённых каналов.
-- [ ] Реализовать BOM aggregation, количество, группировку, столбцы, заменяемость и вывод источника каждого параметра.
-- [ ] Согласовать варианты между BOM, placement, 3D и сборочными чертежами. Не трактовать вариант сборки как произвольную независимую геометрию изготовления PCB.
-- [ ] Добавить поиск и локальный индекс библиотек, проверку ссылок и обновления. Обработать отсутствующие модели и конфликтующие версии.
-- [ ] Подключать цены, остатки и lifecycle через отдельные адаптеры данных; показывать происхождение и дату сведений, сохранять работоспособность локального проекта без сети.
+- [ ] Implement fitted/not fitted, alternate components, parameters and observed repeated-channel variants.
+- [ ] Implement BOM aggregation, quantity, grouping, columns, substitutability and parameter provenance display.
+- [ ] Align variants across BOM, placement, 3D and assembly drawings. Do not treat an assembly variant as arbitrary independent PCB fabrication geometry.
+- [ ] Add library search/local indexing, reference checks and updates. Handle missing models and conflicting versions.
+- [ ] Integrate prices, stock and lifecycle through separate data adapters; display provenance/date and keep local projects usable offline.
 
-## 22. Simulation и SI/PI
+## 22. Simulation and SI/PI
 
-- [ ] Реализовать сопоставление символов, pins и расчётных моделей, генерацию входной задачи и настройки анализа.
-- [ ] Ввести контракт расчётного backend: входные данные, версии моделей, параметры, запуск, отмена, ошибки, единицы и результаты. Внешний solver при использовании работает как отдельный адаптер, ядро EDA остаётся собственным Rust-кодом.
-- [ ] Начать с проверяемых DC, AC и transient-примеров, затем добавлять sweep, измерения и наблюдаемые рабочие операции анализа.
-- [ ] Реализовать просмотр результатов: трассы, оси, курсоры, единицы и экспорт численных данных. Отображаемые графики происходят из выполненного расчёта.
-- [ ] Реализовать SI/PI отдельными задачами с явной моделью экстракции, портами, материалами и граничными условиями. Для DC падения напряжения, токовой плотности, нагрева и динамического PDN задать разные критерии точности.
+- [ ] Implement symbol/pin/computational-model mapping, simulation input generation and analysis settings.
+- [ ] Define the computational-backend contract: inputs, model versions, parameters, launch, cancellation, errors, units and results. An external solver, if used, is a separate adapter; the EDA core remains project-owned Rust code.
+- [ ] Start with verifiable DC, AC and transient examples, then add sweep, measurements and observed analysis workflows.
+- [ ] Implement result viewing: traces, axes, cursors, units and numerical export. Displayed plots come from an executed calculation.
+- [ ] Implement SI/PI as separate tasks with explicit extraction model, ports, materials and boundary conditions. Set different accuracy criteria for DC voltage drop, current density, heating and dynamic PDN.
 
-## 23. Reports, OutJob, CAM и Draftsman
+## 23. Reports, OutJob, CAM and Draftsman
 
-- [ ] Расширить генераторы Gerber/Drill, assembly outputs, IPC-2581 и ODB++ по проверяемым версиям форматов. Вести отдельный статус каждого reader/writer.
-- [ ] Реализовать OutJob: источники, параметры, контейнеры, варианты, validation, последовательность запуска, ошибки и перечень реально созданных файлов.
-- [ ] Реализовать CAM-документ, импорт слоёв и сверловки, отображение, измерения и редактирование по обследованным операциям. CAM хранит собственные данные и не является только картинкой платы.
-- [ ] Реализовать Draftsman: документы, листы, templates, виды, размеры, выноски, таблицы и параметры оформления.
-- [ ] Связать виды и размеры Draftsman с объектами проекта. После изменения платы обновлять геометрию, варианты и таблицы с диагностикой потерянных references.
-- [ ] Проверить независимое открытие manufacturing outputs, единицы, polarity, apertures, masks, drill spans, rotations и quantities. Успешный статус задания без проверенных файлов не закрывает выпуск.
+- [ ] Extend Gerber/Drill generators, assembly outputs, IPC-2581 and ODB++ for verifiable format versions. Track each reader/writer independently.
+- [ ] Implement OutJob: sources, parameters, containers, variants, validation, execution order, errors and actual output-file lists.
+- [ ] Implement CAM documents, layer/drill import, display, measurement and editing according to researched operations. CAM owns data rather than being merely a board image.
+- [ ] Implement Draftsman documents, sheets, templates, views, dimensions, callouts, tables and formatting parameters.
+- [ ] Link Draftsman views/dimensions to project objects. Board changes update geometry, variants and tables with lost-reference diagnostics.
+- [ ] Verify independent opening of manufacturing outputs, units, polarity, apertures, masks, drill spans, rotations and quantities. Successful job status without verified files does not complete output generation.
 
-## 24. Multi-board, harness и собственный Workspace
+## 24. Multi-board, harness and original Workspace
 
-- [ ] Реализовать multi-board logical model, дочерние проекты, connector mapping, системную связность и синхронизацию изменений.
-- [ ] Реализовать multi-board assembly, transforms, механические связи, коллизии и системный BOM из согласованной модели сборки.
-- [ ] Реализовать физический harness отдельно от логического signal harness схемы: провода, кабели, разъёмы, splices, bundles, длины, wiring и layout.
-- [ ] Связать harness wiring, layout и manufacturing-документы. Проверить обновление длин, соединений и BOM при изменении источника.
-- [ ] Создать собственный сервер Workspace для revisions, lifecycle, permissions, comments, conflicts и release records. Локальные проектные операции не зависят от доступности сервера.
-- [ ] Реализовать внешние интеграции через документированные адаптеры и список поддержанных операций. Проверить конкурентные изменения, offline/reconnect и отсутствие потери подтверждённых правок.
+- [ ] Implement multi-board logical models, child projects, connector mapping, system connectivity and change synchronization.
+- [ ] Implement multi-board assembly, transforms, mechanical relationships, collisions and system BOM from a consistent assembly model.
+- [ ] Implement physical harnesses separately from schematic logical signal harnesses: wires, cables, connectors, splices, bundles, lengths, wiring and layout.
+- [ ] Link harness wiring, layout and manufacturing documents. Check length, connection and BOM updates when sources change.
+- [ ] Create a project-owned Workspace server for revisions, lifecycle, permissions, comments, conflicts and release records. Local project operations do not depend on server availability.
+- [ ] Implement external integrations through documented adapters and supported-operation lists. Check concurrent changes, offline/reconnect and preservation of committed edits.
 
-## 25. Производительность и доведение внешнего вида
+## 25. Performance and visual refinement
 
-- [ ] Создать малый, средний и большой benchmark-проект с зафиксированными объектами, настройками и seed. Записывать CPU, GPU, RAM, ОС, разрешение, DPI, commit и release-профиль.
-- [ ] Измерять время открытия/сохранения, pan/zoom, selection, latency route preview, полный/инкрементальный DRC, repour, пиковую память и размер документа.
-- [ ] Для выбранной средней платы принять начальные цели взаимодействия, например 60 FPS и p95 route preview до 50 мс. Эти значения являются проектными целями для заданной конфигурации, а не заявленным результатом.
-- [ ] Устранить полный обход документа на каждый кадр, пересборку всей геометрии и блокирующие расчёты в UI-потоке. Оптимизировать обнаруженные профилировщиком горячие участки.
-- [ ] Параллелить независимые вычисления над снимками через rayon. Сохранять детерминированный порядок результатов, контроль ревизий и возможность отмены долгих задач.
-- [ ] Сверить размеры панелей, отступы, шрифты, цвета, курсоры, disabled states, scrolling, docking и переходы инструментов с эталоном при согласованном DPI.
-- [ ] Проверить Windows и Linux отдельно: клавиатура, clipboard, пути, drag/drop, масштабирование, несколько мониторов, шрифты и доступные GPU backend.
+- [ ] Create small, medium and large benchmark projects with fixed objects, settings and seeds. Record CPU, GPU, RAM, OS, resolution, DPI, commit and release profile.
+- [ ] Measure opening/saving, pan/zoom, selection, route-preview latency, full/incremental DRC, repour, peak memory and document size.
+- [ ] Set initial interaction targets for a chosen medium board, e.g. 60 FPS and p95 route preview under 50 ms. These are design goals for a specified configuration, not reported results.
+- [ ] Remove whole-document scans each frame, full geometry rebuilds and blocking UI-thread calculations. Optimize profiler-identified hot spots.
+- [ ] Parallelize independent snapshot computations with rayon. Preserve deterministic result order, revision checks and cancellation of long jobs.
+- [ ] Compare panel dimensions, spacing, fonts, colors, cursors, disabled states, scrolling, docking and tool transitions with the reference at agreed DPI.
+- [ ] Check Windows/Linux separately: keyboard, clipboard, paths, drag/drop, scaling, multiple monitors, fonts and available GPU backends.
 
-## 26. Правило завершения каждой функции интерфейса
+## 26. Completion rule for each interface feature
 
-- [ ] Указать наблюдаемый редактор, путь интерфейса, контекст доступности и соответствующий собственный `CommandId`.
-- [ ] Реализовать корректное изменение модели и сообщения об ошибках, а также preview, cancel и undo/redo там, где они применимы.
-- [ ] Проверить save/reopen и обновление зависимых данных. Состояние после undo имеет новую ревизию и не принимает старые кэши.
-- [ ] Выполнить содержательный сценарий из эталона и дополнительные граничные случаи. Разделить визуальное, электрическое, геометрическое, файловое и численное совпадение.
-- [ ] Для алгоритмической операции использовать независимые эталоны или инварианты. Не менять ожидаемый результат только для совпадения с собственной реализацией.
-- [ ] Записать доказательства, охват, ограничения и известные расхождения. Поставить флажок задачи только после соответствующих критериев, без объявления универсального совпадения по ограниченному набору примеров.
+- [ ] Identify the observed editor, interface path, availability context and corresponding project-owned `CommandId`.
+- [ ] Implement correct model changes/error messages, plus preview, cancel and undo/redo where applicable.
+- [ ] Check save/reopen and dependent-data updates. State after undo has a new revision and does not accept old caches.
+- [ ] Execute a substantive reference scenario and additional edge cases. Distinguish visual, electrical, geometric, file and numerical equivalence.
+- [ ] Use independent references or invariants for algorithms. Do not change expected results merely to match the implementation.
+- [ ] Record evidence, coverage, limitations and known differences. Check tasks only after meeting their criteria, without claiming universal parity from a limited example set.
 
-## Ближайший пакет работ для первого запуска
+## Next work package for the first launch
 
-- [ ] Выполнить пункты 0–6 в минимальном объёме и общую оболочку пункта 7, не заполняя весь интерфейс фиктивными функциями.
-- [ ] Выдать запускаемые Linux/Windows-сборки, исходники, тестовый документ и инструкцию воспроизведения первого сценария.
-- [ ] Продемонстрировать реальный путь: создать документ → добавить объекты → изменить параметры → переместить → undo/redo → сохранить → закрыть → открыть с теми же данными.
-- [ ] Продолжить пункты 8–17 до первого полного пути схемы и платы. Развивать пункты 18–25 после выполнения их инженерных зависимостей.
+- [ ] Complete the minimum scope of sections 0–6 and the shared shell in section 7 without filling the interface with dummy features.
+- [ ] Deliver runnable Linux/Windows builds, sources, a test document and instructions reproducing the first scenario.
+- [ ] Demonstrate a real workflow: create document → add objects → edit parameters → move → undo/redo → save → close → reopen with identical data.
+- [ ] Continue sections 8–17 to the first complete schematic/board workflow. Develop sections 18–25 after satisfying their engineering dependencies.
 
-## Дополнительные первоисточники поведения Altium
+## Additional primary sources for Altium behavior
 
 - [Traditional rules](https://www.altium.com/documentation/altium-designer/pcb/defining-scoping-managing-design-rules)
 - [Constraint Manager](https://www.altium.com/documentation/altium-designer/sch-pcb/constraint-manager)
@@ -315,4 +324,7 @@
 - [Harness design](https://www.altium.com/documentation/altium-designer/harness-design)
 - [Gerber specifications and test data](https://www.ucamco.com/en/gerber)
 
-Предыдущий исследовательский пакет использовать для источников, каталога и сценариев. Архитектурные указания о KiCad не переносить в этот план. Наблюдение конкретной установки, реализация приложения и измерение его производительности в рамках подготовки этого документа не выполнялись.
+Use the previous research package for sources, inventory and scenarios. Do not
+carry its KiCad architectural guidance into this plan. No observation of a specific
+installation, application implementation or performance measurement was performed
+while preparing this document.

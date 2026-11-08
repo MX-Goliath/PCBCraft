@@ -153,7 +153,7 @@ not claimed.
   Windows PCBCraft verification at 1707x1019 confirmed aligned variant columns,
   the component variation child dialog, Not Fitted, Undo/Redo, manager OK, native
   project/companion saving and assembly projection (red C2 cross, green C1 value).
-  GUI-exported GuiVariantBOM.csv contains alternate C1 / 1404 / 10 нФ and excludes
+  GUI-exported GuiVariantBOM.csv contains alternate C1 / 1404 / 10 nF and excludes
   C2. The original unsaved group was saved as SessionSnapshot.DsnWrk before the
   authorized restart. The single updated GUI is left on the disposable QA copy.
   Schematic, PCB and integrated-library hashes still match their original copies.

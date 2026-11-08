@@ -1,291 +1,277 @@
-# Проверки первой итерации
+# First-iteration verification
 
-19 октября 2026, Windows, Rust 1.90.0, x86_64-pc-windows-gnu.
-Toolchain установлен в `.tools`; системный PATH не менялся.
+October 19, 2026, Windows, Rust 1.90.0, x86_64-pc-windows-gnu.
+Toolchain installed in `.tools`; system PATH was unchanged.
 
-## Автоматические проверки
+## Automated checks
 
-Windows debug build успешен. `cargo fmt --all -- --check`,
-`cargo clippy --workspace --all-targets -- -D warnings` и
-`cargo test --workspace` успешны (через scripts/dev.ps1 с локальным toolchain).
-Всего 4 теста, все прошли. Содержательные сценарии: атомарное отклонение неверной правки,
-ревизии undo/redo, ветвление истории, JSON roundtrip и замена файла,
-dirty state относительно сохранённого содержимого, camera roundtrip
-и сохранение точки под курсором при zoom.
+Windows debug build succeeded. `cargo fmt --all -- --check`,
+`cargo clippy --workspace --all-targets -- -D warnings` and
+`cargo test --workspace` succeeded through scripts/dev.ps1 with the local toolchain.
+All 4 tests passed. Substantive scenarios: atomic rejection of invalid edits,
+undo/redo revisions, history branching, JSON roundtrip and file replacement,
+dirty state relative to saved content, camera roundtrip and preserving the point
+under the cursor when zooming.
 
-## Ручной сценарий
+## Manual scenario
 
-- [x] Запустить реальное окно на wgpu и проверить компоновку.
-- [x] Выбрать J1.1, изменить X с 10 на 12 мм, Apply, undo/redo.
-- [x] Создать PCB и schematic; переключить вкладки и Home.
-- [x] Скрыть/восстановить Properties через View.
-- [ ] Полноценно проверить ручной resize (автоматический drag не подтвердил изменение размера).
-- [x] Сохранить документ, закрыть, открыть через Recent; проверить правку.
-- [x] Cancel отменяет закрытие новой PCB-вкладки.
-- [x] Выход с двумя несохранёнными документами: Save последовательно сохраняет
-      PCB и schematic, затем закрывает приложение. Проверены оба созданных JSON.
-- [ ] Отдельно проверить ветвь Discard.
-- [ ] Проверить ошибки открытия, сетку, единицы, zoom/pan/fit.
-- [ ] Перезапуск и восстановление настроек.
+- [x] Launch the real wgpu window and inspect layout.
+- [x] Select J1.1, change X from 10 to 12 mm, Apply, undo/redo.
+- [x] Create PCB and schematic; switch tabs and Home.
+- [x] Hide/restore Properties through View.
+- [ ] Fully verify manual resizing (automated drag did not confirm a size change).
+- [x] Save document, close, open through Recent; verify the edit.
+- [x] Cancel aborts closing a new PCB tab.
+- [x] Exit with two unsaved documents: Save sequentially saves PCB and schematic,
+      then closes the application. Both resulting JSON files checked.
+- [ ] Separately check Discard.
+- [ ] Check opening errors, grid, units, zoom/pan/fit.
+- [ ] Restart and settings restoration.
 
-Linux CI подготовлен, но удалённый запуск ещё не выполнен.
-Локальный WSL не предоставляет установленную Linux-среду; установка не выполнялась.
-Нативные Altium-файлы и инженерная эквивалентность не проверялись.
+Linux CI is prepared but has not run remotely yet.
+Local WSL provides no installed Linux environment; none was installed.
+Native Altium files and engineering equivalence were not checked.
 
-## Локальное окружение Windows
+## Local Windows environment
 
-В исходной системе отсутствовал доступный Rust/MSVC toolchain. Для этой
-сессии подготовлен локальный Rust 1.90.0 GNU. GNU ld давал сбой при старте
-GUI-binary; финальная сборка использует rust-lld через адаптер
-scripts/windows-linker.rs и LLVM dlltool. Этот обход относится только
-к .tools и scripts/dev.ps1; обычные MSVC/Linux сборки им не пользуются.
-Первый запуск также выявил отсутствие native backend features wgpu;
-они включены явно. Итоговая сборка повторно запущена и просмотрена.
+The original system had no available Rust/MSVC toolchain. A local Rust 1.90.0 GNU
+toolchain was prepared for this session. GNU ld failed when starting the GUI
+binary; the final build uses rust-lld through scripts/windows-linker.rs and LLVM
+dlltool. This workaround is limited to .tools and scripts/dev.ps1; normal MSVC/
+Linux builds do not use it. The first launch also revealed missing native wgpu
+backend features; they are now explicitly enabled. The final build was relaunched
+and inspected.
 
-Пример и проверки не меняли файлы пользовательского проекта в Altium.
-Контрольные документы GUI сохранены внутри игнорируемого .tools.
+Examples/checks did not modify user project files in Altium.
+GUI verification documents were saved inside ignored .tools.
 
-## Уточнение визуального контракта и компоновки
+## Visual contract and layout clarification
 
-Исходный план сохранён и связан с текущими задачами. Обязательная цель
-точной визуальной копии записана в AGENTS.md, PLAN.md и исходном плане.
-После изменения shell повторно выполнены fmt, clippy, все 4 теста и build.
-Окно запущено и развёрнуто до того же размера изображения, что и Altium.
-Проверено переключение Messages/Properties в общей правой области.
-Точное совпадение не заявляется; список расхождений — interface/visual-parity.md.
-Открытый до пересборки документ сохранён в .tools/ui-before-layout.json.
+The original plan is preserved and linked to current tasks. The required exact
+visual-copy target is recorded in AGENTS.md, PLAN.md and the original plan.
+After shell changes, fmt, clippy, all 4 tests and build were rerun.
+The window was launched and maximized to the same captured image size as Altium.
+Messages/Properties switching in the shared right-hand area was checked.
+Exact parity is not claimed; differences: interface/visual-parity.md.
+The document open before rebuilding was saved in .tools/ui-before-layout.json.
 
-## Итерация Properties и общего оформления окна
+## Properties and shared window styling iteration
 
-Успешны Windows build, fmt --check, clippy -D warnings и все 6 тестов.
-Два новых теста проверяют привязки: радиус/границу, выключение, область
-слоёв/видимость, отсутствие мутации документа, проекцию на конечный край pad.
-Те же исходники, включая все test targets, успешно проверены через
+Windows build, fmt --check, clippy -D warnings and all 6 tests passed.
+Two new tests check snapping: radius/boundary, disabling, layer/visibility scope,
+document immutability and projection onto a finite pad edge.
+The same sources, including all test targets, passed
 `scripts/dev.ps1 check --locked --all-targets --target x86_64-unknown-linux-gnu`.
-Это cross cargo check, не запуск/линковка Linux. Первый запуск этой команды
-выявил попадание Windows linker flags в cross-check; dev.ps1 исправлен,
-повторный запуск с этим скриптом успешен.
+This is cross cargo check, not Linux execution/linking. The first run exposed
+Windows linker flags leaking into cross-check; dev.ps1 was fixed and the rerun passed.
 
-В реальном Windows-окне проверены новые Board/Pad Properties, прокрутка,
-синий заголовок активной правой области, отсутствие Apply и применение X
-по Tab: 10 → 12mm, затем выход из поля и Ctrl+Z возвращает 10mm и геометрию.
-Через View → Layers проверены скрытие и восстановление Top Layer;
-при скрытии его pads/tracks исчезают с canvas.
-Повторно просмотрены итоговые обычное (1440×900) и развёрнутое окна,
-поиск с векторной иконкой, плотная таблица snapping, Pad Stack preview.
-До каждой пересборки открытые примеры сохранены в .tools/ui-before-properties.json,
-.tools/ui-properties-qa.json, .tools/ui-density-qa.json и .tools/ui-padstack-qa.json; файлы проекта Altium
-не менялись. Состояния недоступных инженерных контролов отключены.
+The real Windows window verified new Board/Pad Properties, scrolling, the active
+right-hand area's blue heading, absence of Apply and X applied with Tab:
+10 → 12mm; after leaving the field, Ctrl+Z restores 10mm and geometry.
+View → Layers verified hiding/restoring Top Layer; its pads/tracks disappear
+from the canvas when hidden.
+Final normal (1440×900) and maximized windows were reinspected, including Search
+with vector icon, dense snapping table and Pad Stack preview.
+Before each rebuild, open examples were saved to .tools/ui-before-properties.json,
+.tools/ui-properties-qa.json, .tools/ui-density-qa.json and .tools/ui-padstack-qa.json;
+Altium project files were unchanged. Unavailable engineering controls are disabled.
 
-Title bar создан общим Rust UI без Win32; maximize двойным щелчком
-и закрытие через системный Alt+F4 проверены. Drag/edge-resize/minimize
-и отдельные кнопки оконных команд требуют дополнительного ручного сценария.
-Linux GUI, DPI, визуальная эквивалентность шрифтов и точное пиксельное
-соответствие остаются непроверенными. См. interface/visual-parity.md.
+Title bar is shared Rust UI without Win32; double-click maximize and system
+Alt+F4 close were checked. Drag/edge-resize/minimize and separate window-command
+buttons require additional manual scenarios. Linux GUI, DPI, visual font equivalence
+and exact pixel parity remain unverified. See interface/visual-parity.md.
 
-## Итерация Altium project / schematic import
+## Altium project / schematic import iteration
 
-Windows build, fmt --check, clippy --locked --all-targets -D warnings и
-15 тестов workspace проходят. Все targets исходников успешно проверены
-для x86_64-unknown-linux-gnu; Linux линковка/GUI ещё не запускались.
-Новые проверки покрывают ASCII/CFB scene equivalence, стабильность ID,
-абсолютные координаты дочерних объектов, части/display modes/скрытые поля,
-UTF8/legacy/кириллицу, отрицательные дробные координаты, большие листы,
-UTF16 и переносимые пути проекта, отсутствие/регистр ссылок, quoted parameter
-indirection и циклы, zlib Storage, повреждённые длины/числа/owners,
-архив неизвестных streams и запрет JSON-записи поверх native-файла.
+Windows build, fmt --check, clippy --locked --all-targets -D warnings and
+15 workspace tests pass. All source targets passed checks for
+x86_64-unknown-linux-gnu; Linux linking/GUI have not run yet.
+New checks cover ASCII/CFB scene equivalence, stable IDs, absolute child coordinates,
+parts/display modes/hidden fields, UTF8/legacy/Cyrillic, negative fractional
+coordinates, large sheets, UTF16 and portable project paths, missing/case-sensitive
+references, quoted parameter indirection and cycles, zlib Storage, malformed
+lengths/numbers/owners, unknown-stream archives and refusal to write JSON over native files.
 
-Локальные native файлы (не добавлены в Git):
+Local native files (not added to Git):
 
-| Файл/набор | Результат чтения |
+| File/set | Reading result |
 |---|---|
-| ReferenceB.SchDoc | 3480 записей, 64 компонента, 579 видимых примитивов, 100 wires, 115 видимых pins |
-| ReferenceISheet.SchDoc | 434 записи, 6 компонентов, 193 примитива, 17 wires, 62 pins |
-| TIDA-01597_Schematic.SchDoc | 1767 записей, 20 компонентов, 325 примитивов, 43 wires, 59 pins |
-| AWR2944EVM | Все 25 SchDoc прочитаны; типы 43 и Additional 225 отмечены предупреждениями |
+| ReferenceB.SchDoc | 3480 records, 64 components, 579 visible primitives, 100 wires, 115 visible pins |
+| ReferenceISheet.SchDoc | 434 records, 6 components, 193 primitives, 17 wires, 62 pins |
+| TIDA-01597_Schematic.SchDoc | 1767 records, 20 components, 325 primitives, 43 wires, 59 pins |
+| AWR2944EVM | All 25 SchDoc files read; types 43 and Additional 225 flagged with warnings |
 
-CFB и ASCII-копия ReferenceB, сохранённая из Altium в игнорируемый .tools,
-дали одинаковые числа объектов. Это не проверка полной электрической
-эквивалентности. Оригинал внутри сохранённого через GUI JSON совпадает
-по SHA256 с исходным SchDoc на диске. Пользовательские дизайны не копировались
-в публичные fixtures. Новые tests используют собственный minimal.SchDoc;
-этот fixture также открыт и просмотрен в Altium 24.4.1.
+CFB and an ASCII ReferenceB copy saved from Altium into ignored .tools produced
+identical object counts. This does not check full electrical equivalence.
+The original embedded in GUI-saved JSON has the same SHA256 as the source SchDoc
+on disk. User designs were not copied into public fixtures. New tests use the
+project's own minimal.SchDoc; this fixture was also opened/inspected in Altium 24.4.1.
 
-В Windows GUI проверены открытие ReferenceB PrjPcb через Ctrl+O, дерево настоящих
-ссылок, отображение листа, выбор R9 и его Properties с кириллицей,
-масштабирование колесом; открытие TIDA PrjPcb и другого листа EVMHardware
-через дерево создаёт вкладку с отдельной сценой. Схемы ReferenceB и TIDA сопоставлены
-с эталоном. После сверки исправлены quoted special strings, IEEE Dot,
-повёрнутые anchors, масштаб текста, alignment рамок и направление зон.
-Повторно просмотрена исправленная TIDA: полный заголовок помещается в рамке,
-видны компоненты/провода и встроенный логотип. Save As ReferenceB создал собственный
-JSON с архивом оригинала; native файл не был местом назначения записи.
-Сохранённый JSON затем открыт через Ctrl+O в новой сборке: сцена и Import
-Information сохранились, ошибка загрузки отсутствует.
-GUI pan, все стили объектов и крупные performance-сценарии ещё не проверены.
+Windows GUI verified ReferenceB PrjPcb opening through Ctrl+O, the real-reference
+tree, sheet display, R9 selection and its Cyrillic Properties, wheel zoom;
+opening TIDA PrjPcb and another EVMHardware sheet through the tree creates a tab
+with a separate scene. ReferenceB and TIDA schematics were compared with the
+reference. Quoted special strings, IEEE Dot, rotated anchors, text scale, frame
+alignment and zone direction were then fixed. Corrected TIDA was reinspected:
+the complete title fits its frame, components/wires and embedded logo are visible.
+ReferenceB Save As created the application's JSON with the original archive;
+the native file was not the write destination. Saved JSON was opened through
+Ctrl+O in the new build: scene and Import Information were preserved without a
+loading error. GUI pan, all object styles and large performance scenarios remain unchecked.
 
-Во время исследования Altium завершился после закрытия собственного fixture;
-причина не установлена. Altium перезапущен и восстановил исходный ReferenceB проект.
-Сохранения поверх пользовательского SchDoc не выполнялись. Открытие документа
-и экспорт копии не подтверждают полноту native writer (его в PCBCraft нет).
-Состояние на момент той итерации — read-only viewer; дальнейшее редактирование описано ниже.
+During research, Altium exited after closing the project's fixture; cause unknown.
+It was restarted and restored the original ReferenceB project.
+No save over the user's SchDoc occurred. Opening a document and exporting a copy
+do not confirm native-writer completeness (PCBCraft has none).
+At that iteration this was a read-only viewer; later editing is described below.
 
-## Визуальная итерация ReferenceB — 20 октября 2026
+## ReferenceB visual iteration — October 20, 2026
 
 PASS: fmt --all -- --check; clippy --workspace --locked --all-targets --
 -D warnings; test --workspace --locked (19 tests); Windows debug build;
 check --workspace --locked --all-targets --target x86_64-unknown-linux-gnu.
-Команды выполнены через scripts/dev.ps1 с локальным Rust 1.90 GNU.
-Linux результат означает проверку типов/targets, не нативную линковку или GUI.
+Commands ran through scripts/dev.ps1 with local Rust 1.90 GNU.
+Linux results mean type/target checks, not native linking or GUI.
 
-Дополнены проверки сохранения стрелок и их размеров, независимых шрифтов
-имени/номера вывода и системного шрифта листа, IEEE 11 без placeholder,
-сцены в собственном JSON. Отдельный regression test сохраняет общие Designator
-и Comment при альтернативном display mode; графика чужого режима остаётся скрытой.
-Точная геометрия принадлежности точки отрезку
-проверена на концах, внутри, вне/рядом, обратном направлении и больших
-координатах. Проверен переносимый display path без Windows device prefix.
+Added preservation checks for arrows and their sizes, independent pin-name/number
+fonts and sheet system font, IEEE 11 without placeholder, and scene in the
+application's JSON. A separate regression preserves shared Designator/Comment
+under an alternative display mode while hiding other-mode graphics.
+Exact point-on-segment geometry is checked at endpoints, inside, outside/nearby,
+reversed direction and large coordinates. Portable display paths without Windows
+device prefixes are checked.
 
-Повторный headless import оригинала ReferenceB и ASCII-копии: по 3480 records,
-64 components, 581 primitives, 100 wires, 115 pins. Исправление видимости общих
-параметров восстановило XP1 и его Comment, ранее отсеянные режимом символа;
-pin-owned Net Name остаётся метаданными, а не отдельной строкой на листе.
-Тип 3 в этом файле
-больше не вызывает warning: используемые Dot и High Current реализованы.
-Исходный SchDoc остаётся 823296 bytes, LastWriteTime 02.10.2026 17:46:04,
-SHA256 redacted-source-sha256.
-Запись поверх него не выполнялась. Служебные демонстрационные документы
-перед перезапусками сохранены отдельно в игнорируемый .tools.
+Repeat headless import of the ReferenceB original and ASCII copy: each has
+3480 records, 64 components, 581 primitives, 100 wires, 115 pins.
+The shared-parameter visibility fix restored XP1 and its Comment, previously
+excluded by symbol mode; pin-owned Net Name remains metadata rather than a
+separate sheet string. Type 3 no longer warns in this file: its Dot and High
+Current are implemented. Original SchDoc remains 823296 bytes,
+LastWriteTime October 2, 2026 17:46:04, SHA256 redacted-source-sha256.
+It was not overwritten. Temporary demonstration documents were saved separately
+in ignored .tools before restarts.
 
-В реальных окнах проверялись одинаковые полный лист и увеличение 1.5×:
-DA2, pin names/numbers, TP25/TP29, LED, вертикальные GND и основная надпись.
-После восстановления стандартной компоновки canvas имеет x335..1385;
-бумага приблизительно y190..884, footer Editor y971..995, как в эталоне.
-Обнаружена и исправлена потеря темы при Restore Default Layout; оно теперь
-также сбрасывает fit камеры. Точное пиксельное соответствие не подтверждено;
-наблюдения, выводы о fallback шрифта и остаточные отличия отдельно записаны
-в interface/visual-parity.md. Электрическая эквивалентность не проверялась.
+Real windows were checked at the same full-sheet view and 1.5× zoom: DA2,
+pin names/numbers, TP25/TP29, LED, vertical GND and title block.
+After restoring default layout, canvas is x335..1385; paper approximately
+y190..884, Editor footer y971..995, matching the reference landmarks.
+Theme loss on Restore Default Layout was found/fixed; it now also resets camera
+fit. Exact pixel parity is unconfirmed; observations, font-fallback inferences
+and residual differences are recorded separately in interface/visual-parity.md.
+Electrical equivalence was not checked.
 
-## Базовое редактирование схем — 20 октября 2026
+## Basic schematic editing — October 20, 2026
 
-PASS через scripts/dev.ps1 (Rust 1.90 GNU): fmt --all -- --check,
+PASS through scripts/dev.ps1 (Rust 1.90 GNU): fmt --all -- --check,
 clippy --workspace --locked --all-targets -- -D warnings,
-test --workspace --locked (27 tests), Windows debug build и
+test --workspace --locked (27 tests), Windows debug build and
 check --workspace --locked --all-targets --target x86_64-unknown-linux-gnu.
-Linux GUI/линковка локально не проверялись, CI обеих ОС сохранён.
+Linux GUI/linking were not checked locally; CI for both operating systems remains.
 
-Добавлены проверки команд: preview не меняет модель/историю; Delete группы,
-поворот/перемещение дочерних примитивов, Designator/Comment, Undo/Redo;
-устаревшая ревизия, частично ошибочный Batch и выход за диапазон отклоняются
-целиком. Clipboard переносит UUID/владельцев/шрифты. Snapping использует
-электрический конец pin, а не его начало у тела символа.
-Import regression: CFB → Move/Rotate/Properties → JSON → Load,
-сравнение архива и исходных records, Undo к исходному флагу source_modified.
-App interaction tests проверяют отмену preview/незавершённого провода,
-провод одной транзакцией, быстрый drag release и устаревший Move.
-Renderer regression проверяет сохранение начального hit при отпускании мыши,
-включая press/move/release, пришедшие одним кадром; события читаются без
-вложенного захвата context input lock.
+Added command checks: preview leaves model/history unchanged; group Delete,
+child-primitive rotation/movement, Designator/Comment, Undo/Redo;
+stale revision, partially invalid Batch and out-of-range edits are wholly rejected.
+Clipboard transfers UUIDs/owners/fonts. Snapping uses the electrical pin end,
+not its origin at the symbol body.
+Import regression: CFB → Move/Rotate/Properties → JSON → Load, comparing archive
+and original records, Undo to the initial source_modified flag.
+App interaction tests check cancellation of preview/unfinished wires, a wire as
+one transaction, fast drag release and stale Move.
+A renderer regression preserves the initial hit at mouse release, including
+press/move/release in one frame; events are read without nested context input locking.
 
-Реальное окно Windows: новая схема; R1, отмена следующего размещения,
-Properties Comment 10k→47k с обновлением текста на листе; Move, Space,
-Ctrl+Z/Y; Ctrl+C/V с новым R2; Ctrl+W и провод между электрическими концами
-выводов. Сохранённый JSON просмотрен на диске: концы провода
-(114300000,137160000) и (162560000,137160000) nm совпадают с концами pins.
-После пересборки/перезапуска открыт тот же JSON: сцена/номиналы/провод
-восстановлены. Быстрое перетаскивание R2 мышью переместило всю группу;
-Ctrl+Z восстановил исходную позицию и снял dirty marker.
-Дополнительно размещены C1, GND и Net1 с привязкой к проводу, текст с кириллицей.
-Этот собственный пример сохранён через GUI в fixtures/schematic/editing-demo.pcbcraft.json.
-В окончательной сборке открыт оригинальный ReferenceB.SchDoc: быстрый drag
-переместил импортированный R9 с Y=180.000006 на 152.500006 mm вместе с телом
-и подписями. Ctrl+Z восстановил сцену и снял unsaved marker. Исходный файл
-на диске сохранил SHA256 redacted-source-sha256.
+Real Windows window: new schematic; R1, cancellation of next placement,
+Properties Comment 10k→47k updates sheet text; Move, Space, Ctrl+Z/Y;
+Ctrl+C/V creates R2; Ctrl+W and a wire between electrical pin ends.
+Saved JSON inspected on disk: wire ends (114300000,137160000) and
+(162560000,137160000) nm match pin endpoints. After rebuild/restart, reopening
+the same JSON restored scene/values/wire. Fast mouse-drag of R2 moved the entire
+group; Ctrl+Z restored its position and cleared dirty state.
+C1, GND and Net1 snapped to a wire, plus Cyrillic text, were also placed.
+This original example was saved through GUI to fixtures/schematic/editing-demo.pcbcraft.json.
+The final build opened original ReferenceB.SchDoc: a fast drag moved imported R9
+from Y=180.000006 to 152.500006 mm with its body/labels. Ctrl+Z restored scene
+and removed the unsaved marker. The disk source retained SHA256 redacted-source-sha256.
 
-Меню Place/Drawing Tools исследовано в открытом Altium только чтением.
-Пользовательский документ в Altium уже имел unsaved marker при начале
-наблюдений; действий редактирования/сохранения в нём эта итерация не делала.
-Удаление группы проверено на уровне команды Delete; удаление пользовательских
-объектов через Windows UI для проверки не выполнялось.
-Границы и непроверенные состояния: schematic-editing.md и features.json.
+Place/Drawing Tools menus were studied read-only in open Altium.
+The user's Altium document already had an unsaved marker when observation began;
+this iteration neither edited nor saved it. Group deletion was checked at the
+Delete-command level; no user objects were deleted through Windows UI for testing.
+Boundaries and unchecked states: schematic-editing.md and features.json.
 
-## Schematic Properties, 20 октября 2026 — промежуточная итерация
+## Schematic Properties, October 20, 2026 — intermediate iteration
 
-PASS: fmt check, clippy workspace/all-targets с -D warnings, 31 workspace
-tests, Windows debug build, cargo check workspace/all-targets для
-x86_64-unknown-linux-gnu. Linux GUI в этом окружении не запускался.
+PASS: fmt check, workspace/all-targets clippy with -D warnings, 31 workspace tests,
+Windows debug build, workspace/all-targets cargo check for x86_64-unknown-linux-gnu.
+Linux GUI was not run in this environment.
 
-Новые регрессии проверяют ширину 316 px в течение нескольких кадров для
-Document/Component/Parameter/Pin при длинных шрифтах, моделях и значениях;
-копирование сохраняет согласованные отображаемый и исходный Designator.
-IO/commands: скрытые параметры и пустые значения, исходный Comment-expression,
-пересчёт зависимого текста, отдельный шрифт, модели, case-insensitive изменение,
-удаление параметра, atomic rejection, Undo/Redo, JSON и неизменность native archive.
-Snapping grid/electrical включаются независимо.
+New regressions verify 316 px width across multiple frames for Document/Component/
+Parameter/Pin with long fonts, models and values; copying retains consistent
+displayed and original Designator.
+IO/commands: hidden parameters and empty values, original Comment expression,
+dependent-text recalculation, separate font, models, case-insensitive changes,
+parameter deletion, atomic rejection, Undo/Redo, JSON and native-archive immutability.
+Grid/electrical snapping can be enabled independently.
 
-Windows real GUI: Document Options, Component R9, отдельный Parameter,
-таблица моделей/избранных Power/Resistance/ссылок, переключение контекстов.
-Comment R9 ="R_USDD" заменён на 47k; по Tab подпись обновилась на листе.
-После возврата фокуса canvas Ctrl+Z восстановил expression, подпись и clean marker.
-Открыты собственные reference fixtures для наблюдения дополнительных состояний.
-Нативный пользовательский документ в Altium не менялся/не сохранялся;
-SHA256 ReferenceB.SchDoc остался
-redacted-source-sha256.
+Windows real GUI: Document Options, Component R9, separate Parameter,
+model/favorite Power/Resistance/link table, context switching.
+R9 Comment ="R_USDD" replaced with 47k; Tab updated the sheet label.
+After canvas focus returned, Ctrl+Z restored expression, label and clean state.
+Original reference fixtures were opened to observe additional states.
+The native user document in Altium was not changed/saved;
+ReferenceB.SchDoc SHA256 remained redacted-source-sha256.
 
-Проверки выше **не означают точного визуального совпадения во всех состояниях**.
-Оставшиеся расхождения и ненаблюдённые контексты перечислены в
-interface/schematic-properties.md и features.json. Components/IntLib не начаты:
-условие пользователя о завершении Properties ещё не выполнено.
+These checks **do not imply exact visual parity in all states**.
+Remaining differences and unobserved contexts are listed in
+interface/schematic-properties.md and features.json. Components/IntLib has not
+started: the user's completion condition for Properties is not yet satisfied.
 
-## Components / SchLib / IntLib — 20.10.2026
+## Components / SchLib / IntLib — October 20, 2026
 
-По новому указанию пользователя начат этап Components независимо от оставшихся
-расхождений Properties. Наблюдалась живая панель Components AD 24.4.1
-с предоставленной ReferenceB.IntLib. Карта и ограничения:
-interface/components-libraries.md. Исходный ALTIUM_RUST_AGENT_PLAN.md сохранён.
+Following a new user instruction, Components began independently of remaining
+Properties differences. The live AD 24.4.1 Components panel was observed with
+supplied ReferenceB.IntLib. Map/limitations: interface/components-libraries.md.
+Original ALTIUM_RUST_AGENT_PLAN.md preserved.
 
-Проверки: fmt --check, clippy workspace/all-targets -D warnings, 37 workspace
-tests, Windows debug build, Linux GNU check --all-targets. Linux-проверка
-не включает линковку/запуск GUI или подтверждение визуальных метрик.
+Checks: fmt --check, workspace/all-targets clippy -D warnings, 37 workspace tests,
+Windows debug build, Linux GNU check --all-targets. The Linux check excludes
+linking/GUI execution and confirmation of visual metrics.
 
-Тесты охватывают Binary SchLib/IntLib, части/режимы, binary pins, PinFrac,
-UTF-16 PinWideText, разные шрифты надписей, скрытые/raw параметры, связи моделей,
-копирование image Storage, свежие UUID/обозначения, поворот, повторную вставку,
-отмену, конфликт ревизии, Undo/Redo, save/reopen без библиотеки, запрет записи
-JSON поверх IntLib. Повреждённые CFB/пины/zlib/checksum/ссылки auxiliary и
-некорректные/чрезмерные количества отклоняются. Регрессия canvas проверяет,
-что скрытые параметры отсутствуют в отрисованном preview.
+Tests cover Binary SchLib/IntLib, parts/modes, binary pins, PinFrac, UTF-16
+PinWideText, different label fonts, hidden/raw parameters, model links, image
+Storage copying, fresh UUIDs/designators, rotation, repeated placement,
+cancellation, revision conflict, Undo/Redo, save/reopen without a library and
+refusal to write JSON over IntLib. Corrupt CFB/pins/zlib/checksum/auxiliary links
+and invalid/excessive counts are rejected. A canvas regression verifies that
+hidden parameters are absent from the rendered preview.
 
-Реальный пример: library_inspect читает все 31 символ без предупреждений.
-Windows GUI: импорт через Ctrl+O, Results: 31, поиск LMV321 (1 результат),
-предпросмотр 7086, вставка 1396 на отдельной копии схемы как C7, Esc,
-Undo (возврат clean), Redo, Undo; восстановление библиотек после перезапуска.
-Пользовательские изменения открытого PCBCraft до перезапуска сохранены отдельно:
-.tools/ReferenceB-before-components-20261020.pcbcraft.json; оригинал SchDoc не заменялся.
+Real example: library_inspect reads all 31 symbols without warnings.
+Windows GUI: Ctrl+O import, Results: 31, LMV321 search (1 result), 7086 preview,
+1396 placement on a separate schematic copy as C7, Esc, Undo (back to clean),
+Redo, Undo; library restoration after restart.
+The user's open PCBCraft changes were saved separately before restarting:
+.tools/ReferenceB-before-components-20261020.pcbcraft.json; original SchDoc not replaced.
 
-Altium использовался для чтения панели/меню/списка библиотек, без редактирования
-и сохранения схемы. SHA256 ReferenceB.SchDoc совпадает с прежним:
-redacted-source-sha256.
-Предоставленная IntLib только читалась; SHA256:
-redacted-source-sha256.
-Пользовательские схемы/библиотеки и извлечённые из них файлы в Git не добавлены.
+Altium was used to read the panel/menus/library list without schematic editing
+or saving. ReferenceB.SchDoc SHA256 matches before: redacted-source-sha256.
+The supplied IntLib was read only; SHA256: redacted-source-sha256.
+User schematics/libraries and extracted files were not added to Git.
 
-Проверки подтверждают первый рабочий путь импорта/размещения. Они не означают
-полную совместимость всех библиотечных форматов или точное совпадение Components.
+Checks confirm the initial working import/placement path, not full compatibility
+with every library format or exact Components parity.
 
-## Стабильный текст при зуме схемы — 21.10.2026
+## Stable schematic text during zoom — October 21, 2026
 
-Устранены пересчёт округлённых метрик шрифта при каждом масштабе и скачки
-из-за pixel snapping начала текста. Подписи, pin labels и текстовые блоки
-раскладываются при фиксированном размере шрифта и масштабируются с камерой;
-переносы строк рассчитываются из размеров блока в координатах документа.
-Привязка UI-текста к пикселям не изменена.
+Removed recalculation of rounded font metrics at each zoom and jumps caused by
+pixel snapping text origins. Labels, pin labels and text blocks are laid out at
+fixed font size and scaled with the camera; wrapping is calculated from block
+dimensions in document coordinates. UI-text pixel snapping is unchanged.
 
-PASS: 113 workspace tests, fmt --check, Clippy all-targets -D warnings, build.
-Две регрессии renderer падают на прежнем коде и проходят после исправления:
-сравниваются вершины реально тесселированных glyph meshes в координатах схемы
-при зуме, 9 привязках, 4 ориентациях и DPI 100/150/200%; проверяются переносы строк.
-Linux Xvfb/Mesa GUI: editing-demo, обычные/повёрнутые подписи, zoom in/out;
-область canvas после возврата масштаба побайтово совпала со снимком до zoom.
-При очень большом увеличении возможна мягкость растровых glyphs; точная
-визуальная эквивалентность Altium и Windows GUI этой проверкой не подтверждены.
+PASS: 113 workspace tests, fmt --check, all-targets Clippy -D warnings, build.
+Two renderer regressions fail on old code and pass after the fix: they compare
+actual tessellated glyph-mesh vertices in schematic coordinates across zoom,
+9 anchors, 4 orientations and DPI 100/150/200%; line wrapping is checked.
+Linux Xvfb/Mesa GUI: editing-demo, ordinary/rotated labels, zoom in/out;
+after restoring zoom, the canvas region matches the pre-zoom capture byte-for-byte.
+Raster glyphs may look soft at extreme zoom; this does not confirm exact Altium
+visual equivalence or Windows GUI behavior.

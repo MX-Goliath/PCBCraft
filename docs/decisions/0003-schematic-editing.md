@@ -1,29 +1,30 @@
-# ADR 0003: редактирование независимой schematic scene
+# ADR 0003: editing an independent schematic scene
 
-Принято 20 октября 2026. Дополняет ADR 0002, не меняя контракт native IO.
+Accepted October 20, 2026. Supplements ADR 0002 without changing the native IO contract.
 
-Редактор работает с существующей сценой в nm. Все изменения идут через
-`eda-core::schematic_edit::{Request, Edit}` и History; команды не зависят
-от GUI/GPU. Проверка ревизии защищает подтверждение устаревшего preview.
-GUI хранит инструмент и черновик полей отдельно от модели; renderer читает
-модель и отдельный preview, не записывая документ во время движения курсора.
+The editor operates on the existing scene in nm. All changes go through
+`eda-core::schematic_edit::{Request, Edit}` and History; commands do not depend on
+GUI/GPU. Revision checks prevent committing an outdated preview.
+The GUI stores the tool and field drafts separately from the model; the renderer
+reads the model and a separate preview without writing to the document as the
+cursor moves.
 
-Импорт сохраняет исходные records и архив, а правки меняют только сцену.
-Флаг `source_modified` явно отделяет актуальную сцену от исторического архива.
-Designator/Comment получают типизированную роль, необходимую после копирования
-без исходных records. Старый JSON сохраняет совместимость через default;
-новые примитивы имеют UUID v4 и sentinel source_index, импортированные UUID
-сохраняются при изменении геометрии.
+Import preserves original records and the archive; edits change only the scene.
+The `source_modified` flag explicitly separates the current scene from the
+historical archive. Designator/Comment receive typed roles needed after copying
+without original records. Old JSON remains compatible through defaults;
+new primitives receive UUID v4 and a sentinel source_index; imported UUIDs
+are preserved when geometry changes.
 
-Перемещение/поворот компонента — одна команда над всей редактируемой группой,
-включая её скрытые параметры. Properties сохраняет presentation параметров,
-исходные выражения, настройки листа, метаданные экземпляра и его моделей.
-Скрытые параметры имеют UUID и редактируются независимо от видимых объектов;
-альтернативные native представления остаются в историческом архиве.
-Сохранение/повторное открытие
-проверяет собственный JSON, не native roundtrip. Полная инженерная семантика,
-10 pm, durable journal, operation ID и compiler остаются открытыми критериями.
+Moving/rotating a component is one command over its entire editable group,
+including hidden parameters. Properties preserves parameter presentation,
+original expressions, sheet settings, instance metadata and model metadata.
+Hidden parameters have UUIDs and are edited independently of visible objects;
+alternative native representations remain in the historical archive.
+Saving/reopening checks the application's JSON, not a native roundtrip.
+Full engineering semantics, 10 pm, a durable journal, operation ID and a compiler
+remain open acceptance criteria.
 
-Переносимость: одна реализация ввода egui, модели и команд для Windows/Linux;
-clipboard события Copy/Cut/Paste обрабатываются отдельно от Key, как требует
-egui-winit 0.32.3. Платформенные системные вызовы в ядро не добавлены.
+Portability: one egui input, model and command implementation for Windows/Linux;
+clipboard Copy/Cut/Paste events are handled separately from Key, as required by
+egui-winit 0.32.3. No platform system calls were added to the core.

@@ -1,94 +1,91 @@
-# Визуальное соответствие Altium Designer
+# Altium Designer visual parity
 
-Обязательная цель: точная копия доступного Altium Designer Enterprise 24.4.1,
-Windows и Linux. Источник требований — пользователь и исходный план, §7 и §25.
-Точное совпадение ещё не достигнуто. Структура и плотность повторно сверены
-в состояниях Board и Pad; оставшиеся различия ниже являются открытой работой.
+Required target: an exact copy of the available Altium Designer Enterprise 24.4.1,
+on Windows and Linux. Requirements come from the user and original plan, §7 and §25.
+Exact parity is not yet achieved. Structure and density were rechecked in Board
+and Pad states; the remaining differences below are open work.
 
-19 октября 2026, повторно просмотрены реальные развёрнутые окна обоих приложений.
-Полученные изображения: ширина 1707; высота 1019..1027 в разных состояниях
-рамки окна/захвата. Скриншоты отображены в чате.
-DPI не измерен, пиксельное сравнение не выполнялось.
+October 19, 2026: both real maximized application windows were inspected again.
+Captured images: width 1707; height 1019..1027 across frame/capture states.
+Screenshots were displayed in chat. DPI was not measured; no pixel comparison was run.
 
-| Поверхность | Выполнено | Осталось |
+| Surface | Completed | Remaining |
 |---|---|---|
-| Оболочка | Общая строка title bar 23 points; Quick Access, drag, double-click maximize, min/max/close, края resize | Точные метрики и иконки, поведение resize/drag на Linux, системное меню |
-| Меню | Наблюдаемый порядок, Home/PCB контекст, File, Ctrl+F4 | Полное содержимое и геометрия каждого меню |
-| Projects | Левая область 330 points, Search с векторной иконкой, папки и PCB-иконки в дереве | Точный набор toolbar, header dropdown/pin/autohide, проектная модель |
-| Messages/Properties | Одна правая область 316 points, нижние вкладки, активный синий заголовок | Полный docking, точные header/tab states, pin/float, остальные нижние вкладки |
-| Board Properties | General/Parameters, отключённый Health Check; Selection Filter; Snap Options с таблицей 21 point на строку; Board Information | Точные табы/поля/отступы, selection context dropdown, остальные типы selection/snapping, guides/axis range и health engine |
-| Pad Properties | Net Information, Properties, Pad Stack; Designator/Layer/X/Y/X-Size/Y-Size меняют собственную модель с undo | Electrical/net/propagation/template/rotation/lock и multilayer pad stack; вместо физического 3D показана собственная прямоугольная площадка |
-| Active Bar | Полоса около 472×31 points, 13 собственных векторных иконок, Fit/Grid/Select | Точные пиктограммы, цвета, состояния, инструменты размещения/трассировки |
-| Цвета и плотность | Нейтральные серые группы/поля, рамки; Segoe UI из Windows, встроенные Selawik Regular/Semibold | Цвета подобраны визуально; соответствие WPF/egui rasterization и Linux метрик ещё не измерено |
-| Linux | Тот же UI/layout, встроенные шрифты, успешный cargo check всего workspace с all-targets для Linux GNU | Нативная линковка, тесты и запуск X11/Wayland, сопоставление DPI/ввода |
+| Shell | Shared title bar 23 points; Quick Access, drag, double-click maximize, min/max/close, resize edges | Exact metrics/icons, Linux resize/drag behavior, system menu |
+| Menus | Observed order, Home/PCB context, File, Ctrl+F4 | Complete contents and geometry of every menu |
+| Projects | Left area 330 points, Search with vector icon, folders and PCB icons in tree | Exact toolbar set, header dropdown/pin/autohide, project model |
+| Messages/Properties | Shared right-hand area 316 points, bottom tabs, active blue header | Full docking, exact header/tab states, pin/float, remaining bottom tabs |
+| Board Properties | General/Parameters, disabled Health Check; Selection Filter; Snap Options table at 21 points per row; Board Information | Exact tabs/fields/spacing, selection-context dropdown, remaining selection/snapping types, guides/axis range and health engine |
+| Pad Properties | Net Information, Properties, Pad Stack; Designator/Layer/X/Y/X-Size/Y-Size edit the application's model with undo | Electrical/net/propagation/template/rotation/lock and multilayer pad stack; an original rectangular pad is shown instead of physical 3D |
+| Active Bar | Strip about 472×31 points, 13 original vector icons, Fit/Grid/Select | Exact pictograms, colors, states, placement/routing tools |
+| Colors and density | Neutral gray groups/fields, borders; Windows Segoe UI, embedded Selawik Regular/Semibold | Colors chosen visually; WPF/egui rasterization and Linux metrics not yet measured |
+| Linux | Same UI/layout, embedded fonts, successful all-targets cargo check of the entire workspace for Linux GNU | Native linking, tests and X11/Wayland runtime, DPI/input comparison |
 
-Проверены реальные переключения Messages → Properties, состояния Board/Pad,
-ввод X=12mm из 10mm с применением по Tab и возврат через Ctrl+Z.
-fmt, clippy и шесть тестов проходят; новая Windows-сборка запущена и просмотрена.
-Ориентиры в итоговом Board Properties: Selection Filter около y194,
-Snap Options y358, Board Information y829; эталон около y194/356/827.
-Это визуальные оценки, не допуск точного соответствия.
+Real Messages → Properties switches, Board/Pad states, X=12mm input from 10mm
+applied with Tab and reverted with Ctrl+Z were checked.
+fmt, clippy and six tests pass; the new Windows build was launched and inspected.
+Final Board Properties landmarks: Selection Filter around y194,
+Snap Options y358, Board Information y829; reference around y194/356/827.
+These are visual estimates, not an exact-parity tolerance.
 
-Привязки используют реальные центры/вершины/края прямоугольных pads и
-концы tracks с ограничением расстояния/слоя/видимости. Неподдерживаемые
-строки таблицы отключены, поэтому их состояние отличается от Altium.
+Snapping uses actual rectangular-pad centers/vertices/edges and track endpoints
+with distance/layer/visibility limits. Unsupported table rows are disabled,
+so their state differs from Altium.
 
-Неподдерживаемые инженерные команды отключены. Их присутствие в меню не
-означает реализации. Различия геометрии двух текущих плат не являются
-результатом сравнения одинакового PCB документа: PCB import ещё отсутствует.
+Unsupported engineering commands are disabled. Their presence in menus does not
+mean implementation. Geometry differences between the two current boards do not
+compare the same PCB document: PCB import is still absent.
 
 ## Schematic import/viewer
 
-Сравнен один и тот же ReferenceB.SchDoc в PCBCraft и Altium 24.4.1.
-Воспроизводятся лист/фон, основные символы, провода, параметры и выбранный
-компонент в Properties. Исправлены quoted parameter indirection, точки IEEE
-в тестовых площадках и текстовые anchors при поворотах.
-Результат ещё не является точной копией: различаются метрики и выравнивание
-текста, растеризация тонких контуров/проводов требует дальнейшей сверки;
-Active Bar пока общий с PCB;
-port/IEEE/NoERC styles и sheet entries поддерживаются частично. Проверка
-электрической связности не выполнялась. На Linux визуальный запуск отсутствует.
-См. altium-import.md для явной границы поддержки native записей.
+The same ReferenceB.SchDoc was compared in PCBCraft and Altium 24.4.1.
+The sheet/background, main symbols, wires, parameters and selected component in
+Properties are reproduced. Quoted parameter indirection, IEEE dots in test points
+and rotated text anchors were fixed.
+The result is not yet an exact copy: text metrics/alignment differ; thin-outline/
+wire rasterization needs further comparison; Active Bar is still shared with PCB;
+port/IEEE/NoERC styles and sheet entries have partial support.
+Electrical connectivity was not checked. No Linux visual run has been performed.
+See altium-import.md for explicit native-record support boundaries.
 
-### Повторная сверка ReferenceB — 20 октября 2026
+### Repeat ReferenceB comparison — October 20, 2026
 
-Наблюдались полный лист и увеличение PgUp (1.5×) в открытом Altium 24.4.1.
-Геометрия исходных длинных проводов подтверждена просмотром увеличенного
-фрагмента и ASCII-копией. Исчезновение некоторых тонких штрихов на полном
-листе зависит от масштаба; удалять эти сегменты из модели было бы ошибкой.
+The full sheet and PgUp zoom (1.5×) were observed in open Altium 24.4.1.
+Original long-wire geometry was confirmed with a zoomed fragment and an ASCII
+copy. Some thin strokes disappear at full-sheet scale depending on zoom;
+deleting these segments from the model would be incorrect.
 
-Исправлены следующие подтверждённые расхождения:
+The following confirmed differences were fixed:
 
-- `Altium GOST Type A` отсутствует среди установленных семейств; выбор
-  семейства в диалоге Altium пуст, на листе виден обычный sans-serif fallback.
-  Подстановка `GOST Type AU` давала явно узкие подписи. Теперь имя семейства
-  ищется точно, fallback — Arial, затем встроенный Liberation Sans.
-  Выбор Arial является выводом по виду эталона, не измерением GDI GetTextFace.
-- IEEE Dot увеличен вдвое; High Current (11) — контурный треугольник вместо
-  placeholder; учтены окончания LED-линий, отдельный шрифт номера вывода,
-  отступ имени, уменьшен Thin Cross NoERC. Вертикальные GND не имеют лишнего
-  отступа в половину stem; Arrow power port имеет замкнутый треугольник.
-- Junction использует цвет геометрически примыкающего wire. Скомпилированной
-  электрической сети по-прежнему нет.
-- Общие Designator/Comment без OWNERPARTDISPLAYMODE больше не отсекаются
-  альтернативным режимом графики. Для ReferenceB это восстанавливает XP1 и его
-  Part Number; число видимых primitives выросло 579 → 581. Параметры,
-  принадлежащие pin (например Net Name), сохраняются как метаданные и не
-  печатаются как отдельные строки; это также покрыто regression test.
-- Восстановлены footer Editor, стандартная рамка с отступом 20 native units,
-  разделители зон, системный шрифт и стандартный title block 350×80 units
-  с тремя областями, Size/Number/Revision, Date/File/Sheet/Drawn By.
-  Placeholder `*` не печатается как значение заголовка.
-- При viewport x335..1385 и footer y971..995 бумага занимает примерно
-  x335..1385, y190..884 в обоих окнах. Это оценка по отображённым снимкам,
-  не отчёт автоматического сравнения пикселей. PgUp/PgDn добавлены в PCBCraft.
-- Толщина осевых штрихов округляется в физических пикселях; сглаживание
-  и минимум 1 point оставлены для читаемости при дробном масштабировании. Мелкая сетка
-  скрывается при шаге менее 5 points. Сам шаг документа не меняется.
+- `Altium GOST Type A` is absent from installed families; Altium's family selector
+  is blank and the sheet displays an ordinary sans-serif fallback.
+  Substituting `GOST Type AU` produced visibly narrow labels. Family lookup now
+  requires an exact name; fallback is Arial, then embedded Liberation Sans.
+  Choosing Arial is an inference from the reference appearance, not a GDI GetTextFace measurement.
+- IEEE Dot doubled in size; High Current (11) is an outlined triangle instead of
+  a placeholder; LED-line endings, a separate pin-number font and name spacing
+  are handled; Thin Cross NoERC was reduced. Vertical GND has no extra half-stem
+  offset; Arrow power port has a closed triangle.
+- Junction uses the geometrically adjoining wire's color. There is still no
+  compiled electrical net.
+- Shared Designator/Comment without OWNERPARTDISPLAYMODE are no longer excluded
+  by an alternative graphics mode. This restores XP1 and its Part Number in
+  ReferenceB; visible primitive count increased 579 → 581. Pin-owned parameters
+  such as Net Name are retained as metadata rather than printed separately;
+  a regression test covers this too.
+- Restored the Editor footer, standard border with a 20 native-unit inset, zone
+  dividers, system font and standard 350×80-unit title block with three areas,
+  Size/Number/Revision, Date/File/Sheet/Drawn By.
+  Placeholder `*` is not printed as a title value.
+- With viewport x335..1385 and footer y971..995, paper occupies approximately
+  x335..1385, y190..884 in both windows. This is an estimate from displayed
+  captures, not an automated pixel-comparison report. PgUp/PgDn were added to PCBCraft.
+- Axis-aligned stroke widths are rounded to physical pixels; antialiasing and
+  a 1-point minimum remain for readability at fractional zoom. Fine grid is
+  hidden below a 5-point pitch. The document grid pitch itself is unchanged.
 
-Точное совпадение остаётся открытым: GDI/egui antialiasing, фазы пиксельной
-сетки и контраст тонких линий, baseline/метрики некоторых подписей,
-поля основной надписи и поведение специальных строк проекта, Active Bar,
-Properties и другие стили. Linux прошёл проверку исходников всех targets;
-запуска Linux GUI и проверки DPI не было. Ни отсутствие import warnings,
-ни совпадение общего размера листа не являются критерием точной готовности.
+Exact parity remains open: GDI/egui antialiasing, pixel-grid phase and thin-line
+contrast, some label baselines/metrics, title-block fields and project special-string
+behavior, Active Bar, Properties and other styles. Linux passed all-targets source
+checks; Linux GUI runtime and DPI were not checked. Neither an absence of import
+warnings nor matching overall sheet size is a criterion for exact completion.

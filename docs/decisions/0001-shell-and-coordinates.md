@@ -1,22 +1,22 @@
-# ADR 0001: первая оболочка
+# ADR 0001: initial shell
 
-Принято 19 октября 2026.
+Accepted October 19, 2026.
 
-Сохраняем исходное решение: собственное Rust-ядро, egui/eframe, единый
-wgpu renderer. Windows проверяется локально, Linux — отдельным CI.
+Retain the original decision: an independent Rust core, egui/eframe and a single
+wgpu renderer. Windows is checked locally; Linux uses separate CI.
 
-Для начальных прямоугольных pads и прямых tracks используем i64 nm,
-диапазон координат +/- 1 м, schema_version=1. Все значения в этом диапазоне
-точно представимы и в JSON-клиентах с double. Масштаб 10 пм из исходного
-плана остаётся кандидатом для native Altium-представления: до native IO
-требуется отдельный ADR и миграция. Текущий выбор не обещает точного
-представления всех Altium-координат.
+For the initial rectangular pads and straight tracks, use i64 nm,
+a coordinate range of +/- 1 m and schema_version=1. All values in this range are
+also represented exactly by JSON clients using doubles. The original plan's
+10 pm scale remains a candidate for native Altium representation: a separate ADR
+and migration are required before native IO. The current choice does not promise
+exact representation of all Altium coordinates.
 
-Физические данные сериализуются отдельно от view state. Масштаб и pan
-не меняют модель. Отклонённая правка не меняет историю. Undo/redo
-увеличивают ревизию. Ранняя история — снимки, без обещаний пригодности
-для больших плат или длительных сеансов.
+Physical data is serialized separately from view state. Zoom and pan do not
+change the model. A rejected edit does not change history. Undo/redo increase
+the revision. Early history uses snapshots, with no promise of suitability for
+large boards or long sessions.
 
-Первая итерация использует resize/hide egui panels и обычные вкладки.
-Полный docking, float, autohide и multi-window отложены и не помечаются
-готовыми. Инженерные команды меню пока отключены.
+The first iteration uses resizable/hideable egui panels and ordinary tabs.
+Full docking, floating, autohide and multiple windows are deferred and are not
+marked complete. Engineering menu commands are currently disabled.

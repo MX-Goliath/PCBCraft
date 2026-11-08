@@ -1,27 +1,27 @@
 # PCBCraft
 
-Самостоятельная EDA на Rust, Windows и Linux. Altium Designer — эталон
-наблюдений, а не исполнительное ядро. Существующий
-`ALTIUM_RUST_AGENT_PLAN.md` сохраняет полный целевой охват.
+An independent EDA application in Rust for Windows and Linux. Altium Designer is
+an observation reference, not the execution engine. The existing
+`ALTIUM_RUST_AGENT_PLAN.md` preserves the full target scope.
 
-Визуальная цель по указанию пользователя: точная копия интерфейса доступного
-Altium Designer Enterprise 24.4.1. Не заменять компоновку собственным дизайном.
-Проверять размеры, порядок меню, панели, вкладки, иконки, цвета, типографику
-и состояния при одинаковых размере окна и DPI. На Linux сохранять ту же
-компоновку; платформенные различия и неподтверждённые совпадения учитывать явно.
-PLAN.md — рабочий журнал исходного плана, а не его замена.
+The user-defined visual target is an exact copy of the available Altium Designer
+Enterprise 24.4.1 interface. Do not replace its layout with a custom design.
+Compare dimensions, menu order, panels, tabs, icons, colors, typography and states
+at the same window size and DPI. Keep the same layout on Linux; explicitly account
+for platform differences and unverified matches. PLAN.md is the working log of
+the original plan, not its replacement.
 
-- Модель и команды находятся в `eda-core`, без зависимостей от GUI/GPU.
-- Экранные координаты принадлежат `eda-render`, координаты документа — `eda-geom`.
-- Рендерер читает модель. Изменения проходят проверку и историю.
-- Не объявлять функцию готовой по наличию кнопки. Нереализованные команды
-  показывать отключёнными; расхождения фиксировать в `docs/features.json`.
-- Наблюдение, предположение, реализация и проверка — разные статусы.
-- Не изменять пользовательский проект в Altium для исследования без необходимости.
-- Перед завершением этапа: `cargo fmt --all -- --check`,
+- The model and commands belong in `eda-core`, with no GUI/GPU dependencies.
+- Screen coordinates belong to `eda-render`; document coordinates belong to `eda-geom`.
+- The renderer reads the model. Changes go through validation and history.
+- Do not declare a feature complete just because it has a button. Disable
+  unimplemented commands; record differences in `docs/features.json`.
+- Observation, assumption, implementation and verification are separate statuses.
+- Do not modify the user's Altium project for research unless necessary.
+- Before completing a stage: `cargo fmt --all -- --check`,
   `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`.
-- Проверять реальное окно после значимых изменений интерфейса.
-- Не добавлять пустые crates только ради схемы архитектуры.
-- Не переносить код или исполнительное ядро KiCad.
-- Держать открытым только один экземпляр GUI PCBCraft. Перед запуском другой
-  сборки закрыть предыдущий тестовый экземпляр.
+- Check the real application window after significant interface changes.
+- Do not add empty crates merely to match an architecture diagram.
+- Do not port KiCad code or its execution engine.
+- Keep only one PCBCraft GUI instance open. Close the previous test instance
+  before launching another build.

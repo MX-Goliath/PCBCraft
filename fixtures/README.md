@@ -1,11 +1,11 @@
 # Fixtures
 
-`controller.pcbcraft.json` — собственный геометрический пример:
-60 × 40 мм, шесть прямоугольных pads, три tracks на Top Layer.
-Это не импорт и не электрически завершённый проект.
+`controller.pcbcraft.json` is an original geometric example:
+60 × 40 mm, six rectangular pads and three tracks on Top Layer.
+It is not an import or an electrically complete design.
 
-`schematic/editing-demo.pcbcraft.json` — собственная сцена, созданная и
-сохранённая через GUI редактора: R1/R2 47k, провод, C1 100nF, GND,
-Net1 и кириллическая подпись. Нужна для проверки размещения/выбора,
-Properties и копирования. C1 оставлен отдельно; электрическая схема
-не завершена и не проверена ERC. Архивов пользовательских дизайнов нет.
+`schematic/editing-demo.pcbcraft.json` is an original scene created and saved
+through the editor GUI: R1/R2 47k, a wire, C1 100nF, GND, Net1 and a Cyrillic label.
+It is used to check placement/selection, Properties and copying. C1 is left
+unconnected; the circuit is incomplete and has not passed ERC.
+No archives of user designs are included.

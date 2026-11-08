@@ -1,26 +1,26 @@
-# Валидация интеграции PCB v2 — 21.10.2026
+# PCB v2 integration validation — October 21, 2026
 
-Интегрирован пользовательский пакет `PCBCraft-PCB-integration-v2-2026-10-21.zip`
-на исходную базу `bd761734cb5b2fae5461bb5bbec800efd5814bf9`.
-Все записи `SHA256SUMS.txt` совпали; исходные Git blob-хеши изменяемых файлов
-совпали с manifest пакета. Перенесены overlay, Properties hook, синтетические
-fixtures, документация, проверяющий скрипт и уведомления о происхождении кода.
+Integrated the user-supplied `PCBCraft-PCB-integration-v2-2026-10-21.zip`
+onto base `bd761734cb5b2fae5461bb5bbec800efd5814bf9`.
+Every `SHA256SUMS.txt` entry matched; original Git blob hashes of modified files
+matched the package manifest. Transferred the overlay, Properties hook, synthetic
+fixtures, documentation, verification script and code-provenance notices.
 
-## Исправления при интеграции
+## Integration fixes
 
-- Устранён borrow-after-move в `pcb_tools::edit_component`: mutable-ссылка
-  выбирается до перемещения нового значения компонента.
-- Обновлён тестовый конструктор приложения для нового `pcb_clipboard`.
-- Применён rustfmt, устранены замечания Clippy без отключения проверок.
-- Cargo.lock дополнен `geo 0.31.0` и его зависимостями; существующие версии
-  зависимостей не обновлялись. `verify_pcb_update.py` использует `cargo fetch
-  --locked` вместо перегенерации lockfile при каждом запуске.
-- Отчёт `pcb_inspect` отражает экспериментальный writer и считает редактируемые
-  определения полигонов отдельно от исходных записей.
+- Fixed borrow-after-move in `pcb_tools::edit_component`: select the mutable
+  reference before moving the new component value.
+- Updated the test application constructor for the new `pcb_clipboard`.
+- Applied rustfmt and resolved Clippy findings without disabling checks.
+- Added `geo 0.31.0` and its dependencies to Cargo.lock; existing dependency
+  versions were not updated. `verify_pcb_update.py` uses `cargo fetch --locked`
+  rather than regenerating the lockfile each run.
+- The `pcb_inspect` report reflects the experimental writer and counts editable
+  polygon definitions separately from original records.
 
-## Выполненные автоматические проверки
+## Automated checks performed
 
-Linux x86_64, Debian 13, Rust 1.90.0, четыре параллельных задания:
+Linux x86_64, Debian 13, Rust 1.90.0, four parallel jobs:
 
 ```sh
 cargo fmt --all -- --check
@@ -30,110 +30,103 @@ cargo build --locked --workspace --all-targets
 python3 scripts/verify_pcb_update.py --report-dir /tmp/pcb-validation-unique
 ```
 
-Все проверки прошли. Выполнено 109 Rust-тестов: приложение 24, core 34,
-geom 1, IO 44, render 6; ошибок, пропусков и ignored нет. Пустые doc-test
-группы не включены в это число. Все 22 Python-теста сборщика из исходного
-архива также прошли; они проверяют упаковку, а не функциональность Rust.
+All checks passed. Ran 109 Rust tests: app 24, core 34, geom 1, IO 44, render 6;
+no failures, skips or ignored tests. Empty doc-test groups are excluded.
+All 22 Python builder tests from the original archive also passed; these check
+packaging rather than Rust functionality.
 
-Проверки включают геометрию и транзакции, routing preview/backtrack/via/splits,
-полигоны/вырезы/thermal/priority/islands, JSON-миграцию и регрессии старых схем.
-IO-тесты проверяют синтетические binary/ASCII, сохранение неизвестных потоков,
-отказ для неподдержанных зависимостей, резервное копирование и атомарную замену.
+Checks include geometry and transactions, routing preview/backtrack/via/splits,
+polygons/cutouts/thermal/priority/islands, JSON migration and old-schematic regressions.
+IO tests cover synthetic binary/ASCII files, unknown-stream preservation,
+refusal of unsupported dependencies, backups and atomic replacement.
 
-`pcb_roundtrip --exercise` для `fixtures/pcb-update/editor-v2.PcbDoc` изменил
-компонент, Track, Pad, Via, добавил трек и изменил clearance полигона с repour.
-Сохранено 16704 байта; собственный читатель восстановил 9 примитивов,
-1 компонент, 2 цепи, 1 полигон. Входной fixture не изменён.
+`pcb_roundtrip --exercise` on `fixtures/pcb-update/editor-v2.PcbDoc` changed a
+component, Track, Pad and Via, added a track and changed polygon clearance with
+repour. Saved 16704 bytes; the application's reader restored 9 primitives,
+1 component, 2 nets and 1 polygon. The input fixture was unchanged.
 
-## GUI на Linux
+## Linux GUI
 
-Реальное окно wgpu/OpenGL запущено в Xvfb 1440×900 с программным Mesa.
-Для контейнерного X11 отключено MIT-SHM; проверка выполнялась на отдельном
-дисплее и копии fixture вне репозитория. Клавиатурный фокус задан через
-`xdotool windowfocus`.
+A real wgpu/OpenGL window ran in Xvfb 1440×900 with software Mesa.
+MIT-SHM was disabled for container X11; checks used a separate display and a
+fixture copy outside the repository. Keyboard focus was set with `xdotool windowfocus`.
 
-Проверены отображение платы, площадок, via, текста, дорожки и выреза;
-выбор R1 и Component Properties; Comment `1k` → `2k2`, Apply, перезаливка;
-Ctrl+S в `.PcbDoc`. Первая `.bak` побайтово совпала с исходным fixture.
-Проверены Ctrl+W, маршрут от J1.1 (25,10 мм) к (30,15 мм), Esc,
-Undo (новая дорожка исчезает), Redo и Save. После повторного импорта
-сохранились Comment `2k2` и две дорожки; после перезапуска они отображаются.
+Checked board, pads, via, text, track and cutout display; R1 selection and
+Component Properties; Comment `1k` → `2k2`, Apply, repour; Ctrl+S to `.PcbDoc`.
+The first `.bak` matched the original fixture byte-for-byte.
+Checked Ctrl+W, routing from J1.1 (25,10 mm) to (30,15 mm), Esc, Undo (new track
+disappears), Redo and Save. Reimport preserved Comment `2k2` and two tracks;
+they were displayed again after restart.
 
-## Границы результата
+## Result boundaries
 
-Проверка выполнялась собственным читателем PCBCraft и синтетическими файлами.
-Altium Designer, реальные пользовательские платы и Windows в этой среде
-не проверялись. Совместимость native-файлов с Altium и точная визуальная
-эквивалентность не подтверждены. DRC, obstacle avoidance, push-and-shove,
-ECO и выпуск производственных файлов не реализованы этим пакетом.
-Поддержанный поднабор writer и блокирующие ограничения описаны в
-[IMPLEMENTATION.md](IMPLEMENTATION.md). Полный этап PCB из PLAN.md не завершён.
+Verification used PCBCraft's own reader and synthetic files.
+Altium Designer, real user boards and Windows were not checked in this environment.
+Native-file compatibility with Altium and exact visual equivalence are unconfirmed.
+This package does not implement DRC, obstacle avoidance, push-and-shove, ECO or
+manufacturing outputs. The supported writer subset and blocking limitations are
+in [IMPLEMENTATION.md](IMPLEMENTATION.md). The full PCB stage in PLAN.md is incomplete.
 
+## Windows: opening ReferenceB with copper-free NPTH — October 21, 2026
 
-## Windows: открытие ReferenceB с NPTH без меди — 21.10.2026
+Reproduced `Invalid PCB Pad geometry` when opening `ReferenceBBoard.PcbDoc` from
+`ReferenceB.PrjPcb`. Pads6 record 121 (zero-based) contains Multi-Layer Pad `0`,
+PLATED=false, zero top/middle/bottom land dimensions and positive drill 177165
+native units (449999 nm, nominally 0.45 mm). The error was a model constraint,
+not project-path resolution or dimension reading.
 
-Воспроизведено `Invalid PCB Pad geometry` при открытии из проекта
-`ReferenceB.PrjPcb` документа `ReferenceBBoard.PcbDoc`. В Pads6 запись 121
-(индексация с нуля) содержит Multi-Layer Pad `0`, PLATED=false, нулевые размеры
-top/middle/bottom land и положительный drill 177165 native units
-(449999 нм, номинально 0,45 мм). Ошибка была в ограничении модели, а не в
-разрешении пути проекта или чтении размеров.
+The model accepts this bounded case: an unplated through-hole without copper.
+Zero-sized SMD pads, pads without holes, negative dimensions and zero-sized plated
+pads are still rejected. Copper dimensions stay zero; the object is neither
+removed nor replaced with a via. Bounds and picking include drill diameter.
+The renderer creates no degenerate copper polygon and displays the hole outline,
+which remains visible when switching layers. Polygon pours avoid the hole on
+both layers without using it as an electrical pad even when the net matches.
 
-Модель допускает этот ограниченный случай: неметаллизированное сквозное
-отверстие без меди. Нулевые SMD-площадки, площадки без отверстия, отрицательные
-размеры и нулевые металлизированные площадки по-прежнему отклоняются.
-Размеры меди остаются нулевыми; объект не удаляется и не заменяется via.
-Bounds и picking учитывают диаметр сверления. Renderer не создаёт вырожденный
-медный полигон и показывает контур отверстия; оно остаётся видимым при
-переключении слоёв. Полигонная заливка обходит отверстие на обоих слоях,
-не используя его как электрическую площадку даже при совпадении net.
-
-Проверено:
+Verified:
 
 - 148 workspace tests, fmt --check, Clippy --all-targets -D warnings,
-  Windows debug build и Linux GNU all-targets cargo check.
-- Независимо сформированный бинарный CFB с такой площадкой: импорт,
-  JSON Save/load, перемещение, native serialize/re-import и сохранение opaque
-  хвоста записи и оригинального source archive. Реальная плата не сохранялась.
-- Регрессии валидации/границ/picking и обход отверстия заливкой на Top/Bottom.
-- CLI реальной платы: 15389 примитивов, 69 компонентов, 20 цепей, 3 полигона;
-  ни один Pad не пропущен (123 записи).
-- Реальное окно Windows: открытие проекта, двойной щелчок по PcbDoc в Projects,
-  появление платы и вкладки без ошибки импорта. Старое окно с несохранёнными
-  правками оставлено открытым; исходный PcbDoc не изменён.
+  Windows debug build and Linux GNU all-targets cargo check.
+- Independently generated binary CFB with this pad: import, JSON Save/load,
+  moving, native serialize/reimport and preservation of the opaque record tail
+  and original source archive. The real board was not saved.
+- Validation/bounds/picking regressions and pour hole avoidance on Top/Bottom.
+- Real-board CLI: 15389 primitives, 69 components, 20 nets, 3 polygons;
+  no Pad omitted (123 records).
+- Real Windows window: project opening, double-clicking PcbDoc in Projects,
+  board and tab appearing without import error. The old window with unsaved
+  edits remained open; original PcbDoc unchanged.
 
-Это проверка открытия и указанного типа отверстия. Точность всех слоёв,
-текста, padstack/slots, DRC и совместимость изменённой реальной платы с Altium
-здесь не подтверждались. Linux GUI и новые Linux-артефакты не запускались.
+This checks opening and the specified hole type. Accuracy of all layers, text,
+padstack/slots, DRC and compatibility of the edited real board with Altium were
+not confirmed here. Linux GUI and new Linux artifacts were not run.
 
+## Windows: PCB visual comparison — October 21, 2026
 
-## Windows: визуальная сверка PCB — 21.10.2026
+Details and unfinished work: [VISUAL_PARITY.md](VISUAL_PARITY.md).
+Full Altium parity is not claimed. This iteration checked 159 workspace tests,
+fmt --check, strict Clippy, Windows debug build and the real board window;
+Linux GNU all-targets check without Linux GUI/artifact release.
+The model now contains 15513 records, including 124 2D body-projection records.
+Both representations of every body/Region are retained for native IO without
+being overlaid twice on screen.
 
-Подробности и незавершённое: [VISUAL_PARITY.md](VISUAL_PARITY.md). Полное
-совпадение с Altium не заявляется. Проверки этой итерации: 159 workspace tests,
-fmt --check, строгий Clippy, Windows debug build и реальное окно платы; Linux
-GNU all-targets check без Linux GUI/выпуска артефакта. Модель теперь содержит
-15513 записей, включая 124 записи 2D body projections. Оба представления каждого
-корпуса/Region сохранены для native IO, но не накладываются на экране повторно.
+Separate regressions check native layer overrides/fallback/tails, unchanged
+3D-body-stream preservation, refusal to write a changed projection without 3D
+transforms, hidden component strings, native radius percentages, font flags,
+glyph geometry at three DPIs, hatch clipping and clockwise arc seams without
+huge GPU triangles. The real board was not overwritten in native format;
+edited real PcbDoc compatibility with Altium remains unconfirmed.
 
-Отдельные регрессии проверяют native layer overrides/fallback/tails, сохранность
-неизменённых 3D body streams, отказ от записи изменённой проекции без 3D transforms,
-скрытые component strings, native radius percentages, font flags, glyph geometry
-на трёх DPI, hatch clipping и clockwise arc seams без огромных GPU-треугольников.
-Реальная плата в native формате не перезаписывалась, совместимость изменённого
-реального PcbDoc с Altium пока не подтверждена.
+## Windows: PCB Properties — October 21, 2026
 
-
-## Windows: PCB Properties — 21.10.2026
-
-[PROPERTIES.md](PROPERTIES.md) разделяет native observations, реализацию,
-проверки и остающиеся ограничения. Контекстные формы, origin-relative fields,
-Comment, supported snap switches и работа с History. 169 workspace tests,
-fmt --check, strict Clippy all-targets, Windows build, Linux GNU all-targets
-check. Реальное окно: Board/XP1/Track/Via, диаметр 0.7 → 0.8 mm и Undo/Redo/Undo.
-Исходная плата не записывалась. Linux GUI не запускался. Полное совпадение
-Properties/3D padstack/правил/всех состояний не заявляется.
-
+[PROPERTIES.md](PROPERTIES.md) separates native observations, implementation,
+checks and remaining limitations. Contextual forms, origin-relative fields,
+Comment, supported snap switches and History integration. 169 workspace tests,
+fmt --check, strict all-targets Clippy, Windows build, Linux GNU all-targets check.
+Real window: Board/XP1/Track/Via, diameter 0.7 → 0.8 mm and Undo/Redo/Undo.
+Source board was not written. Linux GUI was not run.
+Full Properties/3D padstack/rules/all-state parity is not claimed.
 
 ## Windows padstack / 3D / mask continuation — 2026-10-21
 

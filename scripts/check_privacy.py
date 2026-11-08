@@ -16,6 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 DESIGNS = (".prjpcb", ".pcbdoc", ".schdoc", ".pcblib", ".schlib", ".intlib",
            ".outjob", ".step", ".stp", ".pcbcraft.json")
 EMAIL = re.compile(r"[A-Za-z0-9._%+-]+@([A-Za-z0-9.-]+\.[A-Za-z]{2,})")
+PUBLIC_EMAILS = {"98145946+mx-goliath@users.noreply.github.com"}
 HOME = re.compile(r"(?:[A-Za-z]:[\\/]+(?:Users|Documents and Settings)[\\/]+|/(?:home|Users)/)([^\\/\s\x00\"`<>|]+)", re.I)
 SECRET = re.compile(r"(?:github_pat_[A-Za-z0-9_]{20,}|gh[pousr]_[A-Za-z0-9]{20,}|AKIA[A-Z0-9]{16}|-----BEGIN [A-Z ]*PRIVATE KEY-----)")
 LOCAL_DIRS = {"private-projects", "projects", "local", "captures", "screenshots",
@@ -43,7 +44,14 @@ def findings(path: str, data: bytes) -> set[str]:
                 problems.add("personal home directory")
         for match in EMAIL.finditer(text):
             domain = match[1].lower()
-            if domain not in {"example.com", "example.org", "example.net", "example.test", "example.invalid"}:
+            if match[0].lower() == "t3code@" + "users.noreply.github.com":
+                line_start = text.rfind("\n", 0, match.start()) + 1
+                metadata = (match.start() < text.find("\n\n")
+                            and text[line_start:match.start()].startswith(("author ", "committer ")))
+                if path == ".mailmap" or (path == "commit" and metadata):
+                    continue  # Public historical identity, not a personal address.
+            if (match[0].lower() not in PUBLIC_EMAILS
+                    and domain not in {"example.com", "example.org", "example.net", "example.test", "example.invalid"}):
                 problems.add("email address")
         if SECRET.search(text):
             problems.add("possible credential")

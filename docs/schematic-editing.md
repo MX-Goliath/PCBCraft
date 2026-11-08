@@ -1,177 +1,178 @@
-# Базовое редактирование схем
+# Basic schematic editing
 
-Итерация 21 октября 2026, частичная реализация §3 и §9–10 исходного
-`ALTIUM_RUST_AGENT_PLAN.md`. Работает для новой схемы и импортированной
-сцены SchDoc. Это редактор геометрии и свойств; compiler связности и ERC
-остаются отдельными этапами.
+October 21, 2026 iteration, partial implementation of §3 and §9–10 of the original
+`ALTIUM_RUST_AGENT_PLAN.md`. Works with new schematics and imported SchDoc scenes.
+This is a geometry and properties editor; a connectivity compiler and ERC remain
+separate stages.
 
-Собственный пример для открытия: `fixtures/schematic/editing-demo.pcbcraft.json`.
+Original example to open: `fixtures/schematic/editing-demo.pcbcraft.json`.
 
-## Управление
+## Controls
 
-Создать схему: Ctrl+Shift+N. Открыть SchDoc/PrjPcb: Ctrl+O.
-Инструменты доступны в Place и Active Bar. В Part… пока два собственных
-символа: Resistor и Capacitor. Остальные компоненты можно копировать
-из импортированной сцены или размещать из локальных SchLib/IntLib через Components.
+Create a schematic: Ctrl+Shift+N. Open SchDoc/PrjPcb: Ctrl+O.
+Tools are available in Place and Active Bar. Part… currently has two original
+symbols: Resistor and Capacitor. Other components can be copied from imported
+scenes or placed from local SchLib/IntLib through Components.
 
-| Действие | Управление |
+| Action | Controls |
 |---|---|
-| Выбор | Щелчок; Shift добавляет объекты. Первый щелчок по Wire выбирает весь провод, повторный — сегмент между изгибами/электрическими узлами |
-| Размещение | Выбрать инструмент, щёлкнуть на листе; повторяется до Esc |
-| Провода | Ctrl+W или W; щелчки подтверждают вершины; попадание в существующий провод/электрический контакт завершает соединение и позволяет начать следующее; Enter/правая кнопка завершает на последней подтверждённой вершине |
-| Возврат при прокладке | Backspace/Delete убирает последнюю подтверждённую вершину, не удаляя выбранные объекты |
-| Угол провода | Space переключает порядок горизонтального/вертикального сегментов |
-| Метка / текст / junction | L / T / J |
-| GND / графическая линия | Place → Power Port / Drawing Tools → Line |
-| Drag компонентов | Перетаскивание либо M, D: подключённые провода растягиваются; поддержана смешанная группа компонентов, проводов и выбранных сегментов |
-| Move | M, M: перемещение с разрывом подключений |
-| Форма провода | Перетаскивание сегмента/вершины; либо M, D, выбор точки провода и щелчок в новой позиции. Сегмент смещается поперёк своей оси, концы провода закреплены; Т-ответвления следуют за сегментом |
-| Поворот | Space: выбранный объект или preview на 90° против часовой стрелки |
-| Копирование / вырезание / вставка | Ctrl+C / Ctrl+X / Ctrl+V; вставка требует щелчка |
-| Дубликат | Ctrl+D, затем щелчок |
-| Удаление | Delete; компонент удаляется со всеми видимыми дочерними примитивами |
-| Отмена / повтор | Ctrl+Z / Ctrl+Y |
-| Отмена текущего инструмента | Esc; незавершённый провод/preview не записывается |
-| Properties | Designator, Comment, X/Y; текст объектов; ширина провода/линии. Применение по Enter или уходу из поля |
+| Select | Click; Shift adds objects. The first Wire click selects the whole wire; the next selects a segment between bends/electrical nodes |
+| Place | Select a tool, click the sheet; repeats until Esc |
+| Wire | Ctrl+W or W; clicks confirm vertices; hitting an existing wire/electrical contact completes the connection and allows starting another; Enter/right-click finishes at the last confirmed vertex |
+| Backtrack while wiring | Backspace/Delete removes the last confirmed vertex without deleting selected objects |
+| Wire angle | Space switches horizontal/vertical segment order |
+| Label / text / junction | L / T / J |
+| GND / graphic line | Place → Power Port / Drawing Tools → Line |
+| Component Drag | Drag or M, D: connected wires stretch; mixed groups of components, wires and selected segments are supported |
+| Move | M, M: move while breaking connections |
+| Wire shape | Drag a segment/vertex; or M, D, select a wire point and click the new position. A segment moves perpendicular to its axis; wire ends stay fixed; T-branches follow the segment |
+| Rotate | Space: selected object or preview rotates 90° counterclockwise |
+| Copy / cut / paste | Ctrl+C / Ctrl+X / Ctrl+V; paste requires a click |
+| Duplicate | Ctrl+D, then click |
+| Delete | Delete; a component is deleted with all its visible child primitives |
+| Undo / redo | Ctrl+Z / Ctrl+Y |
+| Cancel current tool | Esc; unfinished wires/previews are not committed |
+| Properties | Designator, Comment, X/Y; object text; wire/line width. Apply on Enter or field blur |
+| Save | Ctrl+S / Ctrl+Shift+S to `.pcbcraft.json`; close tab with Ctrl+F4 |
 
-Properties расширена контекстами Document, Component General/Pins, Parameter,
-Designator, Wire, Net Label, Power Port, Text/Text Frame и графики. Теперь
-доступны настройки листа, цвета, индивидуальные шрифты, видимость/показ имени
-параметров, добавление/удаление параметров, таблица вершин провода/линии.
-Таблица моделей читает метаданные экземпляра. Локальные SchLib/IntLib поддержаны через Components; подробности — interface/components-libraries.md. Выбор нескольких объектов через Shift показывает
-отключённое Mixed. Для смешанной группы доступны Move/Drag, поворот, Copy/Cut/Paste,
-Duplicate и Delete; групповое изменение полей Properties пока отключено.
-Полное совпадение Properties остаётся открытым:
-docs/interface/schematic-properties.md и features.json.
-| Сохранение | Ctrl+S / Ctrl+Shift+S в `.pcbcraft.json`; закрытие вкладки — Ctrl+F4 |
+Properties has been extended with Document, Component General/Pins, Parameter,
+Designator, Wire, Net Label, Power Port, Text/Text Frame and graphics contexts.
+Sheet settings, colors, individual fonts, parameter visibility/name display,
+parameter addition/removal and a wire/line vertex table are now available.
+The model table reads instance metadata. Local SchLib/IntLib are supported through
+Components; details: interface/components-libraries.md. Selecting multiple objects
+with Shift displays disabled Mixed. Mixed groups support Move/Drag, rotation,
+Copy/Cut/Paste, Duplicate and Delete; bulk Properties field editing remains disabled.
+Full Properties parity remains open: docs/interface/schematic-properties.md and
+features.json.
 
-Числовые поля Properties используют выбранные mm/mil. Привязка размещения
-использует snap grid документа, электрические окончания выводов, GND,
-junctions и осевые сегменты проводов. Видимая сетка — независимое
-состояние представления. Новые R/C получают первый свободный designator;
-копии компонентов получают новые UUID и свободное обозначение.
-Буфер обмена хранит собственный текстовый формат PCBCraft с геометрией,
-шрифтами и встроенными изображениями; это не формат обмена с Altium.
-Ctrl+V принимает такой payload до 16 MiB. Пункт Paste в меню использует
-последний внутренний фрагмент текущего сеанса.
+Numeric Properties fields use the selected mm/mil units. Placement snapping uses
+the document snap grid, electrical pin endpoints, GND, junctions and axis-aligned
+wire segments. The visible grid is independent view state.
+New R/C components receive the first unused designator; component copies receive
+new UUIDs and an unused designator.
+The clipboard stores PCBCraft's own text format with geometry, fonts and embedded
+images; it is not an Altium exchange format. Ctrl+V accepts payloads up to 16 MiB.
+The menu Paste command uses the last internal fragment of the current session.
 
-## Контракт данных
+## Data contract
 
-Типизированные `Edit` и `Request` находятся в `eda-core::schematic_edit`.
-Запрос проверяет UUID документа и ожидаемую монотонную ревизию истории.
-Команда сначала применяется к копии модели, проверяется `Document::validate`
-и записывается одной транзакцией. Ошибка любого элемента Batch не меняет
-модель и историю. Renderer только читает модель и возвращает события
-в координатах документа; GUI владеет временным preview и выбором инструмента.
+Typed `Edit` and `Request` live in `eda-core::schematic_edit`.
+A request checks the document UUID and expected monotonic history revision.
+The command is first applied to a model copy, checked by `Document::validate` and
+recorded as one transaction. Failure of any Batch item leaves model and history
+unchanged. The renderer only reads the model and returns events in document
+coordinates; the GUI owns the temporary preview and tool selection.
 
-Импортированные дочерние координаты уже абсолютные. Transform изменяет их
-один раз, вместе с точкой компонента; UUID сохраняются. При копировании
-UUID и связи владельцев заменяются, таблицы шрифтов объединяются.
-Новые объекты имеют `source_index = u32::MAX`; `text_role` сохраняет назначение
-Designator/Comment/NetLabel независимо от исходных записей.
+Imported child coordinates are already absolute. Transform changes them once,
+together with the component origin; UUIDs are preserved. Copying replaces UUIDs
+and owner references and merges font tables.
+New objects have `source_index = u32::MAX`; `text_role` preserves the
+Designator/Comment/NetLabel role independently of original records.
 
-Исходные records и архив SchDoc остаются неизменными. `source_modified`
-помечает, что редактируемая сцена разошлась с архивом; Undo восстанавливает
-флаг вместе со сценой. JSON v1 получил опциональные поля `source_modified`
-и `text_role` с default, старые JSON читаются. Архив не является сохранённым
-результатом редактирования в native-формате.
+Original records and the SchDoc archive remain unchanged. `source_modified`
+marks that the editable scene has diverged from the archive; Undo restores the
+flag along with the scene. JSON v1 gained optional `source_modified` and
+`text_role` fields with defaults; old JSON remains readable. The archive is not
+a saved native-format result of editing.
 
-Координаты сцены остаются i64 nm согласно ADR 0002. Требование native
-10 pm roundtrip из полного плана этой итерацией не закрывается. История
-пока хранит снимки в памяти; durable journal, восстановление после сбоя,
-operation ID/idempotence и удалённый API команд ещё не реализованы.
+Scene coordinates remain i64 nm under ADR 0002. This iteration does not satisfy
+the full plan's native 10 pm roundtrip requirement. History still stores snapshots
+in memory; a durable journal, crash recovery, operation ID/idempotence and a remote
+command API are not yet implemented.
 
-## Соединения при редактировании
+## Connections during editing
 
-`Edit::DragWire` и `wire_drag` выполняют расчёт формы провода в eda-core.
-Выбор ручки происходит в координатах документа с радиусом, переданным renderer.
-Preview и commit сохраняют UUID, оформление и окончания. Вершина меняет
-положение локально, остальные вершины закреплены; при необходимости добавляются
-ортогональные изгибы. Сегментные изменения поддержаны для горизонтали/вертикали.
-Отдельные Drag и Move не смешиваются: Move по-прежнему разрывает связи.
+`Edit::DragWire` and `wire_drag` calculate wire shape in eda-core.
+Handle selection uses document coordinates with a radius supplied by the renderer.
+Preview and commit preserve UUIDs, styling and endings. A vertex changes position
+locally; other vertices stay fixed, with orthogonal bends added if necessary.
+Segment edits support horizontal/vertical segments.
+Separate Drag and Move semantics are preserved: Move still breaks connections.
 
-Автоматические точки Т-соединений и подключений к выводам вычисляются по
-геометрии, включая preview. Они не становятся ручными Junction и не засоряют
-Undo. Простое пересечение середин двух проводов соединением не считается.
-Ручные/импортированные Junction сохраняются. Кэш точек принадлежит View и
-освобождается при закрытии документа; изменения, Undo/Redo и preview его обновляют.
-Это локальная топология, не проектный compiler цепей по именам/иерархии.
+Automatic T-junction and pin-connection points are computed from geometry,
+including preview. They do not become manual Junctions or clutter Undo.
+A simple crossing of two wire interiors is not a connection.
+Manual/imported Junctions are retained. The point cache belongs to View and is
+released on document close; changes, Undo/Redo and preview update it.
+This is local topology, not a project-level named/hierarchical net compiler.
 
-Наблюдение 21.10.2026, Altium 24.4.1: на отдельной копии ReferenceB команда Edit →
-Move → Drag переносит середину провода, растягивает ответвления и оставляет
-компоненты неподвижными. Изменение отменено; исходный проект не редактировался.
-Дополнительный источник: [Creating Circuit Connectivity](https://www.altium.com/documentation/altium-designer/schematic/creating-circuit-connectivity).
+October 21, 2026 observation, Altium 24.4.1: on a separate ReferenceB copy,
+Edit → Move → Drag moves a wire middle, stretches branches and leaves components
+stationary. The change was undone; the original project was not edited.
+Additional source: [Creating Circuit Connectivity](https://www.altium.com/documentation/altium-designer/schematic/creating-circuit-connectivity).
 
-Windows GUI: на собственной схеме проверены M,D компонента с проводами,
-M,D сегмента с Т-ответвлением, Undo/Redo и Save/reopen. Автотесты покрывают
-vertex/segment, обычный и coalesced mouse gesture, отмену вне canvas/по фокусу,
-смену вкладки, stale revision, Backspace и автоматическое завершение провода.
+Windows GUI: component M,D with wires, segment M,D with a T-branch, Undo/Redo and
+Save/reopen were checked on the application's own schematic. Automated tests cover
+vertex/segment, normal and coalesced mouse gestures, cancellation outside the
+canvas/on focus loss, tab switching, stale revision, Backspace and automatic wire completion.
 
-## Группы, отдельные сегменты и перекрытия — 21.10.2026
+## Groups, individual segments and overlaps — October 21, 2026
 
-Наблюдение: на отдельной копии ReferenceB в Altium 24.4.1 первый щелчок по проводу
-показывает зелёные маркеры, повторный выбирает сегмент с красными маркерами.
-Исходный пользовательский проект не изменялся. Удаление сегментов и Optimize
-Wires & Buses дополнительно сверены с официальными описаниями:
+Observation: on a separate ReferenceB copy in Altium 24.4.1, the first wire click
+shows green markers; a repeat click selects a segment with red markers.
+The user's original project was not changed. Segment deletion and Optimize Wires
+& Buses were also compared with official descriptions:
 [Placement and Editing Techniques](https://www.altium.com/documentation/altium-designer/schematic/placement-editing-techniques),
 [Schematic Preferences](https://www.altium.com/documentation/altium-designer/preferences/schematic).
-Результат native Delete и все сочетания preferences в этой итерации не наблюдались.
+Native Delete results and every preference combination were not observed in this iteration.
 
-Реализация:
+Implementation:
 
-- `Selection { ids, segments }`, `DeleteSelection` и `TransformSelection` находятся
-  в eda-core. Смешанная группа изменяется одной проверяемой транзакцией истории.
-  Компонент и выбранная вместе с ним собственная подпись преобразуются один раз.
-- Shift добавляет объекты; повторный Shift+щелчок по выбранному Wire переводит
-  его в выбор сегмента. Следующие Shift+щелчки добавляют/снимают сегменты.
-  Границы — изгибы, окончания соседних проводов, выводы, метки и junctions;
-  обычное пересечение середин без узла не разрезает провод.
-- Delete/Cut сохраняют остальные части полилинии и их оформление. Исчезнувшие
-  автоматические Т-точки пересчитываются. Геометрия и узлы выбранного сегмента
-  проверяются повторно; устаревшая выборка отклоняется атомарно.
-- Move переносит выбранную геометрию; Drag растягивает внешние подключения.
-  Поддержаны группы целых wires и выбранных сегментов вместе с компонентами,
-  общий поворот и Copy/Cut/Paste/Duplicate. При вставке группа получает новые
-  UUID и разные свободные обозначения, например R1/R2 → R3/R4.
-- Перекрывающиеся коллинеарные участки совместимых wires поглощаются после
-  изменения/вставки/прокладки; обратное направление и самоперекрытия учитываются.
-  Электрические Т-узлы сохраняются даже при поглощении исходного конца Wire.
-  Соседние участки могут остаться разными объектами на границе узла.
-  Чужая неизменённая геометрия вне области перекрытия не нормализуется.
-- Preview Move/Drag, вставки и прокладки получает результат той же команды,
-  валидации и оптимизации, что commit. Поглощённые/разрезанные оригиналы скрываются.
-  Быстрый повторный щелчок по схеме больше не вызывает Fit; остаётся View → Fit Document.
+- `Selection { ids, segments }`, `DeleteSelection` and `TransformSelection` live in
+  eda-core. Mixed groups change in one validated history transaction.
+  A component and its own jointly selected label are transformed once.
+- Shift adds objects; a repeated Shift+click on a selected Wire switches to segment
+  selection. Further Shift+clicks add/remove segments. Boundaries are bends,
+  neighboring wire endpoints, pins, labels and junctions; an ordinary interior
+  crossing without a node does not split the wire.
+- Delete/Cut retain other polyline parts and their styling. Disappearing automatic
+  T-points are recomputed. Selected-segment geometry and nodes are rechecked;
+  stale selection is rejected atomically.
+- Move transfers selected geometry; Drag stretches external connections.
+  Groups of whole wires and selected segments together with components support
+  common rotation and Copy/Cut/Paste/Duplicate. Pasted groups receive new UUIDs
+  and distinct unused designators, e.g. R1/R2 → R3/R4.
+- Overlapping collinear portions of compatible wires are absorbed after editing,
+  insertion or wiring; reversed direction and self-overlap are handled.
+  Electrical T-nodes survive even when an original Wire endpoint is absorbed.
+  Adjacent portions may remain separate objects at node boundaries.
+  Unchanged geometry outside the overlap area is not normalized.
+- Move/Drag, paste and wiring previews use the same command, validation and
+  optimization result as commit. Absorbed/split originals are hidden.
+  A quick repeat click on the schematic no longer triggers Fit;
+  View → Fit Document remains available.
 
-Проверка: 145 workspace tests, fmt --check и Clippy -D warnings; в том числе
-реальные egui pointer events для Shift/повторного щелчка и удаления двух сегментов,
-смешанные группы, разные обозначения, no-op, stale revision/топология, Undo/Redo,
-точное покрытие геометрии и 864 комбинации направлений/перекрытий.
-Windows GUI на собственной `.tools/group-wire-qa.pcbcraft.json`: зелёные/красные
-маркеры, mouse Drag сегмента, Duplicate с перекрытием и сохранением Т-ответвления,
-Undo/Redo, JSON Save/reopen. Группы дополнительно проверены автоматическими
-событиями canvas; native Shift-модификатор в этой GUI-пробе не применялся.
-Linux GNU all-targets cargo check проходит; Linux GUI и новые Linux-артефакты
-в этой итерации не запускались/не собирались. Полное совпадение с Altium не заявляется.
+Verification: 145 workspace tests, fmt --check and Clippy -D warnings; includes
+real egui pointer events for Shift/repeat clicks and two-segment deletion, mixed
+groups, distinct designators, no-op, stale revision/topology, Undo/Redo, exact
+geometry coverage and 864 direction/overlap combinations.
+Windows GUI on the application's own `.tools/group-wire-qa.pcbcraft.json`:
+green/red markers, mouse segment Drag, Duplicate with overlap and T-branch
+preservation, Undo/Redo, JSON Save/reopen. Groups were additionally checked through
+automated canvas events; the native Shift modifier was not used in this GUI probe.
+Linux GNU all-targets cargo check passes; Linux GUI and new Linux artifacts were
+not run/built in this iteration. Full Altium parity is not claimed.
 
-## Оставшиеся ограничения
+## Remaining limitations
 
-- Нет рамочного выбора и группового редактирования полей Properties.
-- Оптимизация объединяет только совместимые по стилю wires, участвующие в
-  перекрытии затронутой правкой геометрии. Провода разных стилей, locked/hidden
-  и с оформленными концами не поглощаются. Общей команды cleanup всего листа нет.
-- Нет диагонального segment drag, всех режимов углов Altium, полной семантики
-  locked selection и преобразования четырёхсторонних узлов.
-  Новое совпадение концов учитывается локальной геометрией; проектный compiler,
-  предупреждение об изменении цепи и полная проверка связности ещё отсутствуют.
-- Размещение встроенных R/C и символов локальных SchLib/IntLib через Components,
-  включая перенос из списка/preview. Power Port — GND.
-  Нет редактора библиотек, полной annotation, иерархии, ERC, ECO и native writer.
-- Поворот Port, Image, TextFrame и неизвестных примитивов отклоняется;
-  перемещение поддержано. Отражение и pin editing пока отсутствуют.
-- Порядок Place/Drawing Tools сверён с открытым Altium 24.4.1; Part…
-  открывает Components, Junction добавлен отдельным пунктом.
-  Иконки/Active Bar, Edit и Properties ещё не имеют полного визуального и
-  поведенческого совпадения с эталоном.
-- Windows GUI проверяется локально; Linux использует то же ядро/GUI без Win32,
-  локально подтверждается cargo check x86_64-unknown-linux-gnu. Новая итерация
-  Linux GUI не проверялась; Linux/AppImage артефакты по указанию пользователя не собирались.
+- No rectangle selection or bulk Properties field editing.
+- Optimization merges only style-compatible wires involved in overlap of geometry
+  affected by the edit. Differently styled, locked/hidden wires and wires with
+  styled ends are not absorbed. No whole-sheet cleanup command exists.
+- No diagonal segment drag, all Altium angle modes, complete locked-selection
+  semantics or four-way node transformations. New endpoint coincidence is handled
+  by local geometry; a project compiler, net-change warnings and full connectivity
+  checking are still absent.
+- Placement of built-in R/C and local SchLib/IntLib symbols through Components,
+  including dragging from the list/preview. Power Port is GND.
+  No library editor, full annotation, hierarchy, ERC, ECO or native writer.
+- Rotation of Port, Image, TextFrame and unknown primitives is rejected;
+  moving is supported. Mirroring and pin editing are not yet available.
+- Place/Drawing Tools order was compared with open Altium 24.4.1; Part… opens
+  Components, and Junction was added as a separate entry.
+  Icons/Active Bar, Edit and Properties do not yet fully match the reference in
+  appearance and behavior.
+- Windows GUI is checked locally; Linux uses the same core/GUI without Win32 and
+  is checked locally with cargo check x86_64-unknown-linux-gnu. The new Linux GUI
+  iteration was not verified; Linux/AppImage artifacts were not built at the user's request.

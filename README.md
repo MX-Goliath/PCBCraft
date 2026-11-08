@@ -1,16 +1,18 @@
 # PCBCraft
 
+PCBCraft is an open-source EDA platform written in Rust, with its own engine for
+schematic design and PCB layout. Its interface and workflows are studied against
+Altium Designer. The current stage covers Altium project and schematic import,
+basic schematic editing and a PCB canvas.
+
+Contributor: [MX-Goliath](https://github.com/MX-Goliath).
+
 Desktop updates use GitHub Releases. See [release packages and update channel](docs/updates.md)
 for Windows installer/portable, Linux DEB/AppImage and macOS Intel/Apple Silicon.
 
-PCBCraft is an open-source, Rust-based EDA platform inspired by Altium Designer's interface and workflows, featuring schematic design, PCB layout, a custom engine.
+## Running
 
-Самостоятельная EDA на Rust с интерфейсом, исследуемым по Altium Designer.
-Текущий этап: импорт проектов и схем Altium, базовое редактирование схем и PCB canvas.
-
-## Запуск
-
-Rust 1.90.0, Windows (обычно MSVC + Windows SDK) или Linux.
+Requires Rust 1.90.0 and Windows (usually MSVC + Windows SDK) or Linux.
 
 ```powershell
 cargo run -p eda-app
@@ -19,9 +21,9 @@ cargo run -p eda-app -- fixtures/schematic/minimal.PrjPcb
 cargo run -p eda-app -- fixtures/schematic/editing-demo.pcbcraft.json
 ```
 
-В текущем рабочем каталоге также подготовлен локальный GNU toolchain
-в игнорируемом `.tools`. Скрипт использует rust-lld через небольшой адаптер
-и локальный LLVM dlltool для Windows import libraries:
+A local GNU toolchain is also prepared in the ignored `.tools` directory in this
+working copy. The script uses rust-lld through a small adapter and a local LLVM
+dlltool for Windows import libraries:
 
 ```powershell
 .\scripts\dev.ps1 run
@@ -29,44 +31,44 @@ cargo run -p eda-app -- fixtures/schematic/editing-demo.pcbcraft.json
 .\scripts\dev.ps1 test
 ```
 
-Сборка: `target/debug/pcbcraft.exe` (или `target/release/pcbcraft.exe`).
-Обычная dev-сборка использует оптимизацию уровня 2 для интерактивной работы
-с платами, сохраняя отладочные символы и проверки. Методика измерений:
-[производительность PCB](docs/pcb-update/PERFORMANCE.md).
-`.tools` не входит в репозиторий. На другом компьютере установить Rust
-обычным способом; основной Cargo workspace не зависит от локального linker.
+Build output: `target/debug/pcbcraft.exe` (or `target/release/pcbcraft.exe`).
+The normal development build uses optimization level 2 for interactive board
+editing while retaining debug symbols and checks. Measurement procedure:
+[PCB performance](docs/pcb-update/PERFORMANCE.md).
+`.tools` is not part of the repository. On another computer, install Rust normally;
+the main Cargo workspace does not depend on the local linker.
 
-### Portable на Windows x64
+### Windows x64 portable package
 
 ```powershell
 python scripts/build-windows-portable.py
 ```
 
-Для упаковки готовой release-сборки добавьте `--no-build`. ZIP и SHA256
-появятся в `dist/PCBCraft-0.1.0-windows-x64-portable.zip`. Упаковке нужны
-Python 3.11+ и redistributable CRT из Visual Studio; путь можно передать
-через `--crt-dir`. На компьютере пользователя установка не нужна:
-распаковать всю папку и запустить `pcbcraft.exe`. При наличии `portable.flag`
-рядом с exe настройки сохраняются в `Data/app.ron` в этой же папке.
+Add `--no-build` to package an existing release build. The ZIP is written to
+`dist/PCBCraft-0.1.0-windows-x64-portable.zip`, with a SHA256 checksum alongside it.
+Packaging requires Python 3.11+ and the Visual Studio redistributable CRT; its
+path can be supplied with `--crt-dir`. Users do not need to install the application:
+extract the entire folder and run `pcbcraft.exe`. If `portable.flag` is present
+next to the executable, settings are saved in `Data/app.ron` in the same folder.
 
 ### Linux
 
-Для Ubuntu/Debian подготовить зависимости оконной системы:
+Install the window-system dependencies on Ubuntu/Debian:
 
 ```bash
 sudo apt-get install build-essential pkg-config libssl-dev libxkbcommon-dev libwayland-dev libx11-dev libxi-dev libxcursor-dev libxrandr-dev
 cargo run --locked -p eda-app
 ```
 
-Поддержка X11 и Wayland включена. Диалоги файлов используют desktop portal;
-в окружении рабочего стола должен быть установлен его backend.
-Windows-скрипт `scripts/dev.ps1` для Linux не нужен. CI настроен для обеих ОС,
-но фактический локальный запуск пока проверяется только на Windows.
+X11 and Wayland support are enabled. File dialogs use the desktop portal;
+its backend must be installed in the desktop environment.
+The Windows script `scripts/dev.ps1` is not needed on Linux. CI is configured for
+both operating systems, but local runtime verification currently covers Windows only.
 
-### AppImage на Linux x86_64
+### Linux x86_64 AppImage
 
-В этом рабочем каталоге Rust 1.90.0, rustfmt и clippy установлены локально
-в `.tools`. Linux-обёртка автоматически выбирает этот toolchain:
+In this working copy, Rust 1.90.0, rustfmt and clippy are installed locally in
+`.tools`. The Linux wrapper automatically selects this toolchain:
 
 ```bash
 bash scripts/dev.sh build --locked --release -p eda-app
@@ -76,77 +78,77 @@ bash scripts/dev.sh test --locked --workspace
 python3 scripts/build-appimage.py
 ```
 
-Для повторной упаковки готового release-бинарника:
+To repackage an existing release binary:
 `python3 scripts/build-appimage.py --no-build`.
-Результат и SHA256 находятся в `dist/PCBCraft-0.1.0-x86_64.AppImage`
-и `dist/PCBCraft-0.1.0-x86_64.AppImage.sha256`.
+The output and SHA256 checksum are written to `dist/PCBCraft-0.1.0-x86_64.AppImage`
+and `dist/PCBCraft-0.1.0-x86_64.AppImage.sha256`.
 
-Упаковке нужны Python 3.11+, `appimagetool`, `binutils`, `ldconfig`
-и оконные библиотеки, включая `libxkbcommon-x11` и `libX11-xcb`.
-Путь к appimagetool можно передать через `--appimagetool` или `APPIMAGETOOL`.
-Инструмент скачивает AppImage runtime при упаковке; для работы без сети
-передайте заранее скачанный runtime через `--runtime-file`.
-Системный FUSE для упаковки не требуется.
+Packaging requires Python 3.11+, `appimagetool`, `binutils`, `ldconfig` and window
+libraries, including `libxkbcommon-x11` and `libX11-xcb`.
+Pass the appimagetool path with `--appimagetool` or `APPIMAGETOOL`.
+The tool downloads the AppImage runtime during packaging; for offline use,
+provide a previously downloaded runtime with `--runtime-file`.
+System FUSE is not required for packaging.
 
-AppImage содержит приложение, встроенные шрифты и библиотеки X11/Wayland.
-glibc, графический драйвер и Vulkan/OpenGL loader используются из системы.
-Сборка на современной Arch Linux не гарантирует совместимость со старыми
-дистрибутивами. Для такого выпуска нужно собирать на самом старом
-поддерживаемом дистрибутиве и проверять результат на целевых системах.
-Диалоги открытия/сохранения требуют работающего desktop portal.
+The AppImage includes the application, embedded fonts and X11/Wayland libraries.
+It uses the system glibc, graphics driver and Vulkan/OpenGL loader.
+Building on a recent Arch Linux does not guarantee compatibility with older
+distributions. For such a release, build on the oldest supported distribution
+and verify the result on target systems.
+Open/save dialogs require a working desktop portal.
 
-Запуск без FUSE:
+Run without FUSE:
 
 ```bash
 ./dist/PCBCraft-0.1.0-x86_64.AppImage --appimage-extract-and-run
 ```
 
-На новой машине установите Rust 1.90.0 через rustup согласно
-`rust-toolchain.toml`. Без локального `.tools` обёртка использует Cargo из PATH.
+On a new machine, install Rust 1.90.0 through rustup as specified in
+`rust-toolchain.toml`. Without a local `.tools`, the wrapper uses Cargo from PATH.
 
-## Возможности первой итерации
+## First-iteration features
 
-- Меню и toolbar, вкладки, Projects, Properties, Messages, статус и слои.
-- Изменение размеров и видимости панелей; сохранение раскладки egui.
-- PCB/SCH документы, Home, пример платы, поиск по открытым документам.
-- Zoom колесом, pan средней/правой кнопкой, fit двойным щелчком или Home.
-- Properties: Board/Pad, поиск, сворачиваемые секции и таблица привязок.
-- Выбор прямоугольных pads; правки Properties применяются при завершении ввода;
+- Menus and toolbar, tabs, Projects, Properties, Messages, status and layers.
+- Panel resizing and visibility; persistent egui layout.
+- PCB/SCH documents, Home, sample board and search across open documents.
+- Wheel zoom, middle/right-button pan, fit by double-click or Home.
+- Properties: Board/Pad, search, collapsible sections and snapping table.
+- Rectangular pad selection; Properties edits apply when input is completed;
   Ctrl+Z / Ctrl+Y.
-- Фильтр выбора pads, оси и привязки к вершинам tracks, центрам/вершинам/краям pads.
-- Open/Save/Save As/Save All собственного JSON v1, recent documents.
-- Защита несохранённых изменений при закрытии вкладки или окна.
-- Preferences: единицы, сетка; G — сетка, Q — единицы.
+- Pad selection filter, axes and snapping to track vertices and pad centers/vertices/edges.
+- Open/Save/Save As/Save All for the application's JSON v1 format, recent documents.
+- Unsaved-change protection when closing a tab or window.
+- Preferences: units and grid; G toggles the grid, Q switches units.
 
-Открываются `.PrjPcb` и `.SchDoc` (CFB Binary / ASCII Version 5.0): дерево
-файлов проекта, символы, выводы, провода, текст, параметры, встроенные изображения,
-выбор компонентов/объектов и Properties. Файлы схем загружаются по выбору из дерева.
-Подробные границы совместимости: [импорт Altium](docs/altium-import.md).
-Базовое редактирование схем: размещение R/C, проводов, меток, GND, текста,
-линий и junctions; перемещение, поворот, копирование, удаление, Properties,
-Undo/Redo и сохранение в собственный JSON. Управление и границы:
-[редактор схем](docs/schematic-editing.md).
-Панель Components: импорт локальных `.SchLib` Binary 5.0 / `.IntLib`, поиск,
-предпросмотр и размещение библиотечных символов. Откройте библиотеку через
-Ctrl+O или меню Components → Install Library…. Space — поворот, Esc — завершение.
-[Поддержка и ограничения библиотек](docs/interface/components-libraries.md).
-Импорт PCB и экспериментальное редактирование `.PcbDoc`: компоненты, pads/vias/tracks,
-ручная трассировка, полигоны с перезаливкой и native Save для поддержанного подмножества
-ASCII/PCB6. Пример: `cargo run --locked -p eda-app -- fixtures/pcb-update/editor-v2.PcbDoc`.
-Управление, ограничения и результаты проверок: [PCB](docs/pcb-update/IMPLEMENTATION.md),
-[валидация интеграции](docs/pcb-update/VALIDATION.md).
-Native-запись схем, полный docking, обход препятствий/shove, ERC/DRC, редактор библиотек
-и выпуск производственных файлов запланированы. Неактивные инженерные меню
-не выполняют операции. Altium не нужен для запуска PCBCraft.
+Opens `.PrjPcb` and `.SchDoc` (CFB Binary / ASCII Version 5.0): project file tree,
+symbols, pins, wires, text, parameters, embedded images, component/object selection
+and Properties. Schematic files load when selected in the tree.
+Detailed compatibility boundaries: [Altium import](docs/altium-import.md).
+Basic schematic editing includes placing R/C components, wires, labels, GND, text,
+lines and junctions; moving, rotating, copying, deleting, Properties, Undo/Redo and
+saving in the application's JSON format. Controls and limitations:
+[schematic editor](docs/schematic-editing.md).
+The Components panel imports local `.SchLib` Binary 5.0 / `.IntLib` files and
+supports searching, previewing and placing library symbols. Open a library with
+Ctrl+O or Components → Install Library…. Space rotates; Esc finishes placement.
+[Library support and limitations](docs/interface/components-libraries.md).
+PCB import and experimental `.PcbDoc` editing include components, pads/vias/tracks,
+manual routing, polygons with repouring and native Save for the supported
+ASCII/PCB6 subset. Example: `cargo run --locked -p eda-app -- fixtures/pcb-update/editor-v2.PcbDoc`.
+Controls, limitations and verification results: [PCB](docs/pcb-update/IMPLEMENTATION.md),
+[integration validation](docs/pcb-update/VALIDATION.md).
+Native schematic writing, full docking, obstacle avoidance/shove, ERC/DRC, a library
+editor and manufacturing outputs are planned. Disabled engineering menu entries
+do not perform operations. Altium is not required to run PCBCraft.
 
-Save / Save As импортированной схемы создаёт собственный `.pcbcraft.json`,
-сохраняя исходный SchDoc целиком; запись JSON поверх native-файла запрещена.
-Для проверки импорта без GUI: `cargo run -p eda-io --example altium_inspect -- path/to/file.SchDoc`.
+Save / Save As for an imported schematic creates a `.pcbcraft.json` file,
+preserving the complete original SchDoc; writing JSON over a native file is prohibited.
+To check import without the GUI: `cargo run -p eda-io --example altium_inspect -- path/to/file.SchDoc`.
 
-## Проверки и план
+## Checks and plan
 
-Личные проекты, пути и исходные отчёты не должны попадать в Git.
-Правила хранения и проверка перед коммитом: [приватность репозитория](docs/privacy.md).
+Private projects, paths and original reports must stay out of Git.
+Storage rules and pre-commit checks: [repository privacy](docs/privacy.md).
 
 ```powershell
 cargo fmt --all -- --check
@@ -154,24 +156,25 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
 
-С локальным toolchain: `scripts/dev.ps1 fmt --all -- --check`,
+With the local toolchain: `scripts/dev.ps1 fmt --all -- --check`,
 `scripts/dev.ps1 clippy --all-targets -- -D warnings`.
 
-[План](PLAN.md), [архитектура](docs/architecture.md),
-[наблюдения интерфейса](docs/interface/altium-observations.md),
-[реестр функций](docs/features.json), [проверки](docs/verification.md).
+[Plan](PLAN.md), [architecture](docs/architecture.md),
+[interface observations](docs/interface/altium-observations.md),
+[feature registry](docs/features.json), [verification](docs/verification.md).
 
-Для локальной проверки исходников Linux из подготовленного Windows toolchain:
+To check Linux sources locally from the prepared Windows toolchain:
 `scripts/dev.ps1 check --locked --all-targets --target x86_64-unknown-linux-gnu`.
-Предварительно добавить target через rustup. Это проверка компиляции без
-линковки и запуска Linux-приложения.
+Add the target through rustup first. This checks compilation without linking or
+running the Linux application.
 
-Интерфейс использует установленный Segoe UI на Windows и встроенный Selawik
-на Linux. Пути к своим шрифтам можно задать через `PCBCRAFT_UI_FONT` и
-`PCBCRAFT_UI_FONT_SEMIBOLD`. Лицензия и происхождение — [assets/fonts](assets/fonts/README.md).
-Шрифты схем отделены от интерфейса: Times/Arial/Courier/GOST читаются из
-установленных шрифтов Windows либо каталога `PCBCRAFT_SCHEMATIC_FONT_DIR`.
-На Linux без этих файлов применяется свободный fallback; метрики могут отличаться.
+The interface uses installed Segoe UI on Windows and embedded Selawik on Linux.
+Custom font paths can be set with `PCBCRAFT_UI_FONT` and
+`PCBCRAFT_UI_FONT_SEMIBOLD`. License and provenance: [assets/fonts](assets/fonts/README.md).
+Schematic fonts are separate from interface fonts: Times/Arial/Courier/GOST are
+loaded from installed Windows fonts or `PCBCRAFT_SCHEMATIC_FONT_DIR`.
+Linux uses a free fallback when these files are absent; metrics may differ.
 
-История Undo/Redo ограничена 128 шагами и бюджетом оценки снимков 64 МиБ на документ;
-для больших схем шагов может быть меньше. [Проверка памяти и ограничения](docs/memory.md).
+Undo/Redo history is limited to 128 steps and an estimated snapshot budget of
+64 MiB per document; large schematics may retain fewer steps.
+[Memory verification and limitations](docs/memory.md).

@@ -14,8 +14,14 @@ Third-party font licenses and public documentation links retain their attributio
 Before committing, run `python scripts/check_privacy.py` and review the staged
 diff, especially JSON, binary assets and any new fixture. CI runs the same check.
 Enable the included pre-commit hook with `git config core.hooksPath .githooks`.
-Use a neutral repository-local Git author if you do not want personal commit
-metadata, for example `MX-Goliath <contributors@example.invalid>`.
+The repository contributor is [MX-Goliath](https://github.com/MX-Goliath).
+Use the repository-local Git name `MX-Goliath` and GitHub's public no-reply address
+`98145946+MX-Goliath@users.noreply.github.com` to keep personal email private.
+The `.mailmap` file maps historical repository identities to this account without
+rewriting commits. The privacy scanner permits this exact public no-reply address;
+other non-example email addresses still require removal or explicit review.
+The historical public service no-reply address is accepted only in `.mailmap`
+and Git commit author/committer headers, never in document text or commit messages.
 Use `python scripts/check_privacy.py --history` to also inspect all reachable refs,
 including author/committer metadata. The check catches common home paths, emails,
 credential formats and misplaced design files; private project names, drawings,

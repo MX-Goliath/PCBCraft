@@ -16,7 +16,7 @@ from release_common import ROOT, cargo_metadata, checksum, notices, run, version
 
 def deb_control(app_version, depends, installed_size):
     return (f"Package: pcbcraft\nVersion: {app_version}\nArchitecture: amd64\n"
-            "Maintainer: MX-Goliath <maintainers@example.invalid>\n"
+            "Maintainer: MX-Goliath <98145946+MX-Goliath@users.noreply.github.com>\n"
             "Section: electronics\nPriority: optional\n"
             f"Installed-Size: {installed_size}\nDepends: {depends}\n"
             "Recommends: xdg-desktop-portal, xdg-utils\n"
@@ -42,7 +42,7 @@ def package_deb(metadata, staging, dist, app_version):
     # shlibdeps needs a Debian source control file, even for standalone binaries.
     source_root = staging / "shlibdeps"
     (source_root / "debian").mkdir(parents=True)
-    (source_root / "debian/control").write_text("Source: pcbcraft\nSection: electronics\nPriority: optional\nMaintainer: MX-Goliath <maintainers@example.invalid>\n\nPackage: pcbcraft\nArchitecture: any\nDescription: Schematic and PCB editor\n", encoding="utf-8")
+    (source_root / "debian/control").write_text("Source: pcbcraft\nSection: electronics\nPriority: optional\nMaintainer: MX-Goliath <98145946+MX-Goliath@users.noreply.github.com>\n\nPackage: pcbcraft\nArchitecture: any\nDescription: Schematic and PCB editor\n", encoding="utf-8")
     result = subprocess.run(["dpkg-shlibdeps", "-O", f"-e{binary}"], cwd=source_root, check=True, capture_output=True, text=True)
     linked = next(line.removeprefix("shlibs:Depends=") for line in result.stdout.splitlines() if line.startswith("shlibs:Depends="))
     # Winit also dlopens these libraries; they are absent from ELF NEEDED entries.
