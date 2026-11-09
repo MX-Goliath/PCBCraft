@@ -38,6 +38,36 @@ fn symbol() -> Document {
     lib::preview(&doc, &lib::Edit::Pin(Box::new(pin))).unwrap()
 }
 #[test]
+fn native_pin_symbol_width_roundtrips_independently_of_the_pin_line() {
+    for width in [101_600, 254_000] {
+        let mut doc = symbol();
+        let mut pin = doc
+            .schematic
+            .as_ref()
+            .unwrap()
+            .primitives
+            .iter()
+            .find(|p| matches!(p.kind, sch::SchPrimitiveKind::Pin { .. }))
+            .unwrap()
+            .clone();
+        pin.width_nm = 101_600;
+        pin.presentation.pin_symbol_width_nm = Some(width);
+        doc = lib::preview(&doc, &lib::Edit::Pin(Box::new(pin))).unwrap();
+        let read = io::import(&io::serialize(&doc).unwrap(), "PinWidth.SchLib", false).unwrap();
+        let pin = read
+            .schematic
+            .as_ref()
+            .unwrap()
+            .primitives
+            .iter()
+            .find(|p| matches!(p.kind, sch::SchPrimitiveKind::Pin { .. }))
+            .unwrap();
+        assert_eq!(pin.width_nm, 101_600);
+        assert_eq!(pin.presentation.pin_symbol_width_nm, Some(width));
+    }
+}
+
+#[test]
 fn library_update_roundtrips_rotated_native_instances_and_local_parameter_choices() {
     use eda_core::library_update as update;
     let folder = tempfile::tempdir().unwrap();

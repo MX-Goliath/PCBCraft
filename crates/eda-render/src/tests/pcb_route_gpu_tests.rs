@@ -13,12 +13,19 @@ fn routing_tail_matches_full_gpu_pixels_and_keeps_buffers_across_bends_vias_and_
         return;
     };
     let (device, queue) = pollster::block_on(adapter.request_device(&Default::default())).unwrap();
-    for format in [
+    for (format, dither) in [
         wgpu::TextureFormat::Rgba8Unorm,
         wgpu::TextureFormat::Rgba8UnormSrgb,
-    ] {
+    ]
+    .into_iter()
+    .flat_map(|format| [false, true].map(|dither| (format, dither)))
+    {
         let ctx = Context::default();
         enable_gpu(&ctx, format);
+        // Both paths must use the same framebuffer dithering. Native eframe
+        // enables it for egui as well as resident PCB meshes; otherwise moving
+        // tracks use an undithered shader while the reference scene dithers them.
+        ctx.data_mut(|data| data.insert_temp(egui::Id::new("pcb-artwork-test-dither"), dither));
         let mut fonts = egui::FontDefinitions::default();
         for name in [
             "sch-sans",
@@ -32,7 +39,7 @@ fn routing_tail_matches_full_gpu_pixels_and_keeps_buffers_across_bends_vias_and_
             );
         }
         ctx.set_fonts(fonts);
-        let mut renderer = egui_wgpu::Renderer::new(&device, format, None, 1, false);
+        let mut renderer = egui_wgpu::Renderer::new(&device, format, None, 1, dither);
         let mut board = Board::default();
         board.nets.push(Net {
             index: 0,
@@ -200,13 +207,9 @@ fn routing_tail_matches_full_gpu_pixels_and_keeps_buffers_across_bends_vias_and_
                 stale = preview.board.pours_stale;
             }
             view.pcb.set_route_preview(preview.clone());
-            // Check geometry without noise first. Then exercise production dithering:
-            // its sub-LSB per-fragment perturbation can accumulate across overlapping
+            // Dithering's sub-LSB perturbation can accumulate across overlapping
             // highlighted track/cap passes when their mesh batching differs.
-            for dither in [false, true] {
-                ctx.data_mut(|data| {
-                    data.insert_temp(egui::Id::new("pcb-artwork-test-dither"), dither)
-                });
+            {
                 let actual = capture(&mut view, &mut renderer);
                 if let Some(old) = &resident {
                     assert_eq!(

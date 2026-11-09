@@ -10,9 +10,11 @@ use uuid::Uuid;
 #[derive(Clone, Default)]
 pub(super) struct Cache {
     key: Option<(u64, u64)>,
+    review: Option<(usize, u64)>,
     source: bool,
     transformed: Option<BTreeSet<Uuid>>,
     routed: Option<(usize, Vec<Uuid>)>,
+    routed_changes: BTreeSet<Uuid>,
     pub bounds: HashMap<Uuid, Bounds>,
     pub indices: HashMap<Uuid, usize>,
     pub component_items: HashMap<u32, Vec<usize>>,
@@ -23,6 +25,7 @@ pub(super) struct Cache {
     drills: HashMap<Uuid, Arc<Vec<Point>>>,
     masks: HashMap<(Uuid, bool, bool), Arc<Vec<Point>>>,
     spatial: Arc<Spatial>,
+    polygon_boundaries: Arc<Vec<PolygonBoundary>>,
 }
 
 /// Original document candidates for snapping during an editing preview. Shares
@@ -57,21 +60,33 @@ impl SnapCache {
 }
 
 impl Cache {
+    pub fn prepare_review(&mut self, board: &Board, revision: u64) {
+        let key = (board as *const Board as usize, revision);
+        if self.review == Some(key) {
+            return;
+        }
+        *self = Self::default();
+        self.outline = Arc::new(board.outline_points(256));
+        self.review = Some(key);
+    }
     pub fn prepare_source(&mut self, board: &Board, revision: u64, preview: u64) {
         self.prepare(board, revision, preview);
         self.source = true;
     }
     pub fn prepare(&mut self, board: &Board, revision: u64, preview: u64) {
-        self.source = false;
-        if self.key == Some((revision, preview)) {
+        if self.key == Some((revision, preview))
+            && self.polygon_boundaries.len() == board.polygon_pours.len()
+        {
             return;
         }
         self.prepare_prefix(board, revision, preview, board.items.len());
     }
     fn prepare_prefix(&mut self, board: &Board, revision: u64, preview: u64, prefix: usize) {
+        self.review = None;
         self.source = false;
         self.transformed = None;
         self.routed = None;
+        self.routed_changes.clear();
         self.key = Some((revision, preview));
         self.bounds = board.items[..prefix]
             .iter()
@@ -85,6 +100,13 @@ impl Cache {
             .map(|(index, i)| (i.id, index))
             .collect();
         self.spatial = Arc::new(Spatial::new(board, &self.bounds, prefix));
+        self.polygon_boundaries = Arc::new(
+            board
+                .polygon_pours
+                .iter()
+                .map(|polygon| PolygonBoundary::new(polygon.points()))
+                .collect(),
+        );
         self.component_items.clear();
         for (index, item) in board.items.iter().enumerate().take(prefix) {
             if let Some(owner) = item.component
@@ -141,12 +163,15 @@ impl Cache {
             self.bounds.remove(id);
             self.indices.remove(id);
         }
-        for id in changed {
+        // A connected drag can restore a source slot or stop touching a
+        // neighbour. Refit both frames' changed slots, including restored ones.
+        let dirty: BTreeSet<_> = self.routed_changes.union(changed).copied().collect();
+        for id in &dirty {
             let item = &board.items[self.indices[id]];
             self.bounds.insert(*id, item.bounds());
         }
-        if !changed.is_empty() {
-            Arc::make_mut(&mut self.spatial).refit(board, &self.bounds, changed);
+        if !dirty.is_empty() {
+            Arc::make_mut(&mut self.spatial).refit(board, &self.bounds, &dirty);
         }
         let mut tail = vec![];
         for (index, item) in board.items.iter().enumerate().skip(prefix) {
@@ -154,11 +179,12 @@ impl Cache {
             self.indices.insert(item.id, index);
             tail.push(item.id);
         }
-        let expire: BTreeSet<_> = old.into_iter().chain(changed.iter().copied()).collect();
+        let expire: BTreeSet<_> = old.into_iter().chain(dirty).collect();
         self.pads.retain(|(id, _), _| !expire.contains(id));
         self.drills.retain(|id, _| !expire.contains(id));
         self.masks.retain(|(id, _, _), _| !expire.contains(id));
         self.routed = Some((prefix, tail));
+        self.routed_changes = changed.clone();
         self.key = Some((revision, preview));
     }
     pub fn prepare_transformed(
@@ -213,6 +239,9 @@ impl Cache {
         }
         indices
     }
+    pub fn polygon_boundary_hit(&self, index: usize, at: Point, tolerance: f64) -> bool {
+        self.polygon_boundaries[index].hit(at, tolerance)
+    }
     pub fn pad(&mut self, item: &Item, layer: u16) -> Arc<Vec<Point>> {
         self.pads
             .entry((item.id, layer))
@@ -236,6 +265,43 @@ impl Cache {
             .entry((item.id, kind == MaskKind::Paste, bottom))
             .or_insert_with(|| Arc::new(item.mask_outline(board, kind, bottom).unwrap_or_default()))
             .clone()
+    }
+}
+
+/// The same flattened outer ring used by core selection, prepared once per
+/// scene. Segment bounds avoid scanning distant arcs on every pointer event.
+#[derive(Clone)]
+struct PolygonBoundary {
+    edges: Vec<(Point, Point)>,
+    spatial: Spatial,
+}
+impl PolygonBoundary {
+    fn new(points: Vec<Point>) -> Self {
+        let edges: Vec<_> = points
+            .iter()
+            .copied()
+            .zip(points.iter().copied().cycle().skip(1))
+            .take(points.len())
+            .collect();
+        let mut spatial = Spatial {
+            entries: edges
+                .iter()
+                .enumerate()
+                .map(|(index, (a, b))| (Bounds::points(&[*a, *b]), index))
+                .collect(),
+            nodes: vec![],
+        };
+        if !edges.is_empty() {
+            spatial.build(0..edges.len());
+        }
+        Self { edges, spatial }
+    }
+    fn hit(&self, at: Point, tolerance: f64) -> bool {
+        let near = Bounds::points(&[at]).expanded(tolerance.ceil() as i64);
+        self.spatial.query(near).into_iter().any(|index| {
+            let (a, b) = self.edges[index];
+            segment_distance(at, a, b) <= tolerance
+        })
     }
 }
 
@@ -369,6 +435,94 @@ impl Spatial {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn semantic_review_skips_editor_candidates_and_leaving_review_restores_picking() {
+        let mut board = Board::default();
+        board.items.push(Item::new(
+            TOP,
+            None,
+            Shape::Track {
+                start: Point::mm(1, 1),
+                end: Point::mm(3, 1),
+                width: 200_000,
+            },
+        ));
+        let near = board.items[0].bounds();
+        let mut cache = Cache::default();
+        cache.prepare_review(&board, 1);
+        assert!(cache.query(near).is_empty());
+        assert_eq!(*cache.outline, board.outline_points(256));
+        cache.prepare_source(&board, 1, 0);
+        assert_eq!(cache.query(near), vec![0]);
+        cache.prepare_review(&board, 1);
+        assert!(cache.query(near).is_empty());
+    }
+    #[test]
+    fn indexed_polygon_boundaries_match_core_selection_and_follow_revisions() {
+        use eda_core::{pcb_polygon::Polygon, pcb_selection::polygon_boundary_hit};
+        let mut board = Board::default();
+        board.polygon_pours.push(Polygon {
+            contour: vec![
+                ContourVertex {
+                    position: Point::mm(0, 1),
+                    arc: Some(ContourArc {
+                        centre: Point::default(),
+                        radius: 1_000_000,
+                        start_angle: 0.,
+                        end_angle: 90.,
+                    }),
+                },
+                ContourVertex {
+                    position: Point::mm(1, 0),
+                    arc: None,
+                },
+                ContourVertex {
+                    position: Point::mm(-1, -1),
+                    arc: None,
+                },
+            ],
+            holes: vec![vec![Point::default(), Point::mm(0, -1), Point::mm(-1, 0)]],
+            ..Default::default()
+        });
+        let mut cache = Cache::default();
+        cache.prepare_source(&board, 0, 0);
+        // Component hover queries read the already prepared source scene.
+        cache.prepare(&board, 0, 0);
+        assert!(cache.source);
+        for tolerance in [0., 1., 31_250.25, 250_000.] {
+            for x in -36..=36 {
+                for y in -36..=36 {
+                    let at = Point {
+                        x: x * 62_500,
+                        y: y * 62_500,
+                    };
+                    assert_eq!(
+                        cache.polygon_boundary_hit(0, at, tolerance),
+                        polygon_boundary_hit(&board.polygon_pours[0], at, tolerance),
+                        "at={at:?}, tolerance={tolerance}"
+                    );
+                }
+            }
+        }
+        let original = cache.polygon_boundaries.clone();
+        cache.prepare_routed(&board, 0, 1, 0, &BTreeSet::new());
+        assert!(Arc::ptr_eq(&original, &cache.polygon_boundaries));
+        assert!(cache.polygon_boundary_hit(0, Point::mm(0, 1), 0.));
+        for vertex in &mut board.polygon_pours[0].contour {
+            vertex.position.x += 10_000_000;
+            if let Some(arc) = &mut vertex.arc {
+                arc.centre.x += 10_000_000;
+            }
+        }
+        cache.prepare_source(&board, 1, 0);
+        assert!(!cache.polygon_boundary_hit(0, Point::mm(0, 1), 0.));
+        assert!(cache.polygon_boundary_hit(0, Point::mm(10, 1), 0.));
+        board.polygon_pours.clear();
+        cache.prepare_source(&board, 2, 0);
+        assert!(cache.polygon_boundaries.is_empty());
+        assert!(!PolygonBoundary::new(vec![]).hit(Point::default(), 1.));
+        assert!(PolygonBoundary::new(vec![Point::default()]).hit(Point::default(), 0.));
+    }
     #[test]
     fn snap_candidates_share_source_tree_and_stay_original_during_route_refits() {
         let mut board = board();
@@ -619,6 +773,62 @@ mod tests {
         );
         assert!(!Arc::ptr_eq(&old_pad, &cache.pad(&board.items[0], TOP)));
         assert_eq!(cache.bounds, fresh.bounds);
+    }
+    #[test]
+    fn connected_drag_restores_source_bounds_when_changed_slots_disappear() {
+        let mut board = board();
+        board.nets.push(Net {
+            index: 0,
+            name: "SIGNAL".into(),
+            properties: Fields::new(),
+        });
+        let track = Item::new(
+            TOP,
+            Some(0),
+            Shape::Track {
+                start: Point::mm(4, 0),
+                end: Point::mm(8, 0),
+                width: 200_000,
+            },
+        );
+        let id = track.id;
+        board.items.push(track);
+        let mut prepared = eda_core::pcb_route::TrackDragPreview::new(&board, &[id]).unwrap();
+        let mut cache = Cache::default();
+        cache.prepare_source(&board, 0, 0);
+        for (frame, y) in [3, 5, 0, 1, 0].into_iter().enumerate() {
+            let update = prepared
+                .update(
+                    Point::default(),
+                    Point::mm(0, y),
+                    0.,
+                    eda_core::pcb_route::DragOptions::default(),
+                )
+                .unwrap();
+            let preview = update.preview;
+            let generation = frame as u64 + 1;
+            cache.prepare_routed(
+                &preview.board,
+                0,
+                generation,
+                preview.source_len,
+                &preview.source_changes,
+            );
+            let mut fresh = Cache::default();
+            fresh.prepare(&preview.board, 0, generation);
+            assert_eq!(cache.bounds, fresh.bounds);
+            assert_eq!(cache.indices, fresh.indices);
+            for x in 3..10 {
+                for y in -1..7 {
+                    let bounds = Bounds::points(&[Point::mm(x, y)]).expanded(150_000);
+                    let mut actual = cache.query(bounds);
+                    let mut expected = fresh.query(bounds);
+                    actual.sort_unstable();
+                    expected.sort_unstable();
+                    assert_eq!(actual, expected);
+                }
+            }
+        }
     }
     #[test]
     fn routed_geometry_matches_fresh_queries_and_keeps_unaffected_pad_geometry() {

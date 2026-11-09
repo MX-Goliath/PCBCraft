@@ -311,7 +311,7 @@ impl PcbCraft {
             panel.selected_parameter = None;
         }
         let draft = panel.draft.as_mut().unwrap();
-        ui.set_width((ui.available_width() - 5.0).max(200.0));
+        ui.set_width((ui.available_width() - 5.0).max(0.0));
         ui.spacing_mut().scroll = egui::style::ScrollStyle::solid();
         let count = doc
             .view
@@ -592,7 +592,7 @@ impl PcbCraft {
                 .collapsible(false)
                 .resizable(false)
                 .open(&mut open)
-                .show(ui.ctx(), |ui| {
+                .show_stable(ui.ctx(), |ui| {
                     commit |= font_editor(ui, &mut draft.sheet_font, None);
                 });
             panel.font_dialog = open;
@@ -610,7 +610,7 @@ impl PcbCraft {
                 .collapsible(false)
                 .resizable(false)
                 .open(&mut open)
-                .show(ui.ctx(), |ui| {
+                .show_stable(ui.ctx(), |ui| {
                     text_row(ui, "Name", &mut parameter.name);
                     text_row(ui, "Value", &mut parameter.value);
                     accept = ui.button("OK").clicked();

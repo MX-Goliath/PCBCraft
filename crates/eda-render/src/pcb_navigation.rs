@@ -174,7 +174,9 @@ pub(super) fn paint_cursor(
         && let Some(at) = pointer
     {
         // The visual cursor follows the mouse; tool coordinates snap independently.
-        if !rect.contains(at) {
+        if !rect.contains(at) || view.pcb.navigation.cursor == CursorStyle::Small90 {
+            // The default crosshair must move with the native pointer even
+            // while a board frame is expensive or waiting for presentation.
             ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
             return;
         }
@@ -455,7 +457,7 @@ mod tests {
         assert!(h.view.pcb.input.as_ref().unwrap().requested_layer.is_none());
     }
     #[test]
-    fn cursor_follows_pixel_motion_inside_one_grid_cell() {
+    fn native_cursor_does_not_round_or_add_a_delayed_cross_inside_one_grid_cell() {
         let mut h = Harness::new();
         h.view.grid = true;
         h.view.grid_nm = 1_000_000;
@@ -464,17 +466,30 @@ mod tests {
             for pointer in [Pos2::new(251.0, 121.0), Pos2::new(253.0, 123.0)] {
                 h.pointer = pointer;
                 let output = h.frame(vec![], Modifiers::NONE);
-                for expected in cursor_lines(h.view.pcb.navigation.cursor, pointer, Harness::rect())
-                {
+                assert_eq!(
+                    output.platform_output.cursor_icon,
+                    egui::CursorIcon::Crosshair
+                );
+                for expected in cursor_lines(CursorStyle::Small90, pointer, Harness::rect()) {
                     assert!(
-                        output.shapes.iter().any(|s| matches!(&s.shape,
+                        !output.shapes.iter().any(|s| matches!(&s.shape,
                         egui::Shape::LineSegment { points, stroke }
                         if *points == expected && stroke.color == Color32::WHITE)),
-                        "Cursor must follow the screen pointer without grid rounding"
+                        "Native cursor must have no frame-rendered duplicate"
                     );
                 }
                 assert!(h.view.grid);
                 assert_eq!(h.view.grid_nm, 1_000_000);
+                let raw = world(&h.view.camera, pointer, Harness::rect());
+                let input = h.view.pcb.input.as_ref().unwrap();
+                assert_eq!(input.raw_point, Some(raw));
+                assert_eq!(
+                    input.point,
+                    Some(Point {
+                        x: eda_core::pcb::snap_coord(raw.x, h.view.grid_nm),
+                        y: eda_core::pcb::snap_coord(raw.y, h.view.grid_nm),
+                    })
+                );
             }
         }
     }
@@ -612,12 +627,56 @@ mod tests {
         assert_eq!(lines[0][0].distance(lines[0][1]), 400.0);
         let mut h = Harness::new();
         let output = h.frame(vec![], Modifiers::NONE);
-        assert_eq!(output.platform_output.cursor_icon, egui::CursorIcon::None);
+        assert_eq!(
+            output.platform_output.cursor_icon,
+            egui::CursorIcon::Crosshair
+        );
         h.pointer = Pos2::new(-10.0, -10.0);
         let output = h.frame(vec![], Modifiers::NONE);
         assert_eq!(
             output.platform_output.cursor_icon,
             egui::CursorIcon::Default
+        );
+    }
+    #[test]
+    fn explicitly_selected_software_cursors_keep_their_geometry() {
+        let mut h = Harness::new();
+        for style in [CursorStyle::Small45, CursorStyle::Large90] {
+            h.view.pcb.navigation.cursor = style;
+            for pointer in [Pos2::new(251.0, 121.0), Pos2::new(253.0, 123.0)] {
+                h.pointer = pointer;
+                let output = h.frame(vec![], Modifiers::NONE);
+                assert_eq!(output.platform_output.cursor_icon, egui::CursorIcon::None);
+                for expected in cursor_lines(style, pointer, Harness::rect()) {
+                    assert!(output.shapes.iter().any(|s| matches!(&s.shape,
+                        egui::Shape::LineSegment { points, stroke }
+                        if *points == expected && stroke.color == Color32::WHITE)));
+                }
+            }
+        }
+    }
+    #[test]
+    fn native_cursor_is_released_when_canvas_loses_focus_or_a_modal_opens() {
+        let mut h = Harness::new();
+        h.view.pcb.tool_active = true;
+        let output = h.frame(vec![], Modifiers::NONE);
+        assert_eq!(
+            output.platform_output.cursor_icon,
+            egui::CursorIcon::Crosshair
+        );
+        h.focused = false;
+        let output = h.frame(vec![], Modifiers::NONE);
+        assert_ne!(
+            output.platform_output.cursor_icon,
+            egui::CursorIcon::Crosshair
+        );
+        h.focused = true;
+        h.modal = true;
+        h.frame(vec![], Modifiers::NONE);
+        let output = h.frame(vec![], Modifiers::NONE);
+        assert_ne!(
+            output.platform_output.cursor_icon,
+            egui::CursorIcon::Crosshair
         );
     }
     #[test]

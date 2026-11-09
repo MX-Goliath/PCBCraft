@@ -799,3 +799,338 @@ commit/validation/repour, global display changes, generic previews, large boards
 peak memory, Linux execution and exact Altium parity remain open. Conditions,
 all raw summaries and the native log are in
 `artwork-groups-performance-2026-10-25.json`.
+
+
+### Polygon update, 2026-11-05
+
+The earlier synchronous-explicit-repour limitation below the background-pour
+checkpoint is historical. Explicit Repour now uses the cancellable background
+path, including failed-revision retries and progress. Large-board booleans use
+batched obstacles and conservative spatial pruning; derived results are validated
+on the worker before application. See [POLYGON_POURS.md](POLYGON_POURS.md) and the
+2026-11-05 PLAN.md entry for component-move regressions, measurements and limits.
+
+## Routing and editing latency, 2026-11-05
+
+The endpoint picker now prepares a conservative spatial index once per routing
+session, then applies the existing exact distance, layer/span, pad precedence and
+document-order tie rules to candidates. The source revision guards its lifetime.
+Stop-mode bisection memoizes repeated integer-rounded segments; the same forty
+steps and clearance tests remain in effect.
+
+Keyboard Move and component/pad Drag reuse validated movement storage, including
+previously attached track endpoints. Pointer component Drag uses the same path.
+Repeated stationary requests reuse their preview. Pad/via/text/fill/line/circle,
+rectangle, arc and region placement reuse an immutable source and a small tail;
+stationary GPU artwork and spatial data are shared. Commit still validates the
+complete transaction and records one history edit. Prepared geometry is compared
+against complete transactions, retained snapshots and invalid/locked edits.
+
+Connectivity retains one compact source geometry snapshot per document revision.
+Preview jobs copy changed primitives, assemble unchanged references on the worker,
+preserve document order and exclude stale generated copper. Superseded jobs are
+cooperatively cancelled and cannot publish obsolete airwires. The worker does not
+retain the editor's mutable preview allocation. Delta/full connectivity and GPU
+preview/full-redraw regressions cover the new paths.
+
+JSON input uses a buffered reader, complementing the buffered output path. The
+read-only `pcb_route_preview_profile` reports loading, session preparation, endpoint
+lookup, model preview and CPU canvas/tessellation separately. Its optional
+`--linear-target` measures the old picker; `--ignore`/`--stop` choose solver modes,
+and `--verify-connectivity` separately checks compact connectivity equivalence.
+`pcb_interaction_profile` compares full/prepared Move, connected Drag and placement
+without writing the input and checks exact final transaction geometry.
+
+These changes do not establish universal frame rate or Altium performance parity.
+Cold session preparation, commit/history validation, source revisions and initial
+artwork still cost time. Obstacle-solving track Drag, polygon/outline edits and
+Paste retain complete transaction paths. GPU execution/presentation, panel work,
+input scheduling, arbitrary-board peak memory and Linux runtime latency are not
+measured by these CPU probes. Polygon boolean work remains asynchronous and can
+take seconds on complex boards; see POLYGON_POURS.md.
+
+
+Final Windows observations (milliseconds; medians unless stated). Matched route
+runs use `--varied`, the same five offsets repeated sixty times, and include one
+cold preview. Input A has 41475 items / 74 pours; B has 31257 items / 2 pours.
+The baseline overlapped compilation; final probes ran serially without a compiler.
+CPU frequency and other system activity were uncontrolled.
+
+| Route probe | ReferencePolygonA, before -> after | ReferencePolygonB, before -> after |
+| --- | ---: | ---: |
+| Endpoint lookup | 1.8581 -> 0.0204 | 13.5689 -> 0.0051 |
+| Combined CPU canvas sample | 22.0497 -> 16.0570 | 15.8140 -> 2.6226 |
+| Combined p95 | 25.5634 -> 17.9064 | 34.1364 -> 4.2145 |
+| First combined sample | 131.3446 -> 123.6284 | 194.8257 -> 177.2776 |
+
+Final route session preparation was 1021.1 / 391.4 ms, outside these samples.
+A separate regular workload with tiny vertical offsets remains more expensive on
+A: median/p95/first 22.1150/31.3522/159.2329 ms. B regular samples were
+2.9204/4.3692/260.3610 ms. These are different route legs, not matched baseline
+comparisons. Raw phase summaries, both workloads and intermediate observations
+are preserved in `editing-performance-2026-11-05.json`.
+
+| Model operation, full -> prepared | ReferencePolygonA | ReferencePolygonB |
+| --- | ---: | ---: |
+| Move | 127.0483 -> 0.0682 | 103.8880 -> 0.0254 |
+| Component connected Drag | 194.7244 -> 0.0615 | 104.2085 -> 0.0253 |
+| Via placement | 124.1951 -> 0.0004 | 102.2498 -> 0.0005 |
+
+These twelve-sample transaction comparisons exclude drawing and initial
+preparation. Preparation still took 85.9-122.4 ms. Both large inputs produced
+exactly the same final Board as complete transactions. The 107 MB poured
+research JSON loaded in 1404.3 ms with buffering, against 176074.4 ms before;
+its final varied route CPU median/p95 was 19.5264/21.3136 ms.
+
+Final formatting, strict workspace/all-target Clippy and all 765 workspace unit
+tests passed (app 174, core 327, geometry 1, IO 149, renderer 114); documentation
+tests passed. Windows exe and both diagnostic examples built successfully.
+The existing STEP interpretation diagnostic on ReferencePolygonB remains.
+
+
+Native Windows QA after unlocking: current exe, one GUI. On editor-v2, moving the
+whole component updates the pour; route preview/placement/Finish and via placement
+work, with one Undo each returning a clean document. On ReferencePolygonA, Edit
+-> Drag moves a whole component through a live preview, stretches attached tracks,
+commits, starts automatic 74-pour regeneration and completes. One Undo restores
+original component/copper and a clean document. A separate Top-pad routing preview
+moves with the pointer and is dismissed without committing copper. The research
+tab was closed cleanly; the app-created default example was discarded. The sole
+remaining GUI shows clean editor-v2. No native research file was saved. This is
+functional verification, not measured native FPS or an Altium equivalence claim.
+
+## Pointer responsiveness, 2026-11-05
+
+The PCB hides the system pointer and paints the configured Small 90, Small 45
+or Large 90 cursor at the raw mouse position. Presentation delay therefore
+affects the visible cursor even when snapping and CPU geometry are fast.
+The native app now requests a maximum presentation latency of one frame through
+egui-wgpu, retaining its default AutoVsync mode. This is a driver-dependent
+request, not a measured input-to-photon guarantee or a cursor-style change.
+
+Polygon boundary picking now caches the same flattened outer contour used by
+core selection and indexes its segments per scene revision. Exact segment
+distance still decides hits; document order, visibility/lock filters, holes and
+empty-interior selection behavior are unchanged. Footprint interior checks use
+the existing item-ID index rather than scanning the entire item array for each
+hit. Read-only component hover also preserves the source-cache provenance needed
+to reuse geometry when routing starts.
+
+The read-only CPU frame probe adds a 480-point cursor sweep over a fixed
+1000x800 canvas at 15 px/mm, with GPU callbacks enabled but no GPU execution.
+Separate completed offscreen Vulkan GPU measurements on ReferencePolygonA
+preceding this change gave cached median/p95 6.62/12.91 ms. Those samples exclude
+native panels, the compositor, presentation queues and mouse-device latency.
+Native CPU timings likewise do not measure end-to-end cursor latency.
+Matched final CPU sweep measurements, with both versions run serially after
+compilation and with the native GUI closed:
+
+| CPU paint + tessellation, ms | A before | A after | B before | B after |
+| --- | ---: | ---: | ---: | ---: |
+| Mean | 6.16 | 5.61 | 1.59 | 1.14 |
+| p95 | 8.23 | 6.87 | 2.39 | 1.33 |
+| Maximum | 17.62 | 8.35 | 3.87 | 1.99 |
+
+Each case has 480 samples and zero samples above 33 ms. CPU frequency, thermals
+and other system activity were uncontrolled. These results measure CPU picking
+and drawing preparation, not the effect of the presentation-queue setting.
+Raw summaries and conditions are in editing-performance-2026-11-05.json.
+
+Final fmt, strict workspace/all-target Clippy and all 766 workspace unit tests
+passed (app 174, core 327, geometry 1, IO 149, renderer 115); documentation tests
+passed. The existing empty-polygon canvas test exposed addition without a
+revision change; cache preparation now also detects polygon-count changes.
+The Windows exe and both frame probes built. After the user unlocked Windows
+again, native QA passed on ReferencePolygonA in the sole current GUI: Fit Board,
+raw cursor positions over empty canvas, dense copper and a polygon edge; routing
+from a Top pad, blocked-clearance and valid preview updates; Escape cancellation
+and return to ordinary selection with a clean document. No research source was
+saved. These snapshots establish functional input/painting, not input-to-photon
+latency or perceptual equivalence to Altium.
+
+Cold routing remains a visible limit. A mixed 120-frame native CPU batch spanning
+route startup and preview had median/p95/max 9.42/25.83/1106.60 ms; it includes
+command preparation, panels, painting and idle frames, and is not a steady
+pointer-motion benchmark. Subsequent cancellation/redrawing also produced a
+mixed-batch maximum of 499.66 ms. Presentation latency is excluded from these
+eframe CPU timings. The current clean board remains open for user evaluation.
+
+## Connected track drag, 2026-11-05 follow-up
+
+The current native window recorded repeated connected-track clearance/connection
+failures. A failed frame previously removed the last valid preview, and release
+then discarded the gesture. Native CPU batches also contained multi-second
+updates. The complete solver cloned the full board and reconstructed obstacles
+for each selected track, neighbour, bridge and final clearance check.
+
+Single assigned-net track body, endpoint and keyboard Drag now own one immutable
+source and reusable working board per gesture. Obstacle geometry and its spatial
+index are shared, keyed by layer/width; foreign copper remains stationary and
+same-net copper is excluded by the existing solver. Room-dependent clearances
+are still resolved per proposed leg. Changed source slots and appended legs are
+restored between requests, with stable preview IDs and copy-on-write protection
+for retained snapshots. Only edited geometry needs per-frame validation;
+finish and History still validate the complete transaction.
+
+Repeated constraint attempts also reuse UUID-to-source-slot indices for transforms
+and replacements. The indexed replacement helper retains legacy stack
+reconciliation, generated-copper/locked-owner restrictions and the locked-item
+Unlock-only rule; mismatched or missing slots fail without mutation. Assigned-net
+previews skip irrelevant No Net contact scans and collect final edited geometry
+from source slots and the appended tail rather than scanning the entire board.
+
+A blocked requested position is clipped towards the last valid connected
+position using at most twelve refinements. Release commits the displayed valid
+geometry; cancellation discards it. Changing conflict/clearance options starts
+the constraint search from the original source rather than retaining a position
+accepted under the previous options. Unassigned and multiple-net selections
+retain the complete transaction path. This is a bounded connected rerouter,
+not a claim of Altium's full angle-preserving slide, shove or gloss behavior.
+
+Renderer bounds and spatial picking now refit source slots restored by a later
+preview, including returning a dragged track to its original position. Regression
+coverage compares prepared results with complete transactions, retained immutable
+snapshots, fixed pads/branches, variable widths and Room rules; verifies blocked
+preview release and Undo; and compares restored display bounds/queries with a
+fresh cache. Read-only measurements and final native verification follow below.
+
+Free-space routing has a separate hot-path fix: No Net endpoint contact used to
+scan every source primitive on each pointer update. It now queries the session's
+prepared source index and checks the small appended tail in document order.
+Splitting only shortens source tracks; the original envelopes, expanded for
+native quantization, remain conservative. Exact hit distance, pad precedence,
+No Net contact permissions and tie ordering are retained. Exhaustive comparisons
+cover split tracks, new route segments, vias, layer changes and backtracking.
+The read-only route probe adds `--free-start` to exercise this path explicitly.
+
+Serial optimized-debug measurements on ReferencePolygonA (41,475 items), with
+compilation finished and the GUI closed, before the cold-start follow-up:
+
+| Case | First prepared model, ms | Warm model median / p95 / max, ms |
+| --- | ---: | ---: |
+| Connected track, reachable request | 1086.77 | 9.18 / 11.03 / 11.06 |
+| Connected track, constrained request | 1027.53 | 9.62 / 36.16 / 61.30 |
+
+Each warm case contains 30 varied requests. The reachable complete transaction
+took 6617.76 ms; the prepared final geometry matched it after normalizing newly
+generated UUIDs. The constrained complete request failed, whereas the prepared
+preview retained a connected legal position. Both prepared commits undid to the
+exact source. History, drawing and presentation are excluded from these model
+timings. Cold construction is included only in the first column.
+
+New routing, 60 varied requests per case, includes CPU canvas/tessellation:
+
+| Case | Begin, ms | Combined CPU median / p95 / max, ms |
+| --- | ---: | ---: |
+| No Net free-space start | 1081.608 | 8.2596 / 15.6975 / 117.6719 |
+| Assigned-net start | 1209.307 | 20.6578 / 35.8100 / 135.8274 |
+
+The first paint/model samples are retained. These probes execute no GPU
+callbacks and do not measure native input-to-photon latency. Commit, Undo and
+source-file reopening passed without saving either source.
+
+The 15:38 Windows build passed fmt, strict workspace/all-target Clippy and all
+773 unit tests plus documentation tests. In its sole native GUI, a connected
+track was dragged and placed, a new track preview moved and was placed/finished,
+and each operation was undone exactly once. The user's pre-existing unsaved
+edits remained visible. The user confirmed improved movement and reported a
+remaining initial pause; that cold-start issue is tracked separately below.
+
+## Cold route preparation, 2026-11-05 follow-up
+
+Phase profiling confirmed repeated rule work during obstacle construction.
+Within one immutable board/probe pair, maximum clearance bounds now cache by
+object kind and cutout status. Priority-sorted electrical rules lazily cache
+the fixed probe's scope results, retaining symmetric evaluation, net gating,
+unsupported-query diagnostics and net-tie behavior. Room contours normalize
+once per construction snapshot; each obstacle still receives its own membership
+test. Moving route legs continue to resolve their live scopes. These caches
+do not outlive the board snapshot and do not suppress malformed Room errors.
+
+Serial measurements after compilation, while the earlier GUI stayed open and
+idle to preserve the user's unsaved edits:
+
+| Case | First preparation, ms | Warm model median / p95 / max, ms |
+| --- | ---: | ---: |
+| Connected track, reachable request | 367.51 | 7.02 / 8.51 / 9.25 |
+| Connected track, constrained request | 390.50 | 7.20 / 29.99 / 53.11 |
+
+Both commits undid exactly; reachable geometry matched the complete transaction.
+The complete reachable Walkaround solve took 1892.80 ms. New-route begin took
+344.184 ms (assigned) and 345.854 ms (No Net). Combined CPU model/canvas median /
+p95 / max were 23.3816 / 32.0509 / 117.2442 ms and 6.8051 / 13.3157 / 106.1936 ms,
+respectively, retaining first frames. These are a separate checkpoint from the
+earlier GUI-closed measurements; thermals, frequency and scheduling are uncontrolled.
+
+With phase instrumentation enabled in a separate assigned-net run, 4036 obstacle
+objects used seven gap-bound keys: bounds 0.454 ms, pair rules 128.065 ms, geometry
+69.259 ms, complete environment 202.163 ms, complete begin 391.546 ms. Remaining
+startup work includes board cloning/validation, exact pair queries and geometry,
+and initial preview/index construction. The initial pause remains perceptible;
+these measurements establish neither a universal frame rate nor native latency
+or full Altium equivalence. Regression coverage includes symmetric/unsupported
+scopes, priority/net gating, concave/invalid Rooms and mixed-object/cutout matrix
+clearances compared with exhaustive spatial queries.
+
+Final cold-start gates: fmt, strict workspace/all-target Clippy and all 775
+workspace unit tests plus documentation tests PASS. Windows exe built; final
+read-only probes ran serially after compilation. Native verification after the
+authorized restart is recorded below; no research source was saved.
+
+
+Native final verification completed after the user explicitly authorized
+Discard Changes in the old test session. The sole 16:17 Windows build passed
+assigned-net cold start, two moving previews, place/finish and Undo; connected
+body drag/place/Undo; and an obstacle-constrained drag which retained a legal
+position, followed by Undo. Final title is clean, ordinary selection is active,
+Top is active, and All Objects / All Layers selection and snapping are restored.
+The new GUI remains open; no research source was saved.
+
+At 1920x1032, zoom 98.023726, Top-only view and phase profiling enabled, assigned
+route begin took 365.845 ms (obstacle environment 169.774 ms). Initial preview
+solve/copy took 0.087/53.463 ms; following preview updates took 3.806 and 0.003 ms.
+A mixed CPU batch across this first start reached 434.70 ms; a constrained
+connected-drag/release batch reached 578.88 ms. These include preparation,
+History/commit, artwork, panels and idle frames and exclude GPU presentation;
+they do not establish motion/input latency bounds. The initial pause and
+commit/redraw stalls remain limits.
+
+Additional attempted free-space starts selected copper on other document-visible
+layers despite Top-only display, including with Current Layer snapping selected.
+The route-start target search separately inspects all document-visible copper
+layers. Those attempts were cancelled to a clean title. This is an observed
+layer-selection limitation: native No Net movement is not claimed from these
+attempts; explicit read-only No Net probes remain the corresponding verification.
+
+## Pointer presentation - November 9, 2026
+
+The user reports delayed pointer movement in both document editors. Static
+inspection found that both hid the native cursor and painted the crosshair as
+scene geometry. Even a correct, unsnapped latest pointer position therefore waits
+for UI work, tessellation, GPU execution and presentation. The existing one-frame
+latency hint alone did not separate cursor movement from that path. This finding
+identifies a coupling; it is not a measurement of the reported input-to-photon lag.
+
+The schematic cursor and PCB Small90 default now request the native OS crosshair,
+without a software duplicate. The OS can move it between application frames;
+snapping, picking and tool previews still use normal document input. Existing
+focus/canvas/modal gates and PCB panning cursor behavior are retained. Small45 and
+Large90 keep their configured scene geometry and still depend on frame delivery.
+
+Native presentation now requests AutoNoVsync with maximum frame latency one.
+wgpu 25 chooses Immediate, then Mailbox, then FIFO according to support. This may
+reduce frame wait for previews and software cursor styles, but can permit tearing;
+driver/compositor behavior and FIFO fallback can still add latency. Repainting
+remains input driven: no unconditional animation loop was introduced.
+
+The native crosshair follows the OS cursor theme, including size, DPI and contrast.
+The schematic's previous forced black cross/white halo is no longer guaranteed.
+Exact Altium cursor appearance and visibility against light/dark content require
+actual-window checks; no current visual or measured responsiveness parity is claimed.
+
+Added/updated source regressions cover absence of a frame-rendered duplicate,
+raw movement within a grid cell, tool mode, focus/modal/panel boundaries and
+retained Small45/Large90 geometry. The user requested no rebuild: only formatting,
+whitespace and static checks were run. These tests have not been compiled/run and
+no new GUI was launched. Native Windows/Linux input-to-photon measurements,
+themed cursor contrast and the remaining expensive editing frames are pending.

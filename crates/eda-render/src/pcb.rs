@@ -68,6 +68,7 @@ pub struct BoardView {
     pub show_grid_dialog: bool,
     pub polygons_visible: bool,
     pub repour_pending: bool,
+    pub repour_progress: Option<(usize, usize)>,
     pub drc_markers: Vec<(Point, u16)>,
     cache: HashMap<Uuid, (u64, Vec<usize>, bool)>,
     geometry: geometry::Cache,
@@ -224,6 +225,17 @@ impl BoardView {
         self.preview_generation = self.preview_generation.wrapping_add(1);
         self.preview_items = Some(next.changed_items);
         self.preview = Some(next.board);
+    }
+    /// Placement uses the same immutable source/tail painting passes as routing,
+    /// including pad/via masks, without rebuilding stationary board artwork.
+    pub fn set_insert_preview_shared(&mut self, next: std::sync::Arc<Board>, prefix: usize) {
+        let changed_items = next.items[prefix..].iter().map(|i| i.id).collect();
+        self.set_route_preview(eda_core::pcb_route::RoutePreview {
+            board: next,
+            source_len: prefix,
+            source_changes: BTreeSet::new(),
+            changed_items,
+        });
     }
     pub fn preview(&self) -> Option<&Board> {
         self.preview.as_deref()
@@ -500,10 +512,23 @@ pub fn canvas(ui: &mut egui::Ui, b: &Board, view: &mut View) -> CanvasOutput {
     // Release abandoned preview/deleted/hidden regions after one unused frame,
     // including large meshes that would remain below the old entry-count cap.
     view.pcb.begin_frame();
+    // Semantic review picks its own change bounds. It does not need editor
+    // hit/snap indexes or an electrical connectivity snapshot before first paint.
+    if view.review_overlay {
+        view.pcb
+            .geometry
+            .prepare_review(b, view.pcb.three_d.revision);
+        let camera = view.camera.clone();
+        paint_board_base(&painter, &camera, view, rect);
+        paint_grid(&painter, view, rect);
+        paint_origin(&painter, b, view, rect);
+        return CanvasOutput::default();
+    }
     if view.pcb.display.connections {
         view.pcb.connections.update(
             b,
             view.pcb.preview.as_ref(),
+            view.pcb.preview_items.as_ref(),
             view.pcb.three_d.revision,
             view.pcb.preview_generation,
             ui.ctx(),
@@ -541,13 +566,6 @@ pub fn canvas(ui: &mut egui::Ui, b: &Board, view: &mut View) -> CanvasOutput {
             view.pcb.three_d.revision,
             view.pcb.preview_generation,
         );
-    }
-    if view.review_overlay {
-        let camera = view.camera.clone();
-        paint_board_base(&painter, &camera, view, rect);
-        paint_grid(&painter, view, rect);
-        paint_origin(&painter, scene, view, rect);
-        return CanvasOutput::default();
     }
     let key = paint_cache::key(scene, view, ui.ctx());
     let mut artwork = std::mem::take(&mut view.pcb.paint_cache);
@@ -652,20 +670,24 @@ pub fn canvas(ui: &mut egui::Ui, b: &Board, view: &mut View) -> CanvasOutput {
                 .into_iter()
                 .filter(|id| {
                     let owner = scene.components.iter().find(|c| c.id == *id).unwrap().index;
-                    !hits
-                        .iter()
-                        .any(|hit| scene.item(*hit).is_some_and(|i| i.component == Some(owner)))
+                    !hits.iter().any(|hit| {
+                        view.pcb
+                            .geometry
+                            .indices
+                            .get(hit)
+                            .is_some_and(|index| scene.items[*index].component == Some(owner))
+                    })
                 })
                 .collect();
             hits.splice(0..0, interiors);
         }
         if view.pcb.filters[7] {
-            for poly in scene.polygon_pours.iter().rev() {
+            for (index, poly) in scene.polygon_pours.iter().enumerate().rev() {
                 if !view.pcb.polygon_visible(poly.layer) || (poly.locked && !view.pcb.select_locked)
                 {
                     continue;
                 }
-                if eda_core::pcb_selection::polygon_boundary_hit(poly, p, tol) {
+                if view.pcb.geometry.polygon_boundary_hit(index, p, tol) {
                     hits.push(poly.id);
                 }
             }
@@ -698,14 +720,20 @@ pub fn canvas(ui: &mut egui::Ui, b: &Board, view: &mut View) -> CanvasOutput {
         }
     }
     navigation::paint_cursor(ui, &painter, &response, pointer, view, rect, panning);
-    if scene.pours_stale {
+    if scene.pours_stale || view.pcb.repour_pending {
         painter.text(
             rect.left_top() + Vec2::splat(8.0),
             egui::Align2::LEFT_TOP,
             if view.pcb.repour_pending {
-                "Repouring polygons…"
+                view.pcb
+                    .repour_progress
+                    .filter(|(_, total)| *total > 0)
+                    .map_or_else(
+                        || "Repouring polygons…".into(),
+                        |(done, total)| format!("Repouring polygons… {done}/{total}"),
+                    )
             } else {
-                "Polygon copper is out of date; run Repour All Polygons"
+                "Polygon copper is out of date; run Repour All Polygons".into()
             },
             egui::FontId::proportional(12.0),
             Color32::YELLOW,

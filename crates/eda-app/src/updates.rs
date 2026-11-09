@@ -288,107 +288,108 @@ impl Updater {
             .id(egui::Id::new("desktop_updates_popup"))
             .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
             .show(|ui| {
-                ui.set_width(310.);
-                // The title bar uses zero spacing; restore readable popup spacing.
-                ui.spacing_mut().item_spacing = egui::vec2(8., 7.);
-                ui.label(egui::RichText::new("PCBCraft updates").strong());
-                ui.label(format!("Installed {VERSION} · Stable channel"));
-                ui.separator();
-                match &state.phase {
-                    Phase::Idle => {
-                        ui.label("Check GitHub Releases for a newer version.");
-                    }
-                    Phase::Checking => {
-                        ui.horizontal(|ui| {
-                            ui.spinner();
-                            ui.label("Checking for updates…");
-                        });
-                    }
-                    Phase::Current => {
-                        ui.label("You’re up to date.");
-                    }
-                    Phase::Unpublished => {
-                        ui.label(
+                crate::theme::dialog_contents(ui, 310., |ui| {
+                    // The title bar uses zero spacing; restore readable popup spacing.
+                    ui.spacing_mut().item_spacing = egui::vec2(8., 7.);
+                    ui.label(egui::RichText::new("PCBCraft updates").strong());
+                    ui.label(format!("Installed {VERSION} · Stable channel"));
+                    ui.separator();
+                    match &state.phase {
+                        Phase::Idle => {
+                            ui.label("Check GitHub Releases for a newer version.");
+                        }
+                        Phase::Checking => {
+                            ui.horizontal(|ui| {
+                                ui.spinner();
+                                ui.label("Checking for updates…");
+                            });
+                        }
+                        Phase::Current => {
+                            ui.label("You’re up to date.");
+                        }
+                        Phase::Unpublished => {
+                            ui.label(
                         "No public release is available yet. The repository may still be private.",
                     );
-                    }
-                    Phase::Available => {
-                        ui.label("A new version is available.");
-                    }
-                    Phase::Downloading | Phase::Verifying => {
-                        ui.add(
-                            egui::ProgressBar::new(progress)
-                                .show_percentage()
-                                .desired_width(300.),
-                        );
-                        if let Some(p) = &state.package {
-                            ui.label(format!(
-                                "{:.1} / {:.1} MB",
-                                state.downloaded as f64 / 1e6,
-                                p.asset.size as f64 / 1e6
-                            ));
                         }
-                        if state.phase == Phase::Verifying {
-                            ui.label("Verifying SHA-256…");
+                        Phase::Available => {
+                            ui.label("A new version is available.");
                         }
-                        if ui.button("Cancel download").clicked() {
-                            self.cancelled.store(true, Ordering::Relaxed);
-                        }
-                    }
-                    Phase::Ready => {
-                        ui.label("Download complete · SHA-256 verified");
-                    }
-                    Phase::Error(error) => {
-                        ui.colored_label(egui::Color32::from_rgb(244, 176, 164), error);
-                    }
-                }
-                if let Some(package) = &state.package {
-                    ui.label(format!(
-                        "Version {} · {}",
-                        package.version, package.asset.name
-                    ));
-                    if !state.phase.busy()
-                        && state.phase != Phase::Ready
-                        && ui.button("Download update").clicked()
-                    {
-                        self.download(ui.ctx());
-                    }
-                    if state.phase == Phase::Ready {
-                        ui.label(package.distribution.instructions());
-                        if let Some(path) = &state.path {
-                            let open_folder = package.distribution == Distribution::AppImage;
-                            if ui
-                                .button(if open_folder {
-                                    "Show downloaded AppImage"
-                                } else {
-                                    "Open downloaded package"
-                                })
-                                .clicked()
-                                && let Err(error) = open_path(if open_folder {
-                                    path.parent().unwrap_or(path)
-                                } else {
-                                    path
-                                })
-                            {
-                                self.state.lock().unwrap_or_else(|p| p.into_inner()).phase =
-                                    Phase::Error(error);
+                        Phase::Downloading | Phase::Verifying => {
+                            ui.add(
+                                egui::ProgressBar::new(progress)
+                                    .show_percentage()
+                                    .desired_width(300.),
+                            );
+                            if let Some(p) = &state.package {
+                                ui.label(format!(
+                                    "{:.1} / {:.1} MB",
+                                    state.downloaded as f64 / 1e6,
+                                    p.asset.size as f64 / 1e6
+                                ));
                             }
-                            ui.label(path.display().to_string());
+                            if state.phase == Phase::Verifying {
+                                ui.label("Verifying SHA-256…");
+                            }
+                            if ui.button("Cancel download").clicked() {
+                                self.cancelled.store(true, Ordering::Relaxed);
+                            }
+                        }
+                        Phase::Ready => {
+                            ui.label("Download complete · SHA-256 verified");
+                        }
+                        Phase::Error(error) => {
+                            ui.colored_label(egui::Color32::from_rgb(244, 176, 164), error);
                         }
                     }
-                    ui.hyperlink_to("Release notes", &package.release_url);
-                }
-                ui.separator();
-                if ui
-                    .add_enabled(!state.phase.busy(), egui::Button::new("Check again"))
-                    .clicked()
-                {
-                    self.check(ui.ctx());
-                }
-                ui.hyperlink_to(
-                    "All releases",
-                    format!("https://github.com/{REPOSITORY}/releases"),
-                );
+                    if let Some(package) = &state.package {
+                        ui.label(format!(
+                            "Version {} · {}",
+                            package.version, package.asset.name
+                        ));
+                        if !state.phase.busy()
+                            && state.phase != Phase::Ready
+                            && ui.button("Download update").clicked()
+                        {
+                            self.download(ui.ctx());
+                        }
+                        if state.phase == Phase::Ready {
+                            ui.label(package.distribution.instructions());
+                            if let Some(path) = &state.path {
+                                let open_folder = package.distribution == Distribution::AppImage;
+                                if ui
+                                    .button(if open_folder {
+                                        "Show downloaded AppImage"
+                                    } else {
+                                        "Open downloaded package"
+                                    })
+                                    .clicked()
+                                    && let Err(error) = open_path(if open_folder {
+                                        path.parent().unwrap_or(path)
+                                    } else {
+                                        path
+                                    })
+                                {
+                                    self.state.lock().unwrap_or_else(|p| p.into_inner()).phase =
+                                        Phase::Error(error);
+                                }
+                                ui.label(path.display().to_string());
+                            }
+                        }
+                        ui.hyperlink_to("Release notes", &package.release_url);
+                    }
+                    ui.separator();
+                    if ui
+                        .add_enabled(!state.phase.busy(), egui::Button::new("Check again"))
+                        .clicked()
+                    {
+                        self.check(ui.ctx());
+                    }
+                    ui.hyperlink_to(
+                        "All releases",
+                        format!("https://github.com/{REPOSITORY}/releases"),
+                    );
+                })
             });
         ui.add_space(6.);
     }

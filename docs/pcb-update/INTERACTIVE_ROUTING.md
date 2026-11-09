@@ -409,3 +409,100 @@ The updated executable is target/routing-check/pcbcraft-polygons.exe, launched
 separately because the previous running build has unsaved user edits. The old
 window remains untouched. Full solver/visual parity and native saving of this
 route remain unverified.
+
+
+## Existing-route replacement ? 2026-11-06
+
+Observation: live AD Enterprise 24.4.1 on PROC010B showed Automatically Remove
+Loops enabled, its Shift+D shortcut, and the separate enabled Remove Loops With
+Vias option. Startup and Tab pause were inspected without placing segments or
+saving the original PCB. Altium exited during inspection and was relaunched;
+the original documents reopened. A separate RerouteResearch.PcbDoc copy was
+prepared for further experiments. This is not a verified solver parity claim.
+The official interactive-routing documentation describes replacing a parallel
+old path after reconnecting to existing copper and finishing routing:
+https://www.altium.com/documentation/altium-designer/pcb/routing/interactive
+
+Implementation: RouteSession distinguishes placed route IDs from split old
+copper, including split descendants and Backspace checkpoints. At Finish, an
+unambiguous unbranched same-layer old track path between placed contacts is
+removed in the same validated History transaction as the replacement. Source
+splits preserve outside tails. Multiple contacts are considered even when
+routing continues after a rejoin. Cleanup runs on a clone: draft preview,
+Cancel and source board remain unchanged. Automatically Remove Loops is enabled
+by default; the Properties checkbox and Shift+D toggle it for the editor.
+
+Bounds: old paths containing locked/component tracks, interior terminals,
+geometric T/crossing contacts or branches are retained conservatively, as are
+ambiguous existing loops. Multilayer/via and No Net loop replacement, per-net
+loop-removal preference editing, live deletion preview, gloss and exact sliding posture
+remain incomplete. Remove Loops With Vias stays disabled. These limits are
+explicitly narrower than Altium's routing engine.
+
+Native Nets6 records on the research board contain LOOPREMOVAL=TRUE. Both native
+and ASCII imports retain this field; a FALSE/0 per-net value now prevents old
+path removal regardless of the editor toggle. Conservative bounds also retain
+old paths near arbitrary arc/fill/region contacts which this graph cannot prove
+safe to remove. Regression coverage includes both cases.
+
+The live rerouting experiment on the isolated native copy used a differential
+pair member and Ignore Obstacles. It did not establish reliable deletion parity:
+the selected old track remained visible after rejoining and finishing. Conflict
+mode was restored to Walkaround and Undo was invoked without saving.
+Consequently only startup/options/width pickup are live observations; the new
+replacement algorithm follows the documented behavior and has independent tests.
+
+Verification on 2026-11-06: 781 workspace tests pass, strict all-target Clippy
+and formatting pass. Native Windows portable GUI verifies middle-of-track
+replacement with both tails retained, Ctrl+Z/Ctrl+Y, Shift+D disabling cleanup
+and the enabled Properties checkbox; the unsupported via-loop option stays
+disabled. Artifacts: target/routing-check/reroute-*.jpg and
+reroute-workspace-tests.log. Exact Altium solver/sliding parity remains open.
+
+
+## Body dragging / single-segment sliding ? 2026-11-06
+
+The user's priority is ordinary primary-button dragging of an existing segment.
+The old drag translated both endpoints by the full pointer delta, then routed
+neighbours afresh. On a diagonal-ended straight chain this introduced extra
+elbows instead of shortening/lengthening the original adjacent straight legs.
+
+The core now projects a single segment's body motion onto its normal. For a
+simple chain, the moving supporting line is intersected with each unique free
+neighbour's original supporting line. The outside neighbour endpoints stay
+fixed; widths, IDs and metadata are retained. Corner inversion or passing a
+fixed outside vertex rejects the candidate; prepared previews refine/retain
+the last valid location. Along-track pointer motion is an exact no-op.
+The immutable Slide description is prepared once per gesture and is shared
+by the complete transaction and preview paths. Endpoint edits and rotated or
+multiple-segment selections keep their existing explicit behavior.
+
+The source topology is inspected before endpoint reshaping. Interior junctions,
+fixed terminals and unresolved arc/fill/region contacts use the bounded connected
+rerouter after normal motion; they do not acquire a false angle-preservation
+claim. Shove, gloss, topology collapse through multiple corners, general curved
+sliding, arbitrary-angle solver parity and full multi-segment sliding remain open.
+
+Reference: Altium's official tracks/arcs and interactive-routing documentation
+specifies sliding, angle preservation and shortening/lengthening connected legs:
+https://www.altium.com/documentation/altium-designer/pcb/tracks-arcs
+https://www.altium.com/documentation/altium-designer/pcb/routing/interactive
+Implementation is independent Rust code, with no Altium runtime dependency.
+
+Verification on 2026-11-06: all 785 workspace tests, strict all-target Clippy,
+formatting and Windows build pass. Core regressions cover rotated chains,
+diagonal sliding, tangential no-op, preview/commit identity, source restoration
+and stopping before corner inversion. The ordinary mouse controller regression
+covers normal and fast press/release and one-step Undo/Redo.
+
+In the real Windows GUI, dragging the middle of a three-track chain with both
+horizontal and vertical pointer displacement changes the middle from
+(4,4)-(12,4) to (6,6)-(10,6) mm. The count stays at three, outer ends stay fixed,
+and adjacent 45-degree lines remain straight. Undo restores the original and
+Redo restores the shortened middle in one step each. Screenshots and check logs
+are under target/routing-check/sliding-*. The clean test instance was closed.
+
+Live AD24.4.1 attempts on disposable documents did not establish the equivalent
+three-leg coordinate comparison. These implementation checks therefore do not
+certify full native solver parity. No original user Altium document was saved
+or edited for this sliding investigation.

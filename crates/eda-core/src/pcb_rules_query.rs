@@ -293,6 +293,50 @@ pub(super) fn within_room(board: &Board, item: &Item, name: &str) -> Option<bool
     for room in board.rules.iter().filter(|r| {
         text(r, "RULEKIND") == "RoomDefinition" && text(r, "NAME").eq_ignore_ascii_case(name)
     }) {
+        result |= Room::parse(room)?.contains(item);
+    }
+    Some(result)
+}
+
+/// Parsed, normalized rooms belong to one immutable board snapshot. Unsupported
+/// rooms stay errors; construction is lazy so unused rules cannot reject a route.
+pub(super) struct Rooms<'a> {
+    board: &'a Board,
+    parsed: std::cell::RefCell<std::collections::BTreeMap<String, Option<Vec<Room>>>>,
+}
+struct Room {
+    bounds: Bounds,
+    area: geo::MultiPolygon<f64>,
+}
+impl<'a> Rooms<'a> {
+    pub(super) fn new(board: &'a Board) -> Self {
+        Self {
+            board,
+            parsed: Default::default(),
+        }
+    }
+    pub(super) fn contains(&self, item: &Item, name: &str) -> Option<bool> {
+        let mut parsed = self.parsed.borrow_mut();
+        let rooms = parsed.entry(name.to_ascii_uppercase()).or_insert_with(|| {
+            self.board
+                .rules
+                .iter()
+                .filter(|r| {
+                    text(r, "RULEKIND") == "RoomDefinition"
+                        && text(r, "NAME").eq_ignore_ascii_case(name)
+                })
+                .map(Room::parse)
+                .collect()
+        });
+        let mut result = false;
+        for room in rooms.as_ref()? {
+            result |= room.contains(item);
+        }
+        Some(result)
+    }
+}
+impl Room {
+    fn parse(room: &Fields) -> Option<Self> {
         let points = room_points(room)?;
         let bounds = Bounds::points(&points);
         let area = geo::Polygon::new(
@@ -313,23 +357,25 @@ pub(super) fn within_room(board: &Board, item: &Item, name: &str) -> Option<bool
         if area.0.is_empty() || !area.is_valid() {
             return None;
         }
+        Some(Self { bounds, area })
+    }
+    fn contains(&self, item: &Item) -> bool {
         if matches!(item.shape, Shape::Pad { .. } | Shape::Via { .. }) {
             let p = item.anchor();
-            result |= area.intersects(&geo::Point::new(p.x as f64 / 1e6, p.y as f64 / 1e6));
+            self.area
+                .intersects(&geo::Point::new(p.x as f64 / 1e6, p.y as f64 / 1e6))
         } else {
             let b = item.bounds();
-            if b.min.x >= bounds.min.x
-                && b.min.y >= bounds.min.y
-                && b.max.x <= bounds.max.x
-                && b.max.y <= bounds.max.y
-            {
-                result |= area
+            b.min.x >= self.bounds.min.x
+                && b.min.y >= self.bounds.min.y
+                && b.max.x <= self.bounds.max.x
+                && b.max.y <= self.bounds.max.y
+                && self
+                    .area
                     .relate(&crate::pcb_polygon::copper(item, item.layer))
-                    .is_covers();
-            }
+                    .is_covers()
         }
     }
-    Some(result)
 }
 
 #[cfg(test)]
@@ -494,6 +540,45 @@ mod tests {
             room.insert(format!("VY{n}"), format!("{y}mm"));
         }
         room
+    }
+    #[test]
+    fn prepared_room_scopes_reuse_geometry_without_reusing_item_membership() {
+        let mut board = Board {
+            rules: vec![room()],
+            ..Default::default()
+        };
+        let inside = track(Point::mm(1, 1), Point::mm(3, 1));
+        let outside = track(Point::mm(5, 5), Point::mm(6, 6));
+        let straddling = track(Point::mm(1, 1), Point::mm(5, 5));
+        for curved in [false, true] {
+            if curved {
+                board.rules[0].insert("KIND0".into(), "1".into());
+            }
+            let rooms = Rooms::new(&board);
+            for expression in [
+                "WithinRoom('DUT')",
+                "WithinRoom('dut') OR IsVia",
+                "NOT WithinRoom('DUT')",
+                "WithinRoom('missing', 'DUT') = True",
+                "WithinRoom('missing') AND UnknownPredicate",
+            ] {
+                for item in [&outside, &inside, &straddling, &inside, &outside] {
+                    assert_eq!(
+                        crate::pcb_rules::scope_prepared(&board, item, expression, 0, Some(&rooms)),
+                        crate::pcb_rules::scope(&board, item, expression, 0),
+                        "{expression}"
+                    );
+                }
+            }
+            assert_eq!(
+                rooms.contains(&inside, "DUT"),
+                if curved { None } else { Some(true) }
+            );
+            assert_eq!(
+                rooms.contains(&outside, "DUT"),
+                if curved { None } else { Some(false) }
+            );
+        }
     }
     #[test]
     fn layer_classes_use_native_members_kinds_builtins_and_layer_aliases() {

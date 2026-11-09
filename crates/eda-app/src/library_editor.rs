@@ -2074,7 +2074,7 @@ impl PcbCraft {
             let response = egui::Modal::new(egui::Id::new("new_file_library"))
                 .backdrop_color(Color32::TRANSPARENT)
                 .frame(egui::Frame::window(&ctx.style()).corner_radius(0))
-                .show(ctx, |ui| {
+                .show_stable(ctx, 684., |ui| {
                     ui.set_min_size(vec2(684., 534.));
                     ui.set_max_size(vec2(684., 534.));
                     ui.horizontal(|ui| {
@@ -2164,39 +2164,47 @@ impl PcbCraft {
             let response = egui::Modal::new(egui::Id::new("library_member_name"))
                 .backdrop_color(Color32::TRANSPARENT)
                 .frame(egui::Frame::window(&ctx.style()).corner_radius(0))
-                .show(ctx, |ui| {
-                    let mode = matches!(action, Action::RenameMode);
-                    ui.set_min_width(if mode { 608. } else { 300. });
-                    ui.label(match action {
-                        Action::Rename => "Rename Component",
-                        Action::RenameMode => "Rename Alternate Representation",
-                        Action::Duplicate => "Copy Component",
-                        _ => "New Component",
-                    });
-                    ui.separator();
-                    if !mode {
-                        ui.label("Design Item ID / Name");
-                    }
-                    let response = ui.text_edit_singleline(&mut value);
-                    if !self.library_editor.prompt_error.is_empty() {
-                        ui.colored_label(Color32::LIGHT_RED, &self.library_editor.prompt_error);
-                    }
-                    if self.library_editor.focus_prompt {
-                        response.request_focus();
-                        self.library_editor.focus_prompt = false;
-                    }
-                    ui.add_space(6.);
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui
-                            .add_sized([75., 24.], egui::Button::new("Cancel"))
-                            .clicked()
-                        {
-                            open = false;
+                .show_stable(
+                    ctx,
+                    if matches!(action, Action::RenameMode) {
+                        608.
+                    } else {
+                        300.
+                    },
+                    |ui| {
+                        let mode = matches!(action, Action::RenameMode);
+                        ui.set_min_width(if mode { 608. } else { 300. });
+                        ui.label(match action {
+                            Action::Rename => "Rename Component",
+                            Action::RenameMode => "Rename Alternate Representation",
+                            Action::Duplicate => "Copy Component",
+                            _ => "New Component",
+                        });
+                        ui.separator();
+                        if !mode {
+                            ui.label("Design Item ID / Name");
                         }
-                        ok = ui.add_sized([75., 24.], egui::Button::new("OK")).clicked()
-                            || ui.input(|i| i.key_pressed(Key::Enter));
-                    });
-                });
+                        let response = ui.text_edit_singleline(&mut value);
+                        if !self.library_editor.prompt_error.is_empty() {
+                            ui.colored_label(Color32::LIGHT_RED, &self.library_editor.prompt_error);
+                        }
+                        if self.library_editor.focus_prompt {
+                            response.request_focus();
+                            self.library_editor.focus_prompt = false;
+                        }
+                        ui.add_space(6.);
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui
+                                .add_sized([75., 24.], egui::Button::new("Cancel"))
+                                .clicked()
+                            {
+                                open = false;
+                            }
+                            ok = ui.add_sized([75., 24.], egui::Button::new("OK")).clicked()
+                                || ui.input(|i| i.key_pressed(Key::Enter));
+                        });
+                    },
+                );
             if response.should_close() {
                 open = false;
             }
@@ -2244,38 +2252,39 @@ impl PcbCraft {
                     })
                 })
                 .collect();
-            let response = egui::Modal::new(egui::Id::new("library_pcb_model")).show(ctx, |ui| {
-                ui.set_min_width(460.);
-                ui.heading("PCB Model");
-                ui.label("Name");
-                ui.text_edit_singleline(&mut link.name);
-                egui::ComboBox::from_id_salt("open_footprints")
-                    .selected_text("Browse open PCB libraries")
-                    .show_ui(ui, |ui| {
-                        for (name, path) in &choices {
-                            if ui.selectable_label(false, name).clicked() {
-                                link.name = name.clone();
-                                link.library = path.clone();
+            let response =
+                egui::Modal::new(egui::Id::new("library_pcb_model")).show_stable(ctx, 460., |ui| {
+                    ui.set_min_width(460.);
+                    ui.heading("PCB Model");
+                    ui.label("Name");
+                    ui.text_edit_singleline(&mut link.name);
+                    egui::ComboBox::from_id_salt("open_footprints")
+                        .selected_text("Browse open PCB libraries")
+                        .show_ui(ui, |ui| {
+                            for (name, path) in &choices {
+                                if ui.selectable_label(false, name).clicked() {
+                                    link.name = name.clone();
+                                    link.library = path.clone();
+                                }
                             }
-                        }
-                    });
-                ui.label("Library");
-                ui.text_edit_singleline(&mut link.library);
-                ui.label("Pin Map");
-                ui.label(
+                        });
+                    ui.label("Library");
+                    ui.text_edit_singleline(&mut link.library);
+                    ui.label("Pin Map");
+                    ui.label(
                     "One mapping per line, e.g. 1=1 or EP=9,10. Empty uses matching designators.",
                 );
-                ui.add(egui::TextEdit::multiline(&mut link.mapping).desired_rows(6));
-                if !link.error.is_empty() {
-                    ui.colored_label(Color32::LIGHT_RED, &link.error);
-                }
-                ui.horizontal(|ui| {
-                    ok = ui.button("OK").clicked();
-                    if ui.button("Cancel").clicked() {
-                        open = false;
+                    ui.add(egui::TextEdit::multiline(&mut link.mapping).desired_rows(6));
+                    if !link.error.is_empty() {
+                        ui.colored_label(Color32::LIGHT_RED, &link.error);
                     }
+                    ui.horizontal(|ui| {
+                        ok = ui.button("OK").clicked();
+                        if ui.button("Cancel").clicked() {
+                            open = false;
+                        }
+                    });
                 });
-            });
             if response.should_close() {
                 open = false;
             }

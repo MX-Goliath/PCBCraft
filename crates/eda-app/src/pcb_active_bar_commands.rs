@@ -696,7 +696,7 @@ fn align_form(ctx: &egui::Context, d: &mut AlignDialog) -> (bool, bool) {
     egui::Modal::new(egui::Id::new("pcb_bar_align"))
         .frame(frame)
         .backdrop_color(Color32::TRANSPARENT)
-        .show(ctx, |ui| {
+        .show_stable(ctx, 294., |ui| {
             ui.spacing_mut().item_spacing = Vec2::ZERO;
             let (r, _) = ui.allocate_exact_size(egui::vec2(294., 224.), Sense::hover());
             let at = |x, y, w, h| Rect::from_min_size(r.min + egui::vec2(x, y), egui::vec2(w, h));
@@ -790,7 +790,7 @@ fn transform_form(ctx: &egui::Context, d: &mut TransformDialog) -> (bool, bool, 
     egui::Modal::new(egui::Id::new("pcb_bar_transform"))
         .frame(frame)
         .backdrop_color(Color32::TRANSPARENT)
-        .show(ctx, |ui| {
+        .show_stable(ctx, size.x, |ui| {
             ui.spacing_mut().item_spacing = Vec2::ZERO;
             let (r, _) = ui.allocate_exact_size(size, Sense::hover());
             let at = |x, y, w, h| Rect::from_min_size(r.min + egui::vec2(x, y), egui::vec2(w, h));

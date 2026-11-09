@@ -150,7 +150,7 @@ pub(super) fn show(ctx: &egui::Context, board: &Board, d: &mut Draft, w: &mut Wi
                 .inner_margin(7.0)
                 .stroke(Stroke::new(1.0, widgets::LINE)),
         )
-        .show(ctx, |ui| {
+        .show_stable(ctx, |ui| {
             widgets::style(ui);
             close |= widgets::title(ui, "New Rule Wizard");
             let (body, _) = ui.allocate_exact_size(vec2(644.0, 435.0), Sense::hover());

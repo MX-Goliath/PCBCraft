@@ -100,82 +100,86 @@ impl PcbCraft {
         };
         let mut keep = true;
         let mut start = false;
-        egui::Modal::new(egui::Id::new("schematic_output")).show(ctx, |ui| {
-            ui.set_min_size(if dialog.smart {
-                egui::vec2(860., 510.)
-            } else {
-                egui::vec2(1020., 690.)
-            });
-            ui.heading(if dialog.smart {
-                "Smart PDF"
-            } else {
-                "Preview SCH"
-            });
-            ui.separator();
-            ui.add_enabled_ui(dialog.job.is_none(), |ui| {
-                if dialog.smart {
-                    smart_page(ui, &mut dialog, &self.file_dialog);
+        egui::Modal::new(egui::Id::new("schematic_output")).show_stable(
+            ctx,
+            if dialog.smart { 860. } else { 1020. },
+            |ui| {
+                ui.set_min_size(if dialog.smart {
+                    egui::vec2(860., 510.)
                 } else {
-                    print_page(ui, &mut dialog);
-                }
-            });
-            if !dialog.error.is_empty() {
-                ui.colored_label(Color32::LIGHT_RED, &dialog.error);
-            }
-            ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
-                ui.horizontal(|ui| {
-                    if dialog.job.is_some() {
-                        ui.spinner();
-                        ui.label("Rendering schematic pages…");
-                    }
-                    ui.add_space(
-                        (ui.available_width() - if dialog.smart { 210. } else { 110. }).max(0.),
-                    );
-                    if !dialog.smart
-                        && ui
-                            .add_enabled(dialog.job.is_none(), egui::Button::new("Print…"))
-                            .clicked()
-                    {
-                        start = true;
-                    }
-                    if ui
-                        .add_enabled(dialog.job.is_none(), egui::Button::new("Cancel"))
-                        .clicked()
-                    {
-                        keep = false;
-                    }
+                    egui::vec2(1020., 690.)
+                });
+                ui.heading(if dialog.smart {
+                    "Smart PDF"
+                } else {
+                    "Preview SCH"
+                });
+                ui.separator();
+                ui.add_enabled_ui(dialog.job.is_none(), |ui| {
                     if dialog.smart {
-                        if ui
-                            .add_enabled(
-                                dialog.job.is_none() && dialog.step > 0,
-                                egui::Button::new("Back"),
-                            )
-                            .clicked()
-                        {
-                            dialog.step -= 1;
+                        smart_page(ui, &mut dialog, &self.file_dialog);
+                    } else {
+                        print_page(ui, &mut dialog);
+                    }
+                });
+                if !dialog.error.is_empty() {
+                    ui.colored_label(Color32::LIGHT_RED, &dialog.error);
+                }
+                ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
+                    ui.horizontal(|ui| {
+                        if dialog.job.is_some() {
+                            ui.spinner();
+                            ui.label("Rendering schematic pages…");
                         }
-                        if ui
-                            .add_enabled(
-                                dialog.job.is_none() && dialog.step < 4,
-                                egui::Button::new("Next"),
-                            )
-                            .clicked()
-                        {
-                            dialog.step += 1;
-                        }
-                        if ui
-                            .add_enabled(
-                                dialog.job.is_none() && dialog.step == 4,
-                                egui::Button::new("Finish"),
-                            )
-                            .clicked()
+                        ui.add_space(
+                            (ui.available_width() - if dialog.smart { 210. } else { 110. }).max(0.),
+                        );
+                        if !dialog.smart
+                            && ui
+                                .add_enabled(dialog.job.is_none(), egui::Button::new("Print…"))
+                                .clicked()
                         {
                             start = true;
                         }
-                    }
+                        if ui
+                            .add_enabled(dialog.job.is_none(), egui::Button::new("Cancel"))
+                            .clicked()
+                        {
+                            keep = false;
+                        }
+                        if dialog.smart {
+                            if ui
+                                .add_enabled(
+                                    dialog.job.is_none() && dialog.step > 0,
+                                    egui::Button::new("Back"),
+                                )
+                                .clicked()
+                            {
+                                dialog.step -= 1;
+                            }
+                            if ui
+                                .add_enabled(
+                                    dialog.job.is_none() && dialog.step < 4,
+                                    egui::Button::new("Next"),
+                                )
+                                .clicked()
+                            {
+                                dialog.step += 1;
+                            }
+                            if ui
+                                .add_enabled(
+                                    dialog.job.is_none() && dialog.step == 4,
+                                    egui::Button::new("Finish"),
+                                )
+                                .clicked()
+                            {
+                                start = true;
+                            }
+                        }
+                    });
                 });
-            });
-        });
+            },
+        );
         if dialog.job.is_none()
             && !egui::Popup::is_any_open(ctx)
             && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Escape))

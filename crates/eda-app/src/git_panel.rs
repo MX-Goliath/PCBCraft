@@ -5,15 +5,15 @@ use eda_io::git::{Commit, File, Repository, Snapshot};
 use eda_render::document_diff::{self as render, Mode};
 use std::{
     collections::{BTreeMap, BTreeSet},
-    sync::mpsc,
+    sync::{Arc, mpsc},
     time::Duration,
 };
 
 pub(super) struct Page {
     pub name: String,
-    before: Option<Document>,
-    after: Option<Document>,
-    diff: Diff,
+    before: Option<Arc<Document>>,
+    after: Option<Arc<Document>>,
+    diff: Arc<Diff>,
 }
 pub(super) struct Review {
     path: String,
@@ -29,14 +29,15 @@ pub(super) struct Review {
     visible: [bool; 4],
     selected: Option<usize>,
     fit: bool,
+    initial_model: Option<Document>,
 }
 impl Review {
     fn scene(&self) -> Option<&Document> {
         let page = self.pages.get(self.page)?;
         if self.mode == Mode::Before {
-            page.before.as_ref().or(page.after.as_ref())
+            page.before.as_deref().or(page.after.as_deref())
         } else {
-            page.after.as_ref().or(page.before.as_ref())
+            page.after.as_deref().or(page.before.as_deref())
         }
     }
 }
@@ -72,8 +73,6 @@ pub(super) struct Browser {
     push_confirm: bool,
     push_remote: String,
     push_branch: String,
-    choose_project: bool,
-    directory_input: String,
 }
 impl Default for Browser {
     fn default() -> Self {
@@ -98,8 +97,6 @@ impl Default for Browser {
             push_confirm: false,
             push_remote: String::new(),
             push_branch: String::new(),
-            choose_project: false,
-            directory_input: String::new(),
         }
     }
 }
@@ -387,17 +384,29 @@ fn review(
                 .transpose()
                 .map(|v| v.unwrap_or_default())
         };
-        let mut a = import(before)?;
-        let mut b = if let Some(buffer) = buffer {
+        let identical = buffer.is_none() && before.is_some() && before == after;
+        let mut a: BTreeMap<_, _> = import(before)?
+            .into_iter()
+            .map(|(k, v)| (k, Arc::new(v)))
+            .collect();
+        let mut b: BTreeMap<_, _> = if identical {
+            a.clone()
+        } else if let Some(buffer) = buffer {
             scenes(buffer)
+                .into_iter()
+                .map(|(k, v)| (k, Arc::new(v)))
+                .collect()
         } else {
             import(after)?
+                .into_iter()
+                .map(|(k, v)| (k, Arc::new(v)))
+                .collect()
         };
         let names: BTreeSet<_> = a.keys().chain(b.keys()).cloned().collect();
         for name in names {
             let before = a.remove(&name);
             let after = b.remove(&name);
-            let diff = document_diff::compare(before.as_ref(), after.as_ref());
+            let diff = Arc::new(document_diff::compare(before.as_deref(), after.as_deref()));
             pages.push(Page {
                 name,
                 before,
@@ -407,7 +416,7 @@ fn review(
         }
         None
     };
-    Ok(Review {
+    let mut review = Review {
         path: path.into(),
         base: base.into(),
         result: result.into(),
@@ -421,7 +430,12 @@ fn review(
         visible: [true; 4],
         selected: None,
         fit: false,
-    })
+        initial_model: None,
+    };
+    // This function runs on the import/comparison worker. The read-only tab
+    // needs one display model for its property panels, but no saved snapshot.
+    review.initial_model = review.scene().cloned();
+    Ok(review)
 }
 
 impl PcbCraft {
@@ -457,7 +471,32 @@ impl PcbCraft {
             short(&r.result)
         ))
     }
-    fn install_git_review(&mut self, review: Review) {
+    fn activate_existing_committed_review(&mut self, file: &File) -> bool {
+        if !self.git.history {
+            return false;
+        }
+        let (Some(snapshot), Some(commit)) = (&self.git.snapshot, &self.git.commit) else {
+            return false;
+        };
+        let base = commit
+            .parents
+            .get(self.git.parent)
+            .map_or("Empty", String::as_str);
+        let id = self.git.reviews.iter().find_map(|(id, review)| {
+            (review.repository == snapshot.repository.root
+                && review.path == file.path
+                && review.base == base
+                && review.result == commit.id)
+                .then_some(*id)
+        });
+        let Some(index) = id.and_then(|id| self.documents.iter().position(|d| d.session_id == id))
+        else {
+            return false;
+        };
+        self.active = Some(index);
+        true
+    }
+    fn install_git_review(&mut self, mut review: Review) {
         if let Some(manager) = &mut self.layer_stack {
             manager.visible = false;
         }
@@ -474,18 +513,36 @@ impl PcbCraft {
             if review.result.starts_with("Working tree")
                 || review.result.starts_with("Editor buffer")
             {
+                if let Some(index) = self.active {
+                    let doc = &mut self.documents[index];
+                    if let Some(model) = review
+                        .initial_model
+                        .take()
+                        .or_else(|| review.scene().cloned())
+                    {
+                        doc.model = model;
+                        doc.view.sch_opening = doc.model.schematic.is_some();
+                    }
+                    doc.content_dirty.set(Some((doc.history.revision, false)));
+                    doc.view.pcb.three_d.revision = doc.view.pcb.three_d.revision.wrapping_add(1);
+                    doc.view.pcb.three_d.invalidate();
+                    review.displayed = Some((review.page, review.mode));
+                }
                 self.git.reviews.insert(id, review);
                 self.sync_git_scene();
             }
             return;
         }
         let model = review
-            .scene()
-            .cloned()
+            .initial_model
+            .take()
+            .or_else(|| review.scene().cloned())
             .unwrap_or_else(|| Document::new(DocumentKind::Schematic, &review.path));
         let mut doc = OpenDocument::new(model, None);
         doc.read_only = true;
-        doc.mark_saved();
+        doc.view.sch_opening = doc.model.schematic.is_some();
+        doc.content_dirty.set(Some((0, false)));
+        review.displayed = Some((review.page, review.mode));
         let id = doc.session_id;
         self.documents.push(doc);
         self.active = Some(self.documents.len() - 1);
@@ -502,12 +559,17 @@ impl PcbCraft {
             return;
         };
         let displayed = (review.page, review.mode);
-        if review.displayed == Some(displayed) {
+        if review.displayed.is_some_and(|(page, mode)| {
+            page == review.page && (mode == Mode::Before) == (review.mode == Mode::Before)
+        }) {
+            // Overlay and After expose the same property/3D model.
+            review.displayed = Some(displayed);
             return;
         }
         if let Some(scene) = review.scene() {
             doc.model = scene.clone();
-            doc.mark_saved();
+            doc.view.sch_opening = doc.model.schematic.is_some();
+            doc.content_dirty.set(Some((doc.history.revision, false)));
             doc.view.pcb.three_d.revision = doc.view.pcb.three_d.revision.wrapping_add(1);
             doc.view.pcb.three_d.invalidate();
         }
@@ -673,7 +735,7 @@ impl PcbCraft {
             ui.spacing_mut().item_spacing = egui::vec2(4., 6.);
             ui.horizontal(|ui| {
                 choose = theme::icon_button(ui, theme::Icon::Folder, false, !busy)
-                    .on_hover_text("Open Git project…")
+                    .on_hover_text("Open project")
                     .clicked();
                 refresh = tool_button(ui, "↻", "Refresh repository", !busy).clicked();
                 fetch = tool_button(
@@ -740,10 +802,8 @@ impl PcbCraft {
             }
             let Some(snapshot) = &state.snapshot else {
                 ui.add_space(20.);
-                ui.strong("Open a Git project");
-                ui.label(
-                    RichText::new("Choose the folder containing your Altium project.").color(MUTED),
-                );
+                ui.strong("Open a project");
+                ui.label(RichText::new("Open an Altium PCB project (*.PrjPcb).").color(MUTED));
                 choose |= ui.button("Open project…").clicked();
                 return;
             };
@@ -1032,12 +1092,7 @@ impl PcbCraft {
             }
         });
         if choose && !busy {
-            self.git.choose_project = true;
-            self.git.directory_input = self
-                .git
-                .directory
-                .as_ref()
-                .map_or(String::new(), |p| p.display().to_string());
+            self.command = Some(Command::OpenProject);
         }
         if refresh
             && !busy
@@ -1050,7 +1105,9 @@ impl PcbCraft {
         {
             self.open_git_working_path(snapshot.repository.root.join(&file.path));
         }
-        if let Some(OpenFile::Diff(file)) = open {
+        if let Some(OpenFile::Diff(file)) = open
+            && !self.activate_existing_committed_review(&file)
+        {
             let buffer = (!self.git.history && self.git.include_unsaved)
                 .then(|| {
                     let root = &self.git.snapshot.as_ref()?.repository.root;
@@ -1108,69 +1165,12 @@ impl PcbCraft {
         }
     }
     pub(super) fn git_dialogs(&mut self, ctx: &egui::Context) {
-        self.git_project_dialog(ctx);
         self.git_push_dialog(ctx);
     }
-    fn switch_git_repository(&mut self, ctx: &egui::Context, directory: PathBuf) {
+    pub(super) fn switch_git_repository(&mut self, ctx: &egui::Context, directory: PathBuf) {
         let directory = git_directory(&directory);
         self.settings.git_directory = Some(directory.clone());
-        self.git.choose_project = false;
         self.git.activate(ctx, Some(directory));
-    }
-    fn git_project_dialog(&mut self, ctx: &egui::Context) {
-        if !self.git.choose_project {
-            return;
-        }
-        let mut selected = None;
-        let mut cancel = false;
-        let mut browse = false;
-        egui::Window::new("Open Git project")
-            .collapsible(false)
-            .resizable(false)
-            .default_width(500.)
-            .anchor(egui::Align2::CENTER_CENTER, [0., 0.])
-            .show(ctx, |ui| {
-                ui.label("Project directory or PrjPcb file");
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.git.directory_input).desired_width(480.),
-                );
-                for project in &self.projects {
-                    if ui
-                        .button(&project.name)
-                        .on_hover_text(project.path.display().to_string())
-                        .clicked()
-                    {
-                        self.git.directory_input = project.path.display().to_string();
-                    }
-                }
-                ui.label(
-                    RichText::new("Only supported Altium files in this directory will be listed.")
-                        .small()
-                        .color(MUTED),
-                );
-                ui.horizontal(|ui| {
-                    browse = ui.button("Browse…").clicked();
-                    if ui
-                        .add_enabled(
-                            !self.git.directory_input.trim().is_empty(),
-                            egui::Button::new("Open repository"),
-                        )
-                        .clicked()
-                    {
-                        selected = Some(PathBuf::from(self.git.directory_input.trim()));
-                    }
-                    cancel = ui.button("Cancel").clicked();
-                });
-            });
-        if browse && let Some(path) = self.file_dialog.clone().pick_folder() {
-            self.git.directory_input = path.display().to_string();
-        }
-        if let Some(directory) = selected {
-            self.switch_git_repository(ctx, directory);
-        }
-        if cancel {
-            self.git.choose_project = false;
-        }
     }
     fn git_push_dialog(&mut self, ctx: &egui::Context) {
         if !self.git.push_confirm {
@@ -1185,7 +1185,7 @@ impl PcbCraft {
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, [0., 0.])
-            .show(ctx, |ui| {
+            .show_stable(ctx, |ui| {
                 if s.upstream.is_none() {
                     ui.label("First push · create upstream tracking");
                     egui::ComboBox::from_id_salt("git_push_remote")
@@ -1424,7 +1424,7 @@ impl PcbCraft {
             ui.add_space(26.);
         }
         let scene_rect = ui.available_rect_before_wrap();
-        if let Some(i) = render::canvas(
+        if let Some(i) = render::canvas_shared(
             ui,
             page.before.as_ref(),
             page.after.as_ref(),
@@ -2284,9 +2284,9 @@ mod tests {
             result: result.into(),
             pages: vec![Page {
                 name: name.into(),
-                before: Some(before),
-                after: Some(after),
-                diff,
+                before: Some(Arc::new(before)),
+                after: Some(Arc::new(after)),
+                diff: Arc::new(diff),
             }],
             page: 0,
             text: None,
@@ -2297,7 +2297,88 @@ mod tests {
             visible: [true; 4],
             selected: None,
             fit: false,
+            initial_model: None,
         }
+    }
+    #[test]
+    fn worker_prepared_display_moves_into_read_only_tab_without_saved_or_first_frame_copy() {
+        let doc = eda_io::altium::new_schematic("Prepared.SchDoc").unwrap();
+        let bytes = eda_io::altium::writer::serialize(&doc).unwrap();
+        let review = review(
+            "Prepared.SchDoc",
+            "before",
+            "after",
+            Some(bytes.clone()),
+            Some(bytes),
+            None,
+        )
+        .unwrap();
+        let page = &review.pages[0];
+        assert!(Arc::ptr_eq(
+            page.before.as_ref().unwrap(),
+            page.after.as_ref().unwrap()
+        ));
+        assert!(page.diff.changes.is_empty());
+        let name = review.initial_model.as_ref().unwrap().name.as_ptr();
+        let mut app = crate::app::schematic_editor::tests::app();
+        app.install_git_review(review);
+        let index = app.active.unwrap();
+        app.sync_git_scene();
+        assert_eq!(app.documents[index].model.name.as_ptr(), name);
+        assert!(app.documents[index].saved.is_none());
+        assert!(!app.documents[index].dirty());
+        let id = app.documents[index].session_id;
+        app.git.reviews.get_mut(&id).unwrap().mode = Mode::After;
+        app.sync_git_scene();
+        assert_eq!(app.documents[index].model.name.as_ptr(), name);
+    }
+    #[test]
+    fn reopening_an_open_commit_activates_it_without_a_git_job_but_working_tree_still_refreshes() {
+        let mut app = crate::app::schematic_editor::tests::app();
+        app.install_git_review(fixture_review("a.PcbDoc", "commit-a"));
+        let index = app.active.unwrap();
+        app.documents[index].view.camera.pixels_per_mm = 23.;
+        app.git.snapshot = Some(Snapshot {
+            repository: Repository {
+                root: "fixture".into(),
+                scope: String::new(),
+            },
+            branch: String::new(),
+            upstream: None,
+            ahead: 0,
+            behind: 0,
+            head: None,
+            files: vec![],
+            commits: vec![],
+            refs: vec![],
+            remotes: vec![],
+            operation: None,
+        });
+        app.git.commit = Some(Commit {
+            id: "commit-a".into(),
+            parents: vec!["baseline".into()],
+            author: String::new(),
+            date: String::new(),
+            subject: String::new(),
+            body: String::new(),
+            refs: String::new(),
+        });
+        app.git.history = true;
+        app.active = Some(0);
+        let file = File {
+            path: "a.PcbDoc".into(),
+            old_path: None,
+            status: "M".into(),
+        };
+        assert!(app.activate_existing_committed_review(&file));
+        assert_eq!(app.active, Some(index));
+        assert_eq!(app.documents[index].view.camera.pixels_per_mm, 23.);
+        assert!(app.git.job.is_none());
+        app.git.parent = 1;
+        assert!(!app.activate_existing_committed_review(&file));
+        app.git.parent = 0;
+        app.git.history = false;
+        assert!(!app.activate_existing_committed_review(&file));
     }
     #[test]
     fn review_tabs_keep_independent_views_reuse_identity_and_close_individually() {

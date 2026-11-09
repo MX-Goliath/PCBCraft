@@ -634,6 +634,18 @@ fn hierarchy_changes(
                 );
                 set(f, "SYMBOL_OUTEREDGE", outer_symbol.to_string());
                 set(f, "SYMBOL_INNEREDGE", inner_symbol.to_string());
+                if let Some(width) = p.presentation.pin_symbol_width_nm {
+                    set(
+                        f,
+                        "SYMBOL_LINEWIDTH",
+                        match width {
+                            101_600 => "0",
+                            254_000 => "1",
+                            _ => return Err("Unsupported native pin symbol stroke width".into()),
+                        }
+                        .into(),
+                    );
+                }
             }
             K::CompileMask { a, b, collapsed } => {
                 location(f, *a);
@@ -1777,6 +1789,16 @@ fn verify(
         let Some(expected) = expected_scene.primitive(read.id) else {
             continue;
         };
+        // Older JSON scenes did not model this native pin property. Preserve
+        // and verify the source value without requiring a model migration.
+        if matches!(expected.kind, K::Pin { .. })
+            && expected.presentation.pin_symbol_width_nm.is_none()
+            && source.primitive(expected.id).is_some_and(|old| {
+                old.presentation.pin_symbol_width_nm == read.presentation.pin_symbol_width_nm
+            })
+        {
+            read.presentation.pin_symbol_width_nm = None;
+        }
         match (&mut read.kind, &expected.kind) {
             (
                 K::Pin {

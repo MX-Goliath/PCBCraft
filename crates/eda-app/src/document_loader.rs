@@ -3,14 +3,32 @@
 use super::*;
 use std::{
     collections::VecDeque,
-    sync::mpsc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    },
     time::{Duration, Instant},
 };
+
+#[derive(Debug)]
+pub(super) struct PreparedDocument {
+    pub model: Document,
+    pub saved: Document,
+}
+impl PreparedDocument {
+    pub fn new(mut model: Document) -> Self {
+        eda_core::pcb::Board::ensure_document(&mut model);
+        let saved = model.clone();
+        Self { model, saved }
+    }
+}
 
 struct Job {
     path: PathBuf,
     control: eda_io::altium_pcb::ImportControl,
-    receiver: mpsc::Receiver<Result<Document, String>>,
+    receiver: mpsc::Receiver<Result<PreparedDocument, String>>,
+    preparing: Arc<AtomicBool>,
     started: Instant,
     cancelled: bool,
 }
@@ -57,23 +75,29 @@ impl State {
         let worker_path = path.clone();
         let worker_ctx = ctx.clone();
         let (sender, receiver) = mpsc::sync_channel(1);
+        let preparing = Arc::new(AtomicBool::new(false));
+        let worker_preparing = preparing.clone();
         self.job = Some(Job {
             path,
             control,
             receiver,
+            preparing,
             started: Instant::now(),
             cancelled: false,
         });
         std::thread::spawn(move || {
             let result = std::panic::catch_unwind(|| {
-                if worker_path
+                let model = if worker_path
                     .extension()
                     .is_some_and(|s| s.eq_ignore_ascii_case("PcbDoc"))
                 {
                     eda_io::altium_pcb::load_pcb_controlled(&worker_path, &worker_control)
                 } else {
                     eda_io::load(&worker_path)
-                }
+                }?;
+                worker_preparing.store(true, Ordering::Relaxed);
+                worker_ctx.request_repaint();
+                Ok(PreparedDocument::new(model))
             })
             .unwrap_or_else(|_| Err("Document import worker failed".into()));
             let _ = sender.send(result);
@@ -127,7 +151,7 @@ impl PcbCraft {
                     Ok(result) => {
                         let job = self.document_loader.job.take().unwrap();
                         if !job.cancelled {
-                            self.complete_open_path(job.path, result);
+                            self.complete_prepared_open_path(job.path, result);
                         }
                     }
                     Err(mpsc::TryRecvError::Disconnected) => {
@@ -160,16 +184,33 @@ impl PcbCraft {
             .id(egui::Id::new("document_import_progress"))
             .collapsible(false)
             .resizable(false)
+            .default_width(420.)
+            .min_width(420.)
+            .max_width(420.)
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-            .show(ctx, |ui| {
-                ui.label(job.path.file_name().unwrap_or_default().to_string_lossy());
+            .show_stable(ctx, |ui| {
+                ui.add(
+                    egui::Label::new(job.path.file_name().unwrap_or_default().to_string_lossy())
+                        .truncate(),
+                )
+                .on_hover_text(job.path.display().to_string());
                 ui.horizontal(|ui| {
                     ui.spinner();
-                    ui.label(if job.cancelled {
+                    let phase = if job.cancelled {
                         "Cancelling…".into()
+                    } else if job.preparing.load(Ordering::Relaxed) {
+                        "Preparing document".into()
+                    } else if job
+                        .path
+                        .extension()
+                        .is_some_and(|e| e.eq_ignore_ascii_case("SchDoc"))
+                    {
+                        "Reading schematic".into()
                     } else {
                         job.control.phase()
-                    });
+                    };
+                    ui.add(egui::Label::new(&phase).truncate())
+                        .on_hover_text(phase);
                 });
                 ui.label(format!("{:.1} s", job.started.elapsed().as_secs_f64()));
                 cancel = ui
@@ -186,6 +227,119 @@ impl PcbCraft {
 mod tests {
     use super::*;
     #[test]
+    fn opening_dialog_keeps_its_rectangle_for_long_names_phases_and_elapsed_time() {
+        for dpi in [1., 1.5, 2.] {
+            let mut app = crate::app::schematic_editor::tests::app();
+            let ctx = egui::Context::default();
+            theme::apply(&ctx);
+            ctx.set_pixels_per_point(dpi);
+            let (_sender, receiver) = mpsc::sync_channel(1);
+            app.document_loader.job = Some(Job {
+                path: "Board.PcbDoc".into(),
+                control: Default::default(),
+                receiver,
+                preparing: Arc::new(AtomicBool::new(false)),
+                started: Instant::now(),
+                cancelled: false,
+            });
+            let mut before: Option<egui::Rect> = None;
+            for (name, preparing, cancelled, seconds) in [
+                ("Board.PcbDoc".into(), false, false, 0),
+                (
+                    format!("{}.PcbDoc", "VeryLongImportedBoardName".repeat(30)).into(),
+                    false,
+                    false,
+                    10,
+                ),
+                ("Board.PcbDoc".into(), true, false, 100),
+                ("Board.PcbDoc".into(), true, true, 10000),
+            ] {
+                let job = app.document_loader.job.as_mut().unwrap();
+                job.path = name;
+                job.preparing.store(preparing, Ordering::Relaxed);
+                job.cancelled = cancelled;
+                job.started = Instant::now()
+                    .checked_sub(Duration::from_secs(seconds))
+                    .unwrap_or(job.started);
+                for _ in 0..3 {
+                    let _ = ctx.run(
+                        egui::RawInput {
+                            screen_rect: Some(egui::Rect::from_min_size(
+                                egui::Pos2::ZERO,
+                                egui::vec2(1440., 900.),
+                            )),
+                            ..Default::default()
+                        },
+                        |ctx| app.document_loading_dialog(ctx),
+                    );
+                }
+                let rect = ctx
+                    .memory(|m| m.area_rect(egui::Id::new("document_import_progress")))
+                    .unwrap();
+                if let Some(before) = before {
+                    assert!((rect.min - before.min).length() < 1.);
+                    assert!((rect.size() - before.size()).length() < 1.);
+                } else {
+                    before = Some(rect);
+                }
+            }
+        }
+    }
+    #[test]
+    fn imported_snapshot_is_moved_into_the_ui_and_starts_clean() {
+        let mut app = crate::app::schematic_editor::tests::app();
+        let prepared =
+            PreparedDocument::new(Document::new(DocumentKind::Schematic, "Loaded.SchDoc"));
+        let model_name = prepared.model.name.as_ptr();
+        let saved_name = prepared.saved.name.as_ptr();
+        let path = PathBuf::from("Loaded.SchDoc");
+        app.complete_prepared_open_path(path.clone(), Ok(prepared));
+        let opened = &app.documents[app.active.unwrap()];
+        assert_eq!(opened.model.name.as_ptr(), model_name);
+        assert_eq!(opened.saved.as_ref().unwrap().name.as_ptr(), saved_name);
+        assert_eq!(opened.source_path.as_ref(), Some(&path));
+        assert!(!opened.dirty());
+        assert!(opened.view.sch_opening);
+    }
+
+    #[test]
+    fn project_first_schematic_is_queued_and_worker_prepares_its_saved_snapshot() {
+        let folder = tempfile::tempdir().unwrap();
+        let sheet = folder.path().join("Main.SchDoc");
+        std::fs::write(
+            &sheet,
+            include_bytes!("../../../fixtures/schematic/minimal.SchDoc"),
+        )
+        .unwrap();
+        let project = folder.path().join("Main.PrjPcb");
+        std::fs::write(
+            &project,
+            "[Design]\n[Document1]\nDocumentPath=Main.SchDoc\n",
+        )
+        .unwrap();
+        let mut app = crate::app::schematic_editor::tests::app();
+        let count = app.documents.len();
+        app.request_open_path(project.clone());
+        app.request_open_path(project);
+        assert_eq!(
+            app.documents.len(),
+            count,
+            "Project opening must not import its sheet on the UI thread"
+        );
+        assert_eq!(app.document_loader.queued.len(), 1);
+        app.document_loader.start(&egui::Context::default());
+        let job = app.document_loader.job.as_ref().unwrap();
+        let prepared = job
+            .receiver
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap()
+            .unwrap();
+        assert!(job.preparing.load(Ordering::Relaxed));
+        assert_eq!(prepared.model, prepared.saved);
+        assert!(prepared.model.schematic.is_some());
+    }
+
+    #[test]
     fn cancelled_import_keeps_worker_slot_and_does_not_duplicate_queued_paths() {
         let (sender, receiver) = mpsc::sync_channel(1);
         let mut state = State {
@@ -193,6 +347,7 @@ mod tests {
                 path: "one.PcbDoc".into(),
                 control: Default::default(),
                 receiver,
+                preparing: Arc::new(AtomicBool::new(false)),
                 started: Instant::now(),
                 cancelled: false,
             }),
@@ -217,7 +372,9 @@ mod tests {
             state.job.as_ref().unwrap().path,
             PathBuf::from("one.PcbDoc")
         );
-        sender.send(Ok(Document::example())).unwrap();
+        sender
+            .send(Ok(PreparedDocument::new(Document::example())))
+            .unwrap();
         assert!(state.job.as_ref().unwrap().cancelled);
         state.job.take();
         state.cancel();

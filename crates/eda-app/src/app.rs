@@ -1,4 +1,5 @@
 use crate::theme::{self, ACCENT, MUTED};
+use crate::theme::{StableModal, StableWindow};
 #[path = "schematic_hierarchy.rs"]
 mod schematic_hierarchy;
 #[path = "schematic_sync.rs"]
@@ -95,6 +96,9 @@ struct OpenDocument {
 impl OpenDocument {
     fn new(model: Document, path: Option<PathBuf>) -> Self {
         let saved = path.as_ref().map(|_| model.clone());
+        Self::with_saved(model, path, saved)
+    }
+    fn with_saved(model: Document, path: Option<PathBuf>, saved: Option<Document>) -> Self {
         Self {
             read_only: false,
             new_project: None,
@@ -427,7 +431,9 @@ impl PcbCraft {
 
     fn add_document(&mut self, mut doc: Document, path: Option<PathBuf>) {
         eda_core::pcb::Board::ensure_document(&mut doc);
-        let mut opened = OpenDocument::new(doc, path);
+        self.attach_document(OpenDocument::new(doc, path));
+    }
+    fn attach_document(&mut self, mut opened: OpenDocument) {
         opened.new_project = self.file_state.project_for_new.take();
         if let Some(settings) = opened
             .path
@@ -450,6 +456,9 @@ impl PcbCraft {
 
     fn recent(&mut self, path: PathBuf) {
         let path = path.canonicalize().unwrap_or(path);
+        self.remember_recent(path);
+    }
+    fn remember_recent(&mut self, path: PathBuf) {
         let target = if path
             .extension()
             .is_some_and(|e| e.eq_ignore_ascii_case("PrjPcb"))
@@ -506,6 +515,13 @@ impl PcbCraft {
     }
 
     fn complete_open_path(&mut self, path: PathBuf, loaded: Result<Document, String>) {
+        self.complete_prepared_open_path(path, loaded.map(document_loader::PreparedDocument::new));
+    }
+    fn complete_prepared_open_path(
+        &mut self,
+        path: PathBuf,
+        loaded: Result<document_loader::PreparedDocument, String>,
+    ) {
         // A synchronous dependency lookup may have opened a queued path first.
         if self
             .documents
@@ -518,23 +534,28 @@ impl PcbCraft {
             .extension()
             .is_some_and(|s| s.eq_ignore_ascii_case("SchDoc") || s.eq_ignore_ascii_case("PcbDoc"));
         match loaded {
-            Ok(doc) => {
+            Ok(prepared) => {
                 self.message(false, format!("Opened {}", path.display()));
-                self.recent(path.clone());
-                let warnings = doc
+                // Opening requests already resolved this path. Do not repeat
+                // filesystem/network resolution after the worker finishes.
+                self.remember_recent(path.clone());
+                let warnings = prepared
+                    .model
                     .schematic
                     .as_ref()
                     .map(|s| s.warnings.clone())
-                    .or_else(|| doc.pcb.as_ref().map(|b| b.warnings.clone()))
+                    .or_else(|| prepared.model.pcb.as_ref().map(|b| b.warnings.clone()))
                     .unwrap_or_default();
+                let mut opened = OpenDocument::with_saved(
+                    prepared.model,
+                    Some(path.clone()),
+                    Some(prepared.saved),
+                );
                 if native {
-                    self.add_document(doc, Some(path.clone()));
-                    let opened = self.documents.last_mut().unwrap();
                     opened.source_path = Some(path);
-                    opened.mark_saved();
-                } else {
-                    self.add_document(doc, Some(path));
                 }
+                opened.view.sch_opening = opened.model.schematic.is_some();
+                self.attach_document(opened);
                 for warning in warnings {
                     self.message(false, format!("Import warning: {warning}"));
                 }
@@ -559,14 +580,7 @@ impl PcbCraft {
                 })
                 .map(|d| d.path.clone())
             {
-                if first
-                    .extension()
-                    .is_some_and(|s| s.eq_ignore_ascii_case("PcbDoc"))
-                {
-                    self.request_open_path(first);
-                } else {
-                    self.open_path(first);
-                }
+                self.request_open_path(first);
             }
             return;
         }
@@ -603,14 +617,7 @@ impl PcbCraft {
                 self.projects.push(project);
                 self.recent(path);
                 if let Some(first) = first {
-                    if first
-                        .extension()
-                        .is_some_and(|s| s.eq_ignore_ascii_case("PcbDoc"))
-                    {
-                        self.request_open_path(first);
-                    } else {
-                        self.open_path(first);
-                    }
+                    self.request_open_path(first);
                 } else {
                     self.active = None;
                 }
@@ -804,7 +811,11 @@ impl PcbCraft {
                     .add_filter("Altium PCB project", &["PrjPcb"])
                     .pick_file()
                 {
-                    self.request_open_path(path);
+                    let path = path.canonicalize().unwrap_or(path);
+                    self.request_open_path(path.clone());
+                    if self.projects.iter().any(|project| project.path == path) {
+                        self.switch_git_repository(ctx, path);
+                    }
                 }
             }
             Command::Save | Command::SaveAs => {
@@ -1570,7 +1581,7 @@ impl PcbCraft {
                 .collapsible(false)
                 .resizable(false)
                 .default_width(380.0)
-                .show(ctx, |ui| {
+                .show_stable(ctx, |ui| {
                     theme::heading(ui, "PCB Editor / General", "Application preferences");
                     ui.horizontal(|ui| {
                         ui.label("Display units");
@@ -1625,7 +1636,7 @@ impl PcbCraft {
                 .open(&mut self.about)
                 .collapsible(false)
                 .resizable(false)
-                .show(ctx, |ui| {
+                .show_stable(ctx, |ui| {
                     ui.heading(concat!("PCBCraft ", env!("CARGO_PKG_VERSION")));
                     ui.label("Independent EDA application written in Rust.");
                     ui.label("egui / eframe · wgpu");
@@ -1636,7 +1647,7 @@ impl PcbCraft {
         }
         if let Some(pending) = self.pending {
             let mut choice = 0;
-            egui::Modal::new(egui::Id::new("unsaved_changes")).show(ctx, |ui| {
+            egui::Modal::new(egui::Id::new("unsaved_changes")).show_stable(ctx, 410., |ui| {
                 ui.set_width(410.0);
                 ui.heading("Save changes?");
                 ui.add_space(8.0);

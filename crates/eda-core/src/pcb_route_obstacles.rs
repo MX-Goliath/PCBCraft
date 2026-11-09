@@ -4,6 +4,7 @@ use super::*;
 use crate::pcb_polygon::copper;
 use geo::{Distance, Euclidean, Line, MultiPolygon};
 use rstar::{AABB, RTree, RTreeObject};
+use std::sync::Arc;
 #[cfg(test)]
 #[path = "pcb_route_obstacles_tests.rs"]
 mod tests;
@@ -70,9 +71,9 @@ impl RTreeObject for IndexedBounds {
 }
 #[derive(Clone)]
 pub(super) struct Obstacles {
-    objects: Vec<Obstacle>,
+    objects: Arc<Vec<Obstacle>>,
     spatial: bool,
-    index: RTree<IndexedBounds>,
+    index: Arc<RTree<IndexedBounds>>,
     maximum_gap: i64,
     first_error: Option<usize>,
 }
@@ -103,9 +104,9 @@ impl Obstacles {
             .unwrap_or(0);
         let first_error = objects.iter().position(|o| o.gap.is_err());
         Self {
-            objects,
+            objects: Arc::new(objects),
             spatial,
-            index,
+            index: Arc::new(index),
             maximum_gap,
             first_error,
         }
@@ -133,6 +134,11 @@ impl Obstacles {
         contacts: &BTreeSet<Uuid>,
         source_len: usize,
     ) -> Self {
+        let profile = std::env::var_os("PCBCRAFT_ROUTE_PROFILE").is_some();
+        let started = std::time::Instant::now();
+        let mut phases = [std::time::Duration::ZERO; 3];
+        let mut gap_bounds = std::collections::BTreeMap::new();
+        let clearances = crate::pcb_rules::ObstacleClearances::new(board, probe);
         let net = board.item_net(probe);
         // Room membership changes as the route moves. Cache the geometry, but
         // resolve these pair clearances against each proposed segment.
@@ -205,25 +211,30 @@ impl Obstacles {
                         || i.layer == KEEP_OUT
                         || i.is_drill_only())
             })
-            .map(|(index, i)| Obstacle {
-                bounds: i.bounds(),
-                item: Some(index),
-                gap_bound: if spatial {
-                    maximum_gap(
-                        board,
-                        probe,
-                        crate::pcb_rules::object_kind(i),
-                        text_is_board_cutout(i),
-                    )
+            .map(|(index, i)| {
+                let phase = profile.then(std::time::Instant::now);
+                let gap_bound = if spatial {
+                    let key = (crate::pcb_rules::object_kind(i), text_is_board_cutout(i));
+                    *gap_bounds
+                        .entry(key)
+                        .or_insert_with(|| maximum_gap(board, probe, key.0, key.1))
                 } else {
                     0
-                },
-                gap: if text_is_board_cutout(i) {
+                };
+                if let Some(phase) = phase {
+                    phases[0] += phase.elapsed();
+                }
+                let phase = profile.then(std::time::Instant::now);
+                let gap = if text_is_board_cutout(i) {
                     crate::pcb_rules::cutout_clearance(board, probe, i)
                 } else {
-                    crate::pcb_rules::obstacle_clearance(board, probe, i)
-                },
-                copper: match i.shape {
+                    clearances.clearance(i)
+                };
+                if let Some(phase) = phase {
+                    phases[1] += phase.elapsed();
+                }
+                let phase = profile.then(std::time::Instant::now);
+                let copper = match i.shape {
                     Shape::Track { start, end, width } => Geometry::Track(
                         Line::new(
                             (start.x as f64 / 1e6, start.y as f64 / 1e6),
@@ -258,7 +269,18 @@ impl Obstacles {
                         )
                     }
                     _ => Geometry::Polygon(copper(i, layer)),
-                },
+                };
+                let bounds = i.bounds();
+                if let Some(phase) = phase {
+                    phases[2] += phase.elapsed();
+                }
+                Obstacle {
+                    bounds,
+                    item: Some(index),
+                    gap_bound,
+                    gap,
+                    copper,
+                }
             })
             .collect();
         let outline = board.outline_points(256);
@@ -315,7 +337,19 @@ impl Obstacles {
                 });
             }
         }
-        Self::indexed(obstacles, spatial)
+        let result = Self::indexed(obstacles, spatial);
+        if profile {
+            eprintln!(
+                "route_environment objects={} bound_keys={} bounds_ms={:.3} rules_ms={:.3} geometry_ms={:.3} total_ms={:.3}",
+                result.objects.len(),
+                gap_bounds.len(),
+                phases[0].as_secs_f64() * 1000.,
+                phases[1].as_secs_f64() * 1000.,
+                phases[2].as_secs_f64() * 1000.,
+                started.elapsed().as_secs_f64() * 1000.
+            );
+        }
+        result
     }
     fn blocker(
         &self,
@@ -436,16 +470,22 @@ impl Obstacles {
             .is_none()
     }
     fn stop(&self, points: &[Point], route: &RouteSession, contact: Option<Uuid>) -> Vec<Point> {
-        let clear = |a, b| {
-            self.blocker(
-                a,
-                b,
-                route.width.max(1) / 2,
-                route.clearance.max(0),
-                Some(route),
-                contact,
-            )
-            .is_none()
+        // Nanometre rounding revisits the same segment near the stop boundary.
+        // Retain all 40 bisection steps and their exact result, but evaluate each
+        // identical segment only once within this immutable query.
+        let mut checked = std::collections::HashMap::new();
+        let mut clear = |a: Point, b: Point| {
+            *checked.entry((a.x, a.y, b.x, b.y)).or_insert_with(|| {
+                self.blocker(
+                    a,
+                    b,
+                    route.width.max(1) / 2,
+                    route.clearance.max(0),
+                    Some(route),
+                    contact,
+                )
+                .is_none()
+            })
         };
         let mut result = vec![points[0]];
         for edge in points.windows(2) {

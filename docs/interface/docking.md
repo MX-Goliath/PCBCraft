@@ -89,3 +89,53 @@ stopped in `openssl-sys` because the existing reqwest/native-tls dependency has
 no target OpenSSL sysroot here. Linux runtime was not exercised. Wayland does
 not expose global window positions to eframe; exact cross-window positioning
 and native window placement there remain a platform limitation.
+
+## Properties width feedback - November 9, 2026
+
+The user reports that selecting certain components expands Properties across
+most of the window, and manually shrinking it springs back. Static inspection
+found that the content's `scope_builder` propagated its expanded minimum rectangle
+into the dock/SidePanel. Its clip rectangle limited painting, not layout size.
+The resulting panel size was then persisted as the dock extent.
+
+The content now uses an isolated child UI; the parent allocates only the dock's
+assigned rectangle. Long fields and wide nested layouts cannot enlarge the dock
+through their minimum size. Properties labels inherit truncation, and schematic
+Properties no longer imposes a 200-point minimum on its inner content. Stored
+widths and user-controlled resizing remain available, without resetting layouts.
+At extremely narrow widths, controls may clip; values are retained in full.
+
+Regression sources exercise oversized content, pointer shrinking and subsequent
+frames at 100/150/200 percent DPI, plus actual schematic/PCB components with long
+fields across document switches and unchanged models. No compilation, test run,
+or new GUI instance was started under the user's no-rebuild instruction. Formatting
+and static checks pass; updated-window behavior and Altium/Linux parity are pending.
+
+## Dialog width stability - November 9, 2026
+
+The user reports Opening document oscillating in width as PCB import phases change,
+and similar behavior elsewhere. A nonresizable egui Window still fits its content;
+preventing manual resizing alone does not reserve a stable width. The application
+now uses shared stable content hosts for every Window/Modal call site. Windows use
+their declared/current resize width; each modal supplies its existing form/page
+width explicitly. A horizontal overflow viewport prevents a wide child minimum
+rectangle from enlarging its host. Labels wrap within that width, while oversized
+tables/controls remain reachable by scrolling. Existing form coordinates, explicit
+page sizes and permitted user resizing are retained.
+
+Opening document has a 420-point content width, with single-line filename and phase
+labels and full-text tooltips. Elapsed time and cancellation do not change its
+layout. The update popup uses the shared width host. The 3D loading card paints
+its frame at a fixed rectangle and places clipped/truncated status content inside;
+phase, elapsed-time and error strings cannot determine the frame geometry. The
+renderer Object Visibility modal was audited: its explicit width and bounded
+matrix already separate text from outer geometry. Native OS dialogs are unchanged.
+
+Added regression sources cover repeated long/short text transitions, overflowing
+controls, user resizing, modal Cancel interaction, document name/phase/time/cancel
+changes, and 3D card bounds. DPI cases include 100/150/200 percent. They have not
+been compiled or run: the user's no-rebuild instruction remains in force. Only
+formatting, whitespace and source/feature-registry checks were run. Actual-window
+Windows/Linux verification and equal-DPI Altium comparison remain pending. Dialog
+height can still change for wrapped content or a deliberately different form page;
+this change prevents content-driven width oscillation.

@@ -49,6 +49,7 @@ pub(super) struct Dialog {
     style_editor: Option<model::DisplayStyle>,
     fit_width: bool,
     links: bool,
+    link_notice: Option<String>,
     report: Option<String>,
     library: Option<eda_core::library::Library>,
     error: String,
@@ -612,6 +613,30 @@ impl PcbCraft {
                 return;
             }
         };
+        let references = rows.iter().map(Row::reference).collect::<Vec<_>>();
+        let resolution = match model::resolve_links(&p.variants, &references) {
+            Ok(resolution) => resolution,
+            Err(error) => {
+                self.message(true, error);
+                return;
+            }
+        };
+        let mut draft = p.variants.clone();
+        let mut history = model::History::default();
+        if let Err(error) = history.commit(&mut draft, resolution.variants) {
+            self.message(true, error);
+            return;
+        }
+        let link_notice = (!resolution.affected.is_empty()).then(|| format!(
+            "Found incorrect link(s) between project variant and Schematic components: [{}].\nPlease review Variant definitions, then recompile and resolve warnings/errors and save the Project to avoid conflicts in future.", resolution.affected.join(", ")
+        ));
+        let mut link_errors = Vec::new();
+        if !resolution.unresolved.is_empty() {
+            link_errors.push(format!("Unresolved component links: {}. Review Component Links and validate the schematic.", resolution.unresolved.join(", ")));
+        }
+        if !resolution.duplicate_designators.is_empty() {
+            link_errors.push(format!("Duplicate component designators: {}. Correct them in the schematic and validate the project.", resolution.duplicate_designators.join(", ")));
+        }
         if !self.variants.saved.contains_key(&path) {
             match std::fs::read(&path) {
                 Ok(bytes) => {
@@ -632,8 +657,8 @@ impl PcbCraft {
         self.variants.dialog = Some(Dialog {
             project: path,
             original: p.variants.clone(),
-            draft: p.variants.clone(),
-            history: Default::default(),
+            draft,
+            history,
             rows,
             row: 0,
             selected: BTreeSet::from([0]),
@@ -648,30 +673,11 @@ impl PcbCraft {
             style_editor: None,
             fit_width: true,
             links: false,
+            link_notice,
             report: None,
             library: None,
-            error: String::new(),
+            error: link_errors.join("\n"),
         });
-        if let Some(d) = &mut self.variants.dialog {
-            let refs = d
-                .rows
-                .iter()
-                .map(|r| model::ComponentRef {
-                    uid: r.uid.clone(),
-                    designator: r.designator.clone(),
-                })
-                .collect::<Vec<_>>();
-            let count = d
-                .draft
-                .iter()
-                .map(|v| model::unresolved(v, &refs).len())
-                .sum::<usize>();
-            if count > 0 {
-                d.error = format!(
-                    "{count} unresolved component link(s). Use Component Links to review and relink them."
-                );
-            }
-        }
     }
     pub(super) fn select_variant(&mut self, project: PathBuf, id: Option<String>) {
         self.variants.pick_mode = None;

@@ -105,7 +105,7 @@ impl PcbCraft {
             .resizable(false)
             .fixed_size([592.0, 342.0])
             .open(&mut open)
-            .show(ctx, |ui| {
+            .show_stable(ctx, |ui| {
                 ui.horizontal_top(|ui| {
                     ui.allocate_ui_with_layout(
                         egui::vec2(307.0, 302.0),

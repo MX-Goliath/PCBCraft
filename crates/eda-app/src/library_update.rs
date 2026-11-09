@@ -1028,29 +1028,33 @@ impl PcbCraft {
         };
         if d.page == 3 {
             let mut close = false;
-            egui::Modal::new(egui::Id::new("library_update_information")).show(ctx, |ui| {
-                ui.set_width(240.);
-                ui.strong("Information");
-                ui.separator();
-                ui.label(format!(
-                    "Updated {} components",
-                    d.rows.iter().filter(|r| r.enabled).count()
-                ));
-                ui.label(format!(
-                    "In {} Schematic Documents",
-                    d.rows
-                        .iter()
-                        .filter(|r| r.enabled && d.sheets[r.sheet].enabled)
-                        .map(|r| r.sheet)
-                        .collect::<std::collections::BTreeSet<_>>()
-                        .len()
-                ));
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("OK").clicked() {
-                        close = true;
-                    }
-                });
-            });
+            egui::Modal::new(egui::Id::new("library_update_information")).show_stable(
+                ctx,
+                240.,
+                |ui| {
+                    ui.set_width(240.);
+                    ui.strong("Information");
+                    ui.separator();
+                    ui.label(format!(
+                        "Updated {} components",
+                        d.rows.iter().filter(|r| r.enabled).count()
+                    ));
+                    ui.label(format!(
+                        "In {} Schematic Documents",
+                        d.rows
+                            .iter()
+                            .filter(|r| r.enabled && d.sheets[r.sheet].enabled)
+                            .map(|r| r.sheet)
+                            .collect::<std::collections::BTreeSet<_>>()
+                            .len()
+                    ));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button("OK").clicked() {
+                            close = true;
+                        }
+                    });
+                },
+            );
             close |= ctx.input_mut(|i| {
                 i.consume_key(egui::Modifiers::NONE, Key::Escape)
                     || i.consume_key(egui::Modifiers::NONE, Key::Enter)
@@ -1065,7 +1069,7 @@ impl PcbCraft {
         let mut finish = false;
         let mut validate = false;
         let mut execute = false;
-        egui::Modal::new(egui::Id::new("library_update_wizard")).backdrop_color(Color32::TRANSPARENT).frame(egui::Frame::window(&ctx.style()).corner_radius(0)).show(ctx,|ui|{
+        egui::Modal::new(egui::Id::new("library_update_wizard")).backdrop_color(Color32::TRANSPARENT).frame(egui::Frame::window(&ctx.style()).corner_radius(0)).show_stable(ctx, (ctx.screen_rect().width()-48.).clamp(600.,if d.page==2 {1065.} else {990.}),|ui|{
             ui.set_width((ctx.screen_rect().width()-48.).clamp(600.,if d.page==2 {1065.} else {990.}));
             ui.horizontal(|ui|{ui.strong(if d.page==2{"Engineering Change Order"}else{"Update From Library"});ui.with_layout(egui::Layout::right_to_left(egui::Align::Center),|ui|{if ui.small_button("×").clicked(){close=true;}});});
             ui.separator();
@@ -1118,143 +1122,154 @@ impl PcbCraft {
             });
         });
         if d.advanced {
-            egui::Modal::new(egui::Id::new("library_update_advanced")).show(ctx, |ui| {
-                ui.set_width(670.);
-                ui.strong("Library Update Settings");
-                ui.separator();
-                ui.columns(2, |columns| {
-                    let ui = &mut columns[0];
-                    ui.strong("Parameter Settings");
-                    ui.add_enabled_ui(d.options.parameters, |ui| {
-                        ui.horizontal(|ui| {
-                            ui.label("Library parameters not in sheet:");
-                            egui::ComboBox::from_id_salt("update_add_parameters")
-                                .selected_text(if d.options.add_parameters {
-                                    "Add"
-                                } else {
-                                    "Do not add"
-                                })
-                                .show_ui(ui, |ui| {
-                                    ui.selectable_value(&mut d.options.add_parameters, true, "Add");
-                                    ui.selectable_value(
-                                        &mut d.options.add_parameters,
-                                        false,
-                                        "Do not add",
-                                    );
-                                    ui.add_enabled(false, egui::Button::new("Add if not blank"));
-                                });
-                        });
-                        ui.horizontal(|ui| {
-                            ui.label("Sheet parameters not in library:");
-                            egui::ComboBox::from_id_salt("update_remove_parameters")
-                                .selected_text(if d.options.remove_parameters {
-                                    "Remove"
-                                } else {
-                                    "Do not remove"
-                                })
-                                .show_ui(ui, |ui| {
-                                    ui.selectable_value(
-                                        &mut d.options.remove_parameters,
-                                        true,
-                                        "Remove",
-                                    );
-                                    ui.selectable_value(
-                                        &mut d.options.remove_parameters,
-                                        false,
-                                        "Do not remove",
-                                    );
-                                });
-                        });
-                        ui.add_space(12.);
-                        ui.label("Parameters to update:");
-                        let mut names = std::collections::BTreeSet::new();
-                        for r in &d.rows {
-                            if let Ok(f) = &r.definition {
-                                let c = d.sheets[r.sheet]
-                                    .model
-                                    .schematic
-                                    .as_ref()
-                                    .unwrap()
-                                    .components
-                                    .iter()
-                                    .find(|c| c.id == r.component)
-                                    .unwrap();
-                                if let Ok(changes) = update::parameter_changes(c, f) {
-                                    names.extend(changes.into_iter().map(|c| c.name));
+            egui::Modal::new(egui::Id::new("library_update_advanced")).show_stable(
+                ctx,
+                670.,
+                |ui| {
+                    ui.set_width(670.);
+                    ui.strong("Library Update Settings");
+                    ui.separator();
+                    ui.columns(2, |columns| {
+                        let ui = &mut columns[0];
+                        ui.strong("Parameter Settings");
+                        ui.add_enabled_ui(d.options.parameters, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.label("Library parameters not in sheet:");
+                                egui::ComboBox::from_id_salt("update_add_parameters")
+                                    .selected_text(if d.options.add_parameters {
+                                        "Add"
+                                    } else {
+                                        "Do not add"
+                                    })
+                                    .show_ui(ui, |ui| {
+                                        ui.selectable_value(
+                                            &mut d.options.add_parameters,
+                                            true,
+                                            "Add",
+                                        );
+                                        ui.selectable_value(
+                                            &mut d.options.add_parameters,
+                                            false,
+                                            "Do not add",
+                                        );
+                                        ui.add_enabled(
+                                            false,
+                                            egui::Button::new("Add if not blank"),
+                                        );
+                                    });
+                            });
+                            ui.horizontal(|ui| {
+                                ui.label("Sheet parameters not in library:");
+                                egui::ComboBox::from_id_salt("update_remove_parameters")
+                                    .selected_text(if d.options.remove_parameters {
+                                        "Remove"
+                                    } else {
+                                        "Do not remove"
+                                    })
+                                    .show_ui(ui, |ui| {
+                                        ui.selectable_value(
+                                            &mut d.options.remove_parameters,
+                                            true,
+                                            "Remove",
+                                        );
+                                        ui.selectable_value(
+                                            &mut d.options.remove_parameters,
+                                            false,
+                                            "Do not remove",
+                                        );
+                                    });
+                            });
+                            ui.add_space(12.);
+                            ui.label("Parameters to update:");
+                            let mut names = std::collections::BTreeSet::new();
+                            for r in &d.rows {
+                                if let Ok(f) = &r.definition {
+                                    let c = d.sheets[r.sheet]
+                                        .model
+                                        .schematic
+                                        .as_ref()
+                                        .unwrap()
+                                        .components
+                                        .iter()
+                                        .find(|c| c.id == r.component)
+                                        .unwrap();
+                                    if let Ok(changes) = update::parameter_changes(c, f) {
+                                        names.extend(changes.into_iter().map(|c| c.name));
+                                    }
                                 }
                             }
+                            egui::Grid::new("library_update_advanced_parameters")
+                                .striped(true)
+                                .min_col_width(120.)
+                                .show(ui, |ui| {
+                                    ui.label("Parameter");
+                                    ui.label("Update");
+                                    ui.end_row();
+                                    for name in names {
+                                        let mut enabled =
+                                            !d.options.excluded_parameters.contains(&name);
+                                        ui.label(&name);
+                                        if ui.checkbox(&mut enabled, "").changed() {
+                                            if enabled {
+                                                d.options.excluded_parameters.remove(&name);
+                                            } else {
+                                                d.options.excluded_parameters.insert(name);
+                                            }
+                                        }
+                                        ui.end_row();
+                                    }
+                                });
+                        });
+                        let ui = &mut columns[1];
+                        ui.strong("Model Settings");
+                        for label in [
+                            "Add models found in library but not in sheet",
+                            "Remove models found in sheet but not in library",
+                            "Update which models are the current models",
+                        ] {
+                            ui.add_enabled(false, egui::Checkbox::new(&mut true, label));
                         }
-                        egui::Grid::new("library_update_advanced_parameters")
+                        ui.label("Models to update:");
+                        egui::Grid::new("library_update_advanced_models")
                             .striped(true)
                             .min_col_width(120.)
                             .show(ui, |ui| {
-                                ui.label("Parameter");
+                                ui.label("Model Name");
                                 ui.label("Update");
                                 ui.end_row();
-                                for name in names {
-                                    let mut enabled =
-                                        !d.options.excluded_parameters.contains(&name);
-                                    ui.label(&name);
-                                    if ui.checkbox(&mut enabled, "").changed() {
-                                        if enabled {
-                                            d.options.excluded_parameters.remove(&name);
-                                        } else {
-                                            d.options.excluded_parameters.insert(name);
-                                        }
+                                let mut names = std::collections::BTreeSet::new();
+                                for r in &d.rows {
+                                    if let Ok(f) = &r.definition {
+                                        names.extend(
+                                            f.components[0]
+                                                .settings
+                                                .models
+                                                .iter()
+                                                .map(|m| m.name.clone()),
+                                        );
                                     }
+                                }
+                                for name in names {
+                                    ui.label(name);
+                                    ui.add_enabled(false, egui::Checkbox::without_text(&mut true));
                                     ui.end_row();
                                 }
                             });
                     });
-                    let ui = &mut columns[1];
-                    ui.strong("Model Settings");
-                    for label in [
-                        "Add models found in library but not in sheet",
-                        "Remove models found in sheet but not in library",
-                        "Update which models are the current models",
-                    ] {
-                        ui.add_enabled(false, egui::Checkbox::new(&mut true, label));
-                    }
-                    ui.label("Models to update:");
-                    egui::Grid::new("library_update_advanced_models")
-                        .striped(true)
-                        .min_col_width(120.)
-                        .show(ui, |ui| {
-                            ui.label("Model Name");
-                            ui.label("Update");
-                            ui.end_row();
-                            let mut names = std::collections::BTreeSet::new();
-                            for r in &d.rows {
-                                if let Ok(f) = &r.definition {
-                                    names.extend(
-                                        f.components[0]
-                                            .settings
-                                            .models
-                                            .iter()
-                                            .map(|m| m.name.clone()),
-                                    );
-                                }
-                            }
-                            for name in names {
-                                ui.label(name);
-                                ui.add_enabled(false, egui::Checkbox::without_text(&mut true));
-                                ui.end_row();
-                            }
-                        });
-                });
-                ui.add_space(250.);
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("OK").clicked() {
-                        d.advanced = false;
-                    }
-                });
-            });
+                    ui.add_space(250.);
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button("OK").clicked() {
+                            d.advanced = false;
+                        }
+                    });
+                },
+            );
         }
         if d.parameters {
             parameters::show(ctx, &mut d);
         }
         if d.report {
-            egui::Modal::new(egui::Id::new("library_update_report")).show(ctx, |ui| {
+            egui::Modal::new(egui::Id::new("library_update_report")).show_stable(ctx, 950., |ui| {
                 ui.set_width(950.);
                 ui.strong("Engineering Change Order Report");
                 let mut report =

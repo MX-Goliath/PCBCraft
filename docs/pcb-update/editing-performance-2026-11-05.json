@@ -1,0 +1,1011 @@
+{
+  "date": "2026-11-05",
+  "platform": "Windows x86_64, Rust 1.90, development profile opt-level 2",
+  "conditions": [
+    "Reference labels anonymize local research inputs; no research source was written.",
+    "Matched baseline/final route probe: --varied, 60 endpoints alternating five offsets from the first netted Top pad, default conflict mode; 1000x800 CPU canvas and tessellation, without GPU execution or presentation.",
+    "Combined route samples include endpoint picking, preview calculation, publication and canvas; one cold first preview is included. Session preparation and loading are separate.",
+    "The separately labeled regular runs use small n*1000 nm vertical offsets and a different number of route legs; compare baseline only with final varied runs, not with regular exploratory observations.",
+    "Baseline and intermediate runs overlapped compiler work. Final probes ran serially after compilation; CPU frequency and other system activity were uncontrolled.",
+    "Interaction probe: 12 samples per operation; full/prepared model transactions in one executable, exact final Board equality, no renderer. Preparation is separate.",
+    "These small workloads do not establish general frame rate, end-to-end input latency or exact Altium parity."
+  ],
+  "routing": {
+    "ReferencePolygonA": {
+      "baseline": {
+        "phases": {
+          "target": {
+            "median_ms": 1.8581,
+            "p95_ms": 2.2506,
+            "max_ms": 6.6774,
+            "first_ms": 2.0255,
+            "over_16_7ms": 0.0,
+            "over_33ms": 0.0
+          },
+          "model": {
+            "median_ms": 14.7218,
+            "p95_ms": 15.9982,
+            "max_ms": 71.5393,
+            "first_ms": 71.5393,
+            "over_16_7ms": 2.0,
+            "over_33ms": 1.0
+          },
+          "publish": {
+            "median_ms": 0.0004,
+            "p95_ms": 0.0008,
+            "max_ms": 0.007,
+            "first_ms": 0.007,
+            "over_16_7ms": 0.0,
+            "over_33ms": 0.0
+          },
+          "canvas+tessellate": {
+            "median_ms": 5.2595,
+            "p95_ms": 8.4741,
+            "max_ms": 57.7705,
+            "first_ms": 57.7705,
+            "over_16_7ms": 1.0,
+            "over_33ms": 1.0
+          },
+          "combined": {
+            "median_ms": 22.0497,
+            "p95_ms": 25.5634,
+            "max_ms": 131.3446,
+            "first_ms": 131.3446,
+            "over_16_7ms": 59.0,
+            "over_33ms": 1.0
+          }
+        }
+      },
+      "intermediate_regular_with_compiler": {
+        "load_ms": 2240.495,
+        "begin_ms": 1124.212,
+        "phases": {
+          "target": {
+            "median_ms": 0.023,
+            "p95_ms": 0.0302,
+            "max_ms": 0.0566,
+            "first_ms": 0.0302,
+            "over_16_7ms": 0.0,
+            "over_33ms": 0.0
+          },
+          "model": {
+            "median_ms": 8.2752,
+            "p95_ms": 15.3484,
+            "max_ms": 74.2968,
+            "first_ms": 74.2968,
+            "over_16_7ms": 2.0,
+            "over_33ms": 1.0
+          },
+          "publish": {
+            "median_ms": 0.0026,
+            "p95_ms": 0.0038,
+            "max_ms": 0.2614,
+            "first_ms": 0.0015,
+            "over_16_7ms": 0.0,
+            "over_33ms": 0.0
+          },
+          "canvas+tessellate": {
+            "median_ms": 7.1101,
+            "p95_ms": 20.63,
+            "max_ms": 54.6148,
+            "first_ms": 54.6148,
+            "over_16_7ms": 24.0,
+            "over_33ms": 1.0
+          },
+          "combined": {
+            "median_ms": 20.893,
+            "p95_ms": 28.5132,
+            "max_ms": 128.9454,
+            "first_ms": 128.9454,
+            "over_16_7ms": 47.0,
+            "over_33ms": 1.0
+          }
+        }
+      },
+      "final_regular": {
+        "load_ms": 2197.667,
+        "begin_ms": 1024.429,
+        "phases": {
+          "target": {
+            "median_ms": 0.0251,
+            "p95_ms": 0.0566,
+            "max_ms": 0.1012,
+            "first_ms": 0.1012,
+            "over_16_7ms": 0.0,
+            "over_33ms": 0.0
+          },
+          "model": {
+            "median_ms": 8.3115,
+            "p95_ms": 17.2725,
+            "max_ms": 98.809,
+            "first_ms": 98.809,
+            "over_16_7ms": 4.0,
+            "over_33ms": 1.0
+          },
+          "publish": {
+            "median_ms": 0.0012,
+            "p95_ms": 0.0023,
+            "max_ms": 0.0201,
+            "first_ms": 0.0015,
+            "over_16_7ms": 0.0,
+            "over_33ms": 0.0
+          },
+          "canvas+tessellate": {
+            "median_ms": 7.9107,
+            "p95_ms": 22.9206,
+            "max_ms": 60.3172,
+            "first_ms": 60.3172,
+            "over_16_7ms": 19.0,
+            "over_33ms": 1.0
+          },
+          "combined": {
+            "median_ms": 22.115,
+            "p95_ms": 31.3522,
+            "max_ms": 159.2329,
+            "first_ms": 159.2329,
+            "over_16_7ms": 41.0,
+            "over_33ms": 2.0
+          }
+        }
+      },
+      "final": {
+        "load_ms": 2172.95,
+        "begin_ms": 1021.067,
+        "phases": {
+          "target": {
+            "median_ms": 0.0204,
+            "p95_ms": 0.0371,
+            "max_ms": 0.0571,
+            "first_ms": 0.0255,
+            "over_16_7ms": 0.0,
+            "over_33ms": 0.0
+          },
+          "model": {
+            "median_ms": 9.3286,
+            "p95_ms": 11.0475,
+            "max_ms": 67.2198,
+            "first_ms": 67.2198,
+            "over_16_7ms": 1.0,
+            "over_33ms": 1.0
+          },
+          "publish": {
+            "median_ms": 0.0011,
+            "p95_ms": 0.0023,
+            "max_ms": 0.0026,
+            "first_ms": 0.0015,
+            "over_16_7ms": 0.0,
+            "over_33ms": 0.0
+          },
+          "canvas+tessellate": {
+            "median_ms": 6.9576,
+            "p95_ms": 8.3228,
+            "max_ms": 56.3793,
+            "first_ms": 56.3793,
+            "over_16_7ms": 1.0,
+            "over_33ms": 1.0
+          },
+          "combined": {
+            "median_ms": 16.057,
+            "p95_ms": 17.9064,
+            "max_ms": 123.6284,
+            "first_ms": 123.6284,
+            "over_16_7ms": 19.0,
+            "over_33ms": 1.0
+          }
+        }
+      }
+    },
+    "ReferencePolygonB": {
+      "baseline": {
+        "load_ms": 12372.27,
+        "begin_ms": 276.981,
+        "phases": {
+          "target": {
+            "median_ms": 13.5689,
+            "p95_ms": 15.5468,
+            "max_ms": 18.6613,
+            "first_ms": 13.4613,
+            "over_16_7ms": 1.0,
+            "over_33ms": 0.0
+          },
+          "model": {
+            "median_ms": 0.066,
+            "p95_ms": 0.0915,
+            "max_ms": 92.3349,
+            "first_ms": 92.3349,
+            "over_16_7ms": 1.0,
+            "over_33ms": 1.0
+          },
+          "publish": {
+            "median_ms": 0.0007,
+            "p95_ms": 0.0011,
+            "max_ms": 0.0038,
+            "first_ms": 0.0038,
+            "over_16_7ms": 0.0,
+            "over_33ms": 0.0
+          },
+          "canvas+tessellate": {
+            "median_ms": 1.8755,
+            "p95_ms": 20.0252,
+            "max_ms": 89.0185,
+            "first_ms": 89.0185,
+            "over_16_7ms": 21.0,
+            "over_33ms": 1.0
+          },
+          "combined": {
+            "median_ms": 15.814,
+            "p95_ms": 34.1364,
+            "max_ms": 194.8257,
+            "first_ms": 194.8257,
+            "over_16_7ms": 24.0,
+            "over_33ms": 9.0
+          }
+        }
+      },
+      "intermediate_regular_with_compiler": {
+        "load_ms": 13324.575,
+        "begin_ms": 439.447,
+        "phases": {
+          "target": {
+            "median_ms": 0.0055,
+            "p95_ms": 0.0089,
+            "max_ms": 0.0125,
+            "first_ms": 0.0125,
+            "over_16_7ms": 0.0,
+            "over_33ms": 0.0
+          },
+          "model": {
+            "median_ms": 0.0561,
+            "p95_ms": 0.093,
+            "max_ms": 103.78,
+            "first_ms": 103.78,
+            "over_16_7ms": 1.0,
+            "over_33ms": 1.0
+          },
+          "publish": {
+            "median_ms": 0.0007,
+            "p95_ms": 0.0013,
+            "max_ms": 0.0016,
+            "first_ms": 0.0016,
+            "over_16_7ms": 0.0,
+            "over_33ms": 0.0
+          },
+          "canvas+tessellate": {
+            "median_ms": 2.5541,
+            "p95_ms": 3.5265,
+            "max_ms": 73.8569,
+            "first_ms": 73.8569,
+            "over_16_7ms": 1.0,
+            "over_33ms": 1.0
+          },
+          "combined": {
+            "median_ms": 2.6149,
+            "p95_ms": 3.587,
+            "max_ms": 177.6678,
+            "first_ms": 177.6678,
+            "over_16_7ms": 1.0,
+            "over_33ms": 1.0
+          }
+        }
+      },
+      "final_regular": {
+        "load_ms": 12667.986,
+        "begin_ms": 390.269,
+        "phases": {
+          "target": {
+            "median_ms": 0.0056,
+            "p95_ms": 0.0106,
+            "max_ms": 0.0297,
+            "first_ms": 0.0141,
+            "over_16_7ms": 0.0,
+            "over_33ms": 0.0
+          },
+          "model": {
+            "median_ms": 0.0612,
+            "p95_ms": 0.1265,
+            "max_ms": 186.1997,
+            "first_ms": 186.1997,
+            "over_16_7ms": 1.0,
+            "over_33ms": 1.0
+          },
+          "publish": {
+            "median_ms": 0.0007,
+            "p95_ms": 0.0017,
+            "max_ms": 0.0025,
+            "first_ms": 0.0017,
+            "over_16_7ms": 0.0,
+            "over_33ms": 0.0
+          },
+          "canvas+tessellate": {
+            "median_ms": 2.8639,
+            "p95_ms": 4.2623,
+            "max_ms": 74.14,
+            "first_ms": 74.14,
+            "over_16_7ms": 1.0,
+            "over_33ms": 1.0
+          },
+          "combined": {
+            "median_ms": 2.9204,
+            "p95_ms": 4.3692,
+            "max_ms": 260.361,
+            "first_ms": 260.361,
+            "over_16_7ms": 1.0,
+            "over_33ms": 1.0
+          }
+        }
+      },
+      "final": {
+        "load_ms": 13192.003,
+        "begin_ms": 391.351,
+        "phases": {
+          "target": {
+            "median_ms": 0.0051,
+            "p95_ms": 0.0094,
+            "max_ms": 0.024,
+            "first_ms": 0.0131,
+            "over_16_7ms": 0.0,
+            "over_33ms": 0.0
+          },
+          "model": {
+            "median_ms": 0.0549,
+            "p95_ms": 0.1222,
+            "max_ms": 105.8793,
+            "first_ms": 105.8793,
+            "over_16_7ms": 1.0,
+            "over_33ms": 1.0
+          },
+          "publish": {
+            "median_ms": 0.0005,
+            "p95_ms": 0.0014,
+            "max_ms": 0.0019,
+            "first_ms": 0.0012,
+            "over_16_7ms": 0.0,
+            "over_33ms": 0.0
+          },
+          "canvas+tessellate": {
+            "median_ms": 2.5595,
+            "p95_ms": 4.1521,
+            "max_ms": 71.3814,
+            "first_ms": 71.3814,
+            "over_16_7ms": 1.0,
+            "over_33ms": 1.0
+          },
+          "combined": {
+            "median_ms": 2.6226,
+            "p95_ms": 4.2145,
+            "max_ms": 177.2776,
+            "first_ms": 177.2776,
+            "over_16_7ms": 1.0,
+            "over_33ms": 1.0
+          }
+        }
+      }
+    }
+  },
+  "interaction": {
+    "ReferencePolygonA": {
+      "move_prepare_ms": 119.386,
+      "connected-drag_prepare_ms": 122.389,
+      "placement_prepare_ms": 117.416,
+      "phases": {
+        "move-full": {
+          "median_ms": 127.0483,
+          "p95_ms": 151.4021,
+          "max_ms": 174.8462
+        },
+        "move-prepared": {
+          "median_ms": 0.0682,
+          "p95_ms": 0.165,
+          "max_ms": 0.4064
+        },
+        "connected-drag-full": {
+          "median_ms": 194.7244,
+          "p95_ms": 198.648,
+          "max_ms": 206.9634
+        },
+        "connected-drag-prepared": {
+          "median_ms": 0.0615,
+          "p95_ms": 0.1316,
+          "max_ms": 0.3394
+        },
+        "placement-full": {
+          "median_ms": 124.1951,
+          "p95_ms": 129.0909,
+          "max_ms": 136.3999
+        },
+        "placement-prepared": {
+          "median_ms": 0.0004,
+          "p95_ms": 0.0022,
+          "max_ms": 2.5618
+        }
+      },
+      "geometry_matches_full_transactions": true
+    },
+    "ReferencePolygonB": {
+      "move_prepare_ms": 85.858,
+      "connected-drag_prepare_ms": 90.507,
+      "placement_prepare_ms": 100.817,
+      "phases": {
+        "move-full": {
+          "median_ms": 103.888,
+          "p95_ms": 117.2478,
+          "max_ms": 117.7429
+        },
+        "move-prepared": {
+          "median_ms": 0.0254,
+          "p95_ms": 0.0437,
+          "max_ms": 0.1464
+        },
+        "connected-drag-full": {
+          "median_ms": 104.2085,
+          "p95_ms": 113.6611,
+          "max_ms": 120.1368
+        },
+        "connected-drag-prepared": {
+          "median_ms": 0.0253,
+          "p95_ms": 0.0446,
+          "max_ms": 0.1668
+        },
+        "placement-full": {
+          "median_ms": 102.2498,
+          "p95_ms": 103.9552,
+          "max_ms": 107.0391
+        },
+        "placement-prepared": {
+          "median_ms": 0.0005,
+          "p95_ms": 0.0145,
+          "max_ms": 1.8541
+        }
+      },
+      "geometry_matches_full_transactions": true
+    }
+  },
+  "buffered_json": {
+    "input_size_mb_approx": 107,
+    "unbuffered_load_ms": 176074.392,
+    "baseline_varied": {
+      "load_ms": 176074.392,
+      "begin_ms": 975.613,
+      "phases": {
+        "target": {
+          "median_ms": 1.8499,
+          "p95_ms": 2.4064,
+          "max_ms": 2.9843,
+          "first_ms": 1.9801,
+          "over_16_7ms": 0.0,
+          "over_33ms": 0.0
+        },
+        "model": {
+          "median_ms": 15.639,
+          "p95_ms": 17.9124,
+          "max_ms": 66.8468,
+          "first_ms": 66.8468,
+          "over_16_7ms": 8.0,
+          "over_33ms": 2.0
+        },
+        "publish": {
+          "median_ms": 0.0005,
+          "p95_ms": 0.0014,
+          "max_ms": 0.0023,
+          "first_ms": 0.0023,
+          "over_16_7ms": 0.0,
+          "over_33ms": 0.0
+        },
+        "canvas+tessellate": {
+          "median_ms": 8.6648,
+          "p95_ms": 11.0748,
+          "max_ms": 72.7312,
+          "first_ms": 72.7312,
+          "over_16_7ms": 1.0,
+          "over_33ms": 1.0
+        },
+        "combined": {
+          "median_ms": 26.184,
+          "p95_ms": 30.7252,
+          "max_ms": 141.5622,
+          "first_ms": 141.5622,
+          "over_16_7ms": 60.0,
+          "over_33ms": 3.0
+        }
+      }
+    },
+    "intermediate": {
+      "load_ms": 1386.755,
+      "begin_ms": 1126.655,
+      "phases": {
+        "target": {
+          "median_ms": 0.0218,
+          "p95_ms": 0.0376,
+          "max_ms": 0.0478,
+          "first_ms": 0.0478,
+          "over_16_7ms": 0.0,
+          "over_33ms": 0.0
+        },
+        "model": {
+          "median_ms": 8.1174,
+          "p95_ms": 9.6601,
+          "max_ms": 63.4761,
+          "first_ms": 63.4761,
+          "over_16_7ms": 1.0,
+          "over_33ms": 1.0
+        },
+        "publish": {
+          "median_ms": 0.001,
+          "p95_ms": 0.0016,
+          "max_ms": 0.0017,
+          "first_ms": 0.0015,
+          "over_16_7ms": 0.0,
+          "over_33ms": 0.0
+        },
+        "canvas+tessellate": {
+          "median_ms": 9.5305,
+          "p95_ms": 10.9399,
+          "max_ms": 81.1833,
+          "first_ms": 81.1833,
+          "over_16_7ms": 1.0,
+          "over_33ms": 1.0
+        },
+        "combined": {
+          "median_ms": 17.6461,
+          "p95_ms": 20.1728,
+          "max_ms": 144.7112,
+          "first_ms": 144.7112,
+          "over_16_7ms": 48.0,
+          "over_33ms": 1.0
+        }
+      }
+    },
+    "final_regular": {
+      "load_ms": 1393.682,
+      "begin_ms": 1067.401,
+      "phases": {
+        "target": {
+          "median_ms": 0.0221,
+          "p95_ms": 0.0434,
+          "max_ms": 0.1664,
+          "first_ms": 0.1306,
+          "over_16_7ms": 0.0,
+          "over_33ms": 0.0
+        },
+        "model": {
+          "median_ms": 7.7027,
+          "p95_ms": 8.3687,
+          "max_ms": 68.2386,
+          "first_ms": 68.2386,
+          "over_16_7ms": 1.0,
+          "over_33ms": 1.0
+        },
+        "publish": {
+          "median_ms": 0.0011,
+          "p95_ms": 0.0022,
+          "max_ms": 0.0161,
+          "first_ms": 0.0104,
+          "over_16_7ms": 0.0,
+          "over_33ms": 0.0
+        },
+        "canvas+tessellate": {
+          "median_ms": 9.6102,
+          "p95_ms": 10.6111,
+          "max_ms": 82.5984,
+          "first_ms": 82.5984,
+          "over_16_7ms": 1.0,
+          "over_33ms": 1.0
+        },
+        "combined": {
+          "median_ms": 17.3972,
+          "p95_ms": 18.5765,
+          "max_ms": 150.9998,
+          "first_ms": 150.9998,
+          "over_16_7ms": 60.0,
+          "over_33ms": 1.0
+        }
+      }
+    },
+    "final": {
+      "load_ms": 1404.321,
+      "begin_ms": 1089.964,
+      "phases": {
+        "target": {
+          "median_ms": 0.0218,
+          "p95_ms": 0.038,
+          "max_ms": 0.0869,
+          "first_ms": 0.0869,
+          "over_16_7ms": 0.0,
+          "over_33ms": 0.0
+        },
+        "model": {
+          "median_ms": 10.2058,
+          "p95_ms": 11.9073,
+          "max_ms": 67.6174,
+          "first_ms": 67.6174,
+          "over_16_7ms": 1.0,
+          "over_33ms": 1.0
+        },
+        "publish": {
+          "median_ms": 0.001,
+          "p95_ms": 0.0017,
+          "max_ms": 0.002,
+          "first_ms": 0.0013,
+          "over_16_7ms": 0.0,
+          "over_33ms": 0.0
+        },
+        "canvas+tessellate": {
+          "median_ms": 9.2679,
+          "p95_ms": 10.2928,
+          "max_ms": 85.9726,
+          "first_ms": 85.9726,
+          "over_16_7ms": 1.0,
+          "over_33ms": 1.0
+        },
+        "combined": {
+          "median_ms": 19.5264,
+          "p95_ms": 21.3136,
+          "max_ms": 153.6809,
+          "first_ms": 153.6809,
+          "over_16_7ms": 59.0,
+          "over_33ms": 1.0
+        }
+      }
+    }
+  },
+  "validation": {
+    "formatting": "pass",
+    "strict_workspace_all_target_clippy": "pass",
+    "workspace_unit_tests_passed": 765,
+    "workspace_unit_tests_failed": 0,
+    "documentation_tests": "pass",
+    "windows_build": "pass",
+    "native_qa": [
+      "Current Windows exe: fixture component move with automatic pour, route preview/place/Finish, via preview/place, one Undo per operation.",
+      "ReferencePolygonA: component connected Drag, automatic 74-pour completion, one Undo to clean source state; Top-pad route preview and dismissal.",
+      "Research tab closed cleanly; app-created example discarded; sole GUI remains on clean editor-v2. No native research source saved."
+    ],
+    "limits": "CPU probes exclude GPU execution/presentation and panel/input scheduling. Cold command/preview and other complete-transaction paths remain limited."
+  },
+  "pointer_responsiveness": {
+    "conditions": [
+      "Matched pre-change and current locally built CPU probes, serially after compilation with the native GUI closed; 480 pointer positions, fixed 1000x800 canvas, 15 px/mm, --gpu callbacks without GPU execution.",
+      "System activity, CPU frequency and thermal conditions were not controlled. These samples exclude native panels, presentation and mouse-device latency.",
+      "The native app now requests desired_maximum_frame_latency=1 with default AutoVsync. The driver may clamp this request; no input-to-photon measurement or exact Altium latency claim."
+    ],
+    "cursor_sweep": {
+      "ReferencePolygonA": {
+        "before": {
+          "paint_mean_ms": 4.57,
+          "total_mean_ms": 6.16,
+          "p95_ms": 8.23,
+          "max_ms": 17.62,
+          "over_33ms": 0,
+          "samples": 480
+        },
+        "after": {
+          "paint_mean_ms": 4.1,
+          "total_mean_ms": 5.61,
+          "p95_ms": 6.87,
+          "max_ms": 8.35,
+          "over_33ms": 0,
+          "samples": 480
+        }
+      },
+      "ReferencePolygonB": {
+        "before": {
+          "paint_mean_ms": 1.2,
+          "total_mean_ms": 1.59,
+          "p95_ms": 2.39,
+          "max_ms": 3.87,
+          "over_33ms": 0,
+          "samples": 480
+        },
+        "after": {
+          "paint_mean_ms": 0.82,
+          "total_mean_ms": 1.14,
+          "p95_ms": 1.33,
+          "max_ms": 1.99,
+          "over_33ms": 0,
+          "samples": 480
+        }
+      }
+    },
+    "completed_offscreen_gpu_before_ReferencePolygonA": {
+      "backend": "Vulkan",
+      "median_ms": 6.62,
+      "p95_ms": 12.91,
+      "conditions": "Separate prior offscreen GPU probe; no native presentation or mouse latency."
+    },
+    "validation": {
+      "fmt": "pass",
+      "strict_workspace_all_target_clippy": "pass",
+      "workspace_unit_tests_passed": 766,
+      "native_window": "Windows unlocked: current sole GUI, Fit Board, raw cursor updates over empty/dense/edge locations; blocked/valid route preview and Escape cancellation to a clean document verified. No source saved; snapshots do not measure input-to-photon latency."
+    },
+    "native_mixed_cpu_batches": [
+      {
+        "samples": 120,
+        "median_ms": 9.42,
+        "p95_ms": 25.83,
+        "max_ms": 1106.6,
+        "conditions": "Mixed native CPU frames spanning cold route startup and preview, including idle, controller, panels and artwork work; excludes GPU presentation. Not a steady pointer-motion benchmark."
+      },
+      {
+        "samples": 120,
+        "median_ms": 9.2,
+        "p95_ms": 18.44,
+        "max_ms": 499.66,
+        "conditions": "Later mixed batch including route cancellation/redraw. Not a steady pointer-motion benchmark."
+      }
+    ]
+  },
+  "track_drag_followup": {
+    "reference": "ReferencePolygonA",
+    "items": 41475,
+    "conditions": [
+      "Windows optimized debug build. Cases run serially after compilation, with the GUI closed.",
+      "Full model timing is one complete transaction; prepared warm timing has 30 varied pointer requests and excludes construction, History and drawing.",
+      "Prepared first includes constructor, source validation/clones and initial obstacle environments.",
+      "New-route CPU probes include egui canvas/tessellation, but execute no GPU callbacks or native presentation. First samples are retained.",
+      "Free-space sampling requires a reachable 1mm escape and occurs outside measured begin. The final route is constructed afresh at the selected point.",
+      "Source files are read-only; no private geometry, net names or snapshots are stored in this report."
+    ],
+    "free_track_drag": {
+      "samples": 30,
+      "full_walkaround_model_ms": 6617.76,
+      "full_walkaround_result": "pass",
+      "prepared_first_including_construction_ms": 1086.77,
+      "first_constrained": false,
+      "prepared_warm_model_median_ms": 9.18,
+      "prepared_warm_model_p95_ms": 11.03,
+      "prepared_warm_model_max_ms": 11.06,
+      "equivalent_to_complete_transaction": true,
+      "commit_undo_exact_source": true
+    },
+    "constrained_track_drag": {
+      "samples": 30,
+      "full_walkaround_model_ms": null,
+      "full_walkaround_result": "blocked",
+      "prepared_first_including_construction_ms": 1027.53,
+      "first_constrained": true,
+      "prepared_warm_model_median_ms": 9.62,
+      "prepared_warm_model_p95_ms": 36.16,
+      "prepared_warm_model_max_ms": 61.3,
+      "equivalent_to_complete_transaction": false,
+      "commit_undo_exact_source": true
+    },
+    "new_no_net_route": {
+      "samples": 60,
+      "begin_ms": 1081.608,
+      "previewed_legs": 96,
+      "commit_undo_and_reopen": "pass",
+      "target": {
+        "median_ms": 0.0118,
+        "p95_ms": 0.0301,
+        "max_ms": 0.0397,
+        "first_ms": 0.0124
+      },
+      "model": {
+        "median_ms": 0.0612,
+        "p95_ms": 7.7148,
+        "max_ms": 59.95,
+        "first_ms": 59.95
+      },
+      "publish": {
+        "median_ms": 0.0011,
+        "p95_ms": 0.0029,
+        "max_ms": 0.003,
+        "first_ms": 0.0029
+      },
+      "canvas+tessellate": {
+        "median_ms": 7.5747,
+        "p95_ms": 10.2265,
+        "max_ms": 57.7004,
+        "first_ms": 57.7004
+      },
+      "combined": {
+        "median_ms": 8.2596,
+        "p95_ms": 15.6975,
+        "max_ms": 117.6719,
+        "first_ms": 117.6719
+      }
+    },
+    "new_assigned_route": {
+      "samples": 60,
+      "begin_ms": 1209.307,
+      "previewed_legs": 60,
+      "commit_undo_and_reopen": "pass",
+      "target": {
+        "median_ms": 0.0235,
+        "p95_ms": 0.0434,
+        "max_ms": 0.0901,
+        "first_ms": 0.0901
+      },
+      "model": {
+        "median_ms": 10.6236,
+        "p95_ms": 20.3841,
+        "max_ms": 72.4584,
+        "first_ms": 72.4584
+      },
+      "publish": {
+        "median_ms": 0.0015,
+        "p95_ms": 0.0037,
+        "max_ms": 0.0042,
+        "first_ms": 0.0018
+      },
+      "canvas+tessellate": {
+        "median_ms": 8.3295,
+        "p95_ms": 25.555,
+        "max_ms": 63.2691,
+        "first_ms": 63.2691
+      },
+      "combined": {
+        "median_ms": 20.6578,
+        "p95_ms": 35.81,
+        "max_ms": 135.8274,
+        "first_ms": 135.8274
+      }
+    },
+    "validation": {
+      "fmt": "pass",
+      "strict_workspace_all_target_clippy": "pass",
+      "workspace_unit_tests_passed": 773,
+      "native_window": "15:38 native Windows build: connected track body drag and new route preview/place/finish passed; each test operation undone once; existing user unsaved edits preserved. Cold-start follow-up not included in this checkpoint."
+    },
+    "limits": [
+      "First preparation still takes about one second on this input.",
+      "Constraint refinement and bounded walkaround can exceed a frame budget; no universal native input latency or Altium equivalence guarantee.",
+      "No-net and multi-net connected Drag retain complete transactions."
+    ]
+  },
+  "cold_start_followup": {
+    "reference": "ReferencePolygonA",
+    "items": 41475,
+    "conditions": [
+      "Serial optimized-debug probes after compilation; the previous native GUI stayed open and idle to preserve user unsaved edits.",
+      "No compiler ran during probes. CPU scheduling/frequency and thermals uncontrolled; earlier GUI-closed timings are a separate checkpoint.",
+      "First connected drag includes construction; warm samples exclude History and drawing. New-route CPU probes exclude GPU execution and native presentation.",
+      "Source bytes are checked unchanged; private geometry, names and snapshots are excluded."
+    ],
+    "free_track_drag": {
+      "samples": 30,
+      "full_walkaround_model_ms": 1892.8,
+      "full_walkaround_result": "pass",
+      "prepared_first_including_construction_ms": 367.51,
+      "first_constrained": false,
+      "prepared_warm_model_median_ms": 7.02,
+      "prepared_warm_model_p95_ms": 8.51,
+      "prepared_warm_model_max_ms": 9.25,
+      "equivalent_to_complete_transaction": true,
+      "commit_undo_exact_source": true
+    },
+    "constrained_track_drag": {
+      "samples": 30,
+      "full_walkaround_model_ms": null,
+      "full_walkaround_result": "blocked",
+      "prepared_first_including_construction_ms": 390.5,
+      "first_constrained": true,
+      "prepared_warm_model_median_ms": 7.2,
+      "prepared_warm_model_p95_ms": 29.99,
+      "prepared_warm_model_max_ms": 53.11,
+      "equivalent_to_complete_transaction": false,
+      "commit_undo_exact_source": true
+    },
+    "new_assigned_route": {
+      "samples": 60,
+      "begin_ms": 344.184,
+      "previewed_legs": 60,
+      "commit_undo_and_reopen": "pass",
+      "target": {
+        "median_ms": 0.0204,
+        "p95_ms": 0.0408,
+        "max_ms": 0.1204,
+        "first_ms": 0.1204
+      },
+      "model": {
+        "median_ms": 10.6462,
+        "p95_ms": 18.1734,
+        "max_ms": 63.8537,
+        "first_ms": 63.8537
+      },
+      "publish": {
+        "median_ms": 0.0008,
+        "p95_ms": 0.0015,
+        "max_ms": 0.0022,
+        "first_ms": 0.0015
+      },
+      "canvas+tessellate": {
+        "median_ms": 7.4513,
+        "p95_ms": 21.3722,
+        "max_ms": 53.2487,
+        "first_ms": 53.2487
+      },
+      "combined": {
+        "median_ms": 23.3816,
+        "p95_ms": 32.0509,
+        "max_ms": 117.2442,
+        "first_ms": 117.2442
+      }
+    },
+    "new_no_net_route": {
+      "samples": 60,
+      "begin_ms": 345.854,
+      "previewed_legs": 96,
+      "commit_undo_and_reopen": "pass",
+      "target": {
+        "median_ms": 0.0086,
+        "p95_ms": 0.0218,
+        "max_ms": 0.0697,
+        "first_ms": 0.0273
+      },
+      "model": {
+        "median_ms": 0.0446,
+        "p95_ms": 6.4842,
+        "max_ms": 54.802,
+        "first_ms": 54.802
+      },
+      "publish": {
+        "median_ms": 0.0007,
+        "p95_ms": 0.0014,
+        "max_ms": 0.0032,
+        "first_ms": 0.0014
+      },
+      "canvas+tessellate": {
+        "median_ms": 6.3989,
+        "p95_ms": 7.9422,
+        "max_ms": 51.3352,
+        "first_ms": 51.3352
+      },
+      "combined": {
+        "median_ms": 6.8051,
+        "p95_ms": 13.3157,
+        "max_ms": 106.1936,
+        "first_ms": 106.1936
+      }
+    },
+    "diagnostic_profile": {
+      "condition": "Separate assigned-net run with phase profiling enabled; instrumentation overhead included.",
+      "obstacles": 4036,
+      "bound_keys": 7,
+      "gap_bound_ms": 0.454,
+      "pair_rules_ms": 128.065,
+      "geometry_ms": 69.259,
+      "environment_total_ms": 202.163,
+      "begin_total_ms": 391.546
+    },
+    "validation": {
+      "fmt": "pass",
+      "strict_workspace_all_target_clippy": "pass",
+      "workspace_tests": "pass",
+      "windows_build": "pass",
+      "native_latest": "pass: sole 16:17 Windows build on ReferencePolygonA; assigned-net cold start, two moving previews, place/finish/Undo; free and obstacle-constrained connected body drags and each Undo; clean title and ordinary selection restored. Previous session discarded only after explicit user authorization.",
+      "workspace_unit_tests_passed": 775,
+      "workspace_groups": {
+        "app": 174,
+        "core": 335,
+        "geometry": 1,
+        "io": 149,
+        "renderer": 116
+      },
+      "documentation_tests": "pass"
+    },
+    "limits": [
+      "Cold preparation remains noticeable at roughly 0.34-0.40 seconds on this input.",
+      "First model/paint, full commit/History, constrained solving and artwork changes can still exceed a frame budget.",
+      "Unassigned/multi-net connected Drag retains the complete transaction path; Altium slide/shove/gloss and native/Linux latency parity remain unverified.",
+      "Native attempts to start a No Net route over visually empty Top space selected existing copper on other document-visible layers, including with Current Layer snapping. Those starts were cancelled; native No Net movement is not claimed. Read-only explicit No Net probes passed."
+    ],
+    "native_assigned_start": {
+      "route_begin_ms": 365.845,
+      "obstacle_environment_ms": 169.774,
+      "initial_preview_solve_ms": 0.087,
+      "initial_preview_copy_ms": 53.463,
+      "following_preview_update_ms": [
+        3.806,
+        0.003
+      ],
+      "conditions": "Native 1920x1032 Windows window, Top-only view, zoom 98.023726, phase profiling enabled. These are CPU stages, not input-to-photon latency.",
+      "mixed_cpu_batches": {
+        "first_assigned_start_batch_max_ms": 434.7,
+        "constrained_drag_release_batch_max_ms": 578.88
+      },
+      "limits": "Mixed batches include preparation, commit/History, artwork and panels as well as idle frames; they are not steady motion latency bounds."
+    }
+  }
+}

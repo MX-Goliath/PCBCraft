@@ -397,7 +397,7 @@ impl PcbCraft {
         let mut compare = false;
         let mut validate = false;
         let mut execute = false;
-        egui::Modal::new(egui::Id::new("design_sync_eco")).backdrop_color(Color32::TRANSPARENT).frame(egui::Frame::window(&ctx.style()).corner_radius(0)).show(ctx,|ui|{
+        egui::Modal::new(egui::Id::new("design_sync_eco")).backdrop_color(Color32::TRANSPARENT).frame(egui::Frame::window(&ctx.style()).corner_radius(0)).show_stable(ctx, (ctx.screen_rect().width()-48.).clamp(480.,if d.choose{540.}else{1065.}),|ui|{
             ui.set_width((ctx.screen_rect().width()-48.).clamp(480.,if d.choose{540.}else{1065.}));
             ui.horizontal(|ui|{ui.strong(if d.choose{"Choose Documents To Compare"}else if d.differences{"Differences between"}else{"Engineering Change Order"});ui.with_layout(egui::Layout::right_to_left(egui::Align::Center),|ui|{if ui.small_button("×").clicked(){close=true;}});});ui.separator();
             if d.choose {
@@ -499,29 +499,33 @@ impl PcbCraft {
             }
         }
         if d.report {
-            egui::Modal::new(egui::Id::new("design_sync_report")).show(ctx, |ui| {
-                ui.set_width((ctx.screen_rect().width() - 80.).clamp(480., 1100.));
-                ui.horizontal(|ui| {
-                    ui.strong("Engineering Change Order Report");
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.button("Close").clicked() {
-                            d.report = false;
-                        }
+            egui::Modal::new(egui::Id::new("design_sync_report")).show_stable(
+                ctx,
+                (ctx.screen_rect().width() - 80.).clamp(480., 1100.),
+                |ui| {
+                    ui.set_width((ctx.screen_rect().width() - 80.).clamp(480., 1100.));
+                    ui.horizontal(|ui| {
+                        ui.strong("Engineering Change Order Report");
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.button("Close").clicked() {
+                                d.report = false;
+                            }
+                        });
                     });
-                });
-                let mut report = d.plan.as_ref().map(Plan::report).unwrap_or_default();
-                if ui.button("Copy Report").clicked() {
-                    ui.ctx().copy_text(report.clone());
-                }
-                egui::ScrollArea::both().max_height(430.).show(ui, |ui| {
-                    ui.add(
-                        egui::TextEdit::multiline(&mut report)
-                            .font(egui::TextStyle::Monospace)
-                            .desired_width(1400.)
-                            .interactive(false),
-                    );
-                });
-            });
+                    let mut report = d.plan.as_ref().map(Plan::report).unwrap_or_default();
+                    if ui.button("Copy Report").clicked() {
+                        ui.ctx().copy_text(report.clone());
+                    }
+                    egui::ScrollArea::both().max_height(430.).show(ui, |ui| {
+                        ui.add(
+                            egui::TextEdit::multiline(&mut report)
+                                .font(egui::TextStyle::Monospace)
+                                .desired_width(1400.)
+                                .interactive(false),
+                        );
+                    });
+                },
+            );
         }
         if !close {
             self.design_sync = Some(d);

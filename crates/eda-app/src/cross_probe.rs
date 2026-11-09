@@ -210,7 +210,7 @@ impl PcbCraft {
         egui::Window::new("Cross Probe — destination")
             .collapsible(false)
             .open(&mut open)
-            .show(ctx, |ui| {
+            .show_stable(ctx, |ui| {
                 ui.label("Choose the destination document or physical instance:");
                 for (n, (id, target)) in self.cross_probe.choices.iter().enumerate() {
                     if let Some(d) = self.documents.iter().find(|d| d.session_id == *id)

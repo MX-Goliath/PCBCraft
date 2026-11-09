@@ -1,6 +1,14 @@
 use super::*;
 
 fn frame(app: &mut PcbCraft, ctx: &egui::Context, events: Vec<egui::Event>) {
+    frame_with_properties(app, ctx, events, |app, ui| app.normal_properties(ui));
+}
+fn frame_with_properties(
+    app: &mut PcbCraft,
+    ctx: &egui::Context,
+    events: Vec<egui::Event>,
+    mut properties: impl FnMut(&mut PcbCraft, &mut egui::Ui),
+) {
     let _ = ctx.run(
         egui::RawInput {
             screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1440., 900.))),
@@ -9,12 +17,172 @@ fn frame(app: &mut PcbCraft, ctx: &egui::Context, events: Vec<egui::Event>) {
         },
         |ctx| {
             app.prepare_dock_input(ctx);
-            app.left_dock(ctx);
-            app.right_dock(ctx);
+            app.left_dock_with_properties(ctx, &mut properties);
+            app.right_dock_with_properties(ctx, &mut properties);
             egui::CentralPanel::default().show(ctx, |_| {});
-            app.finish_docks(ctx);
+            app.finish_docks_with_properties(ctx, &mut properties);
         },
     );
+}
+
+#[test]
+fn oversized_properties_do_not_enlarge_the_dock_or_undo_a_pointer_resize() {
+    fn oversized(_: &mut PcbCraft, ui: &mut egui::Ui) {
+        // A selected component can have long fields or a wide parameter table.
+        // Even explicitly oversized content must not negotiate the dock width.
+        ui.set_min_width(2400.);
+        ui.label("Component parameter value".repeat(100));
+    }
+    for dpi in [1., 1.5, 2.] {
+        let mut app = crate::app::schematic_editor::tests::app();
+        let ctx = egui::Context::default();
+        theme::apply(&ctx);
+        ctx.set_pixels_per_point(dpi);
+        for _ in 0..4 {
+            frame_with_properties(&mut app, &ctx, vec![], oversized);
+            let root = app
+                .settings
+                .dock_layout
+                .as_ref()
+                .unwrap()
+                .root_for(Panel::Properties)
+                .unwrap();
+            assert!(
+                (root.extent - 316.).abs() < 1.,
+                "Content expanded the dock: {}",
+                root.extent
+            );
+        }
+        let rect = app
+            .dock_runtime
+            .groups
+            .iter()
+            .find(|g| g.id == 4)
+            .unwrap()
+            .rect;
+        let from = rect.left_center();
+        let to = from + vec2(110., 0.);
+        for events in [
+            vec![
+                egui::Event::PointerMoved(from),
+                egui::Event::PointerButton {
+                    pos: from,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+            vec![egui::Event::PointerMoved(to)],
+            vec![egui::Event::PointerButton {
+                pos: to,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        ] {
+            frame_with_properties(&mut app, &ctx, events, oversized);
+        }
+        for _ in 0..8 {
+            frame_with_properties(&mut app, &ctx, vec![], oversized);
+            let root = app
+                .settings
+                .dock_layout
+                .as_ref()
+                .unwrap()
+                .root_for(Panel::Properties)
+                .unwrap();
+            assert!(
+                (root.extent - 206.).abs() < 2.,
+                "Resize sprang back: {}",
+                root.extent
+            );
+        }
+    }
+}
+
+#[test]
+fn long_component_fields_keep_properties_width_when_switching_schematic_and_board() {
+    let mut app = crate::app::schematic_editor::tests::app();
+    let long = "VeryLongImportedComponentValueOrLibraryPath_".repeat(100);
+    let id = Uuid::new_v4();
+    app.documents[0]
+        .model
+        .schematic
+        .as_mut()
+        .unwrap()
+        .components
+        .push(eda_core::schematic::Component {
+            id,
+            source_index: 0,
+            position: Default::default(),
+            designator: "U1".into(),
+            comment: long.clone(),
+            library_reference: long.clone(),
+            description: long.clone(),
+            part: 1,
+            display_mode: 0,
+            parameters: [
+                ("Comment".into(), long.clone()),
+                (long.clone(), long.clone()),
+            ]
+            .into(),
+            settings: Default::default(),
+        });
+    app.documents[0].view.selected = Some(id);
+    app.add_document(Document::new(DocumentKind::Board, "Wide component"), None);
+    let id = Uuid::new_v4();
+    app.documents[1]
+        .model
+        .pcb
+        .as_mut()
+        .unwrap()
+        .components
+        .push(eda_core::pcb::Component {
+            id,
+            index: 0,
+            designator: "U1".into(),
+            comment: long.clone(),
+            footprint: long.clone(),
+            footprint_parameters: None,
+            parameters: Some(Default::default()),
+            position: Default::default(),
+            rotation: 0.,
+            layer: eda_core::pcb::TOP,
+            locked: false,
+            properties: [
+                ("SOURCEFOOTPRINTLIBRARY".into(), long.clone()),
+                ("FOOTPRINTDESCRIPTION".into(), long),
+            ]
+            .into(),
+        });
+    app.documents[1].view.pcb.selected = vec![id];
+    let models: Vec<_> = app.documents.iter().map(|d| d.model.clone()).collect();
+    let ctx = egui::Context::default();
+    theme::apply(&ctx);
+    for active in [0, 1, 0, 1] {
+        app.active = Some(active);
+        for _ in 0..4 {
+            frame(&mut app, &ctx, vec![]);
+            let root = app
+                .settings
+                .dock_layout
+                .as_ref()
+                .unwrap()
+                .root_for(Panel::Properties)
+                .unwrap();
+            assert!(
+                (root.extent - 316.).abs() < 1.,
+                "Document {active} expanded Properties: {}",
+                root.extent
+            );
+        }
+    }
+    for (doc, before) in app.documents.iter().zip(models) {
+        assert_eq!(
+            doc.model, before,
+            "Rendering properties edited the document"
+        );
+    }
 }
 fn drag(app: &mut PcbCraft, ctx: &egui::Context, from: Pos2, to: Pos2) {
     frame(

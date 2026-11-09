@@ -471,7 +471,7 @@ pub(super) fn show(
                 .inner_margin(7.0)
                 .stroke(Stroke::new(1.0, widgets::LINE)),
         )
-        .show(ctx, |ui| {
+        .show_stable(ctx, |ui| {
             widgets::style(ui);
             close |= widgets::title(ui, title);
             egui::Frame::new()

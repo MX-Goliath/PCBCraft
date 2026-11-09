@@ -167,7 +167,7 @@ impl PcbCraft {
                 .collapsible(false)
                 .resizable(false)
                 .open(&mut open)
-                .show(ctx, |ui| {
+                .show_stable(ctx, |ui| {
                     ui.add_enabled_ui(state.folders.is_none(), |ui| {
                         ui.horizontal(|ui| {
                             ui.allocate_ui_with_layout(
@@ -283,7 +283,7 @@ impl PcbCraft {
             let mut open = true;
             egui::Window::new(egui::RichText::new("Design Reuse").size(12.))
                 .id(egui::Id::new("design_reuse")).order(egui::Order::Foreground).fade_in(false).default_pos([73.,134.]).default_size([374., 368.])
-                .collapsible(false).open(&mut open).show(ctx, |ui| {
+                .collapsible(false).open(&mut open).show_stable(ctx, |ui| {
                     ui.set_min_size(egui::vec2(374.,368.));
                     ui.add_enabled_ui(!state.modal(), |ui| {
                         ui.horizontal(|ui| {
@@ -345,7 +345,7 @@ impl PcbCraft {
             .collapsible(false)
             .resizable(false)
             .open(&mut open)
-            .show(ctx, |ui| {
+            .show_stable(ctx, |ui| {
                 egui::ScrollArea::both().max_height(350.).show(ui, |ui| {
                     ui.set_min_size(egui::vec2(510., 345.));
                     egui::Grid::new("reuse_folder_paths")
@@ -480,7 +480,7 @@ impl PcbCraft {
                 .collapsible(false)
                 .resizable(false)
                 .open(&mut open)
-                .show(ctx, |ui| {
+                .show_stable(ctx, |ui| {
                     ui.label("Name");
                     ui.add_sized(
                         [ui.available_width(), 22.],
@@ -565,7 +565,7 @@ impl PcbCraft {
                 .collapsible(false)
                 .resizable(false)
                 .open(&mut open)
-                .show(ctx, |ui| {
+                .show_stable(ctx, |ui| {
                     ui.label("Name");
                     ui.text_edit_singleline(name);
                     ui.label("Description");

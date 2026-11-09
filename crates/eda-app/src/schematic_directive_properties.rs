@@ -265,7 +265,7 @@ pub(super) fn directive_rule_dialog(
             .resizable(false)
             .collapsible(false)
             .open(&mut open)
-            .show(ctx, |ui| {
+            .show_stable(ctx, |ui| {
                 egui::ScrollArea::vertical()
                     .max_height(365.)
                     .show(ui, |ui| {
@@ -285,7 +285,7 @@ pub(super) fn directive_rule_dialog(
             .resizable(false)
             .collapsible(false)
             .open(&mut open)
-            .show(ctx, |ui| {
+            .show_stable(ctx, |ui| {
                 egui::ScrollArea::vertical()
                     .max_height(555.)
                     .show(ui, |ui| {

@@ -3,10 +3,18 @@ use eda_core::schematic::{SchFont, SchPrimitive, SchPrimitiveKind as K, Schemati
 use egui::{Align2, FontFamily, FontId, Painter, Shape, epaint::TextShape};
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
+#[path = "schematic_cache.rs"]
+mod cache;
+pub(super) use cache::Cache as GeometryCache;
 
 // Layout in a fixed font space: rasterizer rounding must not change glyph
 // advances, anchors or line breaks whenever the schematic camera zooms.
 const TEXT_LAYOUT_SIZE: f32 = 64.0;
+
+// Observed in the available AD24.4.1 Schematic > General preferences.
+// Both margins are measured from the non-electrical (component-body) end.
+const PIN_NAME_MARGIN_NM: i64 = 1_270_000; // 50 mil
+const PIN_NUMBER_MARGIN_NM: i64 = 2_032_000; // 80 mil
 
 pub(super) fn place_text(
     mut shape: TextShape,
@@ -265,15 +273,20 @@ impl Scene<'_> {
         (n as f64 / 1e6 * self.camera.pixels_per_mm) as f32
     }
     fn line(&self, a: Pos2, b: Pos2, stroke: Stroke) {
+        self.line_with_minimum(a, b, stroke, self.painter.ctx().pixels_per_point());
+    }
+    fn line_with_minimum(&self, a: Pos2, b: Pos2, stroke: Stroke, minimum_pixels: f32) {
         if stroke.is_empty() {
             return;
         }
         // GDI-style cosmetic strokes: an integral number of physical pixels.
         // Keep topology/world coordinates intact when a view is zoomed.
         let ppp = self.painter.ctx().pixels_per_point();
-        // Keep a visible one-point minimum at sheet fit.
-        // A one-physical-pixel mesh can disappear when the desktop uses 150% DPI.
-        let pixels = (stroke.width.max(1.0) * ppp).round().max(1.0);
+        // Ordinary schematic lines retain their readability minimum; pin lines
+        // request one physical pixel so desktop DPI does not double their width.
+        let pixels = (stroke.width * ppp)
+            .round()
+            .max(minimum_pixels.round().max(1.0));
         let width = pixels / ppp;
         if (a.x - b.x).abs() < 0.001 || (a.y - b.y).abs() < 0.001 {
             let phase = if pixels as u32 % 2 == 1 { 0.5 } else { 0.0 };
@@ -1110,9 +1123,7 @@ impl Scene<'_> {
                     Pos2::new(x, rect.top()),
                     self.painter.ctx().pixels_per_point(),
                 );
-                self.painter
-                    .with_clip_rect(rect.intersect(self.rect))
-                    .add(shape);
+                self.painter.with_clip_rect(rect).add(shape);
                 hit = pointer.is_some_and(|p| rect.contains(p));
                 rect
             }
@@ -1182,8 +1193,16 @@ impl Scene<'_> {
                 let d = direction(*orientation);
                 let b = a + d * self.nm(*length_nm);
                 let perpendicular = Vec2::new(d.y, -d.x);
-                let margin = self.nm(1_778_000);
-                self.line(a, b, stroke);
+                let minimum = 1. / self.painter.ctx().pixels_per_point();
+                // A pin's minimum is one physical pixel, not one logical point
+                // (which makes thin pins twice as thick at 150% desktop DPI).
+                let pin_stroke = Stroke::new(self.nm(p.width_nm).max(minimum), c);
+                let symbol_stroke = Stroke::new(
+                    self.nm(p.presentation.pin_symbol_width_nm.unwrap_or(p.width_nm))
+                        .max(minimum),
+                    c,
+                );
+                self.line_with_minimum(a, b, pin_stroke, 1.);
                 if self.library_preview && matches!(electrical, 0 | 2) {
                     let size = self.nm(1_270_000);
                     let (tip, base) = if *electrical == 0 {
@@ -1191,52 +1210,49 @@ impl Scene<'_> {
                     } else {
                         (a + d * size, a)
                     };
-                    self.poly(
+                    self.painter.add(Shape::convex_polygon(
                         vec![
                             tip,
                             base + perpendicular * size * 0.4,
                             base - perpendicular * size * 0.4,
                         ],
-                        true,
-                        Some(Color32::WHITE),
-                        stroke,
-                    );
+                        Color32::WHITE,
+                        symbol_stroke,
+                    ));
                 }
                 if *outer_symbol == 1 {
-                    self.painter
-                        .circle(a, self.nm(508_000).max(1.0), Color32::WHITE, stroke);
+                    self.painter.circle(
+                        a,
+                        self.nm(508_000).max(1.0),
+                        Color32::WHITE,
+                        symbol_stroke,
+                    );
                 }
                 if *inner_symbol == 3 {
                     let s = self.nm(1_016_000);
-                    self.poly(
+                    self.painter.add(Shape::line(
                         vec![
                             a + perpendicular * s / 2.0,
                             a - d * s,
                             a - perpendicular * s / 2.0,
                         ],
-                        false,
-                        None,
-                        stroke,
-                    );
+                        symbol_stroke,
+                    ));
                 }
                 let mut bounds = Rect::from_two_pos(a, b);
                 if *show_name && !name.is_empty() {
                     bounds = bounds.union(self.label(
-                        a - d * margin,
+                        a - d * self.nm(PIN_NAME_MARGIN_NM),
                         name,
                         *font,
                         orientation % 2,
-                        if *orientation % 4 == 0 || *orientation % 4 == 3 {
-                            5
-                        } else {
-                            3
-                        },
+                        if *orientation % 4 <= 1 { 5 } else { 3 },
                         c,
                     ));
                 }
                 if *show_number && !number.is_empty() {
                     bounds = bounds.union(self.label(
-                        a + (b - a) * 0.5 + perpendicular * self.nm(762_000),
+                        a + d * self.nm(PIN_NUMBER_MARGIN_NM),
                         number,
                         number_font.unwrap_or(*font),
                         orientation % 2,
@@ -2002,6 +2018,47 @@ fn paint_mode(
             painter: painter.with_clip_rect(board.intersect(rect)),
             ..scene
         };
+        view.sch_geometry_cache.begin(&scene);
+        if view.sch_opening && !output {
+            // Preparing an entire cold sheet in its first frame can freeze the
+            // shell after the import dialog closes. Yield between bounded batches.
+            let started = std::time::Instant::now();
+            let mut built = 0;
+            let mut ready = 0;
+            let mut total = 0;
+            for primitive in schematic
+                .primitives
+                .iter()
+                .chain(&schematic.parameter_objects)
+                .filter(|p| !p.presentation.hidden)
+            {
+                total += 1;
+                if !view.sch_geometry_cache.contains(primitive)
+                    && built < 256
+                    && (built == 0 || started.elapsed() < std::time::Duration::from_millis(8))
+                {
+                    view.sch_geometry_cache.prepare(&scene, primitive);
+                    built += 1;
+                }
+                ready += usize::from(view.sch_geometry_cache.contains(primitive));
+            }
+            if ready != total {
+                let progress = Rect::from_center_size(rect.center(), Vec2::new(320., 24.));
+                ui.put(
+                    progress,
+                    egui::ProgressBar::new(ready as f32 / total as f32)
+                        .text(format!("Preparing schematic graphics {ready}/{total}")),
+                );
+                view.sch_primary_down = false;
+                view.sch_primary_dragging = false;
+                view.sch_press_origin = None;
+                view.sch_selection_box = None;
+                view.sch_suppress_primary = true;
+                ui.ctx().request_repaint();
+                return CanvasOutput::default();
+            }
+            view.sch_opening = false;
+        }
         let excluded = eda_core::schematic_compile::exclusions(schematic);
         let mut ordered: Vec<_> = schematic
             .primitives
@@ -2028,8 +2085,11 @@ fn paint_mode(
                 p.presentation.text_color = Some(p.color);
                 p
             });
-            let (bounds, is_hit) =
-                scene.primitive(faded.as_ref().unwrap_or(primitive), hit_pointer);
+            let (bounds, is_hit) = view.sch_geometry_cache.primitive(
+                &scene,
+                faded.as_ref().unwrap_or(primitive),
+                hit_pointer,
+            );
             if let Some(id) = primitive.component {
                 component_bounds
                     .entry(id)
@@ -2079,6 +2139,7 @@ fn paint_mode(
                 .min_by(|(_, a), (_, b)| a.area().total_cmp(&b.area()))
                 .map(|(id, _)| *id);
         }
+        view.sch_geometry_cache.end();
     }
     if selected_bounds.is_finite() && selected_bounds.is_positive() {
         painter.rect_stroke(
@@ -2255,21 +2316,10 @@ fn paint_mode(
     if (response.hovered() || response.dragged())
         && ui.input(|i| i.focused)
         && ui.rect_contains_pointer(rect)
-        && let Some(at) = ui.ctx().pointer_latest_pos()
     {
-        // Windows crosshair cursors can be white on a white sheet. Draw a
-        // constant-size black cross with a white halo, also visible on dark ink.
-        // Follow the actual pointer; placement coordinates snap independently.
-        let lines = [
-            [at - Vec2::new(7.0, 0.0), at + Vec2::new(7.0, 0.0)],
-            [at - Vec2::new(0.0, 7.0), at + Vec2::new(0.0, 7.0)],
-        ];
-        for (width, ink) in [(3.0, Color32::WHITE), (1.0, Color32::BLACK)] {
-            for line in lines {
-                painter.line_segment(line, Stroke::new(width, ink));
-            }
-        }
-        ui.ctx().set_cursor_icon(egui::CursorIcon::None);
+        // Let the OS move the cursor independently of scene painting/present.
+        // Placement and snapping continue to use document coordinates below.
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
     }
     CanvasOutput {
         cursor_mm: response.hover_pos().map(|p| view.camera.world_mm(p, rect)),
@@ -2340,7 +2390,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn schematic_cursor_has_contrast_on_light_and_dark_sheets_and_stays_in_canvas() {
+    fn schematic_native_cursor_stays_in_canvas_without_a_frame_rendered_duplicate() {
         for dpi in [1.0, 1.5, 2.0] {
             for background in [0xffffff, 0] {
                 let ctx = egui::Context::default();
@@ -2387,7 +2437,10 @@ mod tests {
                 for tool_active in [false, true] {
                     frame(pointer, true, false, tool_active);
                     let output = frame(pointer, true, false, tool_active);
-                    assert_eq!(output.platform_output.cursor_icon, egui::CursorIcon::None);
+                    assert_eq!(
+                        output.platform_output.cursor_icon,
+                        egui::CursorIcon::Crosshair
+                    );
                     let strokes: Vec<_> = output
                         .shapes
                         .iter()
@@ -2400,27 +2453,10 @@ mod tests {
                             }
                         })
                         .collect();
-                    assert_eq!(strokes.len(), 4);
-                    for expected in [
-                        Stroke::new(1.0, Color32::BLACK),
-                        Stroke::new(3.0, Color32::WHITE),
-                    ] {
-                        assert_eq!(
-                            strokes
-                                .iter()
-                                .filter(|(_, stroke)| *stroke == expected)
-                                .count(),
-                            2
-                        );
-                    }
-                    for (points, stroke) in strokes {
-                        assert_eq!(points[0].lerp(points[1], 0.5), pointer);
-                        assert_eq!(points[0].distance(points[1]), 14.0);
-                        assert!(
-                            stroke == Stroke::new(1.0, Color32::BLACK)
-                                || stroke == Stroke::new(3.0, Color32::WHITE)
-                        );
-                    }
+                    assert!(
+                        strokes.is_empty(),
+                        "Native cursor must have no delayed duplicate"
+                    );
                 }
                 for (at, focused, modal) in [
                     (pointer, false, false),
@@ -2429,7 +2465,10 @@ mod tests {
                 ] {
                     frame(at, focused, modal, false);
                     let output = frame(at, focused, modal, false);
-                    assert_ne!(output.platform_output.cursor_icon, egui::CursorIcon::None);
+                    assert_ne!(
+                        output.platform_output.cursor_icon,
+                        egui::CursorIcon::Crosshair
+                    );
                 }
             }
         }
@@ -2486,6 +2525,189 @@ mod tests {
         ctx.set_fonts(fonts);
         ctx.set_pixels_per_point(pixels_per_point);
         ctx
+    }
+
+    #[test]
+    fn opening_a_large_sheet_yields_until_all_graphics_are_ready_and_output_stays_complete() {
+        let ctx = text_context(1.);
+        let mut doc = Document::new(DocumentKind::Schematic, "Opening");
+        for i in 0..1024 {
+            doc.schematic
+                .as_mut()
+                .unwrap()
+                .primitives
+                .push(eda_core::schematic_edit::primitive(
+                    K::Rectangle {
+                        a: Point::mm(i % 32 * 4, i / 32 * 4),
+                        b: Point::mm(i % 32 * 4 + 2, i / 32 * 4 + 2),
+                        radius: Point::default(),
+                    },
+                    None,
+                ));
+        }
+        let original = doc.clone();
+        let mut view = View {
+            sch_opening: true,
+            ..Default::default()
+        };
+        let frame = |view: &mut View| {
+            let mut canvas = CanvasOutput::default();
+            let _ = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(900., 650.))),
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        canvas = crate::canvas(ui, &doc, view);
+                    });
+                },
+            );
+            canvas
+        };
+        let first = frame(&mut view);
+        assert!(
+            view.sch_opening,
+            "A large sheet must not prepare everything in its first frame"
+        );
+        assert!(
+            first.schematic_input.is_none(),
+            "An incomplete sheet must not expose picking"
+        );
+        for _ in 0..1024 {
+            if !view.sch_opening {
+                break;
+            }
+            frame(&mut view);
+        }
+        assert!(!view.sch_opening);
+        assert_eq!(view.sch_geometry_cache.builds, 1024);
+        assert!(frame(&mut view).schematic_input.is_some());
+        assert_eq!(doc, original);
+
+        // Print/PDF cannot inherit the interactive batching policy.
+        let mut print_view = View {
+            camera: view.camera.clone(),
+            sch_opening: true,
+            ..Default::default()
+        };
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let rect = ui.available_rect_before_wrap();
+                let response = ui.allocate_rect(rect, egui::Sense::hover());
+                paint_output(ui, &doc, &mut print_view, rect, &response);
+            });
+        });
+        assert_eq!(print_view.sch_geometry_cache.builds, 1024);
+    }
+
+    #[test]
+    fn pin_strokes_and_label_positions_follow_native_margins_at_every_orientation_and_dpi() {
+        for dpi in [1., 1.5, 2.] {
+            let ctx = text_context(dpi);
+            for zoom in [2., 20.] {
+                for orientation in 0..4 {
+                    let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(800., 600.));
+                    let camera = Camera {
+                        pixels_per_mm: zoom,
+                        ..Default::default()
+                    };
+                    let schematic = Schematic::blank();
+                    let origin = camera.screen(Point::default(), rect);
+                    let mut previous_number = None;
+                    for length_nm in [2_540_000, 7_620_000] {
+                        let mut pin = eda_core::schematic_edit::primitive(
+                            K::Pin {
+                                position: Point::default(),
+                                length_nm,
+                                orientation,
+                                name: "NAME".into(),
+                                number: "123".into(),
+                                show_name: true,
+                                show_number: true,
+                                font: 0,
+                                number_font: None,
+                                electrical: 4,
+                                outer_symbol: 1,
+                                inner_symbol: 0,
+                            },
+                            None,
+                        );
+                        pin.width_nm = 101_600;
+                        pin.presentation.pin_symbol_width_nm = Some(254_000);
+                        let output = ctx.run(
+                            egui::RawInput {
+                                screen_rect: Some(rect),
+                                ..Default::default()
+                            },
+                            |ctx| {
+                                Scene {
+                                    painter: ctx.layer_painter(egui::LayerId::background()),
+                                    camera: &camera,
+                                    rect,
+                                    schematic: Some(&schematic),
+                                    document_id: Uuid::nil(),
+                                    library_preview: false,
+                                }
+                                .primitive(&pin, None);
+                            },
+                        );
+                        let shaft = output
+                            .shapes
+                            .iter()
+                            .find_map(|s| match &s.shape {
+                                Shape::LineSegment { stroke, .. } => Some(stroke.width),
+                                _ => None,
+                            })
+                            .unwrap();
+                        let expected = ((0.1016 * zoom as f32 * dpi).round().max(1.)) / dpi;
+                        assert!((shaft - expected).abs() < 0.001, "DPI={dpi}, zoom={zoom}");
+                        let symbol = output
+                            .shapes
+                            .iter()
+                            .find_map(|s| match &s.shape {
+                                Shape::Circle(circle) => Some(circle.stroke.width),
+                                _ => None,
+                            })
+                            .unwrap();
+                        assert!((symbol - (0.254 * zoom as f32).max(1. / dpi)).abs() < 0.001);
+                        let label = |text| {
+                            output
+                                .shapes
+                                .iter()
+                                .find_map(|s| match &s.shape {
+                                    Shape::Text(t) if t.galley.job.text == text => Some(t),
+                                    _ => None,
+                                })
+                                .unwrap()
+                        };
+                        let centre = |t: &TextShape| {
+                            t.pos
+                                + egui::emath::Rot2::from_angle(t.angle)
+                                    * t.galley.rect.center().to_vec2()
+                        };
+                        let number = label("123");
+                        let number_centre = centre(number);
+                        let along = (number_centre - origin).dot(direction(orientation));
+                        assert!((along - 2.032 * zoom as f32).abs() < 0.001);
+                        if orientation % 2 == 0 {
+                            assert!(number.visual_bounding_rect().bottom() <= origin.y + 0.01);
+                        } else {
+                            assert!(number.visual_bounding_rect().right() <= origin.x + 0.01);
+                        }
+                        if let Some(previous) = previous_number {
+                            assert!(
+                                number_centre.distance(previous) < 0.001,
+                                "Changing pin length must not move the body-relative number"
+                            );
+                        }
+                        previous_number = Some(number_centre);
+                        let name = centre(label("NAME"));
+                        assert!((name - origin).dot(direction(orientation)) < -1.27 * zoom as f32);
+                    }
+                }
+            }
+        }
     }
 
     #[test]

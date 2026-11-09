@@ -298,7 +298,7 @@ fn checker_settings(doc: &OpenDocument, ctx: &egui::Context, state: &mut State) 
     let body_height = (ctx.screen_rect().height() - 80.0).clamp(200.0, 628.0);
     egui::Window::new("Design Rule Checker [mm]").id(egui::Id::new(("drc_setup_v2",doc.session_id))).title_bar(false).fixed_size([755.0,body_height + 56.0]).resizable(false).collapsible(false)
         .movable(false).current_pos(widgets::position(ctx,egui::Id::new(("drc_setup_v2",doc.session_id)),ctx.screen_rect().center()-egui::vec2(385.5,(body_height + 72.0) / 2.0)))
-        .frame(egui::Frame::new().fill(Color32::from_gray(76)).inner_margin(7.0).stroke(egui::Stroke::new(1.0,widgets::LINE))).show(ctx,|ui|{
+        .frame(egui::Frame::new().fill(Color32::from_gray(76)).inner_margin(7.0).stroke(egui::Stroke::new(1.0,widgets::LINE))).show_stable(ctx,|ui|{
             widgets::style(ui);ui.spacing_mut().item_spacing.y=0.0;cancel|=widgets::title(ui,"Design Rule Checker [mm]");
             let(body,_)=ui.allocate_exact_size(egui::vec2(ui.available_width(),body_height),egui::Sense::hover());ui.painter().rect_filled(body,0.0,widgets::BG);
             let left=egui::Rect::from_min_size(body.min+egui::vec2(19.0,17.0),egui::vec2(181.0,body_height-34.0));
@@ -2239,7 +2239,7 @@ fn priorities(ctx: &egui::Context, d: &mut Draft) {
                 .inner_margin(7.0)
                 .stroke(egui::Stroke::new(1.0, widgets::LINE)),
         )
-        .show(ctx, |ui| {
+        .show_stable(ctx, |ui| {
             widgets::style(ui);
             if widgets::title(ui, "Edit Rule Priorities") || escape {
                 d.priorities = false;
@@ -2522,7 +2522,7 @@ fn editor(doc: &mut OpenDocument, ctx: &egui::Context, d: &mut Draft) -> bool {
     egui::Window::new("PCB Rules and Constraints Editor [mm]").id(egui::Id::new(("pcb_rules_v2",doc.session_id))).title_bar(false).fixed_size(size).resizable(false).collapsible(false).interactable(!d.priorities && d.query.is_none() && d.error.is_empty())
         .movable(false).current_pos(widgets::position(ctx,egui::Id::new(("pcb_rules_v2",doc.session_id)),ctx.screen_rect().center()-(size+egui::vec2(16.0,16.0))*0.5))
         .frame(egui::Frame::new().fill(Color32::from_gray(76)).inner_margin(7.0).stroke(egui::Stroke::new(1.0,widgets::LINE)))
-        .show(ctx,|ui|{
+        .show_stable(ctx,|ui|{
             widgets::style(ui);ui.scope(|ui|{
             close|=widgets::title(ui,"PCB Rules and Constraints Editor [mm]");
             let body_height=size.y-64.0;let (body,_)=ui.allocate_exact_size(egui::vec2(ui.available_width(),body_height),egui::Sense::hover());
@@ -2651,7 +2651,7 @@ pub(super) fn show(doc: &mut OpenDocument, ctx: &egui::Context) {
             .default_size([850.0, 500.0])
             .min_width(700.0)
             .open(&mut state.show_report)
-            .show(ctx, |ui| {
+            .show_stable(ctx, |ui| {
                 ui.horizontal(|ui| {
                     if ui.button("Run Design Rule Check").clicked() {
                         state.force = true;
@@ -2800,7 +2800,7 @@ mod tests {
                         egui::Window::new("Schematic rule")
                             .id(egui::Id::new(kind))
                             .default_width(640.0)
-                            .show(ctx, |ui| {
+                            .show_stable(ctx, |ui| {
                                 schematic_rule_constraints(ui, &mut rule);
                                 ui.horizontal(|ui| {
                                     buttons = ui.button("OK").rect.union(ui.button("Cancel").rect);

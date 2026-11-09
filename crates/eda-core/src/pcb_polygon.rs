@@ -17,6 +17,30 @@ pub enum Connection {
     Thermal,
     None,
 }
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SameNet {
+    /// Retains the behavior of existing PCBCraft documents.
+    #[default]
+    All,
+    PolygonsOnly,
+    None,
+}
+impl SameNet {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::All => "Pour Over All Same Net Objects",
+            Self::PolygonsOnly => "Pour Over Same Net Polygons Only",
+            Self::None => "Don't Pour Over Same Net Objects",
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FillMode {
+    #[default]
+    Solid,
+    Hatched,
+    None,
+}
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Polygon {
@@ -36,6 +60,10 @@ pub struct Polygon {
     pub priority: u32,
     pub remove_islands: bool,
     pub min_island_area_mm2: f64,
+    pub same_net: SameNet,
+    pub fill_mode: FillMode,
+    /// Zero disables narrow-neck removal. Coordinates remain in nm.
+    pub neck_width: i64,
     pub shelved: bool,
     pub locked: bool,
     /// Original properties remain available to the native writer.
@@ -59,6 +87,9 @@ impl Default for Polygon {
             priority: 0,
             remove_islands: false,
             min_island_area_mm2: 0.0,
+            same_net: SameNet::All,
+            fill_mode: FillMode::Solid,
+            neck_width: 0,
             shelved: false,
             locked: false,
             properties: Fields::new(),
@@ -70,8 +101,8 @@ impl Polygon {
         contour_points(&self.contour)
     }
     pub fn validate(&self) -> Result<(), String> {
-        if !copper_layer(self.layer) {
-            return Err("A polygon pour must be on a copper layer".into());
+        if !polygon_layer(self.layer) {
+            return Err("Unsupported polygon layer".into());
         }
         if !(0..=100_000_000).contains(&self.clearance)
             || !(1..=100_000_000).contains(&self.thermal_gap)
@@ -79,6 +110,7 @@ impl Polygon {
             || !self.spoke_angle.is_finite()
             || !self.min_island_area_mm2.is_finite()
             || self.min_island_area_mm2 < 0.0
+            || !(0..=100_000_000).contains(&self.neck_width)
         {
             return Err("Invalid polygon clearance/thermal/area settings".into());
         }
@@ -105,6 +137,25 @@ impl Polygon {
         }
         Ok(())
     }
+}
+/// Altium also supports solid polygons on masks, paste, overlay and mechanical
+/// layers. They are graphic regions and do not obey electrical copper rules.
+pub fn polygon_layer(layer: u16) -> bool {
+    copper_layer(layer) || matches!(layer, 33..=38 | 57..=72)
+}
+/// Shelving must exclude copper immediately from display, DRC and connectivity,
+/// even while a background worker is still cancelling an earlier calculation.
+pub fn remove_shelved_copper(board: &mut Board) {
+    let shelved: BTreeSet<_> = board
+        .polygon_pours
+        .iter()
+        .filter(|p| p.shelved)
+        .map(|p| p.index)
+        .collect();
+    board.items.retain(|i| {
+        i.polygon.is_none_or(|n| !shelved.contains(&n))
+            || matches!(i.shape, Shape::Region { cutout: true, .. })
+    });
 }
 pub fn contour_points(contour: &[ContourVertex]) -> Vec<Point> {
     let mut points = Vec::new();
@@ -526,195 +577,53 @@ pub fn prepare_repour(
     revision: u64,
     board: &Board,
 ) -> Result<PreparedPour, String> {
+    prepare_repour_controlled(document, revision, board, &PourControl::default())
+}
+/// Cooperative cancellation and progress contain no GUI state. Superseded work
+/// stops at geometry boundaries instead of blocking the latest document revision.
+#[derive(Clone, Default)]
+pub struct PourControl {
+    cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    completed: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    total: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+impl PourControl {
+    pub fn cancel(&self) {
+        self.cancelled
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+    pub fn progress(&self) -> (usize, usize) {
+        use std::sync::atomic::Ordering::Relaxed;
+        (self.completed.load(Relaxed), self.total.load(Relaxed))
+    }
+    fn check(&self) -> Result<(), String> {
+        if self.cancelled.load(std::sync::atomic::Ordering::Relaxed) {
+            Err("Polygon repour cancelled".into())
+        } else {
+            Ok(())
+        }
+    }
+}
+pub fn prepare_repour_controlled(
+    document: Uuid,
+    revision: u64,
+    board: &Board,
+    control: &PourControl,
+) -> Result<PreparedPour, String> {
     Ok(PreparedPour {
         document,
         revision,
-        board: repour(board)?,
+        board: pour::repour_controlled(board, control)?,
     })
 }
 
-/// Rebuild all pours in dependency order, leaving the caller untouched on error.
-pub fn repour(board: &Board) -> Result<Board, String> {
-    let mut result = board.clone();
-    for p in &board.polygon_pours {
-        p.validate()?;
-    }
-    let managed: BTreeSet<_> = board.polygon_pours.iter().map(|p| p.index).collect();
-    // Generated geometry is never treated as independent obstacles on the next repour.
-    result
-        .items
-        .retain(|i| i.polygon.is_none_or(|id| !managed.contains(&id)));
-    // A polygon cutout is a real native Region, not just private metadata or a
-    // visual hole. It affects copper pours on its layer, as a standalone cutout
-    // does in the PCB editor; the owner tag keeps group transforms predictable.
-    for p in &board.polygon_pours {
-        for (n, hole) in p.holes.iter().enumerate() {
-            let mut item = Item::new(
-                p.layer,
-                None,
-                Shape::Region {
-                    contour: hole.clone(),
-                    holes: vec![],
-                    cutout: true,
-                },
-            );
-            item.id = Uuid::new_v5(&p.id, format!("cutout:{n}").as_bytes());
-            item.polygon = Some(p.index);
-            item.properties
-                .insert("PCBCRAFT_POLYGON_CUTOUT_OWNER".into(), p.index.to_string());
-            result.items.push(item);
-        }
-    }
-    let base = result.items.clone();
-    let outline = board.outline_points(256);
-    let board_clip = if outline.len() >= 3 {
-        Some(mp(ring_polygon(&outline, &[])))
-    } else {
-        None
-    };
-    let mut ordered: Vec<_> = board.polygon_pours.iter().collect();
-    ordered.sort_by_key(|p| (p.priority, p.index));
-    let mut poured: Vec<(&Polygon, MultiPolygon<f64>)> = Vec::new();
-    for p in ordered {
-        if p.shelved {
-            continue;
-        }
-        let mut material = mp(ring_polygon(&p.points(), &p.holes));
-        let mut probe = Item::new(
-            p.layer,
-            p.net,
-            Shape::Region {
-                contour: p.points(),
-                holes: p.holes.clone(),
-                cutout: false,
-            },
-        );
-        probe.polygon = Some(p.index);
-        if let Some(clip) = &board_clip {
-            let gap = crate::pcb_rules::resolve(board, "BoardOutlineClearance", &probe, None)?
-                .map(|(_, r)| crate::pcb_rules::gap_objects(r, "Poly", "OutlineEdge"))
-                .transpose()?
-                .unwrap_or(0);
-            material = material.intersection(&clip.buffer(-(gap as f64) / 1e6));
-        }
-        let mut anchors = empty();
-        for item in &base {
-            let board_cutout = matches!(&item.shape, Shape::Region { cutout: true, .. })
-                && item
-                    .properties
-                    .get("ISBOARDCUTOUT")
-                    .is_some_and(|v| v.eq_ignore_ascii_case("TRUE"));
-            if !board_cutout
-                && !item.is_drill_only()
-                && !on_layer(board, item, p.layer)
-                && item.layer != KEEP_OUT
-            {
-                continue;
-            }
-            let geom = copper(item, p.layer);
-            let is_cutout = matches!(item.shape, Shape::Region { cutout: true, .. });
-            if is_cutout {
-                let gap = if board_cutout {
-                    crate::pcb_rules::cutout_clearance(board, &probe, item)?.unwrap_or(0)
-                } else {
-                    0
-                };
-                material = material.difference(&geom.buffer(gap as f64 / 1e6));
-                continue;
-            }
-            let same =
-                p.net.is_some() && item.net == p.net && !item.keepout && !item.is_drill_only();
-            if same {
-                if matches!(item.shape, Shape::Pad { .. } | Shape::Via { .. }) {
-                    let settings = crate::pcb_rules::polygon_connection(board, item, &probe)?
-                        .unwrap_or(crate::pcb_rules::PolygonConnection {
-                            style: p.connection,
-                            gap: p.thermal_gap,
-                            width: p.spoke_width,
-                            conductors: 4,
-                            angle: p.spoke_angle,
-                        });
-                    if settings.style != Connection::None {
-                        anchors = anchors.union(&geom);
-                    }
-                    match settings.style {
-                        Connection::Direct => {}
-                        Connection::Thermal => {
-                            material = material.difference(&thermals(item, settings, &geom))
-                        }
-                        Connection::None => {
-                            let gap = crate::pcb_rules::obstacle_clearance(board, &probe, item)?
-                                .unwrap_or(p.clearance);
-                            material = material.difference(&geom.buffer(gap as f64 / 1e6))
-                        }
-                    }
-                } else {
-                    anchors = anchors.union(&geom);
-                }
-            } else {
-                let clearance = crate::pcb_rules::obstacle_clearance(board, &probe, item)?
-                    .unwrap_or(p.clearance);
-                material = material.difference(&geom.buffer(clearance as f64 / 1e6));
-            }
-        }
-        for (other, geom) in &poured {
-            if other.layer != p.layer {
-                continue;
-            }
-            if p.net.is_some() && other.net == p.net {
-                anchors = anchors.union(geom);
-            } else {
-                let mut other_probe = Item::new(
-                    other.layer,
-                    other.net,
-                    Shape::Region {
-                        contour: other.points(),
-                        holes: other.holes.clone(),
-                        cutout: false,
-                    },
-                );
-                other_probe.polygon = Some(other.index);
-                let clearance = crate::pcb_rules::obstacle_clearance(board, &probe, &other_probe)?
-                    .unwrap_or(p.clearance.max(other.clearance));
-                material = material.difference(&geom.buffer(clearance as f64 / 1e6));
-            }
-        }
-        material.0.retain(|poly| {
-            poly.unsigned_area() >= p.min_island_area_mm2
-                && (!p.remove_islands || poly.intersects(&anchors))
-        });
-        for (n, poly) in material.0.iter().enumerate() {
-            let contour = from_line(poly.exterior());
-            if contour.len() < 3 {
-                continue;
-            }
-            let mut item = Item::new(
-                p.layer,
-                p.net,
-                Shape::Region {
-                    contour,
-                    holes: poly
-                        .interiors()
-                        .iter()
-                        .map(from_line)
-                        .filter(|v| v.len() >= 3)
-                        .collect(),
-                    cutout: false,
-                },
-            );
-            item.id = Uuid::new_v5(&p.id, format!("copper:{n}").as_bytes());
-            item.polygon = Some(p.index);
-            result.items.push(item);
-            if result.items.len() > MAX_ITEMS {
-                return Err("Pour produces too many primitives".into());
-            }
-        }
-        poured.push((p, material));
-    }
-    result.pours_stale = false;
-    result.validate()?;
-    Ok(result)
-}
+#[path = "pcb_polygon_pour.rs"]
+mod pour;
+pub use pour::repour;
+
+#[cfg(test)]
+#[path = "pcb_polygon_regression_tests.rs"]
+mod regression_tests;
 
 #[cfg(test)]
 mod tests {

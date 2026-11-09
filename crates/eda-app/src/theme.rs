@@ -1,4 +1,7 @@
 use egui::{Color32, FontId, Stroke, TextStyle};
+#[path = "dialog_layout.rs"]
+mod dialog_layout;
+pub use dialog_layout::{StableModal, StableWindow, dialog_contents};
 
 pub const ACCENT: Color32 = Color32::from_rgb(100, 139, 167);
 pub const MUTED: Color32 = Color32::from_rgb(166, 166, 166);

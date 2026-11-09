@@ -277,6 +277,7 @@ fn hole_fields(f: &mut Fields, holes: &[Vec<Point>]) {
 }
 fn polygon_fields(p: &Polygon) -> Fields {
     let mut f = p.properties.clone();
+    super::polygon_io::write_options(p, &mut f);
     for (k, v) in [
         ("RECORD", "Polygon".into()),
         ("ID", p.index.to_string()),
@@ -2106,6 +2107,9 @@ fn verify_tables(expected: &Board, actual: &Board, maps: Option<&Maps>) -> Resul
             || p.spoke_width != a.spoke_width
             || !angle(p.spoke_angle, a.spoke_angle)
             || p.remove_islands != a.remove_islands
+            || p.same_net != a.same_net
+            || p.fill_mode != a.fill_mode
+            || p.neck_width != a.neck_width
             || (p.min_island_area_mm2 - a.min_island_area_mm2).abs() > 1e-9
             || !contour_equivalent(&p.contour, &a.contour)
             || p.holes.len() != a.holes.len()

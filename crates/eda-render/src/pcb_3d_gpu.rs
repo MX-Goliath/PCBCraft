@@ -7,6 +7,7 @@ use wgpu::util::DeviceExt;
 /// vertex storage buffers; keep its software path instead of a validation panic.
 pub fn enable_gpu(ctx: &egui::Context, device: &wgpu::Device) {
     ctx.data_mut(|data| data.insert_temp(egui::Id::new("pcb-3d-gpu-limits"), device.limits()));
+    ctx.data_mut(|data| data.insert_temp(egui::Id::new("pcb-3d-gpu-device"), device.clone()));
 }
 pub(super) fn supported(ctx: &egui::Context, scene: &Scene) -> bool {
     ctx.data(|data| data.get_temp::<wgpu::Limits>(egui::Id::new("pcb-3d-gpu-limits")))
@@ -52,6 +53,27 @@ impl Geometry {
 #[derive(Default)]
 pub(super) struct Renderer {
     buffers: Mutex<Option<Buffers>>,
+    preparation: Mutex<Preparation>,
+}
+#[derive(Clone)]
+struct PreparationKey {
+    scene: Arc<Scene>,
+    format: wgpu::TextureFormat,
+    size: [usize; 2],
+}
+impl PreparationKey {
+    fn matches(&self, scene: &Arc<Scene>, format: wgpu::TextureFormat, size: [usize; 2]) -> bool {
+        Arc::ptr_eq(&self.scene, scene) && self.format == format && self.size == size
+    }
+}
+struct PreparationJob {
+    key: PreparationKey,
+    receiver: mpsc::Receiver<Buffers>,
+}
+#[derive(Default)]
+struct Preparation {
+    job: Option<PreparationJob>,
+    failed: Option<PreparationKey>,
 }
 struct Target {
     size: [usize; 2],
@@ -110,6 +132,54 @@ fn blend() -> wgpu::BlendState {
     }
 }
 impl Buffers {
+    /// Keep compiled pipelines and render targets when only board geometry changes.
+    fn replace_scene(&mut self, scene: Arc<Scene>, device: &wgpu::Device) {
+        let geometry = &scene.geometry;
+        self.vertices = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("PCB 3D positions"),
+            contents: bytemuck::cast_slice(&geometry.vertices),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+        self.colors = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("PCB 3D materials"),
+            size: (geometry.styles.len() as u64 * 4).max(16),
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        self.binding = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("PCB 3D scene"),
+            layout: &self.solid_pipeline.get_bind_group_layout(0),
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: self.uniform.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: self.colors.as_entire_binding(),
+                },
+            ],
+        });
+        let indices_size = (geometry.vertices.len() as u64 * 4).max(16);
+        let index_buffer = |label| {
+            device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some(label),
+                size: indices_size,
+                usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            })
+        };
+        self.opaque = index_buffer("PCB 3D opaque indices");
+        self.transparent = index_buffer("PCB 3D transparent indices");
+        self.scene = scene;
+        self.opaque_count = 0;
+        self.transparent_count = 0;
+        self.transparent_indices.clear();
+        self.indices.clear();
+        self.style = None;
+        self.rendered = None;
+    }
+
     fn new(scene: Arc<Scene>, device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
         let geometry = &scene.geometry;
         let vertices = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -769,6 +839,109 @@ fn distance(a: [f32; 3], b: [f32; 3]) -> f32 {
         .sqrt()
 }
 impl Renderer {
+    pub fn preparing(&self) -> bool {
+        self.preparation.lock().unwrap().job.is_some()
+    }
+
+    pub fn prepare_background(
+        &self,
+        scene: &Arc<Scene>,
+        ctx: &egui::Context,
+        format: wgpu::TextureFormat,
+        size: [usize; 2],
+    ) -> bool {
+        let Some(device) =
+            ctx.data_mut(|data| data.get_temp::<wgpu::Device>(egui::Id::new("pcb-3d-gpu-device")))
+        else {
+            // Integrations without a registered device retain the callback path.
+            return true;
+        };
+        let mut preparation = self.preparation.lock().unwrap();
+        let received = preparation
+            .job
+            .as_ref()
+            .map(|job| (job.key.clone(), job.receiver.try_recv()));
+        if let Some((key, received)) = received {
+            match received {
+                Ok(buffers) => {
+                    *self.buffers.lock().unwrap() = Some(buffers);
+                    preparation.job = None;
+                    preparation.failed = None;
+                }
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    preparation.failed = Some(key);
+                    preparation.job = None;
+                }
+                Err(mpsc::TryRecvError::Empty) => {}
+            }
+        }
+        let ready = self
+            .buffers
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|buffers| {
+                Arc::ptr_eq(&buffers.scene, scene)
+                    && buffers.format == format
+                    && buffers
+                        .target
+                        .as_ref()
+                        .is_some_and(|target| target.size == size)
+            });
+        if ready {
+            return true;
+        }
+        if preparation
+            .failed
+            .as_ref()
+            .is_some_and(|key| key.matches(scene, format, size))
+        {
+            return false;
+        }
+        if preparation.job.is_none() {
+            let previous = self.buffers.lock().unwrap().take();
+            let scene = scene.clone();
+            let key = PreparationKey {
+                scene: scene.clone(),
+                format,
+                size,
+            };
+            let (sender, receiver) = mpsc::sync_channel(1);
+            preparation.job = Some(PreparationJob { key, receiver });
+            let ctx = ctx.clone();
+            std::thread::spawn(move || {
+                let mut buffers = if let Some(mut buffers) = previous.filter(|b| b.format == format)
+                {
+                    if !Arc::ptr_eq(&buffers.scene, &scene) {
+                        buffers.replace_scene(scene, &device);
+                    }
+                    buffers
+                } else {
+                    Buffers::new(scene, &device, format)
+                };
+                buffers.target(&device, size);
+                let _ = sender.send(buffers);
+                ctx.request_repaint();
+            });
+        }
+        ctx.request_repaint_after(std::time::Duration::from_millis(25));
+        false
+    }
+
+    pub fn failed(
+        &self,
+        scene: &Arc<Scene>,
+        format: wgpu::TextureFormat,
+        size: [usize; 2],
+    ) -> bool {
+        self.preparation
+            .lock()
+            .unwrap()
+            .failed
+            .as_ref()
+            .is_some_and(|key| key.matches(scene, format, size))
+    }
+
     pub fn callback(
         self: &Arc<Self>,
         state: &State,
@@ -814,11 +987,12 @@ impl CallbackTrait for Draw {
     ) -> Vec<wgpu::CommandBuffer> {
         let start = std::time::Instant::now();
         let mut buffers = self.renderer.buffers.lock().unwrap();
-        if buffers
-            .as_ref()
-            .is_none_or(|b| !Arc::ptr_eq(&b.scene, &self.state.scene) || b.format != self.format)
-        {
+        if buffers.as_ref().is_none_or(|b| b.format != self.format) {
             *buffers = Some(Buffers::new(self.state.scene.clone(), device, self.format));
+        } else if let Some(buffers) = buffers.as_mut()
+            && !Arc::ptr_eq(&buffers.scene, &self.state.scene)
+        {
+            buffers.replace_scene(self.state.scene.clone(), device);
         }
         let b = buffers.as_mut().unwrap();
         let changed = b.rendered != Some(self.key);
@@ -855,6 +1029,102 @@ impl CallbackTrait for Draw {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn colored_scene(color: Color32) -> Arc<Scene> {
+        let mut scene = Scene {
+            radius: 2.,
+            thickness: 1.,
+            ..Default::default()
+        };
+        for v in [
+            [[-1., -1., 0.], [1., -1., 0.], [1., 1., 0.]],
+            [[-1., -1., 0.], [1., 1., 0.], [-1., 1., 0.]],
+        ] {
+            scene.faces.push(Face {
+                triangle: Triangle { v, color },
+                owner: None,
+                material: 8,
+                layer: MULTI_LAYER,
+            });
+        }
+        scene.geometry = Geometry::new(&scene);
+        Arc::new(scene)
+    }
+
+    #[test]
+    fn replacing_geometry_keeps_pipelines_and_draws_the_new_scene() {
+        let instance = wgpu::Instance::default();
+        let Ok(adapter) = pollster::block_on(instance.request_adapter(&Default::default())) else {
+            return;
+        };
+        let (device, queue) =
+            pollster::block_on(adapter.request_device(&Default::default())).unwrap();
+        let mut buffers = Buffers::new(
+            colored_scene(Color32::RED),
+            &device,
+            wgpu::TextureFormat::Rgba8Unorm,
+        );
+        buffers.target(&device, [64, 64]);
+        let pipeline = buffers.solid_pipeline.clone();
+        let image_pipeline = buffers.image_pipeline.clone();
+        let scene = colored_scene(Color32::GREEN);
+        buffers.replace_scene(scene.clone(), &device);
+        assert_eq!(buffers.solid_pipeline, pipeline);
+        assert_eq!(buffers.image_pipeline, image_pipeline);
+        assert_eq!(buffers.target.as_ref().unwrap().size, [64, 64]);
+        let state = State {
+            scene,
+            ..Default::default()
+        };
+        buffers.styles(&state, &[], 1, &queue);
+        let mut encoder = device.create_command_encoder(&Default::default());
+        buffers.render(&state, Vec2::splat(64.), 1, &queue, &mut encoder);
+        queue.submit([encoder.finish()]);
+        let pixels = read_image(&device, &queue, &buffers);
+        let centre = &pixels[(32 * 64 + 32) * 4..][..4];
+        assert!(
+            centre[1] > centre[0] && centre[1] > centre[2],
+            "New geometry/materials must replace the old scene"
+        );
+    }
+
+    #[test]
+    fn pending_gpu_preparation_is_not_replaced_by_repeated_scene_requests() {
+        let instance = wgpu::Instance::default();
+        let Ok(adapter) = pollster::block_on(instance.request_adapter(&Default::default())) else {
+            return;
+        };
+        let (device, _) = pollster::block_on(adapter.request_device(&Default::default())).unwrap();
+        let ctx = egui::Context::default();
+        enable_gpu(&ctx, &device);
+        let renderer = Renderer::default();
+        let old = colored_scene(Color32::RED);
+        let wanted = colored_scene(Color32::GREEN);
+        let (sender, receiver) = mpsc::sync_channel(1);
+        renderer.preparation.lock().unwrap().job = Some(PreparationJob {
+            key: PreparationKey {
+                scene: old.clone(),
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                size: [64, 64],
+            },
+            receiver,
+        });
+        for _ in 0..20 {
+            assert!(!renderer.prepare_background(
+                &wanted,
+                &ctx,
+                wgpu::TextureFormat::Rgba8Unorm,
+                [64, 64]
+            ));
+            let preparation = renderer.preparation.lock().unwrap();
+            assert!(Arc::ptr_eq(
+                &preparation.job.as_ref().unwrap().key.scene,
+                &old
+            ));
+        }
+        assert!(renderer.buffers.lock().unwrap().is_none());
+        drop(sender);
+    }
+
     #[test]
     fn tilted_transparent_sheets_composite_in_pixel_depth_order_across_triangle_seams() {
         let instance = wgpu::Instance::default();

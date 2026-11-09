@@ -673,7 +673,7 @@ pub(super) fn rule_dialog(
         .collapsible(false)
         .resizable(false)
         .default_width(450.0)
-        .show(ctx, |ui| {
+        .show_stable(ctx, |ui| {
             for key in ["NAME", "SCOPE1EXPRESSION"] {
                 let mut value = property(&d.value, key).to_owned();
                 text_row(

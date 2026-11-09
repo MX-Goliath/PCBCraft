@@ -166,7 +166,7 @@ impl PcbCraft {
         let response=egui::Modal::new(egui::Id::new("pcb_component_update_options"))
             .backdrop_color(Color32::TRANSPARENT)
             .frame(egui::Frame::window(&ctx.style()).corner_radius(0))
-            .show(ctx,|ui| {
+            .show_stable(ctx, 408.,|ui| {
                 let (rect, _) = ui.allocate_exact_size(vec2(408.,442.),egui::Sense::hover());
                 let origin=rect.min;
                 let area=|x:f32,y:f32,w:f32,h:f32| egui::Rect::from_min_size(origin+vec2(x,y),vec2(w,h));

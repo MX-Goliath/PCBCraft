@@ -10,10 +10,17 @@ mod obstacles;
 pub use obstacles::Conflict;
 #[path = "pcb_route_drag.rs"]
 mod drag;
-pub use drag::{DragOptions, drag_track_endpoint, drag_tracks, track_selection};
+pub use drag::{
+    DragOptions, TrackDragPreview, TrackDragUpdate, drag_track_endpoint, drag_tracks,
+    track_selection,
+};
 #[path = "pcb_route_preview.rs"]
 mod preview;
 pub use preview::RoutePreview;
+#[path = "pcb_route_loops.rs"]
+mod loops;
+#[path = "pcb_route_targets.rs"]
+mod targets;
 
 /// Resolve an unconditional preferred routing dimension. Unknown higher-priority
 /// scopes stop resolution; they must not silently fall back to a generic rule.
@@ -54,6 +61,9 @@ pub enum Corner {
 #[derive(Clone)]
 pub struct RouteSession {
     pub revision: u64,
+    pub remove_loops: bool,
+    origin: Option<(Point, u16)>,
+    route_items: BTreeSet<Uuid>,
     draft: Board,
     pub anchor: Point,
     pub layer: u16,
@@ -68,9 +78,11 @@ pub struct RouteSession {
     obstacles: obstacles::Obstacles,
     checkpoints: Vec<Checkpoint>,
     preview: preview::Cache,
+    targets: Option<targets::Index>,
 }
 #[derive(Clone)]
 struct Checkpoint {
+    route_items: BTreeSet<Uuid>,
     items_len: usize,
     restored: Vec<(usize, Item)>,
     anchor: Point,
@@ -99,9 +111,16 @@ fn project(p: Point, a: Point, b: Point) -> Point {
     }
 }
 pub fn target(board: &Board, p: Point, layer: u16, tolerance: i64) -> Option<Target> {
-    board
-        .items
-        .iter()
+    target_from_items(board, p, layer, tolerance, board.items.iter())
+}
+fn target_from_items<'a>(
+    board: &Board,
+    p: Point,
+    layer: u16,
+    tolerance: i64,
+    items: impl Iterator<Item = &'a Item>,
+) -> Option<Target> {
+    items
         .filter(|i| {
             on_layer(board, i, layer) && !i.keepout && !i.is_drill_only() && i.polygon.is_none()
         })
@@ -131,7 +150,13 @@ pub fn target(board: &Board, p: Point, layer: u16, tolerance: i64) -> Option<Tar
         })
         .map(|x| x.0)
 }
-fn split_at(board: &mut Board, p: Point, layer: u16, net: Option<u32>) -> Result<(), String> {
+fn split_at(
+    board: &mut Board,
+    p: Point,
+    layer: u16,
+    net: Option<u32>,
+) -> Result<Vec<(Uuid, Uuid)>, String> {
+    let mut splits = Vec::new();
     let mut additions = Vec::new();
     for i in &mut board.items {
         if i.net != net || i.layer != layer || i.polygon.is_some() || i.component.is_some() {
@@ -157,12 +182,13 @@ fn split_at(board: &mut Board, p: Point, layer: u16, net: Option<u32>) -> Result
                     end: p,
                     width,
                 };
+                splits.push((i.id, other.id));
                 additions.push(other);
             }
         }
     }
     board.items.extend(additions);
-    Ok(())
+    Ok(splits)
 }
 impl RouteSession {
     pub fn begin(
@@ -174,6 +200,8 @@ impl RouteSession {
         width: i64,
         tolerance: i64,
     ) -> Result<Self, String> {
+        let profile = std::env::var_os("PCBCRAFT_ROUTE_PROFILE").is_some();
+        let started = std::time::Instant::now();
         if !copper_layer(layer) {
             return Err("Route on a copper layer".into());
         }
@@ -187,9 +215,12 @@ impl RouteSession {
         let width =
             crate::pcb_rules::preferred(board, &probe, "Width", "PREFEREDWIDTH")?.unwrap_or(width);
         crate::pcb_rules::route_check(board, &crate::pcb_rules::probe(layer, net, anchor, width))?;
+        let resolved = std::time::Instant::now();
         let mut draft = board.clone();
+        let cloned = std::time::Instant::now();
         split_at(&mut draft, anchor, layer, net)?;
         draft.validate()?;
+        let validated = std::time::Instant::now();
         // No Net is not a common electrical net. Only the copper touched at
         // startup and the session's own additions may merge with this route.
         let contacts = board
@@ -213,9 +244,25 @@ impl RouteSession {
         let obstacles =
             obstacles::Obstacles::for_contacts(&draft, layer, &probe, &contacts, board.items.len());
         obstacles.error()?;
+        let built = std::time::Instant::now();
         let preview = preview::Cache::new(board, &draft);
+        let targets = Some(targets::Index::new(board));
+        if profile {
+            eprintln!(
+                "route_begin target_rules_ms={:.3} clone_ms={:.3} split_validate_ms={:.3} obstacles_ms={:.3} preview_targets_ms={:.3} total_ms={:.3}",
+                (resolved - started).as_secs_f64() * 1000.,
+                (cloned - resolved).as_secs_f64() * 1000.,
+                (validated - cloned).as_secs_f64() * 1000.,
+                (built - validated).as_secs_f64() * 1000.,
+                built.elapsed().as_secs_f64() * 1000.,
+                started.elapsed().as_secs_f64() * 1000.
+            );
+        }
         Ok(Self {
             revision,
+            remove_loops: true,
+            origin: Some((anchor, layer)),
+            route_items: BTreeSet::new(),
             draft,
             anchor,
             layer,
@@ -230,7 +277,18 @@ impl RouteSession {
             obstacles,
             checkpoints: vec![],
             preview,
+            targets,
         })
+    }
+    /// Source endpoints for this routing revision. The controller must supply
+    /// the unchanged source board; placed preview legs are deliberately excluded.
+    pub fn source_target(&self, board: &Board, point: Point, tolerance: i64) -> Option<Target> {
+        if board.items.len() != self.source_len {
+            return None;
+        }
+        self.targets
+            .as_ref()?
+            .target(board, point, self.layer, tolerance)
     }
     fn checkpoint(&self, next: &Board) -> Checkpoint {
         let restored = self
@@ -243,6 +301,7 @@ impl RouteSession {
             .map(|(n, (a, _))| (n, a.clone()))
             .collect();
         Checkpoint {
+            route_items: self.route_items.clone(),
             items_len: self.draft.items.len(),
             restored,
             anchor: self.anchor,
@@ -269,7 +328,12 @@ impl RouteSession {
         // Connected dragging uses a separately prepared environment and must
         // never acquire a new no-net contact merely by dropping onto copper.
         (self.net.is_none() && self.source_len != usize::MAX)
-            .then(|| target(&self.draft, end, self.layer, 0))
+            .then(|| {
+                self.targets.as_ref().map_or_else(
+                    || target(&self.draft, end, self.layer, 0),
+                    |index| index.draft_target(&self.draft, end, self.layer, 0, self.source_len),
+                )
+            })
             .flatten()
             .filter(|t| t.net.is_none() && t.point == end)
             .map(|t| t.item)
@@ -356,9 +420,19 @@ impl RouteSession {
             return Ok(());
         }
         let mut next = self.append_to(self.draft.clone(), end)?;
-        split_at(&mut next, end, self.layer, self.net)?;
+        let added: Vec<_> = next.items[self.draft.items.len()..]
+            .iter()
+            .map(|i| i.id)
+            .collect();
+        let splits = split_at(&mut next, end, self.layer, self.net)?;
         next.validate()?;
         let checkpoint = self.checkpoint(&next);
+        self.route_items.extend(added);
+        for (old, new) in splits {
+            if self.route_items.contains(&old) {
+                self.route_items.insert(new);
+            }
+        }
         if let Some(id) = self.endpoint_contact(end) {
             self.contacts.insert(id);
         }
@@ -462,11 +536,21 @@ impl RouteSession {
                 },
             ));
         }
-        split_at(&mut next, end, self.layer, self.net)?;
-        split_at(&mut next, end, to_layer, self.net)?;
+        let added: Vec<_> = next.items[self.draft.items.len()..]
+            .iter()
+            .map(|i| i.id)
+            .collect();
+        let mut splits = split_at(&mut next, end, self.layer, self.net)?;
+        splits.extend(split_at(&mut next, end, to_layer, self.net)?);
         next.pours_stale |= !has_via && !next.polygon_pours.is_empty();
         next.validate()?;
         let checkpoint = self.checkpoint(&next);
+        self.route_items.extend(added);
+        for (old, new) in splits {
+            if self.route_items.contains(&old) {
+                self.route_items.insert(new);
+            }
+        }
         self.preview.invalidate(&checkpoint);
         self.checkpoints.push(checkpoint);
         self.contacts = contacts;
@@ -484,6 +568,7 @@ impl RouteSession {
                 self.draft.items[n] = item;
             }
             self.draft.pours_stale = c.pours_stale;
+            self.route_items = c.route_items;
             self.contacts = c.contacts;
             self.anchor = c.anchor;
             self.layer = c.layer;
@@ -506,8 +591,12 @@ impl RouteSession {
         if self.revision != current_revision {
             return Err("Document changed during routing; cancel and restart".into());
         }
-        self.draft.validate()?;
-        Ok(self.draft.clone())
+        let mut board = self.draft.clone();
+        if self.remove_loops {
+            loops::remove(self, &mut board);
+        }
+        board.validate()?;
+        Ok(board)
     }
 }
 #[cfg(test)]

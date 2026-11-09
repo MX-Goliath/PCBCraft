@@ -95,6 +95,7 @@ pub fn replace_polygon(board: &Board, polygon: Polygon) -> Result<Board, String>
     } else {
         next.polygon_pours.push(polygon);
     }
+    crate::pcb_polygon::remove_shelved_copper(&mut next);
     next.pours_stale = true;
     next.validate()?;
     Ok(next)
@@ -681,9 +682,30 @@ mod connected_drag_tests {
         ));
         let next = drag_connected(&b, &[id], Point::mm(1, 1), Point::mm(2, 0), 0.0).unwrap();
         assert_eq!(next.items[1].anchor(), Point::mm(3, 1));
+        let mut prepared = MovePreview::new_connected(&b, &[id]).unwrap();
+        let retained = prepared
+            .update(Point::mm(1, 1), Point::mm(2, 0), 0.)
+            .unwrap();
+        assert_eq!(*retained, next);
+        for angle in [0., 45., 90., -90.] {
+            let actual = prepared
+                .update(Point::mm(1, 1), Point::mm(3, 2), angle)
+                .unwrap();
+            assert_eq!(
+                *actual,
+                drag_connected(&b, &[id], Point::mm(1, 1), Point::mm(3, 2), angle).unwrap()
+            );
+            assert_eq!(*retained, next);
+        }
         b.items[1].locked = true;
         let before = b.clone();
         assert!(drag_connected(&b, &[id], Point::mm(1, 1), Point::mm(2, 0), 0.0).is_err());
+        let mut prepared = MovePreview::new_connected(&b, &[id]).unwrap();
+        assert!(
+            prepared
+                .update(Point::mm(1, 1), Point::mm(2, 0), 0.)
+                .is_err()
+        );
         assert_eq!(b, before);
     }
 }

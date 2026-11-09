@@ -269,7 +269,7 @@ impl PcbCraft {
         egui::Window::new("Available File-based Libraries")
             .open(&mut open)
             .default_width(620.0)
-            .show(ctx, |ui| {
+            .show_stable(ctx, |ui| {
                 ui.label("Installed");
                 ui.separator();
                 egui::ScrollArea::vertical()

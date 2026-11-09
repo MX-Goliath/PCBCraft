@@ -695,31 +695,34 @@ impl PcbCraft {
             tab_rect.right_top() - vec2(8., 0.),
         );
         if content.is_positive() {
-            ui.scope_builder(
+            // Dock geometry belongs to the splitter/user, not to the minimum
+            // width of a selected component's fields. scope_builder propagates
+            // the child's min_rect back into the SidePanel even when clipped.
+            // Allocate the dock rect below and keep content sizing local.
+            let mut content_ui = ui.new_child(
                 egui::UiBuilder::new()
                     .max_rect(content)
                     .id_salt((panel, "panel_content")),
-                |ui| {
-                    ui.set_clip_rect(content.intersect(ui.clip_rect()));
-                    if panel == Panel::Properties
-                        && let Some(p) = ui.ctx().input(|i| i.pointer.press_origin())
-                    {
-                        self.property_ui.focused = content.contains(p);
-                    }
-                    match panel {
-                        Panel::Projects => self.projects_content(ui),
-                        Panel::Git => self.git_panel_content(ui),
-                        Panel::ViewConfiguration => self.view_configuration_content(ui),
-                        Panel::Library => {
-                            self.library_panel_content(ui);
-                        }
-                        Panel::Properties => properties(self, ui),
-                        Panel::Components => self.components_panel(ui),
-                        Panel::Messages => self.messages_panel(ui),
-                        Panel::Changes => self.git_details_content(ui),
-                    }
-                },
             );
+            content_ui.set_clip_rect(content.intersect(ui.clip_rect()));
+            if panel == Panel::Properties {
+                content_ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
+                if let Some(p) = ui.ctx().input(|i| i.pointer.press_origin()) {
+                    self.property_ui.focused = content.contains(p);
+                }
+            }
+            match panel {
+                Panel::Projects => self.projects_content(&mut content_ui),
+                Panel::Git => self.git_panel_content(&mut content_ui),
+                Panel::ViewConfiguration => self.view_configuration_content(&mut content_ui),
+                Panel::Library => {
+                    self.library_panel_content(&mut content_ui);
+                }
+                Panel::Properties => properties(self, &mut content_ui),
+                Panel::Components => self.components_panel(&mut content_ui),
+                Panel::Messages => self.messages_panel(&mut content_ui),
+                Panel::Changes => self.git_details_content(&mut content_ui),
+            }
         }
         ui.allocate_rect(rect, Sense::hover());
     }
@@ -1008,7 +1011,7 @@ impl PcbCraft {
                             egui::Window::new(self.panel_title(panel))
                                 .id(Id::new(("embedded_dock", root.id)))
                                 .default_size([bounds[2], bounds[3]])
-                                .show(ctx, |ui| {
+                                .show_stable(ctx, |ui| {
                                     self.dock_node(ui, root, &root.tree, &mut properties)
                                 });
                         } else {

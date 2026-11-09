@@ -43,8 +43,8 @@ pub fn load(path: &Path) -> Result<Document, String> {
     if file.metadata().map_err(|e| e.to_string())?.len() > 256 * 1024 * 1024 {
         return Err("Document exceeds the 256 MiB limit".into());
     }
-    let mut doc: Document =
-        serde_json::from_reader(file).map_err(|e| format!("Invalid PCBCraft document: {e}"))?;
+    let mut doc: Document = serde_json::from_reader(std::io::BufReader::new(file))
+        .map_err(|e| format!("Invalid PCBCraft document: {e}"))?;
     if let Some(board) = &mut doc.pcb {
         altium_pcb::upgrade_polygons(board, doc.id)?;
         altium_pcb::upgrade_models(board);
@@ -96,8 +96,14 @@ pub fn save(path: &Path, doc: &Document) -> Result<(), String> {
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or(Path::new("."));
     let mut temp = tempfile::NamedTempFile::new_in(parent).map_err(|e| e.to_string())?;
-    serde_json::to_writer_pretty(&mut temp, doc).map_err(|e| e.to_string())?;
-    temp.write_all(b"\n").map_err(|e| e.to_string())?;
+    {
+        // Large poured regions emit millions of short JSON writes. Buffer them
+        // before the atomic file replacement instead of making each a syscall.
+        let mut writer = std::io::BufWriter::new(temp.as_file_mut());
+        serde_json::to_writer_pretty(&mut writer, doc).map_err(|e| e.to_string())?;
+        writer.write_all(b"\n").map_err(|e| e.to_string())?;
+        writer.flush().map_err(|e| e.to_string())?;
+    }
     if temp.as_file().metadata().map_err(|e| e.to_string())?.len() > 256 * 1024 * 1024 {
         return Err("Document exceeds the 256 MiB save limit".into());
     }

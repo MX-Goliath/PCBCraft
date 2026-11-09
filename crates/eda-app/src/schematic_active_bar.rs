@@ -1364,7 +1364,7 @@ impl PcbCraft {
         .id(egui::Id::new("schematic_arrange_dialog"))
         .collapsible(false)
         .resizable(false)
-        .show(ctx, |ui| {
+        .show_stable(ctx, |ui| {
             match &mut dialog {
                 Dialog::Offset { delta, .. } => {
                     for (label, value) in [("X", &mut delta.x), ("Y", &mut delta.y)] {

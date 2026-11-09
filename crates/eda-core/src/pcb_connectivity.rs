@@ -4,6 +4,7 @@ use crate::{pcb::*, pcb_polygon};
 use eda_geom::Point;
 use geo::{BoundingRect, Intersects, Polygon};
 use std::collections::BTreeMap;
+use uuid::Uuid;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Connection {
@@ -22,14 +23,29 @@ struct Copper {
 /// electrical geometry. Owning this input releases interactive preview storage.
 pub struct Snapshot {
     board: Board,
+    order: Vec<usize>,
+    derived: std::collections::BTreeSet<Uuid>,
 }
 impl Snapshot {
     pub fn new(board: &Board) -> Self {
+        Self::selected(board, |_| true)
+    }
+    fn selected(board: &Board, include: impl Fn(&Item) -> bool) -> Self {
+        let mut order = vec![];
+        let mut derived = std::collections::BTreeSet::new();
         let items = board
             .items
             .iter()
-            .filter_map(|item| {
+            .enumerate()
+            .filter_map(|(index, item)| {
+                if !include(item) {
+                    return None;
+                }
                 let net = connection_net(board, item)?;
+                order.push(index);
+                if item.polygon.is_some() {
+                    derived.insert(item.id);
+                }
                 Some(Item {
                     id: item.id,
                     layer: item.layer,
@@ -52,6 +68,8 @@ impl Snapshot {
             })
             .collect();
         Self {
+            order,
+            derived,
             board: Board {
                 items,
                 layers: board.layers.clone(),
@@ -61,6 +79,56 @@ impl Snapshot {
     }
     pub fn connections(&self) -> Vec<Connection> {
         connections(&self.board)
+    }
+    pub fn connections_cancellable(&self, cancelled: &dyn Fn() -> bool) -> Option<Vec<Connection>> {
+        connections_cancellable(&self.board, cancelled)
+    }
+    /// Source geometry stays immutable across route/move/placement frames.
+    /// These previews preserve original source slots and append new primitives;
+    /// commands that reorder the source require a fresh Snapshot instead.
+    /// `changed` must include every replaced, removed and appended primitive.
+    pub fn preview(
+        self: &std::sync::Arc<Self>,
+        board: &Board,
+        changed: &std::collections::BTreeSet<Uuid>,
+    ) -> PreviewSnapshot {
+        PreviewSnapshot {
+            source: self.clone(),
+            changed: Self::selected(board, |i| changed.contains(&i.id)),
+            excluded: changed.clone(),
+            stale: board.pours_stale,
+        }
+    }
+}
+pub struct PreviewSnapshot {
+    source: std::sync::Arc<Snapshot>,
+    changed: Snapshot,
+    excluded: std::collections::BTreeSet<Uuid>,
+    stale: bool,
+}
+impl PreviewSnapshot {
+    pub fn connections_cancellable(&self, cancelled: &dyn Fn() -> bool) -> Option<Vec<Connection>> {
+        // Assemble references on the worker, retaining original document order
+        // for stable island/MST tie breaking. No prefix shapes are cloned.
+        let mut items: Vec<_> = self
+            .source
+            .board
+            .items
+            .iter()
+            .zip(&self.source.order)
+            .filter(|(i, _)| {
+                !(self.excluded.contains(&i.id)
+                    || self.stale && self.source.derived.contains(&i.id))
+            })
+            .chain(self.changed.board.items.iter().zip(&self.changed.order))
+            .map(|(item, index)| (*index, item))
+            .collect();
+        items.sort_unstable_by_key(|(index, _)| *index);
+        connections_from_items(
+            &self.source.board,
+            items.into_iter().map(|(_, item)| item),
+            cancelled,
+        )
     }
 }
 fn connection_net(board: &Board, item: &Item) -> Option<u32> {
@@ -115,8 +183,15 @@ pub(crate) fn connections_cancellable(
     board: &Board,
     cancelled: &dyn Fn() -> bool,
 ) -> Option<Vec<Connection>> {
+    connections_from_items(board, board.items.iter(), cancelled)
+}
+fn connections_from_items<'a>(
+    board: &Board,
+    items: impl Iterator<Item = &'a Item>,
+    cancelled: &dyn Fn() -> bool,
+) -> Option<Vec<Connection>> {
     let mut nets: BTreeMap<u32, Vec<&Item>> = BTreeMap::new();
-    for item in &board.items {
+    for item in items {
         if cancelled() {
             return None;
         }
@@ -269,6 +344,74 @@ pub(crate) fn connections_cancellable(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn delta_snapshots_match_complete_connectivity_for_stale_pours_edits_and_removed_copper() {
+        let mut b = Board::default();
+        b.nets.push(Net {
+            index: 0,
+            name: "N".into(),
+            properties: Fields::new(),
+        });
+        for x in [0, 5, 10] {
+            b.items.push(Item::new(
+                MULTI_LAYER,
+                Some(0),
+                Shape::Via {
+                    position: Point::mm(x, 0),
+                    diameter: 800_000,
+                    hole: 300_000,
+                    from_layer: TOP,
+                    to_layer: BOTTOM,
+                },
+            ));
+        }
+        let mut fill = Item::new(
+            TOP,
+            Some(0),
+            Shape::Fill {
+                start: Point::mm(-1, -1),
+                end: Point::mm(11, 1),
+                rotation: 0.,
+            },
+        );
+        fill.polygon = Some(0);
+        b.items.push(fill);
+        let source = std::sync::Arc::new(Snapshot::new(&b));
+        let check = |board: &Board, changed: &std::collections::BTreeSet<Uuid>| {
+            let delta = source.preview(board, changed);
+            assert_eq!(
+                delta.connections_cancellable(&|| false).unwrap(),
+                connections(board)
+            );
+            assert!(delta.connections_cancellable(&|| true).is_none());
+        };
+        check(&b, &Default::default());
+        let mut moved = b.clone();
+        moved.pours_stale = true;
+        check(&moved, &Default::default());
+        let id = moved.items[0].id;
+        if let Shape::Via { position, .. } = &mut moved.items[0].shape {
+            *position = Point::mm(2, 3);
+        }
+        let mut changed = std::collections::BTreeSet::from([id]);
+        check(&moved, &changed);
+        let added = Item::new(
+            TOP,
+            Some(0),
+            Shape::Track {
+                start: Point::mm(2, 3),
+                end: Point::mm(5, 0),
+                width: 250_000,
+            },
+        );
+        changed.insert(added.id);
+        moved.items.push(added);
+        check(&moved, &changed);
+        changed.insert(moved.items[1].id);
+        moved.items.remove(1);
+        check(&moved, &changed);
+        assert_eq!(source.connections(), connections(&b));
+    }
     #[test]
     fn concentric_test_pad_connects_to_connector_land_and_only_plated_barrels_join_layers() {
         let connector = Item::new(

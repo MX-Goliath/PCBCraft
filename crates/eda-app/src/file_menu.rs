@@ -711,7 +711,7 @@ impl PcbCraft {
         if let Some(mut wizard) = self.file_state.wizard.take() {
             let mut keep = true;
             let mut import = false;
-            egui::Modal::new(egui::Id::new("file_import_wizard")).show(ctx, |ui| {
+            egui::Modal::new(egui::Id::new("file_import_wizard")).show_stable(ctx, 650., |ui| {
                 ui.set_min_size(egui::vec2(650., 420.));
                 ui.heading("Import Wizard");
                 ui.separator();
@@ -821,7 +821,7 @@ impl PcbCraft {
         if let Some(mut dialog) = self.file_state.script.take() {
             let mut keep = true;
             let mut run = false;
-            egui::Modal::new(egui::Id::new("run_script")).show(ctx, |ui| {
+            egui::Modal::new(egui::Id::new("run_script")).show_stable(ctx, 570., |ui| {
                 ui.set_width(570.);
                 ui.heading("Run Script");
                 ui.separator();

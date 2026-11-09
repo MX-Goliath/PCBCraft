@@ -146,10 +146,15 @@ pub struct View {
     pub display_date: String,
     #[serde(skip)]
     pub sch_tool_active: bool,
+    /// Only interactive document opening uses cooperative first-frame preparation.
+    #[serde(skip)]
+    pub sch_opening: bool,
     #[serde(skip)]
     pub sch_preview: Option<eda_core::schematic::Schematic>,
     #[serde(skip)]
     sch_junction_cache: schematic::JunctionCache,
+    #[serde(skip)]
+    sch_geometry_cache: schematic::GeometryCache,
     #[serde(skip)]
     sch_press_origin: Option<Pos2>,
     #[serde(skip)]
@@ -227,8 +232,10 @@ impl Default for View {
             source_display_path: String::new(),
             display_date: String::new(),
             sch_tool_active: false,
+            sch_opening: false,
             sch_preview: None,
             sch_junction_cache: None,
+            sch_geometry_cache: Default::default(),
             sch_press_origin: None,
             sch_primary_down: false,
             sch_primary_dragging: false,

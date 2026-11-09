@@ -4,6 +4,39 @@ use crate::{
     pcb::{Board, Item, Shape, TOP},
 };
 #[test]
+fn free_schematic_primitives_keep_exact_move_and_parameter_classification() {
+    let mut a = Document::new(DocumentKind::Schematic, "Indexed anchors");
+    for x in 0..256 {
+        a.schematic
+            .as_mut()
+            .unwrap()
+            .primitives
+            .push(crate::schematic_edit::primitive(
+                crate::schematic::SchPrimitiveKind::Rectangle {
+                    a: Point::mm(x, 10),
+                    b: Point::mm(x + 1, 11),
+                    radius: Point::default(),
+                },
+                None,
+            ));
+    }
+    let mut b = a.clone();
+    if let crate::schematic::SchPrimitiveKind::Rectangle { a, b, .. } =
+        &mut b.schematic.as_mut().unwrap().primitives[200].kind
+    {
+        a.x += 5_000_000;
+        b.x += 5_000_000;
+    }
+    let diff = compare(Some(&a), Some(&b));
+    assert_eq!(diff.changes.len(), 1);
+    assert_eq!(diff.changes[0].kind, Kind::Moved);
+    b.schematic.as_mut().unwrap().primitives[200].width_nm += 1;
+    let diff = compare(Some(&a), Some(&b));
+    assert_eq!(diff.changes.len(), 1);
+    assert_eq!(diff.changes[0].kind, Kind::Modified);
+    assert!(compare(Some(&a), Some(&a)).changes.is_empty());
+}
+#[test]
 fn hidden_parameters_do_not_expand_schematic_focus_bounds() {
     let d = Document::new(DocumentKind::Schematic, "Bounds");
     let s = d.schematic.as_ref().unwrap();

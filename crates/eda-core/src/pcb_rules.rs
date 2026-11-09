@@ -231,6 +231,91 @@ pub fn clearance(board: &Board, a: &Item, b: &Item) -> Result<Option<i64>, Strin
 pub(crate) fn obstacle_clearance(board: &Board, a: &Item, b: &Item) -> Result<Option<i64>, String> {
     clearance_with_obstacles(board, a, b, true)
 }
+/// A single immutable probe against many obstacles. Cache only that probe's
+/// scope results, lazily, preserving net gating and symmetric query error order.
+pub(crate) struct ObstacleClearances<'a> {
+    board: &'a Board,
+    probe: &'a Item,
+    rules: Vec<ObstacleRule<'a>>,
+    rooms: membership::Rooms<'a>,
+}
+struct ObstacleRule<'a> {
+    fields: &'a Fields,
+    first: &'a str,
+    second: &'a str,
+    probe_first: std::cell::OnceCell<Result<bool, String>>,
+    probe_second: std::cell::OnceCell<Result<bool, String>>,
+}
+impl<'a> ObstacleClearances<'a> {
+    pub(crate) fn new(board: &'a Board, probe: &'a Item) -> Self {
+        let mut rules: Vec<_> = board
+            .rules
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| enabled(r) && text(r, "RULEKIND") == "Clearance")
+            .collect();
+        rules.sort_by_key(|(i, r)| (text(r, "PRIORITY").parse::<u32>().unwrap_or(u32::MAX), *i));
+        let scope = |r, key| match text(r, key) {
+            "" => "All",
+            value => value,
+        };
+        Self {
+            board,
+            probe,
+            rooms: membership::Rooms::new(board),
+            rules: rules
+                .into_iter()
+                .map(|(_, fields)| ObstacleRule {
+                    fields,
+                    first: scope(fields, "SCOPE1EXPRESSION"),
+                    second: scope(fields, "SCOPE2EXPRESSION"),
+                    probe_first: Default::default(),
+                    probe_second: Default::default(),
+                })
+                .collect(),
+        }
+    }
+    pub(crate) fn clearance(&self, other: &Item) -> Result<Option<i64>, String> {
+        for rule in &self.rules {
+            if !net_scope_matches(
+                self.board,
+                text(rule.fields, "NETSCOPE"),
+                self.probe,
+                other,
+                true,
+            ) {
+                continue;
+            }
+            let evaluate = |item, expression, key| {
+                scope_prepared(self.board, item, expression, 0, Some(&self.rooms))
+                    .ok_or_else(|| format!("Unsupported query: {expression}"))
+                    .map_err(|error| {
+                        format!("{} (Clearance), {key}: {error}", text(rule.fields, "NAME"))
+                    })
+            };
+            let first = || {
+                rule.probe_first
+                    .get_or_init(|| evaluate(self.probe, rule.first, "SCOPE1EXPRESSION"))
+                    .clone()
+            };
+            let second = || {
+                rule.probe_second
+                    .get_or_init(|| evaluate(self.probe, rule.second, "SCOPE2EXPRESSION"))
+                    .clone()
+            };
+            if (first()? && evaluate(other, rule.second, "SCOPE2EXPRESSION")?)
+                || (evaluate(other, rule.first, "SCOPE1EXPRESSION")? && second()?)
+            {
+                return if net_tie_pair(self.board, self.probe, other) {
+                    Ok(Some(0))
+                } else {
+                    clearance_for_rule(rule.fields, self.probe, other).map(Some)
+                };
+            }
+        }
+        Ok(None)
+    }
+}
 fn clearance_with_obstacles(
     board: &Board,
     a: &Item,
@@ -648,6 +733,15 @@ pub fn default_rule(kind: &str) -> Fields {
 // Unknown predicates deliberately propagate; a higher-priority unknown rule
 // must not silently be replaced with a lower-priority All rule.
 pub(crate) fn scope(board: &Board, item: &Item, s: &str, depth: usize) -> Option<bool> {
+    scope_prepared(board, item, s, depth, None)
+}
+fn scope_prepared(
+    board: &Board,
+    item: &Item,
+    s: &str,
+    depth: usize,
+    rooms: Option<&membership::Rooms<'_>>,
+) -> Option<bool> {
     if depth > 32 || s.len() > 8192 {
         return None;
     }
@@ -674,7 +768,7 @@ pub(crate) fn scope(board: &Board, item: &Item, s: &str, depth: usize) -> Option
             }
         }
         if !closes {
-            return scope(board, item, &s[1..s.len() - 1], depth + 1);
+            return scope_prepared(board, item, &s[1..s.len() - 1], depth + 1, rooms);
         }
     }
     let upper = s.to_ascii_uppercase();
@@ -712,10 +806,10 @@ pub(crate) fn scope(board: &Board, item: &Item, s: &str, depth: usize) -> Option
             }
         }
         if !terms.is_empty() {
-            let mut result = scope(board, item, terms[0].0, depth + 1)?;
+            let mut result = scope_prepared(board, item, terms[0].0, depth + 1, rooms)?;
             for (index, (_, operator)) in terms.iter().enumerate() {
                 let term = terms.get(index + 1).map_or(&s[start..], |(term, _)| *term);
-                let next = scope(board, item, term, depth + 1)?;
+                let next = scope_prepared(board, item, term, depth + 1, rooms)?;
                 result = match *operator {
                     "AND" | "&&" => result && next,
                     "XOR" => result ^ next,
@@ -731,10 +825,10 @@ pub(crate) fn scope(board: &Board, item: &Item, s: &str, depth: usize) -> Option
             .next()
             .is_some_and(|c| c.is_whitespace() || c == '(')
     {
-        return scope(board, item, &s[3..], depth + 1).map(|v| !v);
+        return scope_prepared(board, item, &s[3..], depth + 1, rooms).map(|v| !v);
     }
     if let Some(tail) = s.strip_prefix('!') {
-        return scope(board, item, tail, depth + 1).map(|v| !v);
+        return scope_prepared(board, item, tail, depth + 1, rooms).map(|v| !v);
     }
     if upper.starts_with("COMPPARAMETERVALUE") {
         return membership::component_parameter_comparison(board, item, s);
@@ -746,7 +840,8 @@ pub(crate) fn scope(board: &Board, item: &Item, s: &str, depth: usize) -> Option
         return membership::field_comparison(board, item, s);
     }
     if let Some((left, expected)) = membership::boolean_comparison(s) {
-        return scope(board, item, left, depth + 1).map(|actual| actual == expected);
+        return scope_prepared(board, item, left, depth + 1, rooms)
+            .map(|actual| actual == expected);
     }
     match upper.as_str() {
         "ALL" | "TRUE" => return Some(true),
@@ -916,6 +1011,8 @@ pub(crate) fn scope(board: &Board, item: &Item, s: &str, depth: usize) -> Option
                 for value in &values {
                     result |= if name == "INLAYERCLASS" {
                         membership::in_layer_class(board, item.layer, value)?
+                    } else if let Some(rooms) = rooms {
+                        rooms.contains(item, value)?
                     } else {
                         membership::within_room(board, item, value)?
                     };
@@ -1105,6 +1202,63 @@ impl Board {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn prepared_obstacle_rules_preserve_symmetric_scopes_priority_and_errors() {
+        use super::*;
+        let mut board = Board::default();
+        let mut rule = default_rule("Clearance");
+        rule.insert("NETSCOPE".into(), "DifferentNets".into());
+        let mut fallback = rule.clone();
+        fallback.insert("PRIORITY".into(), "2".into());
+        fallback.insert("GAP".into(), "0.7mm".into());
+        rule.insert("PRIORITY".into(), "1".into());
+        rule.insert(
+            "OBJECTCLEARANCES".into(),
+            "ClearanceObj_Track-ClearanceObj_Via:118110".into(),
+        );
+        let probe = probe(TOP, Some(0), Point::default(), 200_000);
+        let mut obstacles: Vec<_> = [None, Some(0), Some(1)]
+            .into_iter()
+            .map(|net| {
+                Item::new(
+                    TOP,
+                    net,
+                    Shape::Via {
+                        position: Point::mm(2, 2),
+                        diameter: 600_000,
+                        hole: 300_000,
+                        from_layer: TOP,
+                        to_layer: BOTTOM,
+                    },
+                )
+            })
+            .collect();
+        let mut keepout = obstacles[1].clone();
+        keepout.keepout = true;
+        obstacles.push(keepout);
+        for (first, second) in [
+            ("IsTrack", "IsVia"),
+            ("IsVia", "IsTrack"),
+            ("False", "UnknownPredicate"),
+            ("UnknownPredicate", "False"),
+            ("IsVia", "UnknownPredicate"),
+            ("All", "All"),
+        ] {
+            rule.insert("SCOPE1EXPRESSION".into(), first.into());
+            rule.insert("SCOPE2EXPRESSION".into(), second.into());
+            board.rules = vec![fallback.clone(), rule.clone()];
+            let prepared = ObstacleClearances::new(&board, &probe);
+            // Same-net gating must not force a cached unsupported query; an
+            // earlier different-net error must not poison a later gated pair.
+            for index in [1, 0, 2, 3, 1, 0] {
+                assert_eq!(
+                    prepared.clearance(&obstacles[index]),
+                    obstacle_clearance(&board, &probe, &obstacles[index]),
+                    "{first} / {second}, obstacle {index}"
+                );
+            }
+        }
+    }
     use super::*;
     #[test]
     fn native_class_members_use_numeric_m_fields_and_respect_class_kind() {

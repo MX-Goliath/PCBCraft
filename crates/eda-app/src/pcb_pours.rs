@@ -1,19 +1,32 @@
 //! At most one background pour per document. Edits remain immediately usable;
 //! only the matching revision may receive derived copper, without another Undo.
 use super::OpenDocument;
-use eda_core::pcb_polygon::{self, PreparedPour};
+use eda_core::pcb_polygon::{self, PourControl, PreparedPour};
 use std::sync::mpsc;
 
 struct Job {
     revision: u64,
     receiver: mpsc::Receiver<Result<PreparedPour, String>>,
+    control: PourControl,
+}
+impl Drop for Job {
+    fn drop(&mut self) {
+        self.control.cancel();
+    }
 }
 #[derive(Default)]
 pub(super) struct State {
     job: Option<Job>,
     failed_revision: Option<u64>,
+    requested: bool,
 }
 impl State {
+    /// Explicit Repour also retries a failed revision and refreshes imported
+    /// copper that has not been marked stale by an edit in this session.
+    pub fn request(&mut self) {
+        self.failed_revision = None;
+        self.requested = true;
+    }
     pub fn update(
         &mut self,
         doc: &mut OpenDocument,
@@ -29,6 +42,11 @@ impl State {
                 .as_ref()
                 .is_some_and(|b| doc.pcb_editor.properties_dirty(b, revision));
         let mut error = None;
+        if let Some(job) = &self.job
+            && job.revision != revision
+        {
+            job.control.cancel();
+        }
         if let Some(job) = &self.job
             && (job.revision != revision || !editing)
         {
@@ -80,24 +98,36 @@ impl State {
         }
         if !editing
             && self.job.is_none()
-            && self.failed_revision != Some(doc.history.revision)
-            && let Some(board) = doc.model.pcb.as_ref().filter(|b| b.pours_stale)
+            && (self.requested || self.failed_revision != Some(doc.history.revision))
+            && let Some(board) = doc
+                .model
+                .pcb
+                .as_ref()
+                .filter(|b| b.pours_stale || self.requested)
         {
             let snapshot = board.clone();
             let document = doc.model.id;
             let revision = doc.history.revision;
             let (sender, receiver) = mpsc::sync_channel(1);
-            self.job = Some(Job { revision, receiver });
+            self.requested = false;
+            let control = PourControl::default();
+            self.job = Some(Job {
+                revision,
+                receiver,
+                control: control.clone(),
+            });
             let ctx = ctx.clone();
             std::thread::spawn(move || {
-                let result = pcb_polygon::prepare_repour(document, revision, &snapshot);
+                let result =
+                    pcb_polygon::prepare_repour_controlled(document, revision, &snapshot, &control);
                 let _ = sender.send(result);
                 ctx.request_repaint();
             });
         }
         doc.view.pcb.repour_pending = self.job.is_some();
+        doc.view.pcb.repour_progress = self.job.as_ref().map(|job| job.control.progress());
         if self.job.is_some() {
-            ctx.request_repaint_after(std::time::Duration::from_millis(25));
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
         error.map_or(Ok(()), Err)
     }
@@ -147,7 +177,11 @@ mod tests {
         let (sender, receiver) = mpsc::sync_channel(1);
         (
             State {
-                job: Some(Job { revision, receiver }),
+                job: Some(Job {
+                    revision,
+                    receiver,
+                    control: PourControl::default(),
+                }),
                 ..Default::default()
             },
             sender,
@@ -237,5 +271,71 @@ mod tests {
         assert!(state.job.is_none());
         assert_eq!(doc.model, before);
         assert!(!doc.view.pcb.repour_pending);
+    }
+    #[test]
+    fn manual_repour_refreshes_clean_imports_and_retries_failed_revision() {
+        for failed in [false, true] {
+            let mut doc = doc();
+            doc.model.pcb.as_mut().unwrap().pours_stale = false;
+            let revision = doc.history.revision;
+            let mut state = State::default();
+            if failed {
+                state.failed_revision = Some(revision);
+            }
+            let ctx = egui::Context::default();
+            state.update(&mut doc, &ctx, true).unwrap();
+            assert!(state.job.is_none());
+            state.request();
+            state.update(&mut doc, &ctx, true).unwrap();
+            assert!(state.job.is_some());
+            assert!(doc.view.pcb.repour_pending);
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while state.job.is_some() {
+                assert!(std::time::Instant::now() < deadline);
+                std::thread::sleep(std::time::Duration::from_millis(1));
+                state.update(&mut doc, &ctx, true).unwrap();
+            }
+            assert!(
+                doc.model
+                    .pcb
+                    .as_ref()
+                    .unwrap()
+                    .items
+                    .iter()
+                    .any(|i| i.polygon.is_some())
+            );
+            assert!(!doc.history.can_undo());
+        }
+    }
+    #[test]
+    fn closing_or_superseding_a_document_cancels_its_worker() {
+        let mut doc = doc();
+        let (mut state, _sender) = waiting(0);
+        let control = state.job.as_ref().unwrap().control.clone();
+        doc.history.revision += 1;
+        state
+            .update(&mut doc, &egui::Context::default(), true)
+            .unwrap();
+        assert!(
+            pcb_polygon::prepare_repour_controlled(
+                doc.model.id,
+                0,
+                doc.model.pcb.as_ref().unwrap(),
+                &control
+            )
+            .is_err()
+        );
+        let (state, _sender) = waiting(0);
+        let control = state.job.as_ref().unwrap().control.clone();
+        drop(state);
+        assert!(
+            pcb_polygon::prepare_repour_controlled(
+                doc.model.id,
+                0,
+                doc.model.pcb.as_ref().unwrap(),
+                &control
+            )
+            .is_err()
+        );
     }
 }

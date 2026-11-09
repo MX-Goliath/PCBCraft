@@ -1,5 +1,94 @@
 # Project assembly variants
 
+## Automatic component links follow-up - 2026-11-09
+
+Observation: in the installed Altium Designer Enterprise 24.4.1, opening
+Variants on the HAVAL2-1 project displayed Information before Variant Management.
+It listed incorrect links for R112, R90, R91 and ZQ1 and requested review,
+recompilation, resolution of warnings/errors and project saving. Acknowledging
+Information opened the manager. The manager was cancelled; no Save command or
+schematic edit was issued. No native Component Links button was observed there.
+
+The official [Variant Errors documentation](https://www.altium.com/documentation/altium-designer/variant-management-dialog#variant-errors)
+states that project settings are analyzed on opening the dialog, UID mismatches
+are resolved automatically, and saving the project retains the corrections.
+Duplicate designators require schematic correction and project validation.
+The [reannotation knowledge-base article](https://www.altium.com/documentation/knowledge-base/altium-designer/found-incorrect-links-between-project-variant-and-schematic-component-after-pcb-reannotation)
+also prescribes reopening Variants to refresh associations after reannotation.
+These sources document behavior, not the proprietary matching algorithm.
+
+Implementation: the former read-only unresolved-link check is preceded by a
+validated model operation. Exact full hierarchical UID matches take priority
+and refresh stale stored designators. A missing UID is replaced only when its
+stored designator identifies one current component with a unique UID, one stale
+variation claims that component and no exact match has reserved it. Duplicate
+UIDs, duplicate names, conflicting claimants and missing components remain
+unresolved without discarding their variation data. These conservative matching
+rules are implementation decisions; native internal algorithm equivalence is
+not established. UID case/slash normalization follows existing lookup rules.
+Legacy parameter-only entries retain their existing designator-based identity.
+
+Repairs preserve fitting state, parameters, alternate geometry and opaque native
+fields. They enter the dialog draft through validated history. Information uses
+the observed native message and precedes the manager; acknowledging it does not
+accept the draft. Manager OK applies the draft to the in-memory project and the
+existing guarded Save path writes the project. Cancel discards the draft. On the
+native QA copy, reopening Variants after Cancel repeated the same four-link
+warning. OK followed by explicit project Save corrected those four UIDs; reopening
+Variants then showed the manager directly. This bounded workflow now has native
+observation support; the exact internal timing of native draft mutation is not
+exposed by these observations.
+The existing manual Component Links picker remains an extension.
+
+Verification: added regression sources cover the four stale hierarchical UID
+examples, reannotation with exact UID precedence, ambiguity/missing components,
+idempotence, alternate/parameter/opaque preservation, Undo/Redo, information-before-
+manager ordering, acknowledgement/backdrop/Cancel behavior, explicit Save and
+native serialization/reopening. These sources are uncompiled and unrun under
+the user's continuing no-rebuild instruction. No updated PCBCraft window was
+launched; the existing unsaved user session was left open.
+
+A disposable project copy was prepared under
+`target/variants-link-qa-a3014411/`. Initial native QA stopped when Altium's window
+disappeared. The subsequent diagnostic supplied by the user confirmed X2.EXE
+APPCRASH events at both losses; no helper crash was established. Startup took
+about 35 seconds, so the early launcher timeout did not establish launch failure.
+After reading the local Computer Use README, verification resumed with the
+stable-sky adapter, fresh window selection and screenshot-only observations.
+No new launch, process termination or repeated input after an unknown outcome was
+needed. The original PCBCraft instance was untouched.
+
+Native QA confirmed Return and Escape acknowledge Information and open the
+manager. Cancel then reopening Variants repeats the warning. After manager OK,
+project bytes still matched the initial copy until the project-only Save command.
+The resulting native file contains exactly these four UID replacements, all
+retaining Kind=1 (Not Fitted):
+
+- R112: `\TIHJCEVI\WXMVVAEY` -> `\TIHJCEVI\KVRCDJEI`.
+- R90: `\TIHJCEVI\YRMNYXPC` -> `\TIHJCEVI\XCEMIHVS`.
+- R91: `\TIHJCEVI\OQKDWTJD` -> `\TIHJCEVI\HPIOPMMP`.
+- ZQ1: `\MNKFAVNF\WUEKOWZF` -> `\MNKFAVNF\BBCVTPWC`.
+
+All four native pairs match the source regression inputs. Reopening Variants
+after Save showed no Information. The saved QA project was then closed; original
+projects/applications remained open. SHA-256 hashes of all 15 original
+project/reference files and all nine QA schematic files remain unchanged.
+Snapshots and `native-link-verification.json` in that directory record the result.
+These are native observations and static source comparison, not executed Rust
+regressions or updated PCBCraft GUI verification.
+
+The native Save also canonicalized blank AlternatePart values and removed other
+variation records (234 designator keys in the independent inspection). This
+compiled-catalog cleanup is not copied into the incomplete PCBCraft catalog;
+missing/ambiguous entries are retained for review. The earlier raw-record scan
+is not an Altium compiled-catalog result and must not be substituted for this
+native-save observation.
+
+Remaining limits: full compiled Repeat/channel annotation and multipart folding
+are still incomplete in the component catalog, including native orphan cleanup.
+Exact message geometry/fonts at matched DPI and updated Windows/Linux runtime
+behavior need verification after rebuilding. No full Altium parity claim is made.
+
 The 2026-11-07 follow-up extends the earlier checkpoint. This remains a partial
 Altium implementation; observation, implementation and verification are separate.
 

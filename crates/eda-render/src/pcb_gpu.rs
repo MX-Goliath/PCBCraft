@@ -32,7 +32,7 @@ pub fn enable_gpu_with_device(
         )
     });
 }
-pub(super) fn copy_configuration(from: &Context, to: &Context) {
+pub(crate) fn copy_configuration(from: &Context, to: &Context) {
     if let Some(format) = format(from) {
         enable_gpu(to, format);
     }
@@ -103,7 +103,7 @@ impl Scene {
             },
         ))
     }
-    pub(super) fn prepare_background(&self, ctx: &Context) {
+    pub(crate) fn prepare_background(&self, ctx: &Context) {
         if let Some(upload) =
             ctx.data_mut(|data| data.get_temp::<Upload>(egui::Id::new("pcb-gpu-upload")))
         {
@@ -527,6 +527,62 @@ mod tests {
         view.pcb.set_preview(None);
         render(&mut view);
         assert!(view.pcb.paint_cache.builds > built.unwrap());
+        let mut placement = InsertPreview::new(&b).unwrap();
+        let mut resident = None;
+        for n in 0..6 {
+            view.pcb.set_preview(None);
+            let position = Point {
+                x: n * 125_000,
+                y: 500_000,
+            };
+            let shape = if n % 2 == 0 {
+                Shape::Pad {
+                    position,
+                    size: Point::mm(1, 2),
+                    rotation: 30.,
+                    shape: PadShape::Round,
+                    hole: 300_000,
+                    plated: true,
+                    name: "1".into(),
+                    bottom_size: None,
+                    middle_size: None,
+                }
+            } else {
+                Shape::Via {
+                    position,
+                    diameter: 900_000,
+                    hole: 300_000,
+                    from_layer: TOP,
+                    to_layer: BOTTOM,
+                }
+            };
+            let next = placement
+                .update(vec![Item::new(MULTI_LAYER, None, shape)])
+                .unwrap();
+            view.pcb
+                .set_insert_preview_shared(next, placement.source_len());
+            let actual = render(&mut view);
+            if let Some(scene) = &resident {
+                assert!(Arc::ptr_eq(
+                    scene,
+                    view.pcb.paint_cache.resident_scene().as_ref().unwrap()
+                ));
+            } else {
+                resident = view.pcb.paint_cache.resident_scene();
+            }
+            let mut fresh = view.clone();
+            fresh.pcb.route_preview = None;
+            fresh.pcb.preview_items = None;
+            fresh.pcb.paint_cache = Default::default();
+            let expected = render(&mut fresh);
+            let error = actual
+                .iter()
+                .zip(expected)
+                .map(|(a, b)| a.abs_diff(b))
+                .max()
+                .unwrap();
+            assert!(error <= 2, "placement step {n} pixel error {error}");
+        }
     }
     #[test]
     fn resident_artwork_matches_egui_meshes_during_pan_clip_dpi_and_blending() {

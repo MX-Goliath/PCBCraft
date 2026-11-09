@@ -89,3 +89,37 @@ contrast, some label baselines/metrics, title-block fields and project special-s
 behavior, Active Bar, Properties and other styles. Linux passed all-targets source
 checks; Linux GUI runtime and DPI were not checked. Neither an absence of import
 warnings nor matching overall sheet size is a criterion for exact completion.
+
+
+### Pin strokes and labels - November 9, 2026
+
+Observation: the available Altium Designer Enterprise 24.4.1 Preferences >
+Schematic > General shows Pin Margin Name = 50 mil and Number = 80 mil. The
+Preferences dialog was cancelled without applying changes. Existing reference
+sheets were opened and inspected without saving or editing their contents.
+Altium's [symbol documentation](https://www.altium.com/documentation/altium-designer/components-libraries/creating-schematic-symbol)
+describes pin text margins relative to the non-electrical end of the pin and a
+separate Line Width for graphical pin symbols.
+
+Implementation: the renderer uses those observed body-relative margins rather
+than centring the number on the pin length and adding a 30 mil perpendicular
+translation. Number text stays above horizontal pins and to the left of vertical
+pins for both opposing orientations. Vertical pin names align towards the inside
+of the component. Pin lines use a one-physical-pixel minimum at low zoom, rather
+than the one-logical-point minimum retained for other schematic artwork.
+SYMBOL_LINEWIDTH is typed separately from the pin's line width, validated,
+rendered and written back for native schematic/library output. Older JSON scenes
+can retain the original native symbol width without a model migration.
+
+Validation: formatting and static source checks only. Added renderer coverage for
+four orientations, two lengths/zooms and 100/150/200 percent DPI, and import/JSON/
+native library preservation regressions. These tests have not been compiled or
+run: the user explicitly deferred rebuilding. Further live reference inspection
+stopped when Computer Use reported `foreground window did not report a process id`
+and then returned no Altium window. No replacement app was launched.
+
+Exact raster/ink-baseline parity remains unverified. Custom per-pin text positions
+are still unsupported; raw native properties remain preserved. The observed
+50/80 mil values are renderer defaults for this reference, not a complete editable
+Schematic General preferences implementation. Other local settings and Linux
+runtime still require comparison after a later build.

@@ -3722,3 +3722,650 @@ Data: `docs/pcb-update/artwork-groups-performance-2026-10-25.json`.
   mocked: it fails before the fix and passes afterward, checking license files,
   launcher, output and checksum. All six Python release tests pass. Rust sources
   are unchanged from the verified 809-test build. Commit/push requested by user.
+
+
+### 2026-11-05 - polygon repour and component-move correction
+
+- User clarified the failure occurs after moving a component: repour either does
+  not finish or takes a very long time. The move paths do set `pours_stale` and
+  release their interaction state. The synchronous explicit command, repeated
+  obstacle booleans, missing native options and uninterruptible obsolete work
+  were separate defects. See `docs/pcb-update/POLYGON_POURS.md`.
+- Manual/automatic work now shares the revision-checked background generator;
+  superseded/closed work cancels, failed revisions can be retried, and progress
+  shows completed/total polygons. A validated typed result avoids a second full
+  geometry validation on the UI thread. Progress polling is 10 Hz; completion
+  and input events still request immediate redraws.
+- Batched obstacle unions normalize ring winding. A conservative spatial tree
+  includes rule-matrix bounds, and per-calculation geometry/buffer caches avoid
+  rebuilding the same obstacles for overlapping polygons. Native dead-copper,
+  area, neck and same-net settings are interpreted; graphic-layer polygons and
+  selective copper keepouts are handled. Shelving removes derived copper
+  immediately. JSON migration preserves deliberate deletion of the last pour.
+- Live AD24.4.1 manager/menu observation distinguishes area removal, dead copper,
+  neck threshold and same-net options. Only research copies were used for native
+  experiments. A template-free authored native file failed to load in Altium:
+  this existing serialization limitation remains explicit, not a parity claim.
+- Read-only ReferencePolygonA: 41475 items and 74 editable polygons (including
+  masks), 40 retained import warnings. First batch-only probe: 31939.5 ms,
+  deterministic repeat 30806.2 ms. After spatial/cached obstacles: 12540.8 ms,
+  repeat 12332.3 ms, 89 generated objects. These are CPU probes during concurrent
+  compiler activity, not a universal interaction-latency claim.
+- Read-only ReferencePolygonB: 31257 items, two polygon definitions, 31 retained
+  import warnings; repour 356.0 ms, repeat 383.7 ms, 340 generated objects and
+  deterministic equality. Existing STEP interpretation diagnostic remains.
+- Whole-component ReferencePolygonA profile: move/validate/history 258.1 ms,
+  stale flag set; repour/apply 18034.6 ms, repeat 16217.3 ms; one Undo/Redo
+  restores original/moved copper respectively. A separate ignored JSON research
+  result was saved. These measurements preceded removing redundant UI-thread
+  validation and include concurrent compiler activity.
+- Regression coverage added for fast/cached pointer moves and keyboard
+  Move/Drag followed by automatic repour and a single Undo/Redo; mixed winding,
+  holes, same-net modes, masks, selective keepouts, necks, remote matrix-clearance
+  obstacles, cancellation/retry, shelving and native option roundtrips.
+- Large JSON serialization now buffers short writes before atomic replacement.
+  New geometry/native/UI limitations are recorded in `docs/features.json`.
+  Final checks and current-window verification follow below.
+- Final conservative spatial bounds also cover basic and advanced Polygon
+  Connect thermal air gaps, including pads whose copper lies outside a pour.
+  Legacy simple pads include larger bottom/middle lands in their item bounds;
+  a bottom-layer regression prevents pruning such a land by its smaller top size.
+  Version 1 JSON migration preserves edited typed dead-copper/area settings and
+  marks derived copper stale when newly interpreted settings change.
+- Real Windows GUI: the synthetic editor-v2 board's explicit Repour All works
+  on a clean import. Moving the entire R1 from (10, 10) to (14, 13) mm repours
+  automatically: the old pad void disappears and the new one is cleared. One
+  Undo and Redo restore original/moved component and copper. Polygon properties
+  show independent dead-copper/area/neck controls and disabled Hatched mode;
+  Shelve immediately removes copper and Restore generates it again.
+- Real Windows GUI ReferencePolygonA: counted menu shows 74 pours; Repour All
+  progresses through 60/74 and 73/74 and completes. Fit Board remains usable.
+  Two component moves each trigger automatic repour; the final result applies
+  at the latest position and the pending indicator disappears. The private
+  research tab was closed with Discard Changes; no native source was saved.
+  This is functional QA, not an Altium electrical/bitmap equivalence claim.
+- ReferencePolygonB whole-component probe: move 195.7 ms, repour/apply 466.2 ms,
+  repeat 429.5 ms; deterministic output and one Undo/Redo verified.
+- The existing GPU routing regression used a dithered resident callback with an
+  undithered egui renderer, unlike native eframe's default. The test now runs
+  both framebuffer modes consistently on both paths, with the original channel
+  tolerances unchanged. Runtime rendering was not changed for this correction.
+- Final `cargo fmt --all -- --check`, strict workspace/all-target Clippy,
+  privacy scan and `git diff --check` PASS. New untracked source/report files
+  were scanned separately with the same privacy rules, with no findings.
+- Final Windows `cargo build -p eda-app` PASS. The resulting exe was relaunched
+  alone: editor-v2 component move automatically generates copper, one Undo
+  restores the original imported board, and explicit Repour All succeeds.
+  The sole PCBCraft GUI remains on the clean synthetic fixture; private PCB
+  research tabs are closed and source files were not saved.
+- Final `cargo test --workspace` PASS: 760 unit tests (app 172, core 324,
+  geometry 1, IO 149, renderer 114), zero failures; documentation tests PASS.
+  This includes the legacy bottom-land pruning regression and the unchanged
+  GPU channel tolerances in consistent dithered/undithered framebuffer modes.
+
+
+## 2026-11-05 ? PCB routing and editing latency
+
+- User report: severe routing and general PCB editing latency. Read-only CPU
+  probes on ReferencePolygonA/B separate endpoint picking, route model, preview
+  publication, canvas/tessellation, loading and cold session preparation.
+- Endpoint lookup was linear on every pointer update (baseline medians 1.8581
+  and 13.5689 ms). It now uses a session-scoped conservative R-tree followed by
+  unchanged exact picking. Tests compare exhaustive/indexed results across ties,
+  layers, rotated pads and unequal multilayer lands.
+- Stop bisection retains all forty steps but memoizes identical rounded segments.
+  No clearance, solver conflict mode or search limit was relaxed.
+- Keyboard Move and component/pad Drag now use prepared transactions and reuse
+  stationary requests; pointer connected component Drag shares the same path.
+  Attached endpoints are prepared once, validated before mutation and protected
+  by copy-on-write. Track-drag obstacle solving and polygon edits retain fallback.
+- Placement previews reuse validated source storage plus stable-identity tails,
+  stationary artwork and spatial data. Commit remains a complete validated edit.
+  Region/arc/rectangle and ordinary primitive placement use this path; Paste and
+  board-outline edits remain full transactions.
+- Connectivity caches compact geometry once per revision; incremental preview
+  packets share stationary geometry without retaining mutable editor storage.
+  Obsolete work cooperatively cancels and cannot overwrite current airwires.
+  Full/delta ordering, stale-pour exclusion and removal/addition are covered.
+- An existing 107 MB research JSON took 176074.4 ms to load through unbuffered
+  File reads; BufReader reduced an intermediate repeat to 1577.3 ms. Both are
+  local CPU observations with uncontrolled background load, not guaranteed limits.
+- Added read-only interaction profiler comparing prepared/full Move, connected
+  Drag and placement with exact final geometry equality. Route profiler includes
+  loading/preparation and optional old linear picker/connectivity checks.
+- Windows was locked during final build; native-window verification requires
+  an unlocked session. The sole old test process was our 11:22 fixture instance
+  with the built-in example and public fixture; it was stopped for rebuilding.
+  No native research source was saved. Final measurements and gates follow.
+
+- Final matched `--varied` routing CPU medians: ReferencePolygonA 22.0497 ->
+  16.0570 ms; B 15.8140 -> 2.6226 ms. Endpoint picking 1.8581 -> 0.0204 and
+  13.5689 -> 0.0051 ms respectively. First preview remains 123.6 / 177.3 ms;
+  session preparation 1021.1 / 391.4 ms is separate. Regular tiny-offset A remains
+  22.1150 ms median, so there is no universal frame-rate claim. PERFORMANCE.md and
+  editing-performance-2026-11-05.json retain all final/regular/intermediate data.
+- Final full/prepared model transaction medians: A Move 127.0483/0.0682 ms,
+  connected Drag 194.7244/0.0615 ms, placement 124.1951/0.0004 ms. B:
+  103.8880/0.0254, 104.2085/0.0253 and 102.2498/0.0005 ms. Exact final Board
+  equality passed on both inputs; setup remains 85.9-122.4 ms, drawing excluded.
+- Final buffered 107 MB research JSON load 1404.3 ms; varied route median/p95
+  19.5264/21.3136 ms. Existing ReferencePolygonB STEP diagnostic remains.
+- Final strict workspace/all-target Clippy PASS. Both full workspace runs PASS:
+  765 unit tests (app 174, core 327, geom 1, IO 149, renderer 114), zero failures;
+  documentation tests PASS. Current Windows exe and both profiler examples built.
+- Windows unlocked by the user; current exe native QA PASS. editor-v2: component
+  move/automatic pour, route preview/placement/Finish, via preview/placement, one
+  Undo per operation. ReferencePolygonA: Edit -> Drag component preview/commit,
+  automatic 74-pour completion and one Undo to the original clean board. A Top-pad
+  route preview moves and dismisses cleanly. No research source was saved. The
+  research tab was closed cleanly; only clean editor-v2 remains in the sole GUI.
+- Cold session creation, initial artwork, full commit validation, obstacle-solving
+  track Drag, polygon/outline edits, Paste, complex pour booleans and large 3D
+  rebuilds remain performance limits. No full Altium/Linux latency parity claim.
+
+### 2026-11-05: PCB pointer responsiveness
+
+- User reports sluggish pointer movement independently of previous routing
+  measurements. Observed: configured PCB crosshair is drawn in the frame with
+  the system pointer hidden. Native eframe used the default egui-wgpu presentation
+  queue, so geometry-only CPU probes did not cover this source of visible delay.
+- Native app now requests maximum frame latency 1, retaining AutoVsync. This is
+  a driver-dependent hint; end-to-end input-to-photon delay is not measured.
+- Cache the exact flattened polygon outer rings and their segment spatial index
+  per scene. Preserve core distance tests, selection order/filters and holes.
+  Component interior hover uses the existing ID index. Read-only cache preparation
+  no longer invalidates source provenance and forces a cold route rebuild.
+- Add a fixed-camera 480-point cursor sweep to the read-only frame probe.
+  Baseline CPU mean/p95: ReferencePolygonA 4.93/5.89 ms; B 1.24/1.57 ms.
+  GPU callbacks are enabled but are not executed by this CPU probe. Separate
+  completed offscreen Vulkan GPU baseline A median/p95: 6.62/12.91 ms.
+- The full run caught an existing canvas test adding a polygon without a
+  revision change. Geometry preparation now also checks polygon count before
+  reusing the cache; the unchanged empty-polygon selection test passes.
+- Final fmt and strict workspace/all-target Clippy PASS. All 766 workspace unit
+  tests PASS (app 174, core 327, geometry 1, IO 149, renderer 115); documentation
+  tests PASS. The Windows exe and both frame probes built successfully.
+- Matched CPU sweeps ran serially after compilation, with the GUI closed:
+  A mean/p95/max 6.16/8.23/17.62 -> 5.61/6.87/8.35 ms; B
+  1.59/2.39/3.87 -> 1.14/1.33/1.99 ms. Each case has 480 samples and zero
+  frames over 33 ms. These exclude native panels/presentation/input latency;
+  system frequency/thermal conditions remain uncontrolled. JSON and PERFORMANCE
+  retain the conditions and results; no universal frame-rate claim.
+- Current exe launched as the sole GUI on clean ReferencePolygonA. Windows
+  automatically re-locked during compilation: screenshot is black, activation
+  fails and LogonUI is present. The app continues submitting frames; no surface
+  error is reported. Asked the user to unlock again; visual cursor QA remains
+  pending. No research source was saved.
+- User unlocked Windows again. Native QA on the current exe PASS: Fit Board,
+  raw cursor updates across empty canvas/dense copper/polygon edge; route from
+  a Top pad with both blocked-clearance and valid preview changes; Escape twice
+  cancels the uncommitted route and restores clean ordinary selection. The sole
+  GUI remains open on clean ReferencePolygonA; no native source was saved.
+- Native mixed CPU batch across cold route startup/preview: median/p95/max
+  9.42/25.83/1106.60 ms (120 frames); a later cancellation/redraw batch reached
+  499.66 ms. These include idle/controller/panel/artwork work, exclude GPU
+  presentation and do not measure steady cursor or input-to-photon latency.
+  Cold routing/redraw stalls remain explicitly limited; no Altium parity claim.
+
+### 2026-11-05: connected track drag and routing follow-up
+
+- Reproduced repeated native connected-track failures and multi-second complete
+  transaction solves. A blocked pointer frame discarded the last valid preview.
+- Single assigned-net body/endpoint/keyboard Drag now reuses validated source,
+  working geometry, source-slot indices and shared immutable obstacle environments.
+  Sparse resets, stable appended IDs and copy-on-write snapshots preserve previews.
+  Blocked requests retain a bounded, connected legal position; release commits
+  displayed geometry. Full finish/History validation remains mandatory.
+- Renderer refits both current and restored source slots. No Net new-route
+  endpoint contact uses the source spatial index and appended tail, preserving
+  document order, native hit tolerances and backtracking behavior.
+- Warm checkpoint: 773 workspace unit tests and documentation tests, fmt, strict
+  all-target Clippy PASS; Windows 15:38 exe built. Read-only serial measurements,
+  geometry equivalence, exact commit/Undo and conditions are in PERFORMANCE.md
+  and editing-performance-2026-11-05.json. No private board data was added.
+- Native 15:38 GUI: connected body drag/place and new-route movement/place/finish
+  PASS. Each own transaction undone exactly once; the user's preceding unsaved
+  edits preserved. User reports improved movement with a noticeable initial pause.
+- Cold-start investigation separates target/rules, cloning, validation, obstacle
+  preparation and initial preview/index construction. Maximum rule gap bounds
+  are invariant per object kind/cutout status for an immutable probe and board;
+  repeated matrix scans are now cached. Fixed-probe scope evaluation and parsed
+  Room geometry are cached only within obstacle construction. Moving route legs
+  still resolve live scopes. Priority, net gating and unsupported-rule errors
+  retain their existing evaluation order. Final cold-start results follow.
+
+- Final cold-start checkpoint on ReferencePolygonA, serial after compilation
+  with the previous GUI open and idle: route begin assigned/No Net
+  344.184/345.854 ms; connected drag first reachable/constrained
+  367.51/390.50 ms. Reachable full-transaction equivalence
+  and both exact commit/Undo checks PASS. Conditions and complete warm CPU
+  distributions are retained in PERFORMANCE.md and the public JSON. Cold
+  preparation remains perceptible; no native latency or full Altium parity claim.
+- Final fmt, strict workspace/all-target Clippy, all 775 unit tests
+  (app 174, core 335, geometry 1, IO 149, renderer 116), documentation tests
+  and Windows exe build PASS. Privacy checks cover tracked and new public files.
+  Latest native verification awaits restart: user unsaved edits remain in the
+  sole previous GUI; that session is not closed and no source was saved.
+
+- User explicitly authorized discarding the old unsaved test session. Closed
+  that GUI without saving, then launched the 16:17 build as the sole GUI.
+  Native cold assigned-route start, moving preview/place/finish/Undo, connected
+  body drag/place/Undo and constrained drag/Undo PASS. Final clean board is
+  open with ordinary selection, Top active and All Objects/All Layers restored.
+- Native first assigned begin: 365.845 ms, environment 169.774 ms; mixed CPU
+  startup batch max 434.70 ms, constrained drag/release batch max 578.88 ms.
+  These include controller/panel/artwork/History work, not native input latency.
+  Remaining pause/redraw limits and exact conditions are recorded in PERFORMANCE.
+- Additional visually free starts selected copper on other document-visible
+  layers even with Current Layer snapping; current route-start search is broader
+  than display/snap mode. Cancelled those attempts, recorded the limitation in
+  features.json; no native No Net motion claim. Explicit read-only No Net probes
+  passed. No source file was saved.
+
+
+### 2026-11-06 ? Existing-track rerouting
+
+- Observed live AD 24.4.1 Automatically Remove Loops, Shift+D, and separate
+  Remove Loops With Vias options via routing/Tab; no segments placed or file saved.
+- Implemented unambiguous unbranched same-layer old-path replacement at Finish,
+  preserving outside tails, Backspace state, source immutability and one History
+  transaction. Intermediate rejoin before continuing is handled too.
+- Enabled Automatically Remove Loops and Shift+D; via-loop option remains
+  disabled. Bounds documented in INTERACTIVE_ROUTING.md and features.json;
+  full Altium parity is not claimed. Full checks and GUI results follow.
+
+- Final verification: cargo fmt --all -- --check; strict workspace/all-target
+  Clippy; cargo test --workspace: 781 passed (175 app, 340 core, 1 geom,
+  149 IO, 116 render). Five core loop tests and the complete editor rerouting
+  test cover replacement, splits/tails, continuation, history, toggles/imported
+  per-net LOOPREMOVAL, locks, branches and arbitrary copper contacts.
+- Windows native GUI, isolated portable session: start at the middle of one
+  track, place a detour, rejoin; obsolete middle removed and both tails retained.
+  Ctrl+Z restores the straight source, Ctrl+Y restores the detour. Shift+D off
+  retains the old path; Properties checkbox is enabled, via option disabled.
+  Screenshots are in target/routing-check/reroute-*.jpg; test log is
+  target/routing-check/reroute-workspace-tests.log. Source PcbDoc and its
+  pre-experiment copy still match by SHA-256. No full Altium parity claim.
+
+
+### 2026-11-06 ? Existing-segment mouse sliding (user clarification)
+
+- User priority: drag the body of an existing segment with the mouse.
+- Replaced full-vector endpoint translation with normal projection for a single
+  body drag. Simple-chain endpoints intersect the original neighbour lines,
+  preserving adjacent angles and fixed outside ends without extra elbows.
+- Cached immutable slide geometry is shared by prepared previews and complete
+  transactions. Stops before corner inversion/passing a fixed vertex. Endpoint
+  edits, rotation and multi-segment selections retain their separate behavior.
+- Added core rotation/diagonal/tangent/constrained-preview regressions and a
+  full ordinary-mouse controller test for fast release, preview identity and
+  one-step Undo/Redo. Branches/fixed terminals retain the connected fallback.
+- Exact remaining bounds are documented in INTERACTIVE_ROUTING.md; validation
+  and native GUI observations follow after checks finish.
+
+- Final verification: cargo fmt --all -- --check, strict workspace/all-target
+  Clippy, cargo test --workspace and Windows build pass. All 785 tests passed
+  (176 app, 343 core, 1 geom, 149 IO, 116 render).
+- Native Windows GUI: ordinary mouse drag with diagonal pointer motion slides
+  the horizontal middle from (4,4)-(12,4) to (6,6)-(10,6) mm. Exactly three
+  connected legs remain, both outer ends stay fixed and adjacent diagonals
+  retain their angles. Ctrl+Z restores the original in one step; Ctrl+Y restores
+  the result. Test document returned to its clean state; isolated GUI closed.
+  Screenshots: target/routing-check/sliding-{before,after,undo,redo}.jpg;
+  logs: sliding-tests.log and sliding-clippy.log in the same directory.
+- Native AD24.4.1 experiments used disposable documents only and did not
+  establish coordinate-by-coordinate equivalence for this chain. The reference
+  sliding behavior comes from official documentation; implementation and GUI
+  checks above are independent evidence, not a full Altium parity claim.
+
+
+### 2026-11-09 - Git review offscreen artwork after zoom and pan
+
+- User observation: components outside the visible area disappear after zooming
+  and do not return when panning the Git comparison.
+- Cause identified in local egui 0.32.3 source: Painter::with_clip_rect intersects
+  the existing clip, so requesting EVERYTHING retained the capture viewport.
+  Tessellation culled offscreen shapes before the resident review cache could
+  transform them into later viewports.
+- Review capture now explicitly replaces its painter clip with EVERYTHING.
+  Mesh replay keeps the current canvas clip. Camera translation and window resize
+  continue reusing the same CPU/GPU artwork. Schematic text frames inherit the
+  painter clip and retain their own text-frame bounds without intersecting the
+  original viewport. Models, semantic comparisons and editor commands are unchanged.
+- Regression checks rendered added geometry after an offscreen zoom rebuild,
+  subsequent pan and canvas resize, for PCB fills, schematic graphics and text
+  frames, while asserting no pan/resize cache rebuild. All five document_diff
+  tests pass, including layer filters, four colors, picking and navigation reuse.
+- Reduced two schematic cache methods to parent-module visibility, matching their
+  private Scene argument and removing existing private_interfaces Clippy failures.
+  cargo fmt --all -- --check and strict workspace/all-target Clippy pass.
+- Actual-window QA is unverified: Computer Use found one existing PCBCraft window
+  with an unsaved user PCB and twice failed with `failed to activate captured window`.
+  That session was not closed, saved or modified; no second GUI was launched.
+  Full workspace tests and a separately named QA executable are recorded below.
+- Final validation: cargo fmt --all -- --check, cargo clippy --workspace
+  --all-targets -- -D warnings, cargo test --workspace PASS. All 899 workspace
+  tests pass (232 app / 374 core / 1 geom / 171 IO / 121 render). The full test
+  rebuild took 4m 32s. A separate Windows executable was built in 4m 20s via
+  cargo rustc with an explicit output path under target/git-review-fix; the two
+  compiler warnings concern that custom output path, not source diagnostics.
+  No updated GUI was launched; actual-window and Linux runtime checks remain
+  unverified. Original user documents and the running executable were untouched.
+
+
+### 2026-11-09 - Shared project opening in Projects and Git
+
+- User requested the Projects opening workflow everywhere and explicitly deferred
+  rebuilding the application because of compile time. No build, Clippy, compiled
+  tests or updated GUI launch was performed for this change.
+- Both Git opening actions (toolbar and empty state) now queue the same
+  Command::OpenProject used by Projects. Removed the separate Git path/folder
+  dialog and its transient state. The existing parented native PrjPcb picker,
+  command guards, project loading, recent projects and initial document selection
+  are shared with Projects and File > Open Project.
+- After a successful project selection/load, the shared command activates the
+  corresponding Git directory. Cancel or failed load does not switch repositories;
+  existing revision tabs and cached browser state remain managed by the existing
+  activation path. Git file scope remains directory-based.
+- Formatting, whitespace and source-reference checks are recorded below. Runtime
+  behavior and actual-window verification remain unverified until a later rebuild.
+- Static validation PASS: cargo fmt --all -- --check; git diff --check;
+  feature registry JSON parses; both panels reference the shared OpenProject
+  command and removed dialog fields/functions have no remaining source references.
+
+
+### 2026-11-09 - Schematic pin thickness and pin-number positions
+
+- User reported pin thickness and number-position differences from Altium. The
+  earlier explicit no-rebuild instruction remains in force: no build, Clippy,
+  compiled tests or updated PCBCraft GUI launch was performed for this change.
+- Observation through Computer Use: installed AD Enterprise 24.4.1 Schematic >
+  General uses Name 50 mil / Number 80 mil. Cancelled Preferences without applying.
+  Read existing reference sheets and selected a component; no source design was
+  edited or saved. Later inspection stopped on `foreground window did not report
+  a process id`; refreshing the window list exposed no Altium window.
+- Source diagnosis: numbers used the midpoint of each pin plus a 30 mil lateral
+  shift; the lateral side flipped on opposite orientations. Name used 70 mil and
+  incorrect inward alignment for vertical pins. Pin stems inherited a one-logical-
+  point minimum, which rounds to two physical pixels at 150 percent DPI.
+- Implementation: observed body-relative 50/80 mil margins; number text above
+  horizontal/left of vertical pins regardless of direction; inward vertical names.
+  Pin stems have their own one-physical-pixel minimum; other schematic lines keep
+  the existing minimum. Kept document endpoints, lengths and connectivity intact.
+- Added separate optional Presentation.pin_symbol_width_nm, native SYMBOL_LINEWIDTH
+  numeric validation/import and native write support for Smallest/Small. Graphical
+  pin symbols no longer inherit the shaft width. Legacy JSON verification permits
+  retaining a source symbol width only when it remains equal to that original.
+- Added rendered stroke/label regression over four orientations, two pin lengths,
+  two zooms and 100/150/200 percent DPI; separate symbol/shaft-width import/JSON,
+  old-scene preservation and native SchLib roundtrip regressions. Tests remain
+  uncompiled/unrun per user instruction. Updated feature registry and visual notes.
+- Validation: cargo fmt --all -- --check and git diff --check PASS. Final static
+  field/reference and feature JSON checks follow. Exact live pixel comparison,
+  custom pin positions, global editable margins and Linux runtime remain open.
+- Final static checks PASS: pin rendering uses body-relative number position
+  and physical-pixel stem minimum; symbol-width field is present in model/import/
+  writer/renderer; feature JSON parses and all feature IDs are unique.
+
+
+### 2026-11-09 - SchDoc opening responsiveness
+
+- User reports loading followed by a sometimes substantial frozen interval before
+  the schematic appears. Continued under the explicit no-rebuild instruction.
+- Static findings: worker completion constructed an OpenDocument saved clone on
+  the UI thread and native completion immediately cloned it again; Recent resolved
+  the same path again; project opening imported its first schematic synchronously.
+  First-frame object graphics preparation was also unbounded. These paths were
+  identified in source, not proved to account for the entire observed stall.
+- The worker now returns PreparedDocument (normalized model + saved snapshot).
+  UI attachment moves these values and retains clean-state/source identity.
+  Removed repeated canonicalization on completed-open paths. Both new/reused
+  project paths queue their first schematic. Existing single-worker queue and
+  cancellation behavior remain; progress distinguishes reading from preparation.
+- Added opt-in interactive first-graphics preparation (256 objects / approximate
+  8 ms paint-pass budget, yielding between objects). Progress replaces an incomplete
+  sheet, picking is withheld until completion, and Print/PDF render full pages.
+  Normal navigation remains on the existing path. Single-object work, masks,
+  junctions, replay and GPU/presentation are not strictly bounded by this budget.
+- Ran existing diagnostic exes read-only on a local reference scene: 241 components,
+  2475 primitives, 5363 parameters; clone 3.820 ms, validate 0.813 ms; fitted warm
+  paint mean 1.004 ms, tessellation-inclusive mean 2.335 ms. Old binary measurements
+  omit this change and cold GUI behavior; no measured speedup is claimed.
+- Added regression sources for moved snapshot ownership, initial clean state,
+  queued first-sheet opening/coalescing, multi-frame graphics readiness and complete
+  output rendering. Extended the existing frame-probe source with load/snapshot/
+  cold-frame measurements for later use. No build, Clippy, compiled tests or GUI
+  launch was performed; runtime and real-window verification remain pending.
+- cargo fmt --all -- --check and git diff --check PASS. Final static checks below.
+- Final static checks PASS: loaded-document attachment contains no model
+  clone/mark_saved/canonicalization; both project-first-sheet branches queue
+  requests; worker returns prepared snapshots; graphics batching is opt-in and
+  excludes output; feature registry JSON is valid with unique IDs.
+
+
+### 2026-11-09 - 3D entry blank viewport and resource preparation
+
+- User reports a white viewport until a slowly loading board appears. Continued
+  under the explicit no-rebuild instruction. No new executable, compiled test,
+  Clippy or GUI run was started; no user design was modified or saved.
+- Static findings: preparation/raster messages used white ink on a configurable
+  native background; first GPU callback created all shader pipelines, buffers
+  and targets synchronously; each scene replacement repeated pipeline creation.
+  These candidate costs are not an end-to-end measurement of the user's stall.
+- Implemented themed loading feedback before snapshot/geometry work, held through
+  all passes of that initial frame; actual CPU stage and elapsed time; consistent
+  contrast for CPU/GPU/fallback loading and failures on a white workspace.
+- Native device registration enables one nonblocking background GPU preparation
+  job per renderer, overlapping initial pipeline work with CPU geometry. Readiness
+  requires matching scene identity, format and target size. Stale resources can
+  supply reusable pipelines but are never drawn for the wrong scene. Keyed failures
+  stop unchanged failed preparations from continuously restarting.
+- Geometry replacement keeps shader pipelines/compatible targets and refreshes
+  vertex, material and index buffers/bindings. Component ownership uses one index
+  rather than a linear component scan per primitive/body. Physical geometry,
+  masking, materials and transparent depth rendering are not reduced.
+- Added regression sources for visible white-background first feedback, bounded
+  pending GPU requests, preserved pipeline identities and a changed-scene GPU
+  image. Updated the offscreen/native-window probe's readiness to include GPU work.
+  Tests remain uncompiled/unrun. CPU booleans, snapshot cloning, driver blocking
+  and the first actual draw remain potential costs; no measured speedup is claimed.
+- Formatting and whitespace checks are recorded below; actual-window comparison
+  and Windows/Linux runtime performance remain pending until an authorized build.
+- Final static validation PASS: cargo fmt --all -- --check; git diff --check;
+  initial-frame announcement precedes geometry preparation; scene-job initializers
+  include phase/timing; matching-key GPU readiness and bounded scheduling exist;
+  geometry replacement does not create pipelines; feature JSON/IDs are valid.
+
+### 2026-11-09 - Schematic and PCB pointer delay
+
+- User reports soft/delayed pointer movement in both editors. Static inspection
+  found both default crosshairs hid the native pointer and used scene geometry;
+  their movement therefore waited for the complete application frame. The
+  existing maximum-frame-latency hint did not remove this coupling.
+- Schematic and PCB Small90 now request the native OS crosshair with no software
+  duplicate. Focus, canvas, modal and tool gates remain; PCB panning retains its
+  grab cursor. Snapping and tool/document coordinates are unchanged. Small45 and
+  Large90 retain their geometry and remain frame-dependent.
+- Native presentation requests AutoNoVsync plus maximum latency one; supported
+  fallback may be Immediate, Mailbox or FIFO. No continuous repaint loop added.
+  Tearing is possible; driver/compositor behavior still determines frame timing.
+- Native cursor size, contrast and DPI follow the OS theme. The former schematic
+  black cross/white halo is no longer guaranteed. Exact Altium appearance,
+  themed light/dark visibility and actual motion latency require live validation.
+- Updated source regressions for native output without a delayed duplicate,
+  grid-independent movement, tools, focus/panels/modals, and configured software
+  styles. Features remain partial; source findings and implementation are kept
+  separate from previous compiled results and unmeasured runtime behavior.
+- The user explicitly requested no rebuild. No build, compiled tests, Clippy,
+  new executable or GUI instance was started. Formatting/whitespace/static
+  validation results are recorded after the checks below.
+- Static validation PASS: cargo fmt --all -- --check; git diff --check;
+  native/default cursor and presentation configuration inspection; feature
+  registry JSON and unique IDs. Added regression sources remain uncompiled.
+
+### 2026-11-09 - Properties expansion and resize spring-back
+
+- User reports selection-dependent expansion of Properties across most of the
+  screen, including re-expansion after manually shrinking it. Static inspection
+  found the content scope propagated its minimum rectangle into dock sizing;
+  clipping did not constrain layout, and the expanded extent was persisted.
+- Replaced the content scope with an isolated child UI. The dock group allocates
+  its assigned rectangle independently of content minimum sizes, through the
+  same host for regular, split, floating and auto-hidden panels. Properties
+  labels inherit truncation; schematic content no longer forces a 200-point
+  minimum. Existing saved layouts/widths are preserved for manual resizing.
+- Added source regressions for oversized content and pointer shrinking that
+  remains stable across later frames at 100/150/200 percent DPI, plus real
+  schematic/PCB components with long values across document switches and checks
+  that properties rendering does not modify models. These are uncompiled/unrun.
+- The no-rebuild instruction remains in force: no build, Clippy, compiled test
+  or new GUI instance was started. Runtime correction, narrow-control clipping,
+  current Windows/Linux behavior and exact Altium parity require live checks.
+- Formatting and static validation results are recorded after the checks below.
+- Static validation PASS: cargo fmt --all -- --check; git diff --check;
+  isolated content sizing and explicit dock allocation/clip inspection;
+  feature registry JSON with unique IDs. Compiled/runtime checks remain pending.
+
+### 2026-11-09 - Content-driven dialog width oscillation
+
+- User reports Opening document changing width repeatedly during PCB import and
+  requests the same issue corrected throughout the application. Static inspection
+  found nonresizable windows still sized themselves from changing content.
+- Added shared stable-width Window/Modal hosts and migrated all application call
+  sites. Existing declared/current window width and explicit modal form/page widths
+  are preserved; text wraps and oversized intrinsic content scrolls horizontally
+  rather than propagating its minimum width to the host. Allowed manual resizing,
+  return values, modal dismissal and dialog commands retain their existing paths.
+- Opening document reserves 420 points and single-line filename/phase labels with
+  full-text tooltips. Cancellation/elapsed time do not control geometry. The update
+  popup uses the same host. The 3D loading card frame now has fixed bounds for all
+  phases/errors; its message is truncated with a tooltip. Audited renderer Object
+  Visibility: existing explicit width and bounded matrix already constrain text.
+- Added regression sources for opening name/phase/time/cancellation changes,
+  long/short text and oversized controls, user resizing retained across later
+  updates, modal Cancel interaction, and 3D card bounds. DPI coverage includes
+  100/150/200 percent. These sources remain uncompiled/unrun.
+- No build, Clippy, compiled tests or new GUI instance was started, following the
+  user's continuing no-rebuild instruction. Runtime behavior, all form interactions,
+  Linux and exact Altium geometry remain unverified. Intentional form/page sizes
+  and height changes caused by wrapped content are not frozen.
+- Static validation PASS: cargo fmt --all -- --check; git diff --check; audit of
+  all 32 Window and 28 Modal call sites in application sources (including one
+  test-only window); document/update/3D sizing paths; feature registry JSON and
+  unique IDs. Added regressions remain uncompiled/unrun.
+
+### 2026-11-09 - Slow SCH/PCB comparison opening
+
+- User reports slow opening of schematic and especially PCB diffs. Static findings:
+  repeated display/saved-model copies on install/first synchronization; complete
+  overlay capture/tessellation and initial GPU resource preparation on the UI;
+  unnecessary PCB editor spatial/connectivity work before overlay's early return.
+  These are candidate costs; end-to-end attribution is not claimed.
+- Page revisions/Diff now use immutable Arc ownership. The comparison worker
+  prepares one initial property model; installation moves it with no read-only
+  saved snapshot or first-frame recopy. Overlay/After share that model. Identical
+  byte revisions import once. Already open commit/path/parent tabs activate before
+  starting a Git job; working-tree and unsaved-buffer comparisons still refresh.
+- Added one bounded graphics worker per comparison view, with independent egui,
+  copied fonts/style/DPI/GPU configuration, complete unculled overlay geometry and
+  background GPU preparation. Publication remaps CPU atlas/images and requires a
+  matching display/content key. Stale results are rejected; failures stop unchanged
+  restart loops and offer Retry. Existing valid artwork remains available during
+  refinement. No simplified board, disabled change class or invisible geometry
+  substitute was introduced.
+- PCB overlay skips editor hit/snap indexes and connectivity jobs, retaining its
+  board outline/base. Normal modes rebuild editor indexes when needed. Semantic
+  comparison defers relative JSON until needed, caches sorting serialization and
+  directly reads schematic primitive anchors; identity/exact field/translation
+  tolerance rules remain. Empty color passes skip document scans. SCH normal-mode
+  first graphics retains cooperative preparation.
+- Added regression sources for initial-model ownership/clean state, immutable-tab
+  reuse, exact move/parameter classification, bounded/stale graphics jobs, CPU atlas
+  and sheet-image transfer, complete offscreen artwork/pan reuse, and editor-index
+  restoration. Extended diff_performance source with import/compare/cold-ready/UI
+  frame timing and JSON input support. These remain uncompiled/unrun.
+- No build, Clippy, compiled tests or new GUI instance was started at the user's
+  request. Ran the existing old diagnostic read-only with --synthetic-sch: warmed
+  overlay median/max 39.73/46.41 ms; After 61.16/71.21 ms. That binary excludes
+  these edits, cold frames, native panels/GPU presentation and actual PCB import;
+  it is not evidence of an opening speedup. Native import, unsaved snapshot capture,
+  later model switches, ordinary PCB Before/After cold artwork, UI publication and
+  driver blocking remain costs; updated timing/visual verification is pending.
+- Static validation PASS: cargo fmt --all -- --check; git diff --check;
+  worker-prepared/read-only display and immutable-tab reuse inspection; lazy/direct
+  semantic work; full capture, bounded keyed preparation and GPU/texture publication;
+  overlay branch precedes connectivity/editor indexes; feature JSON/unique IDs.
+  Compiled regression and native-window results remain pending.
+
+### 2026-11-09 - Automatic variant component links on opening
+
+- User reports broken automatic Component Links resolution when opening Variants
+  and requests Altium behavior. Observed AD Enterprise 24.4.1 Information before
+  Variant Management, listing R112, R90, R91 and ZQ1 on HAVAL2-1. Acknowledged
+  Information and cancelled the manager without saving or editing the schematic.
+  Official Variant Errors documentation confirms opening-time analysis, automatic
+  UID correction, project Save persistence and schematic correction for duplicate
+  designators. The reannotation article also prescribes reopening Variants.
+- Static finding: PCBCraft only counted unresolved strict UID lookups and exposed
+  manual rebinding; no automatic opening operation existed. Added a validated
+  model reconciliation step, preserving fitting state, parameters, alternates and
+  opaque fields. Exact full UID matches reserve targets before a unique-name/
+  unique-UID/single-claimant fallback. Exact UIDs refresh stale stored designators;
+  duplicate/missing/conflicting identities remain unresolved. Existing legacy
+  parameter-only rows keep designator identity. Matching rules are conservative
+  implementation choices, not a verified copy of native internal algorithms.
+- Applied corrections through dialog history. Native Information text precedes
+  the manager; acknowledgement does not accept changes. Manager OK applies the
+  in-memory draft; existing guarded project Save persists it. Cancel discards the
+  draft. Native repair retention on Cancel was not observed and is not claimed
+  equivalent. Existing manual Component Links UI remains an extension.
+- Added regression sources for four stale hierarchical UID examples, reannotation,
+  exact-target reservation, duplicate UID/designator/claimant and missing-component
+  cases, preserved alternate/parameters/opaque fields, idempotence, Undo/Redo,
+  Information ordering/acknowledgement/backdrop/Cancel, explicit Save/reopening
+  and native serialization. They are uncompiled/unrun at the user's request.
+- Created a separate native QA copy under target/variants-link-qa-a3014411 with
+  baseline hashes for all 15 original project/reference files. Independent raw
+  native-record inspection is not a compiled Altium catalog or native Save result.
+  Initial Save/Cancel QA stopped when the Altium window disappeared; refresh and
+  launch recovery returned no targetable window. Later user-supplied diagnostics
+  confirmed X2.EXE crashes, not helper crashes. No stale window input,
+  original project write, PCBCraft restart or unsaved-document discard occurred.
+- No build, Clippy, compiled tests or new GUI instance was started, following the
+  continuing no-rebuild instruction. Full compiled Repeat/channel/multipart
+  identity, exact dialog/DPI parity, native Save/Cancel behavior and updated
+  Windows/Linux runtime remain unverified. Static check results follow below.
+- Static validation PASS: cargo fmt --all -- --check; git diff --check;
+  feature registry JSON with 91 unique IDs; all 15 original project/reference
+  SHA-256 hashes unchanged. Inspected reconciliation-before-manager ordering,
+  strict lookup separation, validation/history, exact-target reservation and
+  existing guarded Save path. Added regressions remain uncompiled/unrun.
+
+### 2026-11-09 - Variant native verification after Computer Use recovery
+
+- Read the installed skill and local README; initialized stable-sky from the base
+  sky export. Selected the fresh Altium window, activated once and used only
+  screenshot observations. No relaunch, diagnostic repetition, application close
+  or input retry after an unknown outcome was needed. PCBCraft stayed untouched.
+- Opened only the disposable PCBCraft_Component_Link_QA.PrjPcb. Information listed
+  R112/R90/R91/ZQ1 before the manager. Return and Escape both acknowledged it.
+  Manager Cancel then reopening Variants repeated the same warning, supporting
+  the existing PCBCraft draft/discard transaction. Extended its source regression
+  to check this reopening sequence.
+- Manager OK did not write project bytes. Explicit Save from the QA project's
+  context menu wrote exactly the four UID substitutions used in core regression
+  inputs, retaining Kind=1. Reopening Variants after Save showed no Information.
+  Saved before/after snapshots and native-link-verification.json under the QA
+  directory. Closed only that saved QA project; original projects remain open.
+- Native Save also normalizes blank AlternatePart fields and prunes other
+  variation records (234 designator keys in independent inspection). This broader
+  cleanup remains a documented difference while PCBCraft's compiled physical
+  Repeat/channel/multipart catalog is incomplete; it is not applied by guessing.
+- Verified all 15 original project/reference SHA-256 hashes and all nine QA sheet
+  hashes unchanged. Native observations and static regression-input agreement do
+  not establish compiled Rust execution or updated PCBCraft GUI behavior. No
+  build, Clippy or tests were run under the continuing no-rebuild instruction.
+- Static validation PASS: cargo fmt --all -- --check; git diff --check; feature
+  registry JSON with 91 unique IDs; native saved four UID pairs found in regression
+  source; original 15/15 and QA schematic 9/9 hashes unchanged. The updated Cancel
+  reopening regression remains uncompiled/unrun.

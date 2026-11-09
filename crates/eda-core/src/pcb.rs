@@ -16,6 +16,9 @@ const MAX_COORD: i64 = 100_000_000_000;
 #[path = "pcb_snap.rs"]
 mod snapping;
 pub use snapping::{SnapLayerMode, SnapOptions};
+#[path = "pcb_insert_preview.rs"]
+mod insertion;
+pub use insertion::InsertPreview;
 #[path = "pcb_stack.rs"]
 mod stack;
 pub use stack::{DrillShape, PadGeometry, PadStack, StackMode, StackSurface, cutout_surface};
@@ -362,9 +365,14 @@ impl Item {
                 size,
                 rotation,
                 hole,
+                bottom_size,
+                middle_size,
                 ..
             } => {
                 let mut bounds = Bounds::points(&rectangle(*position, *size, *rotation));
+                for size in bottom_size.iter().chain(middle_size) {
+                    bounds.union(Bounds::points(&rectangle(*position, *size, *rotation)));
+                }
                 if *hole > 0 {
                     bounds.union(Bounds::points(&[*position]).expanded((*hole + 1) / 2));
                 }
@@ -491,7 +499,7 @@ impl Default for Board {
             differential_pairs: vec![],
             polygons: vec![],
             polygon_pours: vec![],
-            polygon_model_version: 1,
+            polygon_model_version: 2,
             warnings: vec![],
             empty_region_records: vec![],
             pours_stale: false,
@@ -906,36 +914,44 @@ impl Board {
     }
     /// Internal transaction helper. Callers must validate the whole result
     /// before publishing it; all replacement/locking restrictions remain here.
-    pub(crate) fn replace_item_unvalidated(&mut self, mut item: Item) -> Result<bool, String> {
-        if let Some(old) = self.item(item.id) {
-            item.reconcile_legacy_stack(old);
-        }
-        if let Some(old) = self.item(item.id)
-            && old
-                .polygon
-                .is_some_and(|n| self.polygon_pours.iter().any(|p| p.index == n))
+    pub(crate) fn replace_item_unvalidated(&mut self, item: Item) -> Result<bool, String> {
+        let index = self
+            .items
+            .iter()
+            .position(|i| i.id == item.id)
+            .ok_or("Selected object no longer exists")?;
+        self.replace_item_at_unvalidated(index, item)
+    }
+    pub(crate) fn replace_item_at_unvalidated(
+        &mut self,
+        index: usize,
+        mut item: Item,
+    ) -> Result<bool, String> {
+        let old = self
+            .items
+            .get(index)
+            .filter(|old| old.id == item.id)
+            .ok_or("Selected object no longer exists")?;
+        item.reconcile_legacy_stack(old);
+        if old
+            .polygon
+            .is_some_and(|n| self.polygon_pours.iter().any(|p| p.index == n))
         {
             return Err("Edit the polygon definition, not its generated copper".into());
         }
-        if self
-            .item(item.id)
-            .and_then(|old| old.component)
+        if old
+            .component
             .is_some_and(|owner| self.components.iter().any(|c| c.index == owner && c.locked))
         {
             return Err("Cannot edit a child of a locked component".into());
         }
-        let old = self
-            .item(item.id)
-            .ok_or("Selected object no longer exists")?;
         // Mask overrides do not invalidate copper pours. Preserve conservative
         // invalidation for native primitive properties interpreted by pouring.
         let copper_changed = !old.same_copper_geometry(&item, self)
             || old.layer != item.layer
             || old.net != item.net
             || old.properties != item.properties;
-        let old = self
-            .item_mut(item.id)
-            .ok_or("Selected object no longer exists")?;
+        let old = &mut self.items[index];
         if old.locked && old != &item {
             let mut unlocked = old.clone();
             unlocked.locked = false;
@@ -1118,6 +1134,7 @@ pub struct MovePreview {
     board: std::sync::Arc<Board>,
     items: Vec<(usize, Item, bool)>,
     components: Vec<(usize, Component)>,
+    stretched: Vec<(usize, Item, bool, bool)>,
 }
 impl MovePreview {
     pub fn new(board: &Board, selection: &[Uuid]) -> Result<Self, String> {
@@ -1159,7 +1176,46 @@ impl MovePreview {
             board: std::sync::Arc::new(board.clone()),
             items,
             components,
+            stretched: vec![],
         })
+    }
+    /// Component/pad dragging stretches only previously attached free track
+    /// endpoints. Prepare attachment tests once, preserving drag_connected rules.
+    pub fn new_connected(board: &Board, selection: &[Uuid]) -> Result<Self, String> {
+        let mut preview = Self::new(board, selection)?;
+        let ids = board.resolve_selection(selection);
+        let selected: Vec<_> = board.items.iter().filter(|i| ids.contains(&i.id)).collect();
+        for (index, candidate) in board.items.iter().enumerate() {
+            if ids.contains(&candidate.id)
+                || candidate.component.is_some()
+                || candidate.polygon.is_some()
+            {
+                continue;
+            }
+            let Shape::Track { start, end, .. } = candidate.shape else {
+                continue;
+            };
+            let attached = |point| {
+                selected
+                    .iter()
+                    .filter(|i| {
+                        i.net == candidate.net
+                            && crate::pcb_polygon::on_layer(board, i, candidate.layer)
+                    })
+                    .any(|i| match i.shape {
+                        Shape::Pad { .. } | Shape::Via { .. } => hit_distance(i, point) <= 2.0,
+                        Shape::Track { start, end, .. } => {
+                            distance_sq(point, start) <= 4.0 || distance_sq(point, end) <= 4.0
+                        }
+                        _ => false,
+                    })
+            };
+            let (a, b) = (attached(start), attached(end));
+            if a || b {
+                preview.stretched.push((index, candidate.clone(), a, b));
+            }
+        }
+        Ok(preview)
     }
     pub fn update(
         &mut self,
@@ -1197,12 +1253,43 @@ impl MovePreview {
                 Ok((*index, component))
             })
             .collect::<Result<Vec<_>, String>>()?;
+        let stretched = self
+            .stretched
+            .iter()
+            .map(|(index, original, a, b)| {
+                let Shape::Track { start, end, width } = original.shape else {
+                    unreachable!()
+                };
+                let mut item = original.clone();
+                item.shape = Shape::Track {
+                    start: if *a {
+                        transform_point(start, pivot, translation, angle)?
+                    } else {
+                        start
+                    },
+                    end: if *b {
+                        transform_point(end, pivot, translation, angle)?
+                    } else {
+                        end
+                    },
+                    width,
+                };
+                if original.locked && item != *original {
+                    return Err("Selection contains locked objects".into());
+                }
+                item.validate_geometry()?;
+                Ok((*index, item))
+            })
+            .collect::<Result<Vec<_>, String>>()?;
         let board = std::sync::Arc::make_mut(&mut self.board);
         for (index, item) in items {
             board.items[index] = item;
         }
         for (index, component) in components {
             board.components[index] = component;
+        }
+        for (index, item) in stretched {
+            board.items[index] = item;
         }
         board.pours_stale |= !board.polygon_pours.is_empty();
         Ok(self.board.clone())
@@ -1622,6 +1709,41 @@ pub fn route_points(start: Point, end: Point, diagonal_first: bool) -> Vec<Point
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn indexed_replacement_rejects_stale_slots_and_preserves_lock_rules() {
+        let mut board = Board::default();
+        for x in [0, 4] {
+            board.items.push(Item::new(
+                TOP,
+                None,
+                Shape::Track {
+                    start: Point::mm(x, 0),
+                    end: Point::mm(x + 2, 0),
+                    width: 200_000,
+                },
+            ));
+        }
+        let replacement = board.items[1].with_anchor(Point::mm(5, 2)).unwrap();
+        let original = board.clone();
+        assert!(
+            board
+                .replace_item_at_unvalidated(0, replacement.clone())
+                .is_err()
+        );
+        assert!(board.replace_item_at_unvalidated(2, replacement).is_err());
+        assert_eq!(board, original);
+        board.items[1].locked = true;
+        let locked = board.clone();
+        let replacement = board.items[1].with_anchor(Point::mm(5, 2)).unwrap();
+        assert!(board.replace_item_at_unvalidated(1, replacement).is_err());
+        assert_eq!(board, locked);
+        let mut unlocked = board.items[1].clone();
+        unlocked.locked = false;
+        assert!(!board.replace_item_at_unvalidated(1, unlocked).unwrap());
+        let replacement = board.items[1].with_anchor(Point::mm(5, 2)).unwrap();
+        assert!(board.replace_item_at_unvalidated(1, replacement).unwrap());
+        board.validate().unwrap();
+    }
     #[test]
     fn prepared_move_matches_full_validation_and_preserves_worker_snapshots() {
         use std::sync::Arc;

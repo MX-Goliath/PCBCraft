@@ -206,7 +206,7 @@ pub(super) fn properties(ui: &mut egui::Ui, p: &mut SchPrimitive, query: &str) -
             .id(id.with("parameter_editor"))
             .open(&mut open)
             .collapsible(false)
-            .show(ui.ctx(), |ui| {
+            .show_stable(ui.ctx(), |ui| {
                 let class = draft.name.eq_ignore_ascii_case("ClassName")
                     || draft.name.eq_ignore_ascii_case("CompClassName");
                 ui.add_enabled_ui(!class, |ui| {
@@ -251,7 +251,7 @@ pub(super) fn properties(ui: &mut egui::Ui, p: &mut SchPrimitive, query: &str) -
             .id(id.with("rule_editor"))
             .open(&mut open)
             .default_width(640.0)
-            .show(ui.ctx(), |ui| {
+            .show_stable(ui.ctx(), |ui| {
                 if eda_core::pcb_rules::supported(&kind) {
                     crate::app::pcb_editor::rules_ui::schematic_rule_constraints(
                         ui,

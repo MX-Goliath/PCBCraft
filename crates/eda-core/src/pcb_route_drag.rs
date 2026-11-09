@@ -1,11 +1,22 @@
 //! Connected track edits use the routing solver, retaining fixed copper anchors.
 use super::*;
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
+#[path = "pcb_route_drag_preview.rs"]
+mod preview;
+#[path = "pcb_track_slide.rs"]
+mod slide;
+pub use preview::{TrackDragPreview, TrackDragUpdate};
+use slide::Slide;
+
+type Environments = std::collections::BTreeMap<(u16, i64), obstacles::Obstacles>;
+const CONNECTION_BLOCKED: &str =
+    "Cannot drag track without breaking a connection or violating clearance";
+const CLEARANCE_BLOCKED: &str = "Dragged tracks violate copper clearance";
 #[cfg(test)]
 #[path = "pcb_route_drag_tests.rs"]
 mod tests;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DragOptions {
     pub conflict: Conflict,
     pub clearance: i64,
@@ -47,12 +58,24 @@ pub fn drag_tracks(
     if !track_selection(board, selection) {
         return Err("Select free copper tracks for interactive dragging".into());
     }
-    let next = board.edited(Edit::Transform {
+    let sliding = if selection.len() == 1 && angle == 0. {
+        let item = Slide::new(board, selection[0]).at(translation)?;
+        if board.item(item.id) == Some(&item) {
+            return Ok(board.clone());
+        }
+        Some(item)
+    } else {
+        None
+    };
+    let mut next = board.edited(Edit::Transform {
         selection: selection.to_vec(),
         pivot,
         translation,
         angle,
     })?;
+    if let Some(item) = sliding {
+        replace_source_item(&mut next, item, None)?;
+    }
     reroute(board, next, selection, options)
 }
 
@@ -109,7 +132,7 @@ impl MovedTrack {
     }
 }
 
-fn contacts(item: &Item, other: &Item) -> Vec<Point> {
+pub(super) fn contacts(item: &Item, other: &Item) -> Vec<Point> {
     let Shape::Track { start, end, .. } = item.shape else {
         return vec![];
     };
@@ -164,14 +187,38 @@ fn reroute(
     selection: &[Uuid],
     options: DragOptions,
 ) -> Result<Board, String> {
+    reroute_into(
+        board,
+        &mut next,
+        selection,
+        options,
+        None,
+        &mut BTreeSet::new(),
+        None,
+    )?;
+    next.validate()?;
+    Ok(next)
+}
+
+// Prepared previews are restricted to one assigned net. All foreign-net copper
+// stays stationary, so these immutable environments remain valid across frames.
+fn reroute_into(
+    board: &Board,
+    next: &mut Board,
+    selection: &[Uuid],
+    options: DragOptions,
+    mut prepared: Option<&mut Environments>,
+    touched: &mut BTreeSet<Uuid>,
+    indices: Option<&HashMap<Uuid, usize>>,
+) -> Result<(), String> {
     if !(0..=100_000_000_000).contains(&options.clearance) {
         return Err("Invalid drag clearance".into());
     }
     let moved: Vec<_> = selection
         .iter()
         .filter_map(|id| {
-            let old = board.item(*id)?;
-            let new = next.item(*id)?;
+            let old = source_item(board, *id, indices)?;
+            let new = source_item(next, *id, indices)?;
             (old.shape != new.shape).then(|| MovedTrack {
                 old: old.clone(),
                 new: new.clone(),
@@ -179,7 +226,7 @@ fn reroute(
         })
         .collect();
     if moved.is_empty() {
-        return Ok(next);
+        return Ok(());
     }
     let mut routes: Vec<_> = moved.iter().map(|m| m.new.clone()).collect();
     let mut bridges = BTreeSet::new();
@@ -207,7 +254,8 @@ fn reroute(
                     end: b,
                     width,
                 };
-                next.replace_item_unvalidated(item.clone())?;
+                touched.insert(item.id);
+                replace_source_item(next, item.clone(), indices)?;
                 routes.push(item);
             }
         }
@@ -246,30 +294,41 @@ fn reroute(
     let replaced: BTreeSet<_> = routes.iter().map(|i| i.id).collect();
     // Only pre-existing no-net contacts may merge. A new endpoint landing on
     // unrelated no-net copper must still be rejected by clearance checking.
-    let original_no_net_routes: Vec<_> = board
-        .items
-        .iter()
-        .filter(|old| replaced.contains(&old.id) && old.net.is_none())
-        .collect();
-    let no_net_contacts: BTreeSet<_> = board
-        .items
-        .iter()
-        .filter(|i| {
-            i.net.is_none()
-                && !i.keepout
-                && !i.is_drill_only()
-                && matches!(
-                    i.shape,
-                    Shape::Track { .. } | Shape::Pad { .. } | Shape::Via { .. } | Shape::Arc { .. }
-                )
-        })
-        .filter(|i| {
-            original_no_net_routes
-                .iter()
-                .any(|old| on_layer(board, i, old.layer) && !contacts(old, i).is_empty())
-        })
-        .map(|i| i.id)
-        .collect();
+    let original_no_net_routes: Vec<_> = if indices.is_some() {
+        vec![]
+    } else {
+        board
+            .items
+            .iter()
+            .filter(|old| replaced.contains(&old.id) && old.net.is_none())
+            .collect()
+    };
+    let no_net_contacts: BTreeSet<_> = if original_no_net_routes.is_empty() {
+        BTreeSet::new()
+    } else {
+        board
+            .items
+            .iter()
+            .filter(|i| {
+                i.net.is_none()
+                    && !i.keepout
+                    && !i.is_drill_only()
+                    && matches!(
+                        i.shape,
+                        Shape::Track { .. }
+                            | Shape::Pad { .. }
+                            | Shape::Via { .. }
+                            | Shape::Arc { .. }
+                    )
+            })
+            .filter(|i| {
+                original_no_net_routes
+                    .iter()
+                    .any(|old| on_layer(board, i, old.layer) && !contacts(old, i).is_empty())
+            })
+            .map(|i| i.id)
+            .collect()
+    };
     // Keep unaffected primitives in their original order. Reuse each edited
     // primitive's UUID and native metadata on its first resulting leg.
     let mut additions = Vec::new();
@@ -279,7 +338,7 @@ fn reroute(
             unreachable!()
         };
         let mut waypoints = vec![start];
-        if let Some(old) = board.item(item.id) {
+        if let Some(old) = source_item(board, item.id, indices) {
             let Shape::Track {
                 start: old_start,
                 end: old_end,
@@ -318,18 +377,31 @@ fn reroute(
         }
         waypoints.push(end);
         waypoints.dedup();
-        let mut environment = next.clone();
-        environment.items.retain(|i| {
-            (!replaced.contains(&i.id) || i.net != item.net)
-                && !(item.net.is_none()
-                    && i.net.is_none()
-                    && !i.keepout
-                    && no_net_contacts.contains(&i.id))
-        });
-        crate::pcb_rules::route_check(&next, &item)?;
-        let obstacles = obstacles::Obstacles::for_item(&environment, item.layer, &item);
-        obstacles.error()?;
+        crate::pcb_rules::route_check(next, &item)?;
+        let cached = prepared.is_some();
+        let (environment, obstacles) = if let Some(cache) = prepared.as_deref_mut() {
+            let obstacles = cache
+                .entry((item.layer, width))
+                .or_insert_with(|| obstacles::Obstacles::for_item(board, item.layer, &item))
+                .clone();
+            (std::mem::take(next), obstacles)
+        } else {
+            let mut environment = next.clone();
+            environment.items.retain(|i| {
+                (!replaced.contains(&i.id) || i.net != item.net)
+                    && !(item.net.is_none()
+                        && i.net.is_none()
+                        && !i.keepout
+                        && no_net_contacts.contains(&i.id))
+            });
+            let obstacles = obstacles::Obstacles::for_item(&environment, item.layer, &item);
+            (environment, obstacles)
+        };
         let mut route = RouteSession {
+            remove_loops: false,
+            origin: None,
+            route_items: BTreeSet::new(),
+            targets: None,
             revision: 0,
             draft: environment,
             anchor: start,
@@ -347,15 +419,24 @@ fn reroute(
             preview: Default::default(),
         };
         let mut points = vec![start];
+        let mut failure = route.obstacles.error().err();
         for pair in waypoints.windows(2) {
+            if failure.is_some() {
+                break;
+            }
             route.anchor = pair[0];
             let leg = route.points(pair[1]);
             if leg.last() != Some(&pair[1]) {
-                return Err(
-                    "Cannot drag track without breaking a connection or violating clearance".into(),
-                );
+                failure = Some(CONNECTION_BLOCKED.into());
+                break;
             }
             points.extend_from_slice(&leg[1..]);
+        }
+        if cached {
+            *next = route.draft;
+        }
+        if let Some(error) = failure {
+            return Err(error);
         }
         // Keep an ID even when a neighbour collapses to a point. This also
         // retains the shared junction for subsequent edits and Undo.
@@ -372,9 +453,10 @@ fn reroute(
             }
             edited_ids.insert(leg.id);
             leg.shape = Shape::Track { start, end, width };
-            crate::pcb_rules::route_check(&next, &leg)?;
-            if n == 0 && next.item(leg.id).is_some() {
-                next.replace_item_unvalidated(leg)?;
+            crate::pcb_rules::route_check(next, &leg)?;
+            if n == 0 && source_item(next, leg.id, indices).is_some() {
+                touched.insert(leg.id);
+                replace_source_item(next, leg, indices)?;
             } else {
                 additions.push(leg);
             }
@@ -384,21 +466,54 @@ fn reroute(
     // Later replacements can introduce new bends. Check the final geometry too,
     // so a multi-net selection cannot route through another moved net.
     if options.conflict != Conflict::Ignore {
-        for item in next.items.iter().filter(|i| edited_ids.contains(&i.id)) {
+        let edited: Vec<_> = if let Some(indices) = indices {
+            let mut source: Vec<_> = edited_ids
+                .iter()
+                .filter_map(|id| indices.get(id))
+                .copied()
+                .collect();
+            source.sort_unstable();
+            source
+                .into_iter()
+                .map(|index| &next.items[index])
+                .chain(next.items.iter().skip(board.items.len()))
+                .cloned()
+                .collect()
+        } else {
+            next.items
+                .iter()
+                .filter(|i| edited_ids.contains(&i.id))
+                .cloned()
+                .collect()
+        };
+        for item in &edited {
             let Shape::Track { start, end, width } = item.shape else {
                 unreachable!()
             };
-            let mut environment = next.clone();
-            environment.items.retain(|i| {
-                i.id != item.id
-                    && !(item.net.is_none()
-                        && i.net.is_none()
-                        && !i.keepout
-                        && (edited_ids.contains(&i.id) || no_net_contacts.contains(&i.id)))
-            });
-            let obstacles = obstacles::Obstacles::for_item(&environment, item.layer, item);
-            obstacles.error()?;
+            let cached = prepared.is_some();
+            let (environment, obstacles) = if let Some(cache) = prepared.as_deref_mut() {
+                let obstacles = cache
+                    .entry((item.layer, width))
+                    .or_insert_with(|| obstacles::Obstacles::for_item(board, item.layer, item))
+                    .clone();
+                (std::mem::take(next), obstacles)
+            } else {
+                let mut environment = next.clone();
+                environment.items.retain(|i| {
+                    i.id != item.id
+                        && !(item.net.is_none()
+                            && i.net.is_none()
+                            && !i.keepout
+                            && (edited_ids.contains(&i.id) || no_net_contacts.contains(&i.id)))
+                });
+                let obstacles = obstacles::Obstacles::for_item(&environment, item.layer, item);
+                (environment, obstacles)
+            };
             let route = RouteSession {
+                remove_loops: false,
+                origin: None,
+                route_items: BTreeSet::new(),
+                targets: None,
                 revision: 0,
                 draft: environment,
                 anchor: start,
@@ -415,12 +530,48 @@ fn reroute(
                 checkpoints: vec![],
                 preview: Default::default(),
             };
-            if !route.obstacles.clear_for_route(&route, start, end) {
-                return Err("Dragged tracks violate copper clearance".into());
+            let result = route.obstacles.error().and_then(|()| {
+                if route.obstacles.clear_for_route(&route, start, end) {
+                    Ok(())
+                } else {
+                    Err(CLEARANCE_BLOCKED.into())
+                }
+            });
+            if cached {
+                *next = route.draft;
             }
+            result?;
         }
     }
     next.pours_stale |= !next.polygon_pours.is_empty();
-    next.validate()?;
-    Ok(next)
+    Ok(())
+}
+
+fn source_item<'a>(
+    board: &'a Board,
+    id: Uuid,
+    indices: Option<&HashMap<Uuid, usize>>,
+) -> Option<&'a Item> {
+    if let Some(indices) = indices {
+        indices
+            .get(&id)
+            .and_then(|index| board.items.get(*index))
+            .filter(|i| i.id == id)
+    } else {
+        board.item(id)
+    }
+}
+fn replace_source_item(
+    board: &mut Board,
+    item: Item,
+    indices: Option<&HashMap<Uuid, usize>>,
+) -> Result<bool, String> {
+    if let Some(indices) = indices {
+        let index = *indices
+            .get(&item.id)
+            .ok_or("Selected object no longer exists")?;
+        board.replace_item_at_unvalidated(index, item)
+    } else {
+        board.replace_item_unvalidated(item)
+    }
 }

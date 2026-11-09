@@ -16,6 +16,123 @@ fn fixture() -> (tempfile::TempDir, PcbCraft) {
     app.active = Some(0);
     (dir, app)
 }
+fn stale_link_fixture() -> (tempfile::TempDir, PcbCraft) {
+    let (dir, mut app) = fixture();
+    let path = app.projects[0].path.clone();
+    let text = std::fs::read_to_string(&path)
+        .unwrap()
+        .replace("\\RESISTOR", "\\STALE_RESISTOR");
+    std::fs::write(&path, text).unwrap();
+    app.projects[0] = eda_io::altium::load_project(&path).unwrap();
+    (dir, app)
+}
+
+#[test]
+fn stale_links_are_repaired_before_the_manager_and_notice_ack_does_not_accept_the_draft() {
+    let (_dir, mut app) = stale_link_fixture();
+    let original = app.projects[0].variants.clone();
+    let project_bytes = std::fs::read(&app.projects[0].path).unwrap();
+    let sheet = app.documents[0].model.clone();
+    app.open_variants();
+    let d = app.variants.dialog.as_ref().unwrap();
+    assert_eq!(d.draft[0].variations[0].uid, "\\RESISTOR");
+    assert_eq!(d.draft[0].variations[0].kind, 1);
+    assert!(d.error.is_empty());
+    assert!(d.link_notice.as_ref().unwrap().contains("[R1]"));
+    let ctx = egui::Context::default();
+    for _ in 0..3 {
+        let _ = frame(&mut app, &ctx, vec![]);
+    }
+    let output = frame(&mut app, &ctx, vec![]);
+    assert!(
+        output
+            .shapes
+            .iter()
+            .any(|s| matches!(&s.shape, egui::Shape::Text(t) if t.galley.job.text=="Information"))
+    );
+    assert!(!output.shapes.iter().any(
+        |s| matches!(&s.shape, egui::Shape::Text(t) if t.galley.job.text=="Variant Management")
+    ));
+    click(&mut app, &ctx, egui::pos2(10., 10.));
+    assert!(
+        app.variants.dialog.as_ref().unwrap().link_notice.is_some(),
+        "A native information box does not dismiss on a backdrop click"
+    );
+    let output = frame(&mut app, &ctx, vec![]);
+    click(&mut app, &ctx, button(&output, "OK"));
+    assert!(app.variants.dialog.as_ref().unwrap().link_notice.is_none());
+    assert_eq!(app.projects[0].variants, original);
+    for _ in 0..3 {
+        let _ = frame(&mut app, &ctx, vec![]);
+    }
+    let output = frame(&mut app, &ctx, vec![]);
+    click(&mut app, &ctx, button(&output, "Cancel"));
+    assert!(app.variants.dialog.is_none());
+    assert_eq!(app.projects[0].variants, original);
+    assert_eq!(std::fs::read(&app.projects[0].path).unwrap(), project_bytes);
+    assert_eq!(app.documents[0].model, sheet);
+    assert!(!app.variants_dirty());
+    app.open_variants();
+    let reopened = app.variants.dialog.as_ref().unwrap();
+    assert!(reopened.link_notice.as_ref().unwrap().contains("[R1]"));
+    assert_eq!(reopened.draft[0].variations[0].uid, "\\RESISTOR");
+    assert_eq!(app.projects[0].variants, original);
+}
+
+#[test]
+fn information_keyboard_acknowledgement_keeps_the_manager_and_project_unaccepted() {
+    for key in [egui::Key::Enter, egui::Key::Escape] {
+        let (_dir, mut app) = stale_link_fixture();
+        let original = app.projects[0].variants.clone();
+        app.open_variants();
+        let ctx = egui::Context::default();
+        for _ in 0..3 {
+            let _ = frame(&mut app, &ctx, vec![]);
+        }
+        let _ = frame(
+            &mut app,
+            &ctx,
+            vec![egui::Event::Key {
+                key,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+        assert!(app.variants.dialog.as_ref().unwrap().link_notice.is_none());
+        assert_eq!(app.projects[0].variants, original);
+        assert!(!app.variants_dirty());
+    }
+}
+
+#[test]
+fn accepted_link_repairs_save_and_reopen_without_changing_the_schematic() {
+    let (_dir, mut app) = stale_link_fixture();
+    let bytes = std::fs::read(&app.projects[0].path).unwrap();
+    let sheet_bytes = std::fs::read(app.documents[0].path.as_ref().unwrap()).unwrap();
+    app.open_variants();
+    app.variants.dialog.as_mut().unwrap().link_notice = None;
+    let ctx = egui::Context::default();
+    for _ in 0..3 {
+        let _ = frame(&mut app, &ctx, vec![]);
+    }
+    let output = frame(&mut app, &ctx, vec![]);
+    click(&mut app, &ctx, button(&output, "OK"));
+    assert!(app.variants.dialog.is_none());
+    assert!(app.variants_dirty());
+    assert_eq!(app.projects[0].variants[0].variations[0].uid, "\\RESISTOR");
+    assert_eq!(std::fs::read(&app.projects[0].path).unwrap(), bytes);
+    assert!(app.save_variants());
+    let reopened = eda_io::altium::load_project(&app.projects[0].path).unwrap();
+    assert_eq!(reopened.variants[0].variations[0].uid, "\\RESISTOR");
+    app.open_variants();
+    assert!(app.variants.dialog.as_ref().unwrap().link_notice.is_none());
+    assert_eq!(
+        std::fs::read(app.documents[0].path.as_ref().unwrap()).unwrap(),
+        sheet_bytes
+    );
+}
 #[test]
 fn physical_variant_view_is_cached_read_only_and_leaves_base_history_clean() {
     let (_dir, mut app) = fixture();

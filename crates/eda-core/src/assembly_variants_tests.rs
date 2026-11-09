@@ -1,4 +1,174 @@
 use super::*;
+
+#[test]
+fn manager_open_repairs_native_stale_uids_preserving_all_variation_data() {
+    let mut variant = Variant::new("Assembly".into());
+    let mut components = Vec::new();
+    for (designator, old, new) in [
+        ("R112", "\\TIHJCEVI\\WXMVVAEY", "\\TIHJCEVI\\KVRCDJEI"),
+        ("R90", "\\TIHJCEVI\\YRMNYXPC", "\\TIHJCEVI\\XCEMIHVS"),
+        ("R91", "\\TIHJCEVI\\OQKDWTJD", "\\TIHJCEVI\\HPIOPMMP"),
+        ("ZQ1", "\\MNKFAVNF\\WUEKOWZF", "\\MNKFAVNF\\BBCVTPWC"),
+    ] {
+        variant.variations.push(Variation {
+            uid: old.into(),
+            designator: designator.into(),
+            kind: 1,
+            parameters: BTreeMap::from([("Comment".into(), "keep expression".into())]),
+            fields: BTreeMap::from([("FutureField".into(), "keep opaque".into())]),
+            ..Default::default()
+        });
+        components.push(ComponentRef {
+            uid: new.into(),
+            designator: designator.into(),
+        });
+    }
+    let document = fixture();
+    let sheet = document.schematic.as_ref().unwrap();
+    variant.variations[3].kind = 2;
+    variant.variations[3].alternate = Some(edit::extract(sheet, sheet.components[0].id).unwrap());
+    let original = vec![variant];
+    let result = resolve_links(&original, &components).unwrap();
+    assert_eq!(result.affected, ["R112", "R90", "R91", "ZQ1"]);
+    assert!(result.unresolved.is_empty());
+    for ((old, new), target) in original[0]
+        .variations
+        .iter()
+        .zip(&result.variants[0].variations)
+        .zip(&components)
+    {
+        assert_eq!(new.uid, target.uid);
+        let mut expected = old.clone();
+        expected.uid = target.uid.clone();
+        assert_eq!(*new, expected);
+    }
+    let again = resolve_links(&result.variants, &components).unwrap();
+    assert_eq!(again.variants, result.variants);
+    assert!(again.affected.is_empty());
+    let mut current = original.clone();
+    let mut history = History::default();
+    history
+        .commit(&mut current, result.variants.clone())
+        .unwrap();
+    history.undo(&mut current);
+    assert_eq!(current, original);
+    history.redo(&mut current);
+    assert_eq!(current, result.variants);
+}
+
+#[test]
+fn exact_uid_wins_over_a_conflicting_designator_and_is_reserved_before_fallbacks() {
+    let mut variant = Variant::new("A".into());
+    variant.variations = vec![
+        Variation {
+            uid: "\\STALE".into(),
+            designator: "R2".into(),
+            kind: 1,
+            ..Default::default()
+        },
+        Variation {
+            uid: "\\EXACT".into(),
+            designator: "R1".into(),
+            kind: 0,
+            ..Default::default()
+        },
+    ];
+    let components = vec![
+        ComponentRef {
+            uid: "\\OTHER".into(),
+            designator: "R1".into(),
+        },
+        ComponentRef {
+            uid: "\\EXACT".into(),
+            designator: "R2".into(),
+        },
+    ];
+    let result = resolve_links(&[variant.clone()], &components).unwrap();
+    assert_eq!(result.variants[0].variations[1].uid, "\\EXACT");
+    assert_eq!(result.variants[0].variations[1].designator, "R2");
+    assert_eq!(result.variants[0].variations[0], variant.variations[0]);
+    assert_eq!(unresolved(&result.variants[0], &components), vec![0]);
+}
+
+#[test]
+fn automatic_resolution_does_not_guess_between_duplicate_names_uids_or_claimants() {
+    let mut variant = Variant::new("A".into());
+    variant.variations.push(Variation {
+        uid: "\\OLD".into(),
+        designator: "R1".into(),
+        kind: 1,
+        ..Default::default()
+    });
+    let duplicate_names = vec![
+        ComponentRef {
+            uid: "\\LEFT\\R".into(),
+            designator: "R1".into(),
+        },
+        ComponentRef {
+            uid: "\\RIGHT\\R".into(),
+            designator: "R1".into(),
+        },
+    ];
+    let result = resolve_links(&[variant.clone()], &duplicate_names).unwrap();
+    assert_eq!(result.variants[0], variant);
+    assert_eq!(result.duplicate_designators, ["R1"]);
+    let mut duplicate_uids = duplicate_names.clone();
+    duplicate_uids[0].uid = "\\OLD".into();
+    duplicate_uids[1].uid = "\\OLD".into();
+    let result = resolve_links(&[variant.clone()], &duplicate_uids).unwrap();
+    assert_eq!(result.variants[0], variant);
+    assert_eq!(result.unresolved, ["R1"]);
+    variant.variations.push(Variation {
+        uid: "\\SECOND_OLD".into(),
+        designator: "R1".into(),
+        kind: 0,
+        ..Default::default()
+    });
+    let result = resolve_links(&[variant.clone()], &duplicate_names[..1]).unwrap();
+    assert_eq!(result.variants[0], variant);
+    assert_eq!(
+        unresolved(&result.variants[0], &duplicate_names[..1]),
+        vec![0, 1]
+    );
+    let missing = resolve_links(&[variant.clone()], &[]).unwrap();
+    assert_eq!(missing.variants, vec![variant]);
+    assert_eq!(missing.unresolved, ["R1"]);
+}
+
+#[test]
+fn correct_case_insensitive_uids_and_legacy_parameter_rows_do_not_dirty_the_project() {
+    let mut variant = Variant::new("A".into());
+    variant.variations = vec![
+        Variation {
+            uid: "left\\uid".into(),
+            designator: "r1".into(),
+            kind: 1,
+            ..Default::default()
+        },
+        Variation {
+            designator: "R2".into(),
+            parameters: BTreeMap::from([("Comment".into(), "22k".into())]),
+            ..Default::default()
+        },
+    ];
+    let result = resolve_links(
+        &[variant.clone()],
+        &[
+            ComponentRef {
+                uid: "\\LEFT\\UID\\".into(),
+                designator: "R1".into(),
+            },
+            ComponentRef {
+                uid: "\\R2_UID".into(),
+                designator: "R2".into(),
+            },
+        ],
+    )
+    .unwrap();
+    assert_eq!(result.variants, vec![variant]);
+    assert!(result.affected.is_empty());
+    assert!(result.unresolved.is_empty());
+}
 use crate::{DocumentKind, schematic_edit::primitive};
 
 fn fixture() -> Document {

@@ -727,6 +727,7 @@ fn validate_numeric(f: &Fields) -> Result<(), String> {
         "EXTRALOCATIONCOUNT",
         "SYMBOL_OUTEREDGE",
         "SYMBOL_INNEREDGE",
+        "SYMBOL_LINEWIDTH",
         "NAME_CUSTOMFONTID",
         "DESIGNATOR_CUSTOMFONTID",
         "CUSTOMXZONES",
@@ -1327,6 +1328,12 @@ fn build_document(
                     .then(|| uuid(id, harness_owner(&records, r) as u32)),
                     alignment: (r.record_type == 18).then(|| f.n("ALIGNMENT") as u32),
                     text_color: (r.record_type == 18).then(|| f.n("TEXTCOLOR") as u32),
+                    pin_symbol_width_nm: (r.record_type == 2 && f.contains_key("SYMBOL_LINEWIDTH"))
+                        .then(|| match f.n("SYMBOL_LINEWIDTH") {
+                            0 => 101_600,
+                            1 => 254_000,
+                            _ => -1, // Rejected by schematic validation.
+                        }),
                     harness_type: if matches!(r.record_type, 16 | 18 | 216) {
                         f.text("HARNESSTYPE")
                     } else {

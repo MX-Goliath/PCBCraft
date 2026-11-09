@@ -20,7 +20,7 @@ impl Row {
             .find(|c| c.id == self.component)
             .unwrap()
     }
-    fn reference(&self) -> model::ComponentRef {
+    pub(super) fn reference(&self) -> model::ComponentRef {
         model::ComponentRef {
             uid: self.uid.clone(),
             designator: self.designator.clone(),
@@ -190,6 +190,11 @@ impl PcbCraft {
         let Some(mut d) = self.variants.dialog.take() else {
             return;
         };
+        if d.link_notice.is_some() {
+            link_information(ctx, &mut d);
+            self.variants.dialog = Some(d);
+            return;
+        }
         let mut keep = true;
         let mut accept = false;
         let child = d.editor.is_some()
@@ -200,7 +205,7 @@ impl PcbCraft {
             || d.component_kind.is_some();
         egui::Modal::new(egui::Id::new("variant_management"))
             .frame(egui::Frame::popup(&ctx.style()).inner_margin(egui::Margin{left:14,right:14,top:4,bottom:4}))
-            .show(ctx, |ui| {
+            .show_stable(ctx, 994.0_f32.min(ctx.available_rect().width()-68.).max(600.), |ui| {
             ui.set_width(994.0_f32.min(ctx.available_rect().width() - 68.).max(600.));
             ui.spacing_mut().item_spacing = egui::vec2(3., 3.);
             ui.add_enabled_ui(!child, |ui| {
@@ -372,7 +377,7 @@ impl PcbCraft {
                     });
                 });
                 if !d.error.is_empty(){ui.colored_label(Color32::LIGHT_RED,&d.error);}
-                if !ui.ctx().wants_keyboard_input() {
+                if !child && !ui.ctx().wants_keyboard_input() {
                     if ui.input_mut(|i|i.consume_key(egui::Modifiers::COMMAND,egui::Key::Z)){d.history.undo(&mut d.draft);}
                     if ui.input_mut(|i|i.consume_key(egui::Modifiers::COMMAND,egui::Key::Y)){d.history.redo(&mut d.draft);}
                     if ui.input_mut(|i|i.consume_key(egui::Modifiers::NONE,egui::Key::Escape)){keep=false;}
@@ -387,52 +392,58 @@ impl PcbCraft {
         alternate_editor(ctx, &mut d);
         if let Some(report) = d.report.clone() {
             let mut close = false;
-            egui::Modal::new(egui::Id::new("variant_report")).show(ctx, |ui| {
-                ui.set_width(850.0_f32.min(ctx.available_rect().width() - 80.));
-                close = title(ui, "Detailed Variant Report");
-                egui::ScrollArea::both().max_height(480.).show(ui, |ui| {
-                    ui.add(
-                        egui::TextEdit::multiline(&mut report.as_str())
-                            .font(egui::TextStyle::Monospace)
-                            .desired_width(f32::INFINITY),
-                    );
-                });
-                ui.horizontal(|ui| {
-                    if ui.button("Bill of Materials CSV…").clicked() {
-                        match bom_report(&d) {
-                            Ok(bom) => {
-                                if let Some(path) = self
-                                    .file_dialog
-                                    .clone()
-                                    .set_file_name("Variant BOM.csv")
-                                    .add_filter("CSV", &["csv"])
-                                    .save_file()
-                                    && let Err(e) =
-                                        eda_io::project_files::write_atomic(&path, bom.as_bytes())
-                                {
-                                    d.error = e;
+            egui::Modal::new(egui::Id::new("variant_report")).show_stable(
+                ctx,
+                850.0_f32.min(ctx.available_rect().width() - 80.),
+                |ui| {
+                    ui.set_width(850.0_f32.min(ctx.available_rect().width() - 80.));
+                    close = title(ui, "Detailed Variant Report");
+                    egui::ScrollArea::both().max_height(480.).show(ui, |ui| {
+                        ui.add(
+                            egui::TextEdit::multiline(&mut report.as_str())
+                                .font(egui::TextStyle::Monospace)
+                                .desired_width(f32::INFINITY),
+                        );
+                    });
+                    ui.horizontal(|ui| {
+                        if ui.button("Bill of Materials CSV…").clicked() {
+                            match bom_report(&d) {
+                                Ok(bom) => {
+                                    if let Some(path) = self
+                                        .file_dialog
+                                        .clone()
+                                        .set_file_name("Variant BOM.csv")
+                                        .add_filter("CSV", &["csv"])
+                                        .save_file()
+                                        && let Err(e) = eda_io::project_files::write_atomic(
+                                            &path,
+                                            bom.as_bytes(),
+                                        )
+                                    {
+                                        d.error = e;
+                                    }
                                 }
+                                Err(e) => d.error = e,
                             }
-                            Err(e) => d.error = e,
                         }
-                    }
-                    if ui.button("Save CSV…").clicked()
-                        && let Some(path) = self
-                            .file_dialog
-                            .clone()
-                            .set_file_name("Variant Report.csv")
-                            .add_filter("CSV", &["csv"])
-                            .save_file()
-                        && let Err(e) =
-                            eda_io::project_files::write_atomic(&path, report.as_bytes())
-                    {
-                        d.error = e;
-                    }
-                    if ui.button("Close").clicked() {
-                        close = true;
-                    }
-                });
-            });
+                        if ui.button("Save CSV…").clicked()
+                            && let Some(path) = self
+                                .file_dialog
+                                .clone()
+                                .set_file_name("Variant Report.csv")
+                                .add_filter("CSV", &["csv"])
+                                .save_file()
+                            && let Err(e) =
+                                eda_io::project_files::write_atomic(&path, report.as_bytes())
+                        {
+                            d.error = e;
+                        }
+                        if ui.button("Close").clicked() {
+                            close = true;
+                        }
+                    });
+                },
+            );
             if close {
                 d.report = None;
             }
@@ -480,7 +491,7 @@ impl PcbCraft {
         };
         let mut keep = true;
         let mut choose = false;
-        egui::Modal::new(egui::Id::new("edit_component_variation")).show(ctx, |ui| {
+        egui::Modal::new(egui::Id::new("edit_component_variation")).show_stable(ctx, 370., |ui| {
             ui.set_width(370.);
             if title(ui, "Edit Component Variation") {
                 keep = false;
@@ -603,37 +614,41 @@ fn alternate_editor(ctx: &egui::Context, d: &mut Dialog) {
     let Some(lib) = d.library.take() else { return };
     let mut keep = true;
     let mut selected = None;
-    egui::Modal::new(egui::Id::new("variant_alternate")).show(ctx, |ui| {
-        ui.set_width(620.0_f32.min(ctx.available_rect().width() - 80.));
-        if title(ui, "Choose Alternate Part") {
-            keep = false;
-        }
-        ui.label(&lib.name);
-        egui::ScrollArea::vertical()
-            .max_height(400.)
-            .show(ui, |ui| {
-                for (n, symbol) in lib.symbols.iter().enumerate() {
-                    if ui
-                        .selectable_label(
-                            false,
-                            format!("{} — {}", symbol.name, symbol.description),
-                        )
-                        .clicked()
-                    {
-                        selected = Some(n);
+    egui::Modal::new(egui::Id::new("variant_alternate")).show_stable(
+        ctx,
+        620.0_f32.min(ctx.available_rect().width() - 80.),
+        |ui| {
+            ui.set_width(620.0_f32.min(ctx.available_rect().width() - 80.));
+            if title(ui, "Choose Alternate Part") {
+                keep = false;
+            }
+            ui.label(&lib.name);
+            egui::ScrollArea::vertical()
+                .max_height(400.)
+                .show(ui, |ui| {
+                    for (n, symbol) in lib.symbols.iter().enumerate() {
+                        if ui
+                            .selectable_label(
+                                false,
+                                format!("{} — {}", symbol.name, symbol.description),
+                            )
+                            .clicked()
+                        {
+                            selected = Some(n);
+                        }
                     }
-                }
-            });
-        for warning in &lib.warnings {
-            ui.colored_label(Color32::YELLOW, warning);
-        }
-        if !d.error.is_empty() {
-            ui.colored_label(Color32::LIGHT_RED, &d.error);
-        }
-        if ui.button("Cancel").clicked() {
-            keep = false;
-        }
-    });
+                });
+            for warning in &lib.warnings {
+                ui.colored_label(Color32::YELLOW, warning);
+            }
+            if !d.error.is_empty() {
+                ui.colored_label(Color32::LIGHT_RED, &d.error);
+            }
+            if ui.button("Cancel").clicked() {
+                keep = false;
+            }
+        },
+    );
     if let Some(n) = selected {
         let result = (|| {
             let symbol = &lib.symbols[n];
@@ -681,177 +696,188 @@ fn variant_editor(ctx: &egui::Context, d: &mut Dialog) {
         return;
     };
     let mut keep = true;
-    egui::Modal::new(egui::Id::new("edit_project_variant")).show(ctx, |ui| {
-        ui.set_width(620.0_f32.min(ctx.available_rect().width() - 80.));
-        ui.add_enabled_ui(editor.parameter.is_none(), |ui| {
-            if title(ui, "Edit Project Variant") {
-                keep = false;
-            }
-            ui.label("Description");
-            ui.add(egui::TextEdit::singleline(&mut editor.value.name).desired_width(f32::INFINITY));
-            ui.add_enabled(
-                false,
-                egui::Checkbox::new(&mut false, "Allow variation of fabrication outputs"),
-            );
-            ui.add_enabled(
-                false,
-                egui::Checkbox::new(&mut false, "Allow variation for paste mask"),
-            );
-            ui.label("Parameters");
-            egui::Frame::group(ui.style()).show(ui, |ui| {
-                ui.set_min_height(270.);
-                egui::ScrollArea::vertical()
-                    .max_height(300.)
-                    .show(ui, |ui| {
-                        egui::Grid::new("global_variant_parameters")
-                            .spacing([1., 0.])
-                            .striped(true)
-                            .show(ui, |ui| {
-                                cell(ui, "Name", 290., false);
-                                cell(ui, "Value", 290., false);
-                                ui.end_row();
-                                for (name, value) in &editor.value.parameters {
-                                    for text in [name, value] {
-                                        let response = cell(
-                                            ui,
-                                            text,
-                                            290.,
-                                            editor.selected.as_ref() == Some(name),
-                                        );
-                                        if response.clicked() {
-                                            editor.selected = Some(name.clone());
-                                        }
-                                        if response.double_clicked() {
-                                            editor.parameter = Some(ParameterProperties {
-                                                original: Some(name.clone()),
-                                                name: name.clone(),
-                                                value: value.clone(),
-                                            });
-                                        }
-                                    }
-                                    ui.end_row();
-                                }
-                            });
-                    });
-            });
-            ui.horizontal(|ui| {
-                if ui.button("Add?").clicked() {
-                    editor.parameter = Some(ParameterProperties {
-                        original: None,
-                        name: String::new(),
-                        value: String::new(),
-                    });
-                }
-                let selected = editor
-                    .selected
-                    .clone()
-                    .filter(|name| editor.value.parameters.contains_key(name));
-                if ui
-                    .add_enabled(selected.is_some(), egui::Button::new("Remove?"))
-                    .clicked()
-                {
-                    editor.value.parameters.remove(selected.as_ref().unwrap());
-                    editor.selected = None;
-                }
-                if ui
-                    .add_enabled(selected.is_some(), egui::Button::new("Edit?"))
-                    .clicked()
-                {
-                    let name = selected.unwrap();
-                    editor.parameter = Some(ParameterProperties {
-                        original: Some(name.clone()),
-                        value: editor.value.parameters[&name].clone(),
-                        name,
-                    });
-                }
-            });
-            if !editor.error.is_empty() {
-                ui.colored_label(Color32::LIGHT_RED, &editor.error);
-            }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.button("Cancel").clicked() {
+    egui::Modal::new(egui::Id::new("edit_project_variant")).show_stable(
+        ctx,
+        620.0_f32.min(ctx.available_rect().width() - 80.),
+        |ui| {
+            ui.set_width(620.0_f32.min(ctx.available_rect().width() - 80.));
+            ui.add_enabled_ui(editor.parameter.is_none(), |ui| {
+                if title(ui, "Edit Project Variant") {
                     keep = false;
                 }
-                if ui.button("OK").clicked() {
-                    editor.value.name = editor.value.name.trim().into();
-                    let edit = match &editor.original {
-                        Some(id) => model::Edit::Replace {
-                            id: id.clone(),
-                            value: editor.value.clone(),
-                        },
-                        None => model::Edit::Add(editor.value.clone()),
-                    };
-                    match model::edited(&d.draft, edit)
-                        .and_then(|next| d.history.commit(&mut d.draft, next))
-                    {
-                        Ok(_) => {
-                            d.variant = d
-                                .draft
-                                .iter()
-                                .position(|v| v.id == editor.value.id)
-                                .unwrap_or(0);
-                            d.error.clear();
-                            keep = false;
-                        }
-                        Err(e) => editor.error = e,
+                ui.label("Description");
+                ui.add(
+                    egui::TextEdit::singleline(&mut editor.value.name).desired_width(f32::INFINITY),
+                );
+                ui.add_enabled(
+                    false,
+                    egui::Checkbox::new(&mut false, "Allow variation of fabrication outputs"),
+                );
+                ui.add_enabled(
+                    false,
+                    egui::Checkbox::new(&mut false, "Allow variation for paste mask"),
+                );
+                ui.label("Parameters");
+                egui::Frame::group(ui.style()).show(ui, |ui| {
+                    ui.set_min_height(270.);
+                    egui::ScrollArea::vertical()
+                        .max_height(300.)
+                        .show(ui, |ui| {
+                            egui::Grid::new("global_variant_parameters")
+                                .spacing([1., 0.])
+                                .striped(true)
+                                .show(ui, |ui| {
+                                    cell(ui, "Name", 290., false);
+                                    cell(ui, "Value", 290., false);
+                                    ui.end_row();
+                                    for (name, value) in &editor.value.parameters {
+                                        for text in [name, value] {
+                                            let response = cell(
+                                                ui,
+                                                text,
+                                                290.,
+                                                editor.selected.as_ref() == Some(name),
+                                            );
+                                            if response.clicked() {
+                                                editor.selected = Some(name.clone());
+                                            }
+                                            if response.double_clicked() {
+                                                editor.parameter = Some(ParameterProperties {
+                                                    original: Some(name.clone()),
+                                                    name: name.clone(),
+                                                    value: value.clone(),
+                                                });
+                                            }
+                                        }
+                                        ui.end_row();
+                                    }
+                                });
+                        });
+                });
+                ui.horizontal(|ui| {
+                    if ui.button("Add?").clicked() {
+                        editor.parameter = Some(ParameterProperties {
+                            original: None,
+                            name: String::new(),
+                            value: String::new(),
+                        });
                     }
+                    let selected = editor
+                        .selected
+                        .clone()
+                        .filter(|name| editor.value.parameters.contains_key(name));
+                    if ui
+                        .add_enabled(selected.is_some(), egui::Button::new("Remove?"))
+                        .clicked()
+                    {
+                        editor.value.parameters.remove(selected.as_ref().unwrap());
+                        editor.selected = None;
+                    }
+                    if ui
+                        .add_enabled(selected.is_some(), egui::Button::new("Edit?"))
+                        .clicked()
+                    {
+                        let name = selected.unwrap();
+                        editor.parameter = Some(ParameterProperties {
+                            original: Some(name.clone()),
+                            value: editor.value.parameters[&name].clone(),
+                            name,
+                        });
+                    }
+                });
+                if !editor.error.is_empty() {
+                    ui.colored_label(Color32::LIGHT_RED, &editor.error);
                 }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button("Cancel").clicked() {
+                        keep = false;
+                    }
+                    if ui.button("OK").clicked() {
+                        editor.value.name = editor.value.name.trim().into();
+                        let edit = match &editor.original {
+                            Some(id) => model::Edit::Replace {
+                                id: id.clone(),
+                                value: editor.value.clone(),
+                            },
+                            None => model::Edit::Add(editor.value.clone()),
+                        };
+                        match model::edited(&d.draft, edit)
+                            .and_then(|next| d.history.commit(&mut d.draft, next))
+                        {
+                            Ok(_) => {
+                                d.variant = d
+                                    .draft
+                                    .iter()
+                                    .position(|v| v.id == editor.value.id)
+                                    .unwrap_or(0);
+                                d.error.clear();
+                                keep = false;
+                            }
+                            Err(e) => editor.error = e,
+                        }
+                    }
+                });
             });
-        });
-    });
+        },
+    );
     if let Some(mut parameter) = editor.parameter.take() {
         let mut parameter_keep = true;
-        egui::Modal::new(egui::Id::new("variant_parameter_properties")).show(ctx, |ui| {
-            ui.set_width(465.);
-            if title(ui, "Parameter Properties") {
-                parameter_keep = false;
-            }
-            egui::Grid::new("variant_parameter_properties_fields").show(ui, |ui| {
-                ui.label("Name");
-                ui.add(egui::TextEdit::singleline(&mut parameter.name).desired_width(410.));
-                ui.end_row();
-                ui.label("Value");
-                ui.add(egui::TextEdit::singleline(&mut parameter.value).desired_width(410.));
-                ui.end_row();
-            });
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.button("Cancel").clicked() {
+        egui::Modal::new(egui::Id::new("variant_parameter_properties")).show_stable(
+            ctx,
+            465.,
+            |ui| {
+                ui.set_width(465.);
+                if title(ui, "Parameter Properties") {
                     parameter_keep = false;
                 }
-                if ui.button("OK").clicked() {
-                    let name = parameter.name.trim();
-                    if name.is_empty()
-                        || editor.value.parameters.keys().any(|k| {
-                            k.eq_ignore_ascii_case(name) && Some(k) != parameter.original.as_ref()
-                        })
-                    {
-                        editor.error = "Parameter names must be nonempty and unique".into();
-                    } else {
-                        if let Some(old) = &parameter.original {
-                            editor.value.parameters.remove(old);
-                            if let Some(fields) =
-                                editor.value.parameter_fields.remove(&old.to_lowercase())
-                            {
-                                editor
-                                    .value
-                                    .parameter_fields
-                                    .insert(name.to_lowercase(), fields);
-                            }
-                        }
-                        editor
-                            .value
-                            .parameters
-                            .insert(name.into(), parameter.value.clone());
-                        editor.selected = Some(name.into());
-                        editor.error.clear();
+                egui::Grid::new("variant_parameter_properties_fields").show(ui, |ui| {
+                    ui.label("Name");
+                    ui.add(egui::TextEdit::singleline(&mut parameter.name).desired_width(410.));
+                    ui.end_row();
+                    ui.label("Value");
+                    ui.add(egui::TextEdit::singleline(&mut parameter.value).desired_width(410.));
+                    ui.end_row();
+                });
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button("Cancel").clicked() {
                         parameter_keep = false;
                     }
+                    if ui.button("OK").clicked() {
+                        let name = parameter.name.trim();
+                        if name.is_empty()
+                            || editor.value.parameters.keys().any(|k| {
+                                k.eq_ignore_ascii_case(name)
+                                    && Some(k) != parameter.original.as_ref()
+                            })
+                        {
+                            editor.error = "Parameter names must be nonempty and unique".into();
+                        } else {
+                            if let Some(old) = &parameter.original {
+                                editor.value.parameters.remove(old);
+                                if let Some(fields) =
+                                    editor.value.parameter_fields.remove(&old.to_lowercase())
+                                {
+                                    editor
+                                        .value
+                                        .parameter_fields
+                                        .insert(name.to_lowercase(), fields);
+                                }
+                            }
+                            editor
+                                .value
+                                .parameters
+                                .insert(name.into(), parameter.value.clone());
+                            editor.selected = Some(name.into());
+                            editor.error.clear();
+                            parameter_keep = false;
+                        }
+                    }
+                });
+                if !editor.error.is_empty() {
+                    ui.colored_label(Color32::LIGHT_RED, &editor.error);
                 }
-            });
-            if !editor.error.is_empty() {
-                ui.colored_label(Color32::LIGHT_RED, &editor.error);
-            }
-        });
+            },
+        );
         if parameter_keep {
             editor.parameter = Some(parameter);
         }
@@ -866,98 +892,102 @@ fn drawing_style(ctx: &egui::Context, d: &mut Dialog) {
         return;
     };
     let mut keep = true;
-    egui::Modal::new(egui::Id::new("variant_drawing_style")).show(ctx, |ui| {
-        ui.set_width(690.0_f32.min(ctx.available_rect().width() - 80.));
-        if title(ui, "Drawing Style") {
-            keep = false;
-        }
-        ui.group(|ui| {
-            ui.strong("Schematic Drawing Options");
-            ui.label("Graphics drawn over components that are not fitted.");
-            ui.label("Not fitted components are automatically masked.");
-            let mut graphics = style.cross || style.mesh;
-            if ui.checkbox(&mut graphics, "Use Graphics").changed() {
-                style.cross = graphics;
-                style.mesh = false;
+    egui::Modal::new(egui::Id::new("variant_drawing_style")).show_stable(
+        ctx,
+        690.0_f32.min(ctx.available_rect().width() - 80.),
+        |ui| {
+            ui.set_width(690.0_f32.min(ctx.available_rect().width() - 80.));
+            if title(ui, "Drawing Style") {
+                keep = false;
             }
-            ui.add_enabled_ui(graphics, |ui| {
-                if ui.radio(style.cross, "Use Red Cross").clicked() {
-                    style.cross = true;
+            ui.group(|ui| {
+                ui.strong("Schematic Drawing Options");
+                ui.label("Graphics drawn over components that are not fitted.");
+                ui.label("Not fitted components are automatically masked.");
+                let mut graphics = style.cross || style.mesh;
+                if ui.checkbox(&mut graphics, "Use Graphics").changed() {
+                    style.cross = graphics;
                     style.mesh = false;
                 }
-                if ui.radio(style.mesh, "Use Gray Box and Mesh").clicked() {
-                    style.mesh = true;
-                    style.cross = false;
-                }
-            });
-            let mut text = !style.not_fitted_text.is_empty();
-            if ui.checkbox(&mut text, "Use Text").changed() {
-                style.not_fitted_text = if text {
-                    "Not Fitted".into()
-                } else {
-                    String::new()
-                };
-            }
-            ui.add_enabled(text, egui::TextEdit::singleline(&mut style.not_fitted_text));
-            ui.horizontal(|ui| {
-                ui.label("Graphics Color");
-                color_edit(ui, &mut style.color);
-                ui.label("Line Width (mm)");
-                let mut mm = style.width_nm as f64 / 1e6;
-                if ui
-                    .add(egui::DragValue::new(&mut mm).range(0.01..=10.).speed(0.01))
-                    .changed()
-                {
-                    style.width_nm = (mm * 1e6).round() as i64;
-                }
-            });
-            ui.separator();
-            ui.label("Appearance of parameter variations");
-            ui.checkbox(&mut style.modify_parameters, "Modify Text and Font");
-            ui.add_enabled_ui(style.modify_parameters, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label("Suffix");
-                    ui.text_edit_singleline(&mut style.parameter_suffix);
-                    ui.label("Font Color");
-                    color_edit(ui, &mut style.parameter_color);
+                ui.add_enabled_ui(graphics, |ui| {
+                    if ui.radio(style.cross, "Use Red Cross").clicked() {
+                        style.cross = true;
+                        style.mesh = false;
+                    }
+                    if ui.radio(style.mesh, "Use Gray Box and Mesh").clicked() {
+                        style.mesh = true;
+                        style.cross = false;
+                    }
                 });
+                let mut text = !style.not_fitted_text.is_empty();
+                if ui.checkbox(&mut text, "Use Text").changed() {
+                    style.not_fitted_text = if text {
+                        "Not Fitted".into()
+                    } else {
+                        String::new()
+                    };
+                }
+                ui.add_enabled(text, egui::TextEdit::singleline(&mut style.not_fitted_text));
                 ui.horizontal(|ui| {
-                    ui.label("Font");
-                    ui.text_edit_singleline(&mut style.parameter_font_name);
-                    ui.label("Size");
-                    let mut points = style.parameter_height_nm as f64 / 254_000.;
+                    ui.label("Graphics Color");
+                    color_edit(ui, &mut style.color);
+                    ui.label("Line Width (mm)");
+                    let mut mm = style.width_nm as f64 / 1e6;
                     if ui
-                        .add(egui::DragValue::new(&mut points).range(1.0..=100.))
+                        .add(egui::DragValue::new(&mut mm).range(0.01..=10.).speed(0.01))
                         .changed()
                     {
-                        style.parameter_height_nm = (points * 254_000.).round() as i64;
+                        style.width_nm = (mm * 1e6).round() as i64;
                     }
-                    ui.checkbox(&mut style.parameter_italic, "Italic");
-                    ui.checkbox(&mut style.parameter_bold, "Bold");
+                });
+                ui.separator();
+                ui.label("Appearance of parameter variations");
+                ui.checkbox(&mut style.modify_parameters, "Modify Text and Font");
+                ui.add_enabled_ui(style.modify_parameters, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label("Suffix");
+                        ui.text_edit_singleline(&mut style.parameter_suffix);
+                        ui.label("Font Color");
+                        color_edit(ui, &mut style.parameter_color);
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Font");
+                        ui.text_edit_singleline(&mut style.parameter_font_name);
+                        ui.label("Size");
+                        let mut points = style.parameter_height_nm as f64 / 254_000.;
+                        if ui
+                            .add(egui::DragValue::new(&mut points).range(1.0..=100.))
+                            .changed()
+                        {
+                            style.parameter_height_nm = (points * 254_000.).round() as i64;
+                        }
+                        ui.checkbox(&mut style.parameter_italic, "Italic");
+                        ui.checkbox(&mut style.parameter_bold, "Bold");
+                    });
                 });
             });
-        });
-        ui.group(|ui| {
-            ui.strong("PCB Drawing Options");
-            ui.add_enabled(
-                false,
-                egui::RadioButton::new(true, "Hide Not Fitted Components"),
-            );
-            ui.add_enabled(
-                false,
-                egui::RadioButton::new(false, "Display Not Fitted Components in Draft Mode"),
-            );
-        });
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui.button("Cancel").clicked() {
-                keep = false;
-            }
-            if ui.button("OK").clicked() {
-                d.style = style.clone();
-                keep = false;
-            }
-        });
-    });
+            ui.group(|ui| {
+                ui.strong("PCB Drawing Options");
+                ui.add_enabled(
+                    false,
+                    egui::RadioButton::new(true, "Hide Not Fitted Components"),
+                );
+                ui.add_enabled(
+                    false,
+                    egui::RadioButton::new(false, "Display Not Fitted Components in Draft Mode"),
+                );
+            });
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.button("Cancel").clicked() {
+                    keep = false;
+                }
+                if ui.button("OK").clicked() {
+                    d.style = style.clone();
+                    keep = false;
+                }
+            });
+        },
+    );
     if keep {
         d.style_editor = Some(style);
     }
@@ -969,64 +999,109 @@ fn color_edit(ui: &mut egui::Ui, color: &mut u32) {
     }
 }
 
+fn link_information(ctx: &egui::Context, d: &mut Dialog) {
+    let Some(message) = d.link_notice.clone() else {
+        return;
+    };
+    let mut dismiss = false;
+    let response = egui::Modal::new(egui::Id::new("variant_link_information"))
+        .frame(egui::Frame::window(&ctx.style()).corner_radius(0))
+        .show_stable(ctx, 620., |ui| {
+            dismiss |= title(ui, "Information");
+            ui.horizontal_top(|ui| {
+                let (icon, _) = ui.allocate_exact_size(egui::vec2(40., 60.), egui::Sense::hover());
+                let centre = icon.center_top() + egui::vec2(0., 18.);
+                ui.painter()
+                    .circle_filled(centre, 16., Color32::from_rgb(61, 131, 180));
+                ui.painter().text(
+                    centre,
+                    egui::Align2::CENTER_CENTER,
+                    "i",
+                    egui::FontId::proportional(25.),
+                    Color32::WHITE,
+                );
+                ui.add(egui::Label::new(message).wrap());
+            });
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                dismiss |= ui.add_sized([75., 25.], egui::Button::new("OK")).clicked();
+            });
+        });
+    if dismiss
+        || (response.is_top_modal
+            && !response.any_popup_open
+            && ctx.input_mut(|i| {
+                i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)
+                    || i.consume_key(egui::Modifiers::NONE, egui::Key::Enter)
+            }))
+    {
+        d.link_notice = None;
+    }
+}
+
 fn component_links(ctx: &egui::Context, d: &mut Dialog) {
     if !d.links {
         return;
     }
     let refs = d.rows.iter().map(Row::reference).collect::<Vec<_>>();
     let mut edit = None;
-    egui::Modal::new(egui::Id::new("variant_component_links")).show(ctx, |ui| {
-        ui.set_width(760.0_f32.min(ctx.available_rect().width() - 80.));
-        if title(ui, "Component Links") {
-            d.links = false;
-        }
-        ui.label("Unresolved variation links. Select the physical component to relink explicitly.");
-        egui::ScrollArea::both().max_height(400.).show(ui, |ui| {
-            let mut count = 0;
-            for v in &d.draft {
-                for n in model::unresolved(v, &refs) {
-                    count += 1;
-                    let c = &v.variations[n];
-                    ui.horizontal(|ui| {
-                        ui.label(format!("{} / {}", v.name, c.designator))
-                            .on_hover_text(&c.uid);
-                        egui::ComboBox::from_id_salt(("repair_variant_link", &v.id, n))
-                            .selected_text("Choose component…")
-                            .show_ui(ui, |ui| {
-                                for r in d.rows.iter() {
-                                    if ui
-                                        .selectable_label(
-                                            false,
-                                            format!(
-                                                "{} — {} {}",
-                                                r.designator, r.document.name, r.path
-                                            ),
-                                        )
-                                        .clicked()
-                                    {
-                                        edit = Some(model::Edit::Rebind {
-                                            id: v.id.clone(),
-                                            index: n,
-                                            component: r.reference(),
-                                        });
-                                        ui.close();
+    egui::Modal::new(egui::Id::new("variant_component_links")).show_stable(
+        ctx,
+        760.0_f32.min(ctx.available_rect().width() - 80.),
+        |ui| {
+            ui.set_width(760.0_f32.min(ctx.available_rect().width() - 80.));
+            if title(ui, "Component Links") {
+                d.links = false;
+            }
+            ui.label(
+                "Unresolved variation links. Select the physical component to relink explicitly.",
+            );
+            egui::ScrollArea::both().max_height(400.).show(ui, |ui| {
+                let mut count = 0;
+                for v in &d.draft {
+                    for n in model::unresolved(v, &refs) {
+                        count += 1;
+                        let c = &v.variations[n];
+                        ui.horizontal(|ui| {
+                            ui.label(format!("{} / {}", v.name, c.designator))
+                                .on_hover_text(&c.uid);
+                            egui::ComboBox::from_id_salt(("repair_variant_link", &v.id, n))
+                                .selected_text("Choose component…")
+                                .show_ui(ui, |ui| {
+                                    for r in d.rows.iter() {
+                                        if ui
+                                            .selectable_label(
+                                                false,
+                                                format!(
+                                                    "{} — {} {}",
+                                                    r.designator, r.document.name, r.path
+                                                ),
+                                            )
+                                            .clicked()
+                                        {
+                                            edit = Some(model::Edit::Rebind {
+                                                id: v.id.clone(),
+                                                index: n,
+                                                component: r.reference(),
+                                            });
+                                            ui.close();
+                                        }
                                     }
-                                }
-                            });
-                    });
+                                });
+                        });
+                    }
                 }
+                if count == 0 {
+                    ui.label("All variation links are resolved.");
+                }
+            });
+            if ui.button("Close").clicked() {
+                d.links = false;
             }
-            if count == 0 {
-                ui.label("All variation links are resolved.");
+            if !d.error.is_empty() {
+                ui.colored_label(Color32::LIGHT_RED, &d.error);
             }
-        });
-        if ui.button("Close").clicked() {
-            d.links = false;
-        }
-        if !d.error.is_empty() {
-            ui.colored_label(Color32::LIGHT_RED, &d.error);
-        }
-    });
+        },
+    );
     if let Some(edit) = edit {
         d.commit(edit);
     }

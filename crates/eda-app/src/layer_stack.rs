@@ -413,7 +413,7 @@ impl PcbCraft {
             egui::Window::new("Stack is not symmetric")
                 .collapsible(false)
                 .resizable(false)
-                .show(ctx, |ui| {
+                .show_stable(ctx, |ui| {
                     ui.label("Choose which half supplies the paired layer properties.");
                     for (label, top_down) in [
                         ("Mirror top half down", true),
@@ -466,7 +466,7 @@ impl PcbCraft {
             egui::Window::new("Unapplied stack changes")
                 .collapsible(false)
                 .resizable(false)
-                .show(ctx, |ui| {
+                .show_stable(ctx, |ui| {
                     ui.label("Apply changes before closing?");
                     ui.horizontal(|ui| {
                         if ui.button("Apply and close").clicked() {

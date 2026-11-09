@@ -117,6 +117,8 @@ pub enum CameraCommand {
 struct SceneJob {
     key: SceneKey,
     receiver: Mutex<mpsc::Receiver<Scene>>,
+    started: std::time::Instant,
+    stage: Arc<std::sync::atomic::AtomicUsize>,
 }
 struct RasterJob {
     scene: SceneKey,
@@ -143,6 +145,7 @@ pub struct State {
     generation: u64,
     scene_job: Option<Arc<SceneJob>>,
     failed_key: Option<SceneKey>,
+    loading_announced: Option<(SceneKey, u64)>,
     raster_job: Option<Arc<RasterJob>>,
     failed_raster: Option<u64>,
     texture: Option<egui::TextureHandle>,
@@ -171,6 +174,7 @@ impl Default for State {
             generation: 0,
             scene_job: None,
             failed_key: None,
+            loading_announced: None,
             raster_job: None,
             failed_raster: None,
             texture: None,
@@ -285,7 +289,7 @@ impl State {
         self.built_key != Some(self.scene_key())
     }
     pub fn rendering(&self) -> bool {
-        self.raster_job.is_some()
+        self.raster_job.is_some() || self.gpu.as_ref().is_some_and(|gpu| gpu.preparing())
     }
     fn render(
         &mut self,
@@ -382,14 +386,19 @@ impl State {
         if self.preparing() && self.scene_job.is_none() && self.failed_key != Some(key) {
             let snapshot = board.clone();
             let (sender, receiver) = mpsc::sync_channel(1);
+            let stage = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let worker_stage = stage.clone();
             self.scene_job = Some(Arc::new(SceneJob {
                 key,
                 receiver: Mutex::new(receiver),
+                started: std::time::Instant::now(),
+                stage,
             }));
             let ctx = ctx.clone();
             let previous = self.scene.clone();
             std::thread::spawn(move || {
-                let mut scene = build_reusing(&snapshot, key.1, &previous);
+                let mut scene =
+                    build_with_progress(&snapshot, key.1, &previous, Some(&worker_stage));
                 scene.source = Some(Arc::new(snapshot));
                 let _ = sender.send(scene);
                 ctx.request_repaint();
@@ -498,7 +507,16 @@ fn mask_sources(board: &Board) -> impl Iterator<Item = &Item> {
         matches!(i.shape, Shape::Pad { .. } | Shape::Via { .. }) || matches!(i.layer, 37 | 38)
     })
 }
+#[cfg(test)]
 fn build_reusing(board: &Board, components: bool, previous: &Scene) -> Scene {
+    build_with_progress(board, components, previous, None)
+}
+fn build_with_progress(
+    board: &Board,
+    components: bool,
+    previous: &Scene,
+    progress: Option<&std::sync::atomic::AtomicUsize>,
+) -> Scene {
     let started = std::time::Instant::now();
     let mut stage = started;
     let mut timing = |name: &str| {
@@ -509,8 +527,16 @@ fn build_reusing(board: &Board, components: bool, previous: &Scene) -> Scene {
             );
         }
         stage = std::time::Instant::now();
+        if let Some(progress) = progress {
+            progress.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
     };
     let mut scene = Scene::default();
+    let component_ids: std::collections::HashMap<_, _> = board
+        .components
+        .iter()
+        .map(|component| (component.index, component.id))
+        .collect();
     let origin = Point::default();
     let board_outline = board.outline_points(256);
     let board_bounds = Bounds::points(&board_outline);
@@ -722,10 +748,7 @@ fn build_reusing(board: &Board, components: bool, previous: &Scene) -> Scene {
                 }
                 _ => {}
             }
-            if let Some(parent) = item
-                .component
-                .and_then(|i| board.components.iter().find(|c| c.index == i).map(|c| c.id))
-            {
+            if let Some(parent) = item.component.and_then(|i| component_ids.get(&i).copied()) {
                 scene.parents.insert(item.id, parent);
             }
             add(
@@ -813,10 +836,7 @@ fn build_reusing(board: &Board, components: bool, previous: &Scene) -> Scene {
             else {
                 continue;
             };
-            let owner = item
-                .component
-                .and_then(|i| board.components.iter().find(|c| c.index == i))
-                .map(|c| c.id);
+            let owner = item.component.and_then(|i| component_ids.get(&i).copied());
             let opacity = item
                 .properties
                 .get("BODYOPACITY3D")
@@ -894,6 +914,9 @@ fn build_reusing(board: &Board, components: bool, previous: &Scene) -> Scene {
     scene.substrate = substrate;
     let geometry_ms = started.elapsed().as_secs_f64() * 1000.;
     scene.geometry = gpu::Geometry::new(&scene);
+    if let Some(progress) = progress {
+        progress.store(5, std::sync::atomic::Ordering::Relaxed);
+    }
     scene.picking = picking::Index::new(&scene.faces);
     if std::env::var_os("PCBCRAFT_FRAME_PROFILE").is_some() {
         eprintln!(
@@ -1154,6 +1177,31 @@ fn drag_to(state: &mut State, pos: Pos2) -> bool {
     state.drag = Some((pos, button, rotate));
     delta != Vec2::ZERO
 }
+fn loading_status(
+    ui: &mut egui::Ui,
+    rect: Rect,
+    message: &str,
+    seconds: Option<f64>,
+    failed: bool,
+) {
+    let card = Rect::from_center_size(rect.center(), Vec2::new(340_f32.min(rect.width()), 86.));
+    let frame = egui::Frame::window(ui.style());
+    let inner = frame.total_margin().shrink_rect(card);
+    ui.painter().add(frame.paint(inner));
+    let mut content = ui.new_child(egui::UiBuilder::new().max_rect(inner));
+    content.set_clip_rect(inner.intersect(ui.clip_rect()));
+    content.horizontal(|ui| {
+        if !failed {
+            ui.spinner();
+        }
+        ui.add(egui::Label::new(message).truncate())
+            .on_hover_text(message);
+    });
+    if let Some(seconds) = seconds {
+        content.label(format!("{seconds:.1} s"));
+    }
+}
+
 pub fn canvas(ui: &mut egui::Ui, board: &Board, view: &mut View) -> CanvasOutput {
     view.pcb.sync_3d_display(board);
     let state = &mut view.pcb.three_d;
@@ -1177,6 +1225,40 @@ pub fn canvas(ui: &mut egui::Ui, board: &Board, view: &mut View) -> CanvasOutput
         ui.label("Shift + right drag: rotate · right drag: pan · wheel: zoom");
     });
     let (rect, response) = ui.allocate_exact_size(ui.available_size(), Sense::click_and_drag());
+    ui.painter()
+        .rect_filled(rect, 0., state.presentation.background[0]);
+    let dpi = ui.ctx().pixels_per_point();
+    let size = [
+        (rect.width() * dpi).ceil().clamp(1., 1800.) as usize,
+        (rect.height() * dpi).ceil().clamp(1., 1400.) as usize,
+    ];
+    // Compile pipelines while CPU geometry is still being prepared. Only one
+    // GPU preparation job is retained, and callbacks never wait for that job.
+    if let Some(format) =
+        crate::pcb::gpu_format(ui.ctx()).filter(|_| gpu::supported(ui.ctx(), &state.scene))
+    {
+        state
+            .gpu
+            .get_or_insert_with(|| Arc::new(gpu::Renderer::default()))
+            .prepare_background(&state.scene, ui.ctx(), format, size);
+    }
+    let scene_key = state.scene_key();
+    let frame = ui.ctx().cumulative_frame_nr();
+    if state.preparing()
+        && state.scene_job.is_none()
+        && state.failed_key != Some(scene_key)
+        && state
+            .loading_announced
+            .is_none_or(|(key, announced)| key != scene_key || announced == frame)
+    {
+        // An egui frame can contain discarded layout passes. Announce through
+        // every pass of this frame, not just its first pass.
+        state.loading_announced = Some((scene_key, frame));
+        view.pcb.input = None;
+        loading_status(ui, rect, "Preparing 3D view", None, false);
+        ui.ctx().request_repaint();
+        return CanvasOutput::default();
+    }
     state.prepare(board, ui.ctx());
     if !state.preparing() {
         state.sync_camera_viewport(rect.size());
@@ -1273,18 +1355,34 @@ pub fn canvas(ui: &mut egui::Ui, board: &Board, view: &mut View) -> CanvasOutput
     }
     if state.preparing() {
         view.pcb.input = None;
-        ui.painter()
-            .rect_filled(rect, 0., state.presentation.background[0]);
-        ui.painter().text(
-            rect.center(),
-            egui::Align2::CENTER_CENTER,
-            if state.failed_key == Some(state.scene_key()) {
-                "Could not prepare 3D view"
-            } else {
-                "Preparing 3D view…"
-            },
-            egui::FontId::proportional(14.),
-            Color32::WHITE,
+        let failed = state.failed_key == Some(state.scene_key());
+        let stages = [
+            "Preparing board substrate",
+            "Preparing solder mask",
+            "Preparing copper and labels",
+            "Preparing components",
+            "Preparing 3D graphics",
+            "Finishing 3D view",
+        ];
+        let message = if failed {
+            "Could not prepare 3D view"
+        } else {
+            state.scene_job.as_ref().map_or("Preparing 3D view", |job| {
+                stages[job
+                    .stage
+                    .load(std::sync::atomic::Ordering::Relaxed)
+                    .min(stages.len() - 1)]
+            })
+        };
+        loading_status(
+            ui,
+            rect,
+            message,
+            state
+                .scene_job
+                .as_ref()
+                .map(|job| job.started.elapsed().as_secs_f64()),
+            failed,
         );
         if state.scene_job.is_some() {
             ui.ctx()
@@ -1295,11 +1393,6 @@ pub fn canvas(ui: &mut egui::Ui, board: &Board, view: &mut View) -> CanvasOutput
             schematic_input: None,
         };
     }
-    let dpi = ui.ctx().pixels_per_point();
-    let size = [
-        (rect.width() * dpi).ceil().clamp(1., 1800.) as usize,
-        (rect.height() * dpi).ceil().clamp(1., 1400.) as usize,
-    ];
     let mut hash = std::collections::hash_map::DefaultHasher::new();
     view.pcb.selected.hash(&mut hash);
     state.revision.hash(&mut hash);
@@ -1344,6 +1437,22 @@ pub fn canvas(ui: &mut egui::Ui, board: &Board, view: &mut View) -> CanvasOutput
             .gpu
             .get_or_insert_with(|| Arc::new(gpu::Renderer::default()))
             .clone();
+        if !renderer.prepare_background(&state.scene, ui.ctx(), format, size) {
+            view.pcb.input = None;
+            let failed = renderer.failed(&state.scene, format, size);
+            loading_status(
+                ui,
+                rect,
+                if failed {
+                    "Could not prepare 3D graphics"
+                } else {
+                    "Preparing 3D graphics"
+                },
+                None,
+                failed,
+            );
+            return CanvasOutput::default();
+        }
         ui.painter().add(renderer.callback(
             state,
             &view.pcb.selected,
@@ -1370,18 +1479,17 @@ pub fn canvas(ui: &mut egui::Ui, board: &Board, view: &mut View) -> CanvasOutput
                 Color32::WHITE,
             );
         } else {
-            ui.painter()
-                .rect_filled(rect, 0., state.presentation.background[0]);
-            ui.painter().text(
-                rect.center(),
-                egui::Align2::CENTER_CENTER,
-                if state.failed_raster == Some(key) {
+            let failed = state.failed_raster == Some(key);
+            loading_status(
+                ui,
+                rect,
+                if failed {
                     "Could not render 3D view"
                 } else {
-                    "Rendering 3D view…"
+                    "Rendering 3D view"
                 },
-                egui::FontId::proportional(14.),
-                Color32::WHITE,
+                None,
+                failed,
             );
         }
         // The displayed image may lag while orbiting. Never pick using a depth
@@ -1751,6 +1859,93 @@ mod tests {
         assert_eq!(ids[5050], 1);
     }
     #[test]
+    fn loading_card_keeps_its_bounds_across_phases_time_and_failure() {
+        let ctx = egui::Context::default();
+        ctx.set_visuals(egui::Visuals::dark());
+        let mut before = None;
+        for (message, seconds, failed) in [
+            ("Preparing 3D view".into(), None, false),
+            ("Preparing copper and labels".into(), Some(9.9), false),
+            ("Preparing 3D graphics".into(), Some(1000.), false),
+            ("Long GPU initialization error ".repeat(40), None, true),
+        ] {
+            let output = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(800., 600.))),
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        let rect = ui.available_rect_before_wrap();
+                        loading_status(ui, rect, &message, seconds, failed);
+                    });
+                },
+            );
+            fn card_rect(shape: &egui::Shape, fill: Color32) -> Option<Rect> {
+                match shape {
+                    egui::Shape::Rect(rect) if rect.fill == fill && rect.rect.width() < 600. => {
+                        Some(rect.rect)
+                    }
+                    egui::Shape::Vec(shapes) => shapes.iter().find_map(|s| card_rect(s, fill)),
+                    _ => None,
+                }
+            }
+            let rect = output
+                .shapes
+                .iter()
+                .find_map(|s| card_rect(&s.shape, ctx.style().visuals.window_fill))
+                .unwrap();
+            if let Some(before) = before {
+                assert_eq!(rect, before);
+            } else {
+                before = Some(rect);
+            }
+        }
+    }
+
+    #[test]
+    fn white_background_shows_a_loading_card_before_starting_geometry_work() {
+        let mut board = Board::default();
+        board.properties.insert(
+            "3DCONFIGURATION".into(),
+            "CFG3D.WORKSPACEBEGINCOLOR=16777215`CFG3D.WORKSPACEENDCOLOR=16777215".into(),
+        );
+        let ctx = egui::Context::default();
+        ctx.set_visuals(egui::Visuals::dark());
+        let mut view = View::default();
+        view.pcb.three_d.enabled = true;
+        let output = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(800., 600.))),
+                ..Default::default()
+            },
+            |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    crate::pcb::canvas(ui, &board, &mut view);
+                });
+            },
+        );
+        assert_eq!(view.pcb.three_d.presentation.background[0], Color32::WHITE);
+        assert!(
+            view.pcb.three_d.scene_job.is_none(),
+            "The loading frame must precede cloning/building the board"
+        );
+        assert!(view.pcb.input.is_none());
+        assert!(output.shapes.iter().any(|s| matches!(&s.shape,
+            egui::Shape::Text(text) if text.galley.job.text.contains("Preparing 3D view"))));
+        let fill = ctx.style().visuals.window_fill;
+        assert_ne!(fill, Color32::WHITE);
+        fn has_fill(shape: &egui::Shape, fill: Color32) -> bool {
+            match shape {
+                egui::Shape::Rect(rect) => rect.fill == fill,
+                egui::Shape::Vec(shapes) => shapes.iter().any(|shape| has_fill(shape, fill)),
+                _ => false,
+            }
+        }
+        assert!(output.shapes.iter().any(|s| has_fill(&s.shape, fill)));
+    }
+
+    #[test]
     fn gpu_canvas_reuses_scene_and_renderer_during_navigation_without_raster_jobs() {
         let board = Board::from_legacy(&eda_core::Document::new(
             eda_core::DocumentKind::Board,
@@ -1884,6 +2079,8 @@ mod tests {
             state.scene_job = Some(Arc::new(SceneJob {
                 key: old_key,
                 receiver: Mutex::new(receiver),
+                started: std::time::Instant::now(),
+                stage: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             }));
             let job = state.scene_job.clone().unwrap();
             let original = state.scene.clone();
@@ -1913,6 +2110,8 @@ mod tests {
         state.scene_job = Some(Arc::new(SceneJob {
             key: old_key,
             receiver: Mutex::new(receiver),
+            started: std::time::Instant::now(),
+            stage: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         }));
         state.invalidate();
         assert!(sender.send(Scene::default()).is_ok());

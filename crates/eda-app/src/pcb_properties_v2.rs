@@ -915,6 +915,40 @@ fn polygon(
             done |= text_row(ui, "Name", &mut p.name);
             done |= layer(ui, board, &mut p.layer, true);
             done |= net(ui, board, &mut p.net);
+            row(ui, "Fill Mode", |ui| {
+                for (mode, label) in [
+                    (pcb_polygon::FillMode::Solid, "Solid"),
+                    (pcb_polygon::FillMode::Hatched, "Hatched"),
+                    (pcb_polygon::FillMode::None, "None"),
+                ] {
+                    if ui
+                        .add_enabled(
+                            mode != pcb_polygon::FillMode::Hatched,
+                            egui::Button::selectable(p.fill_mode == mode, label),
+                        )
+                        .clicked()
+                    {
+                        p.fill_mode = mode;
+                        done = true;
+                    }
+                }
+            });
+            row(ui, "Pour Over Same Net", |ui| {
+                egui::ComboBox::from_id_salt("pour_over_same_net")
+                    .selected_text(p.same_net.label())
+                    .truncate()
+                    .show_ui(ui, |ui| {
+                        for mode in [
+                            pcb_polygon::SameNet::None,
+                            pcb_polygon::SameNet::All,
+                            pcb_polygon::SameNet::PolygonsOnly,
+                        ] {
+                            done |= ui
+                                .selectable_value(&mut p.same_net, mode, mode.label())
+                                .changed();
+                        }
+                    });
+            });
             done |= numeric_row(ui, "Clearance", &mut p.clearance, units);
             row(ui, "Connect Style", |ui| {
                 egui::ComboBox::from_id_salt("connect")
@@ -944,7 +978,15 @@ fn polygon(
             done |= ui
                 .checkbox(&mut p.remove_islands, "Remove Dead Copper")
                 .changed();
-            if p.remove_islands {
+            let mut remove_small = p.min_island_area_mm2 > 0.0;
+            if ui
+                .checkbox(&mut remove_small, "Remove Islands Less Than")
+                .changed()
+            {
+                p.min_island_area_mm2 = if remove_small { 1.6129 } else { 0.0 };
+                done = true;
+            }
+            if remove_small {
                 row(ui, "Area Less Than", |ui| {
                     let r = ui.add_sized(
                         [ui.available_width(), 22.0],
@@ -954,6 +996,17 @@ fn polygon(
                     );
                     done |= r.lost_focus() || r.drag_stopped();
                 });
+            }
+            let mut remove_necks = p.neck_width > 0;
+            if ui
+                .checkbox(&mut remove_necks, "Remove Necks Less Than")
+                .changed()
+            {
+                p.neck_width = if remove_necks { 127_000 } else { 0 };
+                done = true;
+            }
+            if remove_necks {
+                done |= numeric_row(ui, "Neck Width", &mut p.neck_width, units);
             }
         });
     });
@@ -1718,10 +1771,7 @@ fn routing(
             });
         }
         ui.checkbox(&mut ed.auto_terminate, "Automatically Terminate Routing");
-        ui.add_enabled(
-            false,
-            egui::Checkbox::new(&mut false, "Automatically Remove Loops"),
-        );
+        ui.checkbox(&mut ed.remove_loops, "Automatically Remove Loops");
         ui.add_enabled(
             false,
             egui::Checkbox::new(&mut false, "Remove Loops With Vias"),

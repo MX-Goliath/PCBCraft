@@ -586,7 +586,7 @@ pub(super) fn message(ctx: &egui::Context, id: impl std::hash::Hash, message: &m
         .anchor(Align2::CENTER_CENTER, vec2(0.0, 0.0))
         .collapsible(false)
         .resizable(false)
-        .show(ctx, |ui| {
+        .show_stable(ctx, |ui| {
             ui.set_max_width(480.0);
             ui.label(message.as_str());
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {

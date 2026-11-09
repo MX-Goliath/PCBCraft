@@ -170,3 +170,41 @@ are unsupported. Linux GUI rendering is not exercised in this Windows session.
 The software renderer remains asynchronous and is not a 60 FPS parity claim.
 Native save restrictions for edited imported 3D placements still apply;
 navigation alone does not affect native saving.
+
+
+### 3D entry loading feedback and GPU preparation - November 9, 2026
+
+The user reports a blank white viewport before a slowly loading board. Source
+inspection found a white-text-on-native-background loading message (invisible
+when the stored workspace background is white), and synchronous shader pipeline,
+vertex-buffer and render-target construction in the first GPU paint callback.
+Scene replacement also reconstructed all pipelines instead of retaining them.
+These are source findings; the reported complete delay has not been profiled.
+
+The viewport now paints a themed loading card with spinner before starting the
+board snapshot/geometry job. The announcement is held through every layout pass
+of its first frame. Geometry preparation reports its actual stage and elapsed
+seconds. CPU failure, GPU preparation and software raster fallback all use a
+contrasting card, independent of the configured board background.
+
+Registering the native device also enables one background GPU preparation job
+per 3D renderer. Pipeline compilation can overlap CPU geometry generation. A
+completed stale preparation is not displayed against a different scene/format/
+size; its compatible pipelines can be reused for the newest request. Geometry
+replacement updates vertex/material/index buffers and bindings while retaining
+compiled pipelines and compatible render targets. Unsupported integrations keep
+the existing callback/software paths. Failed preparation is tracked per key so
+an unchanged failure does not continuously restart shader compilation.
+
+A component-index map replaces repeated component-table searches while building
+artwork/model ownership. Board geometry, mask/drill generation, material rules
+and transparency/depth rendering remain enabled. Initial boolean geometry work,
+board snapshot copying, GPU driver serialization and the first actual draw may
+still be expensive. No universal cold-load or frame-time guarantee is claimed.
+
+Added regression sources cover white-background first-frame feedback, bounded
+GPU preparation requests, pipeline reuse and rendering changed geometry/materials.
+The frame probe now waits for GPU resource preparation as well as CPU geometry
+before calling a frame ready. Formatting/static checks only: the user explicitly
+deferred rebuilding, so these tests and updated native-window/GPU latency checks
+remain uncompiled/unrun. No original design was edited or saved.

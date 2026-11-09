@@ -107,7 +107,7 @@ fn main() -> Result<(), String> {
     };
     let start = Instant::now();
     frame(&mut view, board);
-    while !two_d && view.pcb.three_d.preparing() {
+    while !two_d && (view.pcb.three_d.preparing() || view.pcb.three_d.rendering()) {
         if start.elapsed().as_secs() > 120 {
             return Err("Scene preparation timed out".into());
         }
@@ -212,7 +212,7 @@ fn main() -> Result<(), String> {
             view.pcb.three_d.revision += 1;
             let start = Instant::now();
             frame(&mut view, &edited);
-            while view.pcb.three_d.preparing() {
+            while view.pcb.three_d.preparing() || view.pcb.three_d.rendering() {
                 if start.elapsed().as_secs() > 120 {
                     return Err("Edited scene timed out".into());
                 }
@@ -267,7 +267,9 @@ fn window(
                     eprintln!("Captured native frame: {}", path.display());
                 }
             }
-            if self.two_d || !self.view.pcb.three_d.preparing() {
+            if self.two_d
+                || (!self.view.pcb.three_d.preparing() && !self.view.pcb.three_d.rendering())
+            {
                 let t = self
                     .ready
                     .get_or_insert_with(Instant::now)

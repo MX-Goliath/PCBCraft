@@ -88,6 +88,35 @@ fn spatial_rule_maximum_covers_room_and_matrix_clearance() {
         items: (-8..8).map(|x| track(x * 5, 5)).collect(),
         ..Default::default()
     };
+    board.items.push(Item::new(
+        MULTI_LAYER,
+        None,
+        Shape::Via {
+            position: Point::mm(20, -20),
+            diameter: 800_000,
+            hole: 400_000,
+            from_layer: TOP,
+            to_layer: BOTTOM,
+        },
+    ));
+    let mut cutout = Item::new(
+        TOP,
+        None,
+        Shape::Region {
+            contour: vec![
+                Point::mm(-30, -30),
+                Point::mm(-29, -30),
+                Point::mm(-29, -29),
+                Point::mm(-30, -29),
+            ],
+            holes: vec![],
+            cutout: true,
+        },
+    );
+    cutout
+        .properties
+        .insert("ISBOARDCUTOUT".into(), "TRUE".into());
+    board.items.push(cutout);
     let mut room = Fields::from([
         ("RULEKIND".into(), "RoomDefinition".into()),
         ("NAME".into(), "DUT".into()),
@@ -104,9 +133,14 @@ fn spatial_rule_maximum_covers_room_and_matrix_clearance() {
     rule.insert("GAP".into(), "0.1mm".into());
     rule.insert(
         "OBJECTCLEARANCES".into(),
-        "ClearanceObj_Track-ClearanceObj_Track:3937008".into(),
+        "ClearanceObj_Track-ClearanceObj_Track:3937008;ClearanceObj_Track-ClearanceObj_Via:5905512;ClearanceObj_Track-ClearanceObj_Region:787402".into(),
     );
-    board.rules = vec![room, rule];
+    let mut edge = crate::pcb_rules::default_rule("BoardOutlineClearance");
+    edge.insert(
+        "OBJECTCLEARANCES".into(),
+        "ClearanceObj_Track-ClearanceObj_CutoutEdge:7874016".into(),
+    );
+    board.rules = vec![room, rule, edge];
     let route = RouteSession::begin(&board, 0, Point::mm(80, 80), TOP, None, 250_000, 0).unwrap();
     assert!(route.obstacles.spatial);
     assert!(route.obstacles.maximum_gap >= 9_999_000);
@@ -115,6 +149,12 @@ fn spatial_rule_maximum_covers_room_and_matrix_clearance() {
             .obstacles
             .clear_for_route(&route, Point::mm(0, 0), Point::mm(1, 0))
     );
+    for (a, b) in [
+        (Point::mm(20, -35), Point::mm(21, -35)),
+        (Point::mm(-30, -45), Point::mm(-29, -45)),
+    ] {
+        assert!(!route.obstacles.clear_for_route(&route, a, b));
+    }
     compare(&route);
 }
 

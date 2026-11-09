@@ -53,8 +53,17 @@ struct Entity {
     label: String,
     target: Target,
     value: Value,
-    relative: Value,
+    relative: std::cell::OnceCell<Value>,
     anchor: Point,
+}
+impl Entity {
+    fn relative(&self) -> &Value {
+        self.relative.get_or_init(|| {
+            let mut value = self.value.clone();
+            relative(&mut value, self.anchor, false);
+            value
+        })
+    }
 }
 fn clean(value: &mut Value) {
     match value {
@@ -139,7 +148,7 @@ fn relative(value: &mut Value, anchor: Point, coordinate: bool) {
                     if k == "primitives"
                         && let Value::Array(values) = v
                     {
-                        values.sort_by_key(Value::to_string);
+                        values.sort_by_cached_key(Value::to_string);
                     }
                 }
             }
@@ -162,15 +171,13 @@ fn entity(
     anchor: Point,
 ) -> Entity {
     clean(&mut value);
-    let mut rel = value.clone();
-    relative(&mut rel, anchor, false);
     Entity {
         key,
         category: category.into(),
         label,
         target: Target { ids, bounds },
         value,
-        relative: rel,
+        relative: std::cell::OnceCell::new(),
         anchor,
     }
 }
@@ -221,7 +228,7 @@ fn entities(doc: &Document) -> Vec<Entity> {
                     v
                 })
                 .collect();
-            primitives.sort_by_key(Value::to_string);
+            primitives.sort_by_cached_key(Value::to_string);
             let key = native_key(s, c.source_index)
                 .or_else(|| Some(format!("component:{}:{}", c.designator, c.part)));
             out.push(entity(
@@ -242,7 +249,7 @@ fn entities(doc: &Document) -> Vec<Entity> {
         {
             let value = serde_json::to_value(p).unwrap();
             let cat = category(&value["kind"]);
-            let anchor = crate::schematic_edit::anchor(s, p.id).unwrap_or_default();
+            let anchor = crate::schematic_edit::primitive_anchor(p).unwrap_or_default();
             let key = native_key(s, p.source_index)
                 .or_else(|| s.source.is_none().then(|| format!("id:{}", p.id)));
             let label = match &p.kind {
@@ -379,7 +386,7 @@ fn signature(e: &Entity, pass: u8) -> Option<String> {
     match pass {
         0 => e.key.as_ref().map(|k| format!("{}:{k}", e.category)),
         1 => Some(format!("{}:{}", e.category, e.value)),
-        2 => Some(format!("{}:{}", e.category, e.relative)),
+        2 => Some(format!("{}:{}", e.category, e.relative())),
         _ => Some(format!("{}:{}:{}", e.category, e.anchor.x, e.anchor.y)),
     }
 }
@@ -440,6 +447,9 @@ fn same_translation(a: &Value, b: &Value, coordinate: bool) -> bool {
     }
 }
 pub fn compare(before: Option<&Document>, after: Option<&Document>) -> Diff {
+    if before.zip(after).is_some_and(|(a, b)| std::ptr::eq(a, b)) {
+        return Diff::default();
+    }
     let a = before.map(entities).unwrap_or_default();
     let b = after.map(entities).unwrap_or_default();
     let mut pairs = BTreeMap::new();
@@ -488,7 +498,7 @@ pub fn compare(before: Option<&Document>, after: Option<&Document>) -> Diff {
                 continue;
             }
             let moved = old.anchor != new.anchor;
-            let kind = if moved && same_translation(&old.relative, &new.relative, false) {
+            let kind = if moved && same_translation(old.relative(), new.relative(), false) {
                 Kind::Moved
             } else {
                 Kind::Modified

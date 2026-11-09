@@ -1,5 +1,40 @@
 use super::*;
 #[test]
+fn automatically_repaired_links_roundtrip_with_native_parameters_and_opaque_fields() {
+    let source = "[Design]\nFutureProjectField=keep\n[ProjectVariant1]\nUniqueID=A\nDescription=A\nVariationCount=1\nVariation1=Designator=R1|UniqueId=\\OLD_PATH\\OLD|Kind=1|AlternatePart= |FutureField=keep\nParamVariationCount=1\nParamVariation1=ParameterName=Comment|VariantValue=22k\nParamDesignator1=R1\n";
+    let before = parse(source).unwrap();
+    let fixed = eda_core::assembly_variants::resolve_links(
+        &before,
+        &[eda_core::assembly_variants::ComponentRef {
+            uid: "\\NEW_PATH\\NEW".into(),
+            designator: "R1".into(),
+        }],
+    )
+    .unwrap();
+    let saved = rewrite(source, &fixed.variants).unwrap();
+    assert!(saved.contains("FutureProjectField=keep"));
+    assert!(saved.contains("FutureField=keep"));
+    assert!(saved.contains("ParamDesignator1=R1"));
+    let after = parse(&saved).unwrap();
+    let c = &after[0].variations[0];
+    assert_eq!(c.uid, "\\NEW_PATH\\NEW");
+    assert_eq!(c.kind, 1);
+    assert_eq!(c.parameters["Comment"], "22k");
+    assert_eq!(c.fields["FutureField"], "keep");
+    assert!(
+        eda_core::assembly_variants::resolve_links(
+            &after,
+            &[eda_core::assembly_variants::ComponentRef {
+                uid: "\\NEW_PATH\\NEW".into(),
+                designator: "R1".into()
+            }]
+        )
+        .unwrap()
+        .affected
+        .is_empty()
+    );
+}
+#[test]
 fn native_project_variant_states_parameters_and_unknown_fields_roundtrip() {
     let text = "[Design]\nUnknownOption=preserve\n[Document1]\nDocumentPath=main.SchDoc\n[ProjectVariant1]\nUniqueID=VARIANT_A\nDescription=Assembly A\nCustomFutureKey=keep\nVariationCount=2\nVariation1=Designator=R1|UniqueId=\\CHILD\\RESISTOR|Kind=1|AlternatePart= |FutureField=opaque\nVariation2=Designator=C1|UniqueId=\\CAP|Kind=0|AlternatePart=\nParamVariation1=ParameterName=Comment|VariantValue=22k\nParamDesignator1=R1\nParamVariationCount=1\nParameterCount=1\nParameter1=Name=Title|Value=Assembly title\n[Configuration1]\nVariant=Assembly A\n";
     let v = parse(text).unwrap();

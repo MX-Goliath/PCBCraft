@@ -570,7 +570,7 @@ impl PcbCraft {
         }
         let mut close = false;
         let mut action = None;
-        egui::Modal::new(egui::Id::new("sheet_entry_port_sync")).show(ctx, |ui| {
+        egui::Modal::new(egui::Id::new("sheet_entry_port_sync")).show_stable(ctx, 856., |ui| {
             ui.set_width(856.0);
             ui.set_min_height(503.0);
             ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);

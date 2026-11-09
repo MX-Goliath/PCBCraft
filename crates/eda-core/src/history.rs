@@ -185,7 +185,9 @@ impl History {
         if result.revision != self.revision {
             return Ok(false);
         }
-        result.board.validate()?;
+        // PreparedPour is constructed only by the core generator after full
+        // validation on the worker. Rewalking every region and contour here
+        // would put the expensive work back onto the UI thread on large boards.
         if doc.pcb.as_ref() == Some(&result.board) {
             return Ok(false);
         }

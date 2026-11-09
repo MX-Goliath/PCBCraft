@@ -28,6 +28,8 @@ pub mod writer;
 
 #[path = "altium_pcb_parameters.rs"]
 mod parameters;
+#[path = "altium_pcb_polygon.rs"]
+mod polygon_io;
 #[path = "altium_pcb_stack.rs"]
 mod stack_io;
 #[path = "pcb_step.rs"]
@@ -1609,18 +1611,38 @@ fn holes(f: &Fields) -> Result<Vec<Vec<Point>>> {
 }
 /// Migrate the v1 metadata-only polygons without changing legacy source archives.
 pub fn upgrade_polygons(board: &mut Board, namespace: Uuid) -> Result<()> {
-    if board.polygon_model_version >= 1 {
+    if board.polygon_model_version >= 2 {
         return Ok(());
     }
-    if !board.polygon_pours.is_empty() {
-        board.polygon_model_version = 1;
+    if board.polygon_model_version >= 1 || !board.polygon_pours.is_empty() {
+        for polygon in &mut board.polygon_pours {
+            let before = polygon.clone();
+            // Existing typed edits are authoritative. v1 imported the private
+            // fields only; reinterpret untouched defaults, not user changes.
+            let dead = (polygon.remove_islands != polygon.properties.yes("REMOVEISLANDS"))
+                .then_some(polygon.remove_islands);
+            let area = (polygon.min_island_area_mm2
+                != polygon.properties.num("PCBCRAFT_MINAREA", 0.0)?)
+            .then_some(polygon.min_island_area_mm2);
+            polygon_io::upgrade_options(polygon)?;
+            if let Some(dead) = dead {
+                polygon.remove_islands = dead;
+            }
+            if let Some(area) = area {
+                polygon.min_island_area_mm2 = area;
+            }
+            if *polygon != before {
+                board.pours_stale = true;
+            }
+        }
+        board.polygon_model_version = 2;
         return Ok(());
     }
     use eda_core::pcb_polygon::{Connection, Polygon};
     for (n, f) in board.polygons.iter().enumerate() {
         let net = f.num("NET", -1.0)?;
         let index = unsigned_property(f, "ID", n as u32)?;
-        let p = Polygon {
+        let mut p = Polygon {
             id: stable(namespace, "Polygons6", n),
             index,
             name: f
@@ -1654,10 +1676,14 @@ pub fn upgrade_polygons(board: &mut Board, namespace: Uuid) -> Result<()> {
             },
             remove_islands: f.yes("REMOVEISLANDS"),
             min_island_area_mm2: f.num("PCBCRAFT_MINAREA", 0.0)?,
+            same_net: Default::default(),
+            fill_mode: Default::default(),
+            neck_width: 0,
             shelved: f.yes("SHELVED"),
             locked: f.yes("LOCKED"),
             properties: f.clone(),
         };
+        polygon_io::upgrade_options(&mut p)?;
         // Unsupported outlines stay visible as a warning, and native writing refuses
         // to rebuild Polygons6 rather than deleting these records silently.
         match p.validate() {
@@ -1667,7 +1693,7 @@ pub fn upgrade_polygons(board: &mut Board, namespace: Uuid) -> Result<()> {
                 .push(format!("Polygon {index} not editable: {e}")),
         }
     }
-    board.polygon_model_version = 1;
+    board.polygon_model_version = 2;
     Ok(())
 }
 #[cfg(test)]

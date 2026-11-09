@@ -265,6 +265,8 @@ pub struct Presentation {
     pub alignment: Option<u32>,
     /// Port label ink is independent of its outline colour.
     pub text_color: Option<u32>,
+    /// Native pin-symbol stroke, independent of the electrical pin line.
+    pub pin_symbol_width_nm: Option<i64>,
     pub harness_type: String,
     pub record_type: u32,
     pub url: String,
@@ -571,6 +573,10 @@ impl Schematic {
                 || !font_valid
                 || p.width_nm < 0
                 || p.width_nm > 1_000_000_000
+                || p.presentation.pin_symbol_width_nm.is_some_and(|width| {
+                    !matches!(p.kind, SchPrimitiveKind::Pin { .. })
+                        || !matches!(width, 101_600 | 254_000)
+                })
                 || p.component.is_some_and(|id| !component_ids.contains(&id))
             {
                 return Err("Invalid schematic primitive or owner".into());

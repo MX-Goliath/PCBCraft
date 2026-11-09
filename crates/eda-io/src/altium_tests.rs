@@ -574,8 +574,8 @@ fn schematic_styles_keep_arrowheads_independent_pin_fonts_and_sheet_metrics() {
         .replace("FONTIDCOUNT=1", "FONTIDCOUNT=2|SIZE2=14|FONTNAME2=Arial")
         .replace("SYSTEMFONT=1", "SYSTEMFONT=2");
     text.push_str("\n|RECORD=6|OWNERPARTID=-1|LOCATIONCOUNT=2|X1=10|Y1=20|X2=30|Y2=40|STARTLINESHAPE=1|ENDLINESHAPE=1|LINESHAPESIZE=2\n");
-    text.push_str("|RECORD=2|OWNERPARTID=-1|LOCATION.X=20|LOCATION.Y=20|PINLENGTH=20|PINCONGLOMERATE=24|NAME=A|DESIGNATOR=1|NAME_CUSTOMFONTID=1|DESIGNATOR_CUSTOMFONTID=2\n");
-    text.push_str("|RECORD=2|OWNERPARTID=-1|LOCATION.X=20|LOCATION.Y=30|PINLENGTH=20|PINCONGLOMERATE=24|NAME=B|DESIGNATOR=2\n");
+    text.push_str("|RECORD=2|OWNERPARTID=-1|LOCATION.X=20|LOCATION.Y=20|PINLENGTH=20|PINCONGLOMERATE=24|NAME=A|DESIGNATOR=1|NAME_CUSTOMFONTID=1|DESIGNATOR_CUSTOMFONTID=2|SYMBOL_LINEWIDTH=1\n");
+    text.push_str("|RECORD=2|OWNERPARTID=-1|LOCATION.X=20|LOCATION.Y=30|PINLENGTH=20|PINCONGLOMERATE=24|NAME=B|DESIGNATOR=2|SYMBOL_LINEWIDTH=0\n");
     text.push_str(
         "|RECORD=3|OWNERPARTID=-1|LOCATION.X=10|LOCATION.Y=10|SYMBOL=11|SCALEFACTOR=10\n",
     );
@@ -602,6 +602,34 @@ fn schematic_styles_keep_arrowheads_independent_pin_fonts_and_sheet_metrics() {
             .any(|p| matches!(&p.kind,K::Pin{name,font:1,number_font:Some(1),..} if name=="B"))
     );
     assert!(!s.warnings.iter().any(|w| w.starts_with("Record type 3:")));
+    for (name, symbol_width) in [("A", 254_000), ("B", 101_600)] {
+        let pin = s
+            .primitives
+            .iter()
+            .find(|p| matches!(&p.kind, K::Pin { name: n, .. } if n == name))
+            .unwrap();
+        assert_eq!(
+            pin.width_nm, 101_600,
+            "Symbol width must not change the pin line"
+        );
+        assert_eq!(pin.presentation.pin_symbol_width_nm, Some(symbol_width));
+    }
+    let mut legacy = doc.clone();
+    for pin in &mut legacy.schematic.as_mut().unwrap().primitives {
+        pin.presentation.pin_symbol_width_nm = None;
+    }
+    let restored = import_schematic(&writer::serialize(&legacy).unwrap(), "styles.SchDoc").unwrap();
+    for (name, width) in [("A", 254_000), ("B", 101_600)] {
+        let pin = restored
+            .schematic
+            .as_ref()
+            .unwrap()
+            .primitives
+            .iter()
+            .find(|p| matches!(&p.kind, K::Pin { name: n, .. } if n == name))
+            .unwrap();
+        assert_eq!(pin.presentation.pin_symbol_width_nm, Some(width));
+    }
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("styles.json");
     crate::save(&path, &doc).unwrap();

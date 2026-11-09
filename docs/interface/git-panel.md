@@ -27,12 +27,14 @@ not observations of Altium's version-control implementation.
   Each project retains its history/filter selection, commit draft and pending
   Git job. A comparison finishing in another project's browser does not steal
   focus; it opens when that project becomes active again.
-- The folder button accepts a directory or PrjPcb path, with an optional folder
-  browser and shortcuts for open projects. This manual choice lasts until the
-  active document changes or Git is reopened through Panels. The tree contains
-  SchDoc, PcbDoc, SchLib, PcbLib, PrjPcb and DsnWrk files under that directory.
-  Ignored files and unsupported Altium types are excluded. A directory is the
-  project boundary; two PrjPcb files in the same directory share that scope.
+- **Open project** uses the same command and native `.PrjPcb` file picker as
+  Projects and File > Open Project. The selected project is loaded into the
+  shared workspace, and Git switches to its directory only after a successful
+  open. Cancel leaves the workspace and current repository unchanged. There is
+  no separate Git directory dialog. The tree contains SchDoc, PcbDoc, SchLib,
+  PcbLib, PrjPcb and DsnWrk files under the selected project directory. Ignored
+  files and unsupported Altium types are excluded. Git scope remains a directory;
+  two PrjPcb files in the same directory share that scope.
 - **Changes** compares HEAD against saved files, including tracked,
   untracked, renamed and deleted documents. **View > Changed files only** filters the tree.
   **View > Include unsaved editor edits** compares an immutable snapshot of applied
@@ -85,6 +87,9 @@ revision with the ordinary 3D viewer; the four-color overlay is a 2D comparison.
 
 Overlay artwork is cached per review view, with resident GPU buffers when available.
 Pan/zoom transforms cached geometry; zoom settling refines text and stroke sizes.
+Artwork capture includes objects outside the current viewport, including schematic
+text frames. Only replay uses the live canvas clip, so panning and resizing reveal
+previously offscreen geometry without rebuilding the comparison.
 Layer/display settings, semantic filters, revision or library-member changes and
 DPI/font changes invalidate the artwork. Change picking uses one canvas response
 and cached visible bounds rather than one widget and a board scan per change.
@@ -172,3 +177,60 @@ Altium on the copy because PCBCraft's native writer refuses unsupported repour /
 reindex updates for this board. Viewing and Git commits do not invoke Altium.
 Test assets and native source archives are local and are not checked into the
 PCBCraft source repository.
+
+## Opening comparison performance - November 9, 2026
+
+The user reports slow opening of both schematic and PCB comparisons, especially
+boards. Static inspection found four initial display/saved-model copies on the
+UI path (install plus first scene synchronization), a complete overlay artwork
+build/tessellation on that thread, first GPU resource preparation in a callback,
+and PCB editor spatial/connectivity preparation before overlay's early return.
+These are concrete candidate costs, not a measured attribution of the full delay.
+
+Comparison pages now share immutable Documents and Diff through Arc. The import
+worker prepares one display model for Properties; the read-only tab moves it in,
+keeps no saved-model snapshot and marks the initial scene already synchronized.
+Overlay and After share that property model. Identical before/after bytes import
+only once. Selecting an already open commit/path/parent comparison activates its
+existing tab without reading/importing/comparing again. Saved working-tree and
+unsaved-buffer comparisons still refresh from current inputs.
+
+The native overlay path starts at most one graphics job per comparison view.
+It owns an independent egui context with copied font definitions, style, DPI and
+GPU configuration, and retains shared revision/model inputs rather than cloning
+them. The same complete neutral/classified overlay painter and tessellation code
+are used on the worker, with an unrestricted capture clip and live replay clip.
+Native GPU buffers/atlas preparation completes there before publication. Other
+image textures and CPU fallback atlas IDs are remapped to UI-owned handles. A
+matching content/display key is required; stale jobs cannot replace a newer
+comparison, and unchanged failed work stops restarting until Retry. Existing
+valid artwork scales during refinement; cold/stale content shows preparation
+feedback rather than an incorrect older scene. Semantic picking resumes with the
+completed matching artwork.
+
+PCB overlay prepares only its board outline/base instead of editor hit/snap indexes
+and electrical connection jobs. Normal editor/Before/After modes retain those
+indexes. SCH comparison uses direct primitive anchors instead of repeatedly
+searching the sheet. Relative-coordinate JSON copies are deferred until needed
+for unmatched/moved entities; primitive sort keys are serialized once per sort.
+Persistent identity checks, exact field comparison and native-coordinate movement
+tolerance are preserved. Empty color passes do not scan the whole document.
+
+Added regression sources cover display ownership/clean state, immutable reuse,
+exact move/parameter classification, bounded jobs/stale results, atlas and sheet
+image remapping, full offscreen SCH/PCB artwork and pan reuse, and restoring editor
+picking after overlay. `diff_performance` now accepts local JSON scenes and reports
+import, comparison, first-ready/preparation frames, maximum cold UI time and warmed
+CPU frames. It still excludes native application panels, GPU presentation and
+input-to-photon latency.
+
+Only formatting/whitespace/static checks were run for these changes, under the
+user's continuing no-rebuild instruction. Added tests and the updated diagnostic
+remain uncompiled/unrun, and no new GUI instance was started. The existing old
+diagnostic executable was run read-only on its 20,000-rectangle schematic case:
+warmed overlay median/max 39.73/46.41 ms, After 61.16/71.21 ms. It omits the first
+two frames and contains none of these changes, so it establishes neither cold
+opening time nor a speedup. Native import, unsaved snapshot capture, later model
+switches, ordinary PCB Before/After cold artwork, UI texture publication and
+driver blocking remain potential costs. Actual Windows/Linux timing and visual
+parity require a later authorized build.

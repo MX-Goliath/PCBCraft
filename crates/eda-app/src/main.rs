@@ -18,6 +18,13 @@ fn main() -> eframe::Result {
                 .with_inner_size([1440.0, 900.0])
                 .with_min_inner_size([1000.0, 650.0]),
             renderer: eframe::Renderer::Wgpu,
+            wgpu_options: eframe::egui_wgpu::WgpuConfiguration {
+                // Prefer immediate/mailbox presentation for tool previews and
+                // software cursor styles, with wgpu's supported-mode fallback.
+                present_mode: wgpu::PresentMode::AutoNoVsync,
+                desired_maximum_frame_latency: Some(1),
+                ..Default::default()
+            },
             persistence_path: std::env::current_exe()
                 .ok()
                 .and_then(|exe| exe.parent().map(std::path::Path::to_path_buf))

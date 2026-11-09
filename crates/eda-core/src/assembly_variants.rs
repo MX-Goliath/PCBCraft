@@ -224,7 +224,8 @@ pub fn edited(current: &[Variant], edit: Edit) -> Result<Vec<Variant>, String> {
     Ok(next)
 }
 
-/// A stale UID is never silently rebound by designator. Ambiguity needs a choice.
+/// Read-only lookup stays strict; opening the manager uses `resolve_links` first.
+/// Ambiguous identities require schematic correction or an explicit choice.
 pub fn unresolved(variant: &Variant, components: &[ComponentRef]) -> Vec<usize> {
     variant
         .variations
@@ -244,6 +245,115 @@ pub fn unresolved(variant: &Variant, components: &[ComponentRef]) -> Vec<usize> 
             (count != 1).then_some(n)
         })
         .collect()
+}
+
+/// Opening Variant Management refreshes stale links; exact physical UIDs win.
+/// A designator fallback must identify one component and have one claimant.
+/// Unresolved/duplicate identities stay intact for schematic correction/review.
+pub struct LinkResolution {
+    pub variants: Vec<Variant>,
+    pub affected: Vec<String>,
+    pub unresolved: Vec<String>,
+    pub duplicate_designators: Vec<String>,
+}
+pub fn resolve_links(
+    variants: &[Variant],
+    components: &[ComponentRef],
+) -> Result<LinkResolution, String> {
+    validate(variants)?;
+    let uid_key = |s: &str| s.trim_matches('\\').to_ascii_uppercase();
+    let mut by_uid = BTreeMap::<String, Vec<usize>>::new();
+    let mut by_designator = BTreeMap::<String, Vec<usize>>::new();
+    for (n, component) in components.iter().enumerate() {
+        if !component.uid.trim_matches('\\').is_empty() {
+            by_uid.entry(uid_key(&component.uid)).or_default().push(n);
+        }
+        by_designator
+            .entry(component.designator.to_ascii_uppercase())
+            .or_default()
+            .push(n);
+    }
+    let mut next = variants.to_vec();
+    let mut affected = BTreeMap::new();
+    for variant in &mut next {
+        let mut reserved = BTreeSet::new();
+        let mut pending = BTreeMap::<usize, Vec<usize>>::new();
+        for (n, change) in variant.variations.iter_mut().enumerate() {
+            // Native parameter-only entries use designator fallback at lookup;
+            // do not manufacture a second UID row shadowing an explicit variation.
+            if change.uid.trim_matches('\\').is_empty() {
+                continue;
+            }
+            match by_uid.get(&uid_key(&change.uid)).map(Vec::as_slice) {
+                Some([component]) => {
+                    reserved.insert(*component);
+                    let designator = &components[*component].designator;
+                    if !change.designator.eq_ignore_ascii_case(designator) {
+                        affected.insert(
+                            change.designator.to_ascii_uppercase(),
+                            change.designator.clone(),
+                        );
+                        change.designator = designator.clone();
+                    }
+                }
+                Some(_) => {} // Duplicate UIDs are not resolved by guessing a name.
+                None => {
+                    if let Some([component]) = by_designator
+                        .get(&change.designator.to_ascii_uppercase())
+                        .map(Vec::as_slice)
+                        && !components[*component].uid.trim_matches('\\').is_empty()
+                        && by_uid[&uid_key(&components[*component].uid)].len() == 1
+                    {
+                        pending.entry(*component).or_default().push(n);
+                    }
+                }
+            }
+        }
+        for (component, claimants) in pending {
+            if let [n] = claimants.as_slice()
+                && !reserved.contains(&component)
+            {
+                let change = &mut variant.variations[*n];
+                affected.insert(
+                    change.designator.to_ascii_uppercase(),
+                    change.designator.clone(),
+                );
+                change.uid = components[component].uid.clone();
+                change.designator = components[component].designator.clone();
+            }
+        }
+    }
+    validate(&next)?;
+    let mut unresolved_names = BTreeMap::new();
+    for variant in &next {
+        for change in &variant.variations {
+            let matches = if change.uid.trim_matches('\\').is_empty() {
+                by_designator.get(&change.designator.to_ascii_uppercase())
+            } else {
+                by_uid.get(&uid_key(&change.uid))
+            };
+            if matches.is_some_and(|ids| ids.len() == 1) {
+                continue;
+            }
+            let name = &change.designator;
+            unresolved_names.insert(name.to_ascii_uppercase(), name.clone());
+            affected.insert(name.to_ascii_uppercase(), name.clone());
+        }
+    }
+    let duplicates: Vec<_> = by_designator
+        .iter()
+        .filter(|(name, ids)| ids.len() > 1 && unresolved_names.contains_key(*name))
+        .map(|(_, ids)| components[ids[0]].designator.clone())
+        .collect();
+    for name in &duplicates {
+        affected.insert(name.to_ascii_uppercase(), name.clone());
+    }
+    Ok(LinkResolution {
+        variants: next,
+        affected: affected.into_values().collect(),
+        unresolved: unresolved_names.into_values().collect(),
+        duplicate_designators: duplicates,
+    })
 }
 pub fn same_uid(a: &str, b: &str) -> bool {
     a.trim_matches('\\')

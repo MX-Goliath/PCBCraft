@@ -117,6 +117,7 @@ fn main() -> Result<(), String> {
     for (name, n) in [
         ("cold", 1),
         ("cursor", 10),
+        ("cursor-sweep", 480),
         ("pan", 10),
         ("long-pan", 360),
         ("zoom", 120),
@@ -136,7 +137,12 @@ fn main() -> Result<(), String> {
                 view.camera.pixels_per_mm =
                     zoom * (i as f64 / 119. * std::f64::consts::TAU).sin().exp();
             }
-            times.push(frame(&mut view, Pos2::new(500. + i as f32, 400.)));
+            let pointer = if name == "cursor-sweep" {
+                Pos2::new(50. + (i % 30) as f32 * 30., 100. + (i / 30) as f32 * 40.)
+            } else {
+                Pos2::new(500. + i as f32, 400.)
+            };
+            times.push(frame(&mut view, pointer));
         }
         let mean =
             |k: fn(&(f64, f64)) -> f64| times.iter().map(k).sum::<f64>() / times.len() as f64;

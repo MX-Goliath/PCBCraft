@@ -228,7 +228,7 @@ impl PcbCraft {
         let mut update = None;
         let mut validate = false;
         let mut execute = false;
-        egui::Modal::new(egui::Id::new("schematic_annotation")).show(ctx,|ui|{
+        egui::Modal::new(egui::Id::new("schematic_annotation")).show_stable(ctx, (ctx.screen_rect().width()-60.0).clamp(500.0,1060.0),|ui|{
             ui.set_width((ctx.screen_rect().width()-60.0).clamp(500.0,1060.0));
             ui.heading(if d.eco{"Engineering Change Order"}else{"Annotate"});ui.label(&d.title);ui.separator();
             if !d.eco {

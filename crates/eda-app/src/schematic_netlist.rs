@@ -122,7 +122,7 @@ impl PcbCraft {
         };
         let mut keep = true;
         let mut export = false;
-        egui::Modal::new(egui::Id::new("export_netlist")).show(ctx, |ui| {
+        egui::Modal::new(egui::Id::new("export_netlist")).show_stable(ctx, 341., |ui| {
             // AD 24.4.1: 349 x 221 outer pixels at this DPI, including the modal margin.
             let (area, _) = ui.allocate_exact_size(egui::vec2(341., 213.), egui::Sense::hover());
             let at = |x, y| area.min + egui::vec2(x, y);

@@ -89,6 +89,7 @@ enum Gesture {
         connected: bool,
         rotation: f64,
         prepared: Option<pcb::MovePreview>,
+        prepared_track: Option<pcb_route::TrackDragPreview>,
     },
     Box {
         origin: Point,
@@ -100,6 +101,7 @@ enum Gesture {
         base: Board,
         revision: u64,
         handle: Handle,
+        prepared_track: Option<pcb_route::TrackDragPreview>,
     },
 }
 #[derive(Clone)]
@@ -152,12 +154,17 @@ pub(super) struct Editor {
     conflict: Conflict,
     clearance: i64,
     auto_terminate: bool,
+    remove_loops: bool,
     routing_initialized: bool,
     diagonal_first: bool,
     paused: bool,
     gesture: Option<Gesture>,
     gesture_preview: Option<(Point, u64)>,
     tool_base: Option<(Board, u64)>,
+    tool_track_prepared: Option<(Vec<Uuid>, pcb_route::TrackDragPreview)>,
+    tool_prepared: Option<(Vec<Uuid>, pcb::MovePreview)>,
+    tool_preview: Option<(Point, u64, Vec<Uuid>, Conflict, i64, bool)>,
+    placement_preview: Option<(u64, pcb::InsertPreview)>,
     selection_pick: Option<ConnectionSelection>,
     tab_selection: Option<TabSelection>,
     draft: Option<Draft>,
@@ -271,12 +278,17 @@ impl Default for Editor {
             conflict: Conflict::Walkaround,
             clearance: 200_000,
             auto_terminate: true,
+            remove_loops: true,
             routing_initialized: false,
             diagonal_first: true,
             paused: false,
             gesture: None,
             gesture_preview: None,
             tool_base: None,
+            tool_track_prepared: None,
+            tool_prepared: None,
+            tool_preview: None,
+            placement_preview: None,
             selection_pick: None,
             tab_selection: None,
             draft: None,
@@ -310,6 +322,10 @@ impl Editor {
         self.points.clear();
         self.gesture = None;
         self.tool_base = None;
+        self.tool_prepared = None;
+        self.tool_track_prepared = None;
+        self.tool_preview = None;
+        self.placement_preview = None;
         self.paused = false;
         self.properties_panel.focus_route_width = false;
         self.sequence = None;
@@ -616,7 +632,8 @@ fn box_selection_filtered(
     ids.into_iter().collect()
 }
 fn finish_route(doc: &mut OpenDocument, ed: &mut Editor) -> Result<(), String> {
-    if let Some(route) = &ed.route_session {
+    if let Some(route) = &mut ed.route_session {
+        route.remove_loops = ed.remove_loops;
         if route.has_segments() {
             commit(doc, route.finish(doc.history.revision)?)?;
         }
@@ -781,6 +798,7 @@ fn finish_polygon(doc: &mut OpenDocument, ed: &mut Editor) -> Result<(), String>
                 layer: doc.view.pcb.active_layer,
                 net: ed.net,
                 contour: pcb_polygon::straight_contour(&ed.points),
+                same_net: pcb_polygon::SameNet::PolygonsOnly,
                 ..Default::default()
             };
             selected = Some(p.id);
@@ -828,6 +846,46 @@ fn finish_polygon(doc: &mut OpenDocument, ed: &mut Editor) -> Result<(), String>
     doc.view.pcb.draft_outline.clear();
     Ok(())
 }
+fn update_placement(
+    doc: &mut OpenDocument,
+    ed: &mut Editor,
+    items: Vec<Item>,
+    place: bool,
+) -> Result<(), String> {
+    if place {
+        let next = doc
+            .model
+            .pcb
+            .as_ref()
+            .unwrap()
+            .edited(Edit::Insert(items))?;
+        commit(doc, next)?;
+        doc.view.pcb.set_preview(None);
+        ed.placement_preview = None;
+        return Ok(());
+    }
+    if ed
+        .placement_preview
+        .as_ref()
+        .is_none_or(|(revision, _)| *revision != doc.history.revision)
+    {
+        ed.placement_preview = Some((
+            doc.history.revision,
+            pcb::InsertPreview::new(doc.model.pcb.as_ref().unwrap())?,
+        ));
+    }
+    let preview = &mut ed.placement_preview.as_mut().unwrap().1;
+    if preview.is_current(&items) && doc.view.pcb.preview().is_some() {
+        return Ok(());
+    }
+    doc.view.pcb.set_preview(None);
+    let next = preview.update(items)?;
+    doc.view
+        .pcb
+        .set_insert_preview_shared(next, preview.source_len());
+    Ok(())
+}
+
 fn input(
     doc: &mut OpenDocument,
     ed: &mut Editor,
@@ -911,6 +969,8 @@ fn input(
             ed.start = None;
             ed.points.clear();
             ed.tool_base = None;
+            ed.tool_prepared = None;
+            ed.tool_preview = None;
             doc.view.pcb.set_preview(None);
         } else {
             ed.cancel(&mut doc.view);
@@ -939,6 +999,7 @@ fn input(
                     connected,
                     rotation,
                     prepared,
+                    prepared_track,
                 } => {
                     if *revision != doc.history.revision {
                         ed.gesture = None;
@@ -973,14 +1034,60 @@ fn input(
                         x: p.x - origin.x,
                         y: p.y - origin.y,
                     };
-                    if !*connected
+                    if *connected && pcb_route::TrackDragPreview::supports(base, selection) {
+                        doc.view.pcb.set_preview(None);
+                        if prepared_track.is_none() {
+                            match pcb_route::TrackDragPreview::new(base, selection) {
+                                Ok(prepared) => *prepared_track = Some(prepared),
+                                Err(error) => {
+                                    if i.drag_stopped {
+                                        ed.gesture = None;
+                                    }
+                                    return Err(error);
+                                }
+                            }
+                        }
+                        let update = prepared_track.as_mut().unwrap().update(
+                            *origin,
+                            translation,
+                            *rotation,
+                            drag_options,
+                        );
+                        let update = match update {
+                            Ok(update) => update,
+                            Err(error) => {
+                                if i.drag_stopped {
+                                    ed.gesture = None;
+                                }
+                                return Err(error);
+                            }
+                        };
+                        if i.drag_stopped {
+                            let changed = !update.preview.changed_items.is_empty();
+                            drop(update);
+                            let next = prepared_track.take().unwrap().finish()?;
+                            ed.gesture = None;
+                            if changed {
+                                commit(doc, next)?;
+                            }
+                        } else {
+                            doc.view.pcb.set_route_preview(update.preview);
+                            ed.gesture_preview = Some(preview_key);
+                        }
+                        return Ok(());
+                    }
+                    if (!*connected || !pcb_route::track_selection(base, selection))
                         && !base
                             .polygon_pours
                             .iter()
                             .any(|poly| selection.contains(&poly.id))
                     {
                         if prepared.is_none() {
-                            match pcb::MovePreview::new(base, selection) {
+                            match if *connected {
+                                pcb::MovePreview::new_connected(base, selection)
+                            } else {
+                                pcb::MovePreview::new(base, selection)
+                            } {
                                 Ok(next) => *prepared = Some(next),
                                 Err(error) => {
                                     doc.view.pcb.set_preview(None);
@@ -1068,6 +1175,7 @@ fn input(
                     base,
                     revision,
                     handle,
+                    prepared_track,
                 } => {
                     if *revision != doc.history.revision {
                         ed.cancel_pointer(&mut doc.view);
@@ -1086,6 +1194,52 @@ fn input(
                         && ed.gesture_preview == Some(preview_key)
                         && doc.view.pcb.preview().is_some()
                     {
+                        return Ok(());
+                    }
+                    if let Handle::TrackStart(id) | Handle::TrackEnd(id) = *handle
+                        && pcb_route::TrackDragPreview::supports(base, &[id])
+                    {
+                        doc.view.pcb.set_preview(None);
+                        if prepared_track.is_none() {
+                            match pcb_route::TrackDragPreview::new_endpoint(
+                                base,
+                                id,
+                                matches!(handle, Handle::TrackStart(_)),
+                            ) {
+                                Ok(prepared) => *prepared_track = Some(prepared),
+                                Err(error) => {
+                                    if i.drag_stopped {
+                                        ed.gesture = None;
+                                    }
+                                    return Err(error);
+                                }
+                            }
+                        }
+                        let update = prepared_track
+                            .as_mut()
+                            .unwrap()
+                            .update_endpoint(p, drag_options);
+                        let update = match update {
+                            Ok(update) => update,
+                            Err(error) => {
+                                if i.drag_stopped {
+                                    ed.gesture = None;
+                                }
+                                return Err(error);
+                            }
+                        };
+                        if i.drag_stopped {
+                            let changed = !update.preview.changed_items.is_empty();
+                            drop(update);
+                            let next = prepared_track.take().unwrap().finish()?;
+                            ed.gesture = None;
+                            if changed {
+                                commit(doc, next)?;
+                            }
+                        } else {
+                            doc.view.pcb.set_route_preview(update.preview);
+                            ed.gesture_preview = Some(preview_key);
+                        }
                         return Ok(());
                     }
                     let next = match *handle {
@@ -1197,6 +1351,7 @@ fn input(
                     base: board.clone(),
                     revision: doc.history.revision,
                     handle,
+                    prepared_track: None,
                 });
                 ed.gesture_preview = None;
                 return input(
@@ -1301,6 +1456,7 @@ fn input(
                         || (modifiers.ctrl || modifiers.command) && !modifiers.shift,
                     rotation: 0.0,
                     prepared: None,
+                    prepared_track: None,
                 });
                 ed.gesture_preview = None;
             } else {
@@ -1456,10 +1612,110 @@ fn input(
                     );
                 }
                 let origin = ed.start.unwrap_or(p);
+                let request = (
+                    p,
+                    ed.rotation.to_bits(),
+                    doc.view.pcb.selected.clone(),
+                    ed.conflict,
+                    ed.clearance,
+                    ed.diagonal_first,
+                );
+                if ed.tool_preview.as_ref() == Some(&request) && doc.view.pcb.preview().is_some() {
+                    if i.clicked {
+                        ed.tool_prepared = None;
+                        ed.tool_track_prepared = None;
+                        let next = doc.view.pcb.take_preview().unwrap();
+                        commit(doc, next)?;
+                        ed.cancel(&mut doc.view);
+                    }
+                    return Ok(());
+                }
                 let translation = Point {
                     x: p.x - origin.x,
                     y: p.y - origin.y,
                 };
+                if ed.tool == Tool::Drag
+                    && pcb_route::TrackDragPreview::supports(base, &doc.view.pcb.selected)
+                {
+                    if ed
+                        .tool_track_prepared
+                        .as_ref()
+                        .is_none_or(|(selection, _)| selection != &doc.view.pcb.selected)
+                    {
+                        ed.tool_track_prepared = Some((
+                            doc.view.pcb.selected.clone(),
+                            pcb_route::TrackDragPreview::new(base, &doc.view.pcb.selected)?,
+                        ));
+                    }
+                    doc.view.pcb.set_preview(None);
+                    let update = ed.tool_track_prepared.as_mut().unwrap().1.update(
+                        origin,
+                        translation,
+                        ed.rotation,
+                        pcb_route::DragOptions {
+                            conflict: ed.conflict,
+                            clearance: ed.clearance,
+                            diagonal_first: ed.diagonal_first,
+                        },
+                    )?;
+                    if i.clicked {
+                        let changed = !update.preview.changed_items.is_empty();
+                        drop(update);
+                        let next = ed.tool_track_prepared.take().unwrap().1.finish()?;
+                        if changed {
+                            commit(doc, next)?;
+                        }
+                        ed.cancel(&mut doc.view);
+                    } else {
+                        doc.view.pcb.set_route_preview(update.preview);
+                        ed.tool_preview = Some(request);
+                    }
+                    return Ok(());
+                }
+                if (ed.tool == Tool::Move
+                    || !pcb_route::track_selection(base, &doc.view.pcb.selected))
+                    && !base
+                        .polygon_pours
+                        .iter()
+                        .any(|poly| doc.view.pcb.selected.contains(&poly.id))
+                {
+                    if ed
+                        .tool_prepared
+                        .as_ref()
+                        .is_none_or(|(selection, _)| selection != &doc.view.pcb.selected)
+                    {
+                        let prepared = if ed.tool == Tool::Drag {
+                            pcb::MovePreview::new_connected(base, &doc.view.pcb.selected)
+                        } else {
+                            pcb::MovePreview::new(base, &doc.view.pcb.selected)
+                        };
+                        ed.tool_prepared = Some((
+                            doc.view.pcb.selected.clone(),
+                            match prepared {
+                                Ok(prepared) => prepared,
+                                Err(error) => {
+                                    doc.view.pcb.set_preview(None);
+                                    return Err(error);
+                                }
+                            },
+                        ));
+                    }
+                    doc.view.pcb.set_preview(None);
+                    let next = ed.tool_prepared.as_mut().unwrap().1.update(
+                        origin,
+                        translation,
+                        ed.rotation,
+                    )?;
+                    if i.clicked {
+                        ed.tool_prepared = None;
+                        commit(doc, std::sync::Arc::unwrap_or_clone(next))?;
+                        ed.cancel(&mut doc.view);
+                    } else {
+                        doc.view.pcb.set_move_preview_shared(base, next, &request.2);
+                        ed.tool_preview = Some(request);
+                    }
+                    return Ok(());
+                }
                 let next = if ed.tool == Tool::Drag {
                     if pcb_route::track_selection(base, &doc.view.pcb.selected) {
                         pcb_route::drag_tracks(
@@ -1502,7 +1758,8 @@ fn input(
                     commit(doc, next)?;
                     ed.cancel(&mut doc.view);
                 } else {
-                    doc.view.pcb.set_preview(Some(next));
+                    doc.view.pcb.set_move_preview(base, next, &request.2);
+                    ed.tool_preview = Some(request);
                 }
             } else if i.clicked {
                 if doc.view.pcb.selected.is_empty() {
@@ -1513,6 +1770,9 @@ fn input(
                 }
                 ed.start = Some(p);
                 ed.rotation = 0.0;
+                ed.tool_prepared = None;
+                ed.tool_track_prepared = None;
+                ed.tool_preview = None;
                 ed.tool_base = Some((board.clone(), doc.history.revision));
             }
         }
@@ -1531,7 +1791,8 @@ fn input(
                     _ => Corner::AnyAngle,
                 };
                 route.diagonal_first = ed.diagonal_first;
-                let hit = pcb_route::target(board, i.raw_point.unwrap_or(p), route.layer, tol)
+                let hit = route
+                    .source_target(board, i.raw_point.unwrap_or(p), tol)
                     .filter(|h| h.net == route.net);
                 let end = hit.map_or(p, |h| h.point);
                 ed.last_point = Some(end);
@@ -1624,9 +1885,7 @@ fn input(
                 .collect();
             if ed.tool == Tool::Region {
                 if let Some(item) = placement(ed, p, layer) {
-                    doc.view
-                        .pcb
-                        .set_preview(Some(board.edited(Edit::Insert(vec![item]))?));
+                    update_placement(doc, ed, vec![item], false)?;
                 }
             } else if ed.tool == Tool::Outline && ed.points.len() >= 2 {
                 let mut next = board.clone();
@@ -1650,13 +1909,9 @@ fn input(
                     ed.points.push(p);
                 }
             } else if let Some(item) = placement(ed, p, layer) {
-                let next = board.edited(Edit::Insert(vec![item]))?;
+                update_placement(doc, ed, vec![item], i.clicked)?;
                 if i.clicked {
-                    commit(doc, next)?;
                     ed.points.clear();
-                    doc.view.pcb.set_preview(None);
-                } else {
-                    doc.view.pcb.set_preview(Some(next));
                 }
             }
         }
@@ -1664,13 +1919,9 @@ fn input(
             if let Some(a) = ed.start {
                 if a.x != p.x && a.y != p.y {
                     let items = eda_core::pcb_arrange::rectangle(layer, a, p, ed.width);
-                    let next = board.edited(Edit::Insert(items))?;
+                    update_placement(doc, ed, items, i.clicked)?;
                     if i.clicked {
-                        commit(doc, next)?;
                         ed.start = None;
-                        doc.view.pcb.set_preview(None);
-                    } else {
-                        doc.view.pcb.set_preview(Some(next));
                     }
                 }
             } else if i.clicked {
@@ -1684,10 +1935,8 @@ fn input(
         }
         _ => {
             if let Some(item) = placement(ed, p, layer) {
-                let next = board.edited(Edit::Insert(vec![item]))?;
+                update_placement(doc, ed, vec![item], i.clicked)?;
                 if i.clicked {
-                    commit(doc, next)?;
-                    doc.view.pcb.set_preview(None);
                     if doc.model.library.is_some()
                         && ed.tool == Tool::Pad
                         && let Some(start) = ed
@@ -1710,8 +1959,6 @@ fn input(
                     if matches!(ed.tool, Tool::Fill | Tool::Circle | Tool::Line) {
                         ed.start = (ed.tool == Tool::Line).then_some(p);
                     }
-                } else {
-                    doc.view.pcb.set_preview(Some(next));
                 }
             }
         }
@@ -1980,12 +2227,16 @@ impl PcbCraft {
                     doc.view.pcb.selected = selected.into_iter().collect();
                 }
                 Action::Repour => {
-                    let next = pcb_polygon::repour(doc.model.pcb.as_ref().unwrap())?;
-                    commit(doc, next)?;
+                    ed.pours.request();
                 }
                 Action::Shelve | Action::Restore => {
                     let mut next = doc.model.pcb.as_ref().unwrap().clone();
-                    let selected = &doc.view.pcb.selected;
+                    let selected: Vec<_> = next
+                        .polygon_pours
+                        .iter()
+                        .filter(|p| doc.view.pcb.selected.contains(&p.id))
+                        .map(|p| p.id)
+                        .collect();
                     for p in &mut next.polygon_pours {
                         if selected.is_empty() || selected.contains(&p.id) {
                             if p.locked {
@@ -1994,6 +2245,7 @@ impl PcbCraft {
                             p.shelved = matches!(action, Action::Shelve);
                         }
                     }
+                    pcb_polygon::remove_shelved_copper(&mut next);
                     next.pours_stale = true;
                     commit(doc, next)?;
                 }
@@ -2334,6 +2586,11 @@ impl PcbCraft {
                 handled = true;
                 return;
             }
+            if doc.pcb_editor.route_session.is_some() && input.consume_key(shift, Key::D) {
+                doc.pcb_editor.remove_loops = !doc.pcb_editor.remove_loops;
+                handled = true;
+                return;
+            }
             if doc.pcb_editor.tool == Tool::Route && input.consume_key(shift, Key::R) {
                 doc.pcb_editor.conflict = doc.pcb_editor.conflict.next();
                 handled = true;
@@ -2635,27 +2892,56 @@ impl PcbCraft {
                     true,
                 );
                 ui.separator();
-                self.action(
-                    ui,
-                    "Repour All Polygons",
-                    "",
-                    Command::Pcb(Action::Repour),
-                    true,
-                );
-                self.action(
-                    ui,
-                    "Shelve Selected / All Polygons",
-                    "",
-                    Command::Pcb(Action::Shelve),
-                    true,
-                );
-                self.action(
-                    ui,
-                    "Restore Selected / All Polygons",
-                    "",
-                    Command::Pcb(Action::Restore),
-                    true,
-                );
+                let (pours, shelved, modified) = self
+                    .active
+                    .and_then(|n| {
+                        let doc = &self.documents[n];
+                        let board = doc.model.pcb.as_ref()?;
+                        let selected: Vec<_> = board
+                            .polygon_pours
+                            .iter()
+                            .filter(|p| doc.view.pcb.selected.contains(&p.id))
+                            .collect();
+                        let targets: Vec<_> = if selected.is_empty() {
+                            board.polygon_pours.iter().collect()
+                        } else {
+                            selected
+                        };
+                        Some((
+                            targets.iter().filter(|p| !p.shelved).count(),
+                            targets.iter().filter(|p| p.shelved).count(),
+                            board.pours_stale,
+                        ))
+                    })
+                    .unwrap_or_default();
+                ui.menu_button("Polygon Pours", |ui| {
+                    ui.add_enabled(false, egui::Button::new("Polygon Manager"));
+                    self.action(
+                        ui,
+                        &format!("Shelve {pours} Polygon(s)"),
+                        "",
+                        Command::Pcb(Action::Shelve),
+                        pours > 0,
+                    );
+                    self.action(
+                        ui,
+                        &format!("Restore {shelved} Shelved Polygon(s)"),
+                        "",
+                        Command::Pcb(Action::Restore),
+                        shelved > 0,
+                    );
+                    ui.separator();
+                    ui.add_enabled(false, egui::Button::new("Repour Selected"));
+                    self.action(ui, "Repour All", "", Command::Pcb(Action::Repour), true);
+                    ui.add_enabled(false, egui::Button::new("Repour Violating Polygons"));
+                    self.action(
+                        ui,
+                        "Repour Modified",
+                        "",
+                        Command::Pcb(Action::Repour),
+                        modified,
+                    );
+                });
             }
             "Reports" => {
                 self.action(
@@ -2686,7 +2972,7 @@ impl PcbCraft {
             egui::Window::new("Snap Grid")
                 .open(&mut grid)
                 .resizable(false)
-                .show(ctx, |ui| {
+                .show_stable(ctx, |ui| {
                     for nm in [
                         25_400, 50_800, 100_000, 127_000, 254_000, 500_000, 1_000_000,
                     ] {
@@ -2885,6 +3171,152 @@ mod controller_tests {
             assert_eq!(b.items[0].anchor(), Point::mm(13, 0));
             assert_eq!(b.items[1].anchor(), Point::mm(13, 4));
             assert_eq!(d.history.revision, 1);
+        }
+    }
+    #[test]
+    fn keyboard_move_and_drag_reuse_preview_for_stationary_input_and_commit_one_edit() {
+        for tool in [Tool::Move, Tool::Drag] {
+            let (mut d, id) = footprint_doc();
+            let original = d.model.clone();
+            let mut ed = Editor::default();
+            ed.set_tool(tool, &mut d.view);
+            let ctx = egui::Context::default();
+            let mut first = click(10, 0);
+            first.hit = Some(id);
+            input(&mut d, &mut ed, &mut None, first, &ctx).unwrap();
+            for n in 1..4 {
+                let mut hover = click(10 + n, 3);
+                hover.clicked = false;
+                input(&mut d, &mut ed, &mut None, hover.clone(), &ctx).unwrap();
+                let generation = d.view.pcb.preview_generation();
+                input(&mut d, &mut ed, &mut None, hover, &ctx).unwrap();
+                assert_eq!(generation, d.view.pcb.preview_generation());
+                assert!(ed.tool_prepared.is_some());
+                assert!(!d.history.can_undo());
+                assert_eq!(d.model, original);
+            }
+            input(&mut d, &mut ed, &mut None, click(13, 3), &ctx).unwrap();
+            assert_eq!(d.history.retained_steps(), 1);
+            assert_eq!(
+                d.model.pcb.as_ref().unwrap().components[0].position,
+                Point::mm(13, 3)
+            );
+            d.history.undo(&mut d.model);
+            assert_eq!(d.model, original);
+        }
+    }
+    #[test]
+    fn placement_preview_reuses_identity_and_stationary_input_without_editing_source() {
+        let (mut d, _) = footprint_doc();
+        let original = d.model.clone();
+        let mut ed = Editor::default();
+        ed.set_tool(Tool::Via, &mut d.view);
+        let ctx = egui::Context::default();
+        let mut first = click(16, 5);
+        first.clicked = false;
+        input(&mut d, &mut ed, &mut None, first.clone(), &ctx).unwrap();
+        let generation = d.view.pcb.preview_generation();
+        let id = d.view.pcb.preview().unwrap().items.last().unwrap().id;
+        input(&mut d, &mut ed, &mut None, first, &ctx).unwrap();
+        assert_eq!(generation, d.view.pcb.preview_generation());
+        let mut next = click(17, 5);
+        next.clicked = false;
+        input(&mut d, &mut ed, &mut None, next, &ctx).unwrap();
+        assert_eq!(id, d.view.pcb.preview().unwrap().items.last().unwrap().id);
+        assert_eq!(d.model, original);
+        input(&mut d, &mut ed, &mut None, click(17, 5), &ctx).unwrap();
+        assert_eq!(d.history.retained_steps(), 1);
+        assert!(d.view.pcb.preview().is_none());
+        d.history.undo(&mut d.model);
+        assert_eq!(d.model, original);
+    }
+    #[test]
+    fn component_drop_automatically_repours_at_the_new_position_with_one_undo() {
+        for mode in 0..4 {
+            let (mut d, id) = footprint_doc();
+            let board = d.model.pcb.as_mut().unwrap();
+            board.nets.push(pcb::Net {
+                index: 1,
+                name: "Other".into(),
+                properties: Default::default(),
+            });
+            let contour = pcb_polygon::straight_contour(&[
+                Point::mm(0, -5),
+                Point::mm(30, -5),
+                Point::mm(30, 10),
+                Point::mm(0, 10),
+            ]);
+            board.outline = contour.clone();
+            board.polygon_pours.push(Polygon {
+                contour,
+                net: Some(1),
+                ..Default::default()
+            });
+            d.model.pcb = Some(pcb_polygon::repour(board).unwrap());
+            let original = d.model.clone();
+            let ctx = egui::Context::default();
+            let mut editor = Editor::default();
+            if mode < 2 {
+                let frame = drag_frame(Point::mm(10, 0), Point::mm(13, 3), mode == 0);
+                input(&mut d, &mut editor, &mut None, frame.clone(), &ctx).unwrap();
+                if mode == 1 {
+                    input(
+                        &mut d,
+                        &mut editor,
+                        &mut None,
+                        Input {
+                            drag_started: false,
+                            dragging: false,
+                            drag_stopped: true,
+                            ..frame
+                        },
+                        &ctx,
+                    )
+                    .unwrap();
+                }
+            } else {
+                editor.set_tool(if mode == 2 { Tool::Move } else { Tool::Drag }, &mut d.view);
+                let mut first = click(10, 0);
+                first.hit = Some(id);
+                input(&mut d, &mut editor, &mut None, first, &ctx).unwrap();
+                input(&mut d, &mut editor, &mut None, click(13, 3), &ctx).unwrap();
+            }
+            assert!(!editor.has_pending());
+            assert!(d.model.pcb.as_ref().unwrap().pours_stale);
+            assert_eq!(
+                d.model.pcb.as_ref().unwrap().components[0].position,
+                Point::mm(13, 3)
+            );
+            d.pcb_editor = editor;
+            let mut pours = pours::State::default();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while d.model.pcb.as_ref().unwrap().pours_stale {
+                assert!(std::time::Instant::now() < deadline);
+                pours.update(&mut d, &ctx, true).unwrap();
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            let board = d.model.pcb.as_ref().unwrap();
+            let has_copper = |at| {
+                board
+                    .items
+                    .iter()
+                    .filter(|i| i.polygon.is_some())
+                    .any(|i| pcb::hit_distance(i, at) == 0.0)
+            };
+            assert!(
+                has_copper(Point::mm(8, 0)),
+                "old pad location stays empty, mode {mode}"
+            );
+            assert!(
+                !has_copper(Point::mm(11, 3)),
+                "new pad location is shorted, mode {mode}"
+            );
+            assert_eq!(d.history.retained_steps(), 1);
+            let after = d.model.clone();
+            d.history.undo(&mut d.model);
+            assert_eq!(d.model, original);
+            d.history.redo(&mut d.model);
+            assert_eq!(d.model, after);
         }
     }
     #[test]
@@ -3121,6 +3553,42 @@ mod controller_tests {
         assert_eq!(d.model, original);
     }
     #[test]
+    fn rerouting_existing_track_autoterminates_and_replaces_old_section_in_one_edit() {
+        for remove_loops in [false, true] {
+            let mut d = doc();
+            d.model.pcb.as_mut().unwrap().items = vec![Item::new(
+                pcb::TOP,
+                Some(0),
+                Shape::Track {
+                    start: Point::mm(0, 0),
+                    end: Point::mm(10, 0),
+                    width: 250_000,
+                },
+            )];
+            let original = d.model.clone();
+            let mut ed = Editor {
+                remove_loops,
+                ..Default::default()
+            };
+            ed.set_tool(Tool::Route, &mut d.view);
+            let ctx = egui::Context::default();
+            for (x, y) in [(2, 0), (2, 3), (8, 3), (8, 0)] {
+                input(&mut d, &mut ed, &mut None, click(x, y), &ctx).unwrap();
+            }
+            assert!(ed.route_session.is_none());
+            assert_eq!(d.history.revision, 1);
+            assert_eq!(
+                d.model.pcb.as_ref().unwrap().items.len(),
+                if remove_loops { 5 } else { 6 }
+            );
+            let finished = d.model.clone();
+            d.history.undo(&mut d.model);
+            assert_eq!(d.model, original);
+            d.history.redo(&mut d.model);
+            assert_eq!(d.model, finished);
+        }
+    }
+    #[test]
     fn unchanged_route_pointer_reuses_snapshot_generation_and_storage() {
         let mut d = doc();
         let before = d.model.clone();
@@ -3337,8 +3805,73 @@ mod controller_tests {
         }
     }
     #[test]
-    fn blocked_track_drag_clears_previous_preview_and_never_commits_on_release() {
-        let (mut d, _) = routed_drag_doc();
+    fn ordinary_body_drag_slides_a_chain_without_extra_bends_and_undoes_in_one_step() {
+        for fast in [false, true] {
+            let mut d = doc();
+            let b = d.model.pcb.as_mut().unwrap();
+            b.items.clear();
+            for (a, z) in [
+                (Point::mm(4, 4), Point::mm(12, 4)),
+                (Point::mm(0, 0), Point::mm(4, 4)),
+                (Point::mm(12, 4), Point::mm(16, 0)),
+            ] {
+                b.items.push(Item::new(
+                    pcb::TOP,
+                    Some(0),
+                    Shape::Track {
+                        start: a,
+                        end: z,
+                        width: 250_000,
+                    },
+                ));
+            }
+            let id = b.items[0].id;
+            let original = d.model.clone();
+            let mut ed = Editor::default();
+            let ctx = egui::Context::default();
+            let frame = drag_frame(Point::mm(8, 4), Point::mm(11, 6), fast);
+            let preview = if !fast {
+                input(&mut d, &mut ed, &mut None, frame.clone(), &ctx).unwrap();
+                let preview = d.view.pcb.preview().unwrap().clone();
+                assert_eq!(preview.items.len(), 3);
+                assert_eq!(d.model, original);
+                Some(preview)
+            } else {
+                None
+            };
+            input(
+                &mut d,
+                &mut ed,
+                &mut None,
+                Input {
+                    drag_started: fast,
+                    drag_stopped: true,
+                    dragging: false,
+                    ..frame
+                },
+                &ctx,
+            )
+            .unwrap();
+            let next = d.model.pcb.as_ref().unwrap();
+            assert_eq!(next.items.len(), 3);
+            assert!(
+                matches!(next.item(id).unwrap().shape,Shape::Track{start,end,..}
+                if start==Point::mm(6,6) && end==Point::mm(10,6))
+            );
+            if let Some(preview) = preview {
+                assert_eq!(*next, preview);
+            }
+            assert_eq!(d.history.revision, 1);
+            let changed = d.model.clone();
+            d.history.undo(&mut d.model);
+            assert_eq!(d.model, original);
+            d.history.redo(&mut d.model);
+            assert_eq!(d.model, changed);
+        }
+    }
+    #[test]
+    fn blocked_track_drag_retains_a_clear_connected_preview_and_commits_it_on_release() {
+        let (mut d, id) = routed_drag_doc();
         let mut obstacle = Item::new(
             pcb::TOP,
             None,
@@ -3365,25 +3898,34 @@ mod controller_tests {
         )
         .unwrap();
         assert!(d.view.pcb.preview().is_some());
-        for finish in [false, true] {
-            assert!(
-                input(
-                    &mut d,
-                    &mut ed,
-                    &mut None,
-                    Input {
-                        drag_started: false,
-                        ..drag_frame(Point::mm(15, 0), Point::mm(15, 3), finish)
-                    },
-                    &ctx
-                )
-                .is_err()
-            );
-            assert!(d.view.pcb.preview().is_none());
-            assert_eq!(d.model, original);
-            assert_eq!(d.history.revision, 0);
-        }
+        let blocked = Input {
+            drag_started: false,
+            ..drag_frame(Point::mm(15, 0), Point::mm(15, 3), false)
+        };
+        input(&mut d, &mut ed, &mut None, blocked.clone(), &ctx).unwrap();
+        let preview = d.view.pcb.preview().unwrap().clone();
+        let at = preview.item(id).unwrap().anchor();
+        assert!(at.y >= 1_000_000 && at.y < 2_000_000);
+        assert!(eda_core::pcb_connectivity::connections(&preview).is_empty());
+        assert_eq!(d.model, original);
+        assert_eq!(d.history.revision, 0);
+        input(
+            &mut d,
+            &mut ed,
+            &mut None,
+            Input {
+                dragging: false,
+                drag_stopped: true,
+                ..blocked
+            },
+            &ctx,
+        )
+        .unwrap();
+        assert_eq!(d.model.pcb.as_ref().unwrap(), &preview);
+        assert_eq!(d.history.revision, 1);
         assert!(ed.gesture.is_none());
+        d.history.undo(&mut d.model);
+        assert_eq!(d.model, original);
     }
     #[test]
     fn track_endpoint_drag_and_keyboard_drag_keep_fixed_pads_connected() {
