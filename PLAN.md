@@ -28,6 +28,28 @@ expectations were updated: Cross Probe waits for the queued project sheet import
 and library preview asserts the visible white triangular Path shapes. The full
 workspace and strict Clippy then passed. Diagnostics remain local under target.
 
+Release build and publication completed locally from clean revision
+`4b887f0b6e0cd1a8f71782e83f61f81a6039d0f0`, identified by tag `v0.0.2`.
+The optimized native MSVC build passed. Both packages contain version/revision
+metadata and license notices; the portable ZIP passes CRC, safe-path, PE imports,
+bundled CRT, clean-source identity and no-user-settings/design checks. The built
+executable's SHA-256 matches the archived executable and contains no local home
+path in the UTF-8/UTF-16 scan. The installer compiled from that same ZIP staging;
+it was not installed or launched for GUI QA alongside the unsaved user session.
+
+- Portable ZIP: 16,340,817 bytes; SHA-256
+  `8b989e10ad6528ddad4b0711fdfbe12d021bc8fa8c415655d42bfd6cac2ca607`.
+- Installer: 11,971,248 bytes; SHA-256
+  `fafddc97ca184d21bd6cbbc55ea3e2d064e454136f0f2f0872370a1687f2da55`.
+
+Published [PCBCraft 0.0.2](https://github.com/MX-Goliath/PCBCraft/releases/tag/v0.0.2)
+through the GitHub API. Verified all four uploaded asset sizes and GitHub SHA-256
+digests before publication, then independently downloaded the public assets and
+verified each SHA-256 again. The repository is now public. Packages are Windows
+x64 only and unsigned. GitHub Actions was not used. Source checks, build, package
+and publication logs/reports are retained locally under target/release-002-*;
+the four verified upload files are retained under dist/release-0.0.2/.
+
 ### Local Windows release 0.0.1 — November 8, 2026
 
 The user requested Windows installer and portable packages at version 0.0.1,
