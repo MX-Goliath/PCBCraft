@@ -1,5 +1,33 @@
 # PCBCraft implementation plan
 
+### Local Windows release 0.0.2 - November 9, 2026
+
+The user requested a new release, explicitly authorizing local compilation and
+publication without GitHub Actions. This supersedes the earlier no-rebuild
+instruction for this release. Updated workspace/lockfile and package examples to
+0.0.2. The Windows x64 installer and portable ZIP follow the preceding release's
+platform scope. Both workflows remain manual-dispatch only.
+
+The currently installed native toolchain is Rust 1.90.0 MSVC; the previous local
+GNU toolchain directory is absent. Checks and packages therefore use MSVC, with
+local compiler paths remapped in the release build. Inno Setup 6.7.4 was obtained
+from the official release and its Pyrsys B.V. signature verified before use.
+The existing PCBCraft session has an unsaved document and must remain open; no
+second GUI instance will be started alongside it. Verification results follow.
+
+Local source validation passed: format, strict workspace/all-target Clippy,
+all 930 workspace tests (244 app, 379 core, 1 geometry, 173 I/O, 133 renderer),
+doc tests, and all 12 Python release/privacy regressions. Current tracked content
+passes the privacy scanner. The full-history scan still reports earlier home-
+path examples and commit-email findings; history was not rewritten for release.
+
+The first compiled checks exposed two deprecated egui margin calls and the
+loader's missing explicit unwind-safety boundary around its repaint context.
+These were corrected without changing the document transaction. Two old test
+expectations were updated: Cross Probe waits for the queued project sheet import,
+and library preview asserts the visible white triangular Path shapes. The full
+workspace and strict Clippy then passed. Diagnostics remain local under target.
+
 ### Local Windows release 0.0.1 — November 8, 2026
 
 The user requested Windows installer and portable packages at version 0.0.1,

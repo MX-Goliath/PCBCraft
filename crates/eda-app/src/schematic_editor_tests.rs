@@ -1987,7 +1987,7 @@ fn library_preview_uses_raw_gray_comment_without_mutating_symbol() {
             eda_render::symbol_preview(ui, &with_io, 184.0);
         });
     });
-    assert_eq!(output.shapes.iter().filter(|s| s.clip_rect.is_positive() && matches!(&s.shape, egui::Shape::Mesh(m) if m.vertices.len() == 3 && m.vertices.iter().all(|v| v.color == Color32::WHITE))).count(), 2);
+    assert_eq!(output.shapes.iter().filter(|s| s.clip_rect.is_positive() && matches!(&s.shape, egui::Shape::Path(p) if p.closed && p.points.len() == 3 && p.fill == Color32::WHITE)).count(), 2);
 }
 
 #[test]

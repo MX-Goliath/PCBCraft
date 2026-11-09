@@ -45,7 +45,7 @@ python scripts/build-windows-portable.py
 ```
 
 Add `--no-build` to package an existing release build. The ZIP is written to
-`dist/PCBCraft-0.0.1-windows-x64-portable.zip`, with a SHA256 checksum alongside it.
+`dist/PCBCraft-0.0.2-windows-x64-portable.zip`, with a SHA256 checksum alongside it.
 Packaging requires Python 3.11+ and the Visual Studio redistributable CRT; its
 path can be supplied with `--crt-dir`. Users do not need to install the application:
 extract the entire folder and run `pcbcraft.exe`. If `portable.flag` is present
@@ -80,8 +80,8 @@ python3 scripts/build-appimage.py
 
 To repackage an existing release binary:
 `python3 scripts/build-appimage.py --no-build`.
-The output and SHA256 checksum are written to `dist/PCBCraft-0.0.1-x86_64.AppImage`
-and `dist/PCBCraft-0.0.1-x86_64.AppImage.sha256`.
+The output and SHA256 checksum are written to `dist/PCBCraft-0.0.2-x86_64.AppImage`
+and `dist/PCBCraft-0.0.2-x86_64.AppImage.sha256`.
 
 Packaging requires Python 3.11+, `appimagetool`, `binutils`, `ldconfig` and window
 libraries, including `libxkbcommon-x11` and `libX11-xcb`.
@@ -100,7 +100,7 @@ Open/save dialogs require a working desktop portal.
 Run without FUSE:
 
 ```bash
-./dist/PCBCraft-0.0.1-x86_64.AppImage --appimage-extract-and-run
+./dist/PCBCraft-0.0.2-x86_64.AppImage --appimage-extract-and-run
 ```
 
 On a new machine, install Rust 1.90.0 through rustup as specified in

@@ -503,6 +503,16 @@ mod tests {
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../fixtures/cross-probe/demo.PrjPcb");
         app.open_path(path);
+        let ctx = egui::Context::default();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while app.document_loader.busy() && std::time::Instant::now() < deadline {
+            app.poll_document_loader(&ctx);
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert!(
+            !app.document_loader.busy(),
+            "Project sheet import timed out"
+        );
         assert_eq!(app.documents.len(), 1);
         let id = app.documents[0]
             .model

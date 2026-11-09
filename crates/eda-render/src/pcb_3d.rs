@@ -1186,7 +1186,7 @@ fn loading_status(
 ) {
     let card = Rect::from_center_size(rect.center(), Vec2::new(340_f32.min(rect.width()), 86.));
     let frame = egui::Frame::window(ui.style());
-    let inner = frame.total_margin().shrink_rect(card);
+    let inner = card - frame.total_margin();
     ui.painter().add(frame.paint(inner));
     let mut content = ui.new_child(egui::UiBuilder::new().max_rect(inner));
     content.set_clip_rect(inner.intersect(ui.clip_rect()));

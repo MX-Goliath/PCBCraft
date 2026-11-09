@@ -86,7 +86,9 @@ impl State {
             cancelled: false,
         });
         std::thread::spawn(move || {
-            let result = std::panic::catch_unwind(|| {
+            // The shared context only receives a repaint request. A failed job
+            // publishes an error instead of a partially prepared document.
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 let model = if worker_path
                     .extension()
                     .is_some_and(|s| s.eq_ignore_ascii_case("PcbDoc"))
@@ -98,7 +100,7 @@ impl State {
                 worker_preparing.store(true, Ordering::Relaxed);
                 worker_ctx.request_repaint();
                 Ok(PreparedDocument::new(model))
-            })
+            }))
             .unwrap_or_else(|_| Err("Document import worker failed".into()));
             let _ = sender.send(result);
             worker_ctx.request_repaint();

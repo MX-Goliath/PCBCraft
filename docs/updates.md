@@ -75,7 +75,7 @@ project files. Existing downloaded versions can be removed manually from cache.
    GitHub Release. Publish after checking the uploaded sizes and hashes.
 
 Both workflows use `workflow_dispatch` only: pushing commits/tags or publishing
-a release does not start GitHub Actions. Version 0.0.1 Windows packages are built
+a release does not start GitHub Actions. Version 0.0.2 Windows packages are built
 and uploaded locally without using Actions minutes.
 
 The optional release workflow builds/tests all platforms on Windows, Ubuntu 22.04
@@ -101,8 +101,8 @@ python scripts/build-release.py --format deb
 python scripts/build-appimage.py
 python scripts/build-release.py --format macos
 python -m unittest discover -s scripts -p test_release.py
-python scripts/verify-release.py --tag v0.0.1 --artifacts dist
-python scripts/verify-release.py --tag v0.0.1 --platform windows --artifacts dist
+python scripts/verify-release.py --tag v0.0.2 --artifacts dist
+python scripts/verify-release.py --tag v0.0.2 --platform windows --artifacts dist
 ```
 
 `--no-build` packages an existing native release binary. Windows supports native
