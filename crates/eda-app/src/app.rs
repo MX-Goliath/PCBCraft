@@ -1869,6 +1869,9 @@ impl PcbCraft {
 
 impl eframe::App for PcbCraft {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if self.poll_git_pull(ctx) {
+            return;
+        }
         self.poll_git(ctx);
         self.poll_document_loader(ctx);
         self.sync_available_libraries();

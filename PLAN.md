@@ -1,5 +1,38 @@
 # PCBCraft implementation plan
 
+### Git Pull from the project panel - November 12, 2026
+
+Observation: the existing down-arrow action only fetched refs; no command applied
+upstream changes to the branch or working files. Added separately labelled Fetch
+and Pull controls. Pull fetches the current branch's configured upstream and uses
+fast-forward only, with automatic stash/rebase and ignored-file overwrite disabled.
+It validates the whole repository rather than only supported project documents,
+and rechecks HEAD, branch and upstream after the network operation. Dirty/staged/
+untracked files, active Git operations and unsaved editor/project drafts reject it.
+
+The worker owns editor input until Git and imports finish. Updated working tabs
+retain their identities with new clean models and reset history/view/editor state;
+historical comparison tabs remain captured snapshots. Projects and affected cached
+libraries refresh. Deleted/unreadable files close instead of remaining writable
+stale tabs. A changed DsnWrk requires reopening the group; its old in-memory
+membership is detached from the updated file. Errors remain visible in the panel.
+
+Validation uses an isolated checkout of c2ef21e plus only the Git Pull changes,
+because automatic updates are being implemented concurrently in the shared tree.
+Formatting and feature-registry JSON/unique-ID checks pass. Git regressions cover
+fast-forward fetching, whole-repository scope, local/index/ignored-file preservation,
+divergence, detached/missing-upstream state and stale HEAD. Editor regressions cover
+request-time unsaved changes, clean reload, deleted files and immutable snapshots,
+including a worker integration test with a local bare remote and a native SchDoc.
+The four Git Pull regressions passed. The isolated workspace passed all 938 tests
+(248 app, 379 core, 1 geometry, 177 I/O, 133 render) and doc tests. Format and
+whitespace checks pass. A subsequent disabled-button tooltip adjustment has format/
+static validation; shared strict Clippy/test results are owned by the concurrent
+update task. The queued strict Clippy rerun was canceled at the user's request to
+avoid delaying that task's build. No additional build or GUI instance was started.
+Native-window Pull QA is deferred until desktop ownership is released after the
+automatic-update QA. External-network authentication and Linux GUI remain unverified.
+
 ### Local Windows release 0.0.2 - November 9, 2026
 
 The user requested a new release, explicitly authorizing local compilation and

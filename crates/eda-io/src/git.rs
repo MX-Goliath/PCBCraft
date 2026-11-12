@@ -1,4 +1,4 @@
-//! Project-scoped Git access. No shell, checkout, reset of working files or force push.
+//! Project-scoped Git access. No shell, branch checkout, reset of working files or force push.
 use std::{
     collections::BTreeMap,
     io::Read,
@@ -294,6 +294,8 @@ impl Repository {
             ("rebase-merge", "Rebase in progress"),
             ("rebase-apply", "Rebase in progress"),
             ("CHERRY_PICK_HEAD", "Cherry-pick in progress"),
+            ("REVERT_HEAD", "Revert in progress"),
+            ("sequencer", "Git sequence in progress"),
         ]
         .into_iter()
         .find(|(p, _)| gitdir.join(p).exists())
@@ -535,6 +537,78 @@ impl Repository {
     }
     pub fn fetch(&self) -> Result<String, String> {
         self.text(&["fetch", "--all"])
+    }
+    /// Fetch the current branch's upstream and update only by fast-forward.
+    /// Check the whole repository, including paths outside the project filter.
+    pub fn pull(&self, expected_head: &str) -> Result<Vec<String>, String> {
+        let branch = self
+            .text(&["symbolic-ref", "--quiet", "HEAD"])
+            .map_err(|_| "Cannot pull a detached HEAD. Check out a branch in Git first.")?;
+        let upstream = self
+            .text(&["rev-parse", "--symbolic-full-name", "@{upstream}"])
+            .map_err(
+                |_| "No upstream configured. Set this branch's upstream in Git, then refresh.",
+            )?;
+        let remote = self.text(&[
+            "config",
+            "--get",
+            &format!("branch.{}.remote", branch.trim_start_matches("refs/heads/")),
+        ])?;
+        self.check_pull_state(expected_head)?;
+        self.run(&["fetch", "--recurse-submodules=no", "--", &remote])?;
+        // Network operations may take time. Recheck immediately before touching files.
+        self.check_pull_state(expected_head)?;
+        if self.text(&["symbolic-ref", "--quiet", "HEAD"])? != branch
+            || self.text(&["rev-parse", "--symbolic-full-name", "@{upstream}"])? != upstream
+        {
+            return Err("Branch or upstream changed during fetch. Refresh and retry Pull.".into());
+        }
+        let target = self.oid(&upstream)?;
+        self.run(&[
+            "-c",
+            "submodule.recurse=false",
+            "merge",
+            "--ff-only",
+            "--no-autostash",
+            "--no-overwrite-ignore",
+            &target,
+        ])
+        .map_err(|error| {
+            format!("Pull could not fast-forward. Resolve divergent history or file conflicts in Git, then refresh.\n{error}")
+        })?;
+        nul_strings(&self.run(&[
+            "diff",
+            "--name-only",
+            "--no-renames",
+            "-z",
+            expected_head,
+            "HEAD",
+            "--",
+        ])?)
+    }
+    fn check_pull_state(&self, expected_head: &str) -> Result<(), String> {
+        let snapshot = self.snapshot("HEAD", 1)?;
+        if snapshot.head.as_deref() != Some(expected_head) {
+            return Err("HEAD changed. Refresh before pulling.".into());
+        }
+        if snapshot.operation.is_some() {
+            return Err("Finish the current Git operation before pulling.".into());
+        }
+        if !self
+            .run(&[
+                "status",
+                "--porcelain=v1",
+                "-z",
+                "--untracked-files=all",
+                "--ignore-submodules=none",
+            ])?
+            .is_empty()
+        {
+            return Err(
+                "Commit or stash local changes in the entire repository before pulling.".into(),
+            );
+        }
+        Ok(())
     }
     pub fn push(&self) -> Result<String, String> {
         let branch = self

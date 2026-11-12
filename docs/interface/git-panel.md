@@ -50,7 +50,20 @@ not observations of Altium's version-control implementation.
 - **Push…** names the destination and states that entire commits are sent,
   including files outside the panel filter. First push can select an existing
   remote and establish upstream tracking. Push never uses force. Fetch refreshes
-  remote refs. Authentication uses the installed Git setup; interactive terminal
+  remote refs. **Pull** fetches the current branch's configured upstream and
+  fast-forwards the branch and files. It is a repository-wide operation, including
+  files outside the panel's Altium filter. Save editor changes and commit or stash
+  saved local changes first. Dirty/staged/untracked files anywhere in the repository,
+  active Git operations, detached HEAD and divergent branches reject the update.
+  Pull never creates merge commits or rebases/stashes automatically. Ignored local
+  files cannot be overwritten. Changes to HEAD/branch/upstream during fetch require
+  a refresh. While pulling, editor input is suspended; changed open documents and
+  cached libraries are reimported on the worker and project references are refreshed.
+  Working tabs keep their identities but reset editor/history/view state. Historical
+  review tabs retain their captured snapshots. Deleted or unreadable working files
+  close with a visible reload error. A changed DsnWrk requires reopening the group;
+  its old in-memory membership is detached from the updated file to prevent a stale save.
+  Authentication uses the installed Git setup; interactive terminal
   and credential-manager prompts are disabled in the background job.
 - **History** browses local/remote refs and tags without checking out a branch.
   It loads 100 commits at a time. Select a commit, then a file. Merge commits
@@ -134,7 +147,7 @@ including added and removed members. PrjPcb/DsnWrk use decoded text comparison.
   full binary/native semantic comparison. “No semantic changes” is explicitly
   limited to supported data. PCB layer colors in Before/After remain native;
   Overlay uses the review palette.
-- Git must be on PATH. Remote creation, init/clone, checkout, pull/merge/rebase,
+- Git must be on PATH. Remote creation, init/clone, checkout, merge/rebase,
   conflict resolution, stash, destructive resets and force push are outside this
   viewer. No remote authentication or remote-network compatibility claim follows
   from tests with a local bare repository. Linux UI runtime is not verified here.

@@ -1,4 +1,6 @@
 //! Independent Git dock and read-only revision workspace.
+#[path = "git_pull.rs"]
+mod pull;
 use super::*;
 use eda_core::document_diff::{self, Diff, Kind};
 use eda_io::git::{Commit, File, Repository, Snapshot};
@@ -102,6 +104,8 @@ impl Default for Browser {
 }
 #[derive(Default)]
 pub(super) struct State {
+    pull_request: Option<Repository>,
+    pull_job: Option<pull::Job>,
     browser: Browser,
     browsers: BTreeMap<Option<PathBuf>, Browser>,
     followed: Option<(Option<Uuid>, Option<PathBuf>)>,
@@ -729,6 +733,7 @@ impl PcbCraft {
         let mut choose = false;
         let mut refresh = false;
         let mut fetch = false;
+        let mut pull = false;
         let mut commit = false;
         ui.scope(|ui| {
             ui.set_min_width(ui.available_width());
@@ -738,13 +743,35 @@ impl PcbCraft {
                     .on_hover_text("Open project")
                     .clicked();
                 refresh = tool_button(ui, "↻", "Refresh repository", !busy).clicked();
-                fetch = tool_button(
-                    ui,
-                    "↓",
-                    "Fetch remote changes",
-                    !busy && state.snapshot.is_some(),
-                )
-                .clicked();
+                fetch = ui
+                    .add_enabled(
+                        !busy && state.snapshot.is_some(),
+                        egui::Button::new("Fetch").frame(false),
+                    )
+                    .on_hover_text("Fetch remote references. Project files stay unchanged; use Pull to update files.")
+                    .clicked();
+                pull = ui
+                    .add_enabled(
+                        !busy
+                            && state.snapshot.as_ref().is_some_and(|s| {
+                                s.head.is_some() && s.upstream.is_some() && s.operation.is_none()
+                            }),
+                        egui::Button::new("Pull").frame(false),
+                    )
+                    .on_hover_text("Fetch and update project files from this branch's upstream (fast-forward only). Save editor changes and commit or stash local files first.")
+                    .on_disabled_hover_text(state.snapshot.as_ref().map_or(
+                        "Open a project repository first.",
+                        |s| if s.branch == "Detached HEAD" {
+                            "Cannot pull a detached HEAD. Check out a branch in Git first."
+                        } else if s.upstream.is_none() {
+                            "No upstream configured. Set this branch's upstream in Git, then refresh."
+                        } else if s.operation.is_some() {
+                            "Finish the current Git operation before pulling."
+                        } else {
+                            "Fetch and update project files from this branch's upstream (fast-forward only). Save editor changes and commit or stash local files first."
+                        },
+                    ))
+                    .clicked();
                 if let Some(job) = &state.job {
                     ui.add(egui::Spinner::new().size(14.));
                     ui.add(
@@ -1093,6 +1120,9 @@ impl PcbCraft {
         });
         if choose && !busy {
             self.command = Some(Command::OpenProject);
+        }
+        if pull && let Some(s) = &self.git.snapshot {
+            self.git.pull_request = Some(s.repository.clone());
         }
         if refresh
             && !busy

@@ -55,6 +55,13 @@ pub(super) struct Dialog {
     error: String,
 }
 impl State {
+    pub(super) fn project_reloaded(&mut self, path: &std::path::Path) {
+        self.saved.remove(path);
+        self.alternate_files.remove(path);
+        self.histories.remove(path);
+        self.catalog.borrow_mut().take();
+        self.cache = None;
+    }
     pub fn project_updated(&mut self, p: &eda_io::altium::Project) {
         if let Some((saved, bytes)) = self.saved.get_mut(&p.path)
             && *saved == p.variants
