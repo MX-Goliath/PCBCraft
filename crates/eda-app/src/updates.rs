@@ -1,7 +1,7 @@
-//! Public GitHub Releases channel. Network and disk work never run on the UI thread.
+//! Public GitHub Releases channel. Network and package I/O run off the UI thread.
 use reqwest::blocking::Client;
 use semver::Version;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -11,7 +11,13 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
-pub const CONTROL_WIDTH: f32 = 142.0;
+pub const CONTROL_WIDTH: f32 = 158.0;
+const CHECK_INTERVAL: Duration = Duration::from_secs(60 * 60);
+#[path = "update_install.rs"]
+pub mod install;
+#[cfg(debug_assertions)]
+#[path = "updates_qa.rs"]
+mod qa;
 const REPOSITORY: &str = match option_env!("PCBCRAFT_UPDATE_REPOSITORY") {
     Some(repository) => repository,
     None => "MX-Goliath/PCBCraft",
@@ -19,7 +25,7 @@ const REPOSITORY: &str = match option_env!("PCBCRAFT_UPDATE_REPOSITORY") {
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const MAX_PACKAGE_SIZE: u64 = 4 * 1024 * 1024 * 1024;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 enum Distribution {
     WindowsInstaller,
     WindowsPortable,
@@ -64,29 +70,9 @@ impl Distribution {
             ),
         }
     }
-
-    fn instructions(self) -> &'static str {
-        match self {
-            Self::WindowsInstaller => {
-                "Save your work and close PCBCraft before completing the installer."
-            }
-            Self::WindowsPortable => {
-                "Close PCBCraft, extract the ZIP and replace the application files. Keep your existing Data folder and portable.flag."
-            }
-            Self::Deb => {
-                "Open the DEB in your system package installer, or install it with sudo apt install /path/to/package.deb. Close PCBCraft first."
-            }
-            Self::AppImage => {
-                "Close PCBCraft, replace your previous AppImage with the downloaded file and make it executable. Your settings are kept separately."
-            }
-            Self::Mac => {
-                "Open the disk image, quit PCBCraft and drag PCBCraft.app to Applications, replacing the previous version."
-            }
-        }
-    }
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct Asset {
     name: String,
     browser_download_url: String,
@@ -102,7 +88,7 @@ struct Release {
     assets: Vec<Asset>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct Package {
     version: Version,
     distribution: Distribution,
@@ -119,6 +105,7 @@ enum Phase {
     Current,
     Unpublished,
     Available,
+    Paused,
     Downloading,
     Verifying,
     Ready,
@@ -136,263 +123,452 @@ struct State {
     phase: Phase,
     package: Option<Package>,
     downloaded: u64,
-    path: Option<PathBuf>,
+    pending_install: bool,
+    scheduler: Option<std::sync::mpsc::Sender<ScheduleEvent>>,
+    shutdown: bool,
 }
 
-#[derive(Default)]
 pub struct Updater {
     state: Arc<Mutex<State>>,
     cancelled: Arc<AtomicBool>,
+    last_check: Option<Instant>,
+    checking: Arc<AtomicBool>,
+    restart: bool,
+}
+
+impl Default for Updater {
+    fn default() -> Self {
+        let state = install::restored_state().unwrap_or_default();
+        Self {
+            state: Arc::new(Mutex::new(state)),
+            cancelled: Arc::default(),
+            last_check: None,
+            checking: Arc::default(),
+            restart: false,
+        }
+    }
 }
 
 impl Drop for Updater {
     fn drop(&mut self) {
+        let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+        state.shutdown = true;
         self.cancelled.store(true, Ordering::Relaxed);
+        if let Some(send) = state.scheduler.take() {
+            let _ = send.send(ScheduleEvent::Stop);
+        }
     }
 }
 
 impl Updater {
+    /// Arm once on the first frame. All subsequent work is independent of redraws.
+    pub fn tick(&mut self, ctx: &egui::Context) {
+        if self
+            .state
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .scheduler
+            .is_some()
+        {
+            return;
+        }
+        let (check, download, interval) = channel();
+        self.start_schedule(ctx, interval, check, download);
+    }
+
+    fn start_schedule(
+        &mut self,
+        ctx: &egui::Context,
+        interval: Duration,
+        check: ReleaseCheck,
+        download: Download,
+    ) {
+        let (send, receive) = std::sync::mpsc::channel();
+        {
+            let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+            if state.scheduler.is_some() || state.shutdown {
+                return;
+            }
+            state.scheduler = Some(send);
+        }
+        let shared = self.state.clone();
+        let checking = self.checking.clone();
+        let cancelled = self.cancelled.clone();
+        let ctx = ctx.clone();
+        let mut last = self.last_check;
+        std::thread::spawn(move || {
+            loop {
+                let state = shared.lock().unwrap_or_else(|p| p.into_inner()).clone();
+                if state.shutdown {
+                    break;
+                }
+                if state.phase == Phase::Available {
+                    start_download(&shared, &cancelled, &checking, &ctx, download);
+                }
+                if check_due(last, Instant::now(), interval) {
+                    let check = check.clone();
+                    if start_check(&shared, &checking, &ctx, move || check()) {
+                        last = Some(Instant::now());
+                    }
+                }
+                let delay = last.map_or(interval, |last| interval.saturating_sub(last.elapsed()));
+                let delay = if delay.is_zero() {
+                    interval.min(Duration::from_secs(1))
+                } else {
+                    delay
+                };
+                match receive.recv_timeout(delay) {
+                    Ok(ScheduleEvent::Stop)
+                    | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                    Ok(ScheduleEvent::Wake) | Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                }
+            }
+        });
+    }
+
+    pub fn take_restart(&mut self) -> bool {
+        std::mem::take(&mut self.restart)
+    }
+
     fn snapshot(&self) -> State {
         self.state.lock().unwrap_or_else(|p| p.into_inner()).clone()
     }
 
-    fn check(&self, ctx: &egui::Context) {
-        {
-            let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
-            if state.phase.busy() {
-                return;
-            }
-            *state = State {
-                phase: Phase::Checking,
-                ..Default::default()
-            };
+    fn check(&mut self, ctx: &egui::Context) {
+        let (check, _, _) = channel();
+        self.check_using(ctx, move || check());
+    }
+
+    fn check_using(
+        &mut self,
+        ctx: &egui::Context,
+        check: impl FnOnce() -> Result<(Phase, Option<Package>), String> + Send + 'static,
+    ) {
+        if start_check(&self.state, &self.checking, ctx, check) {
+            self.last_check = Some(Instant::now());
         }
-        let shared = self.state.clone();
-        let ctx = ctx.clone();
-        std::thread::spawn(move || {
-            let result = check_release();
-            let mut state = shared.lock().unwrap_or_else(|p| p.into_inner());
-            match result {
-                Ok((phase, package)) => {
-                    state.phase = phase;
-                    state.package = package;
-                }
-                Err(error) => state.phase = Phase::Error(error),
-            }
-            ctx.request_repaint();
-        });
     }
 
     fn download(&self, ctx: &egui::Context) {
-        let package = {
-            let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
-            if state.phase.busy() {
-                return;
-            }
-            let Some(package) = state.package.clone() else {
-                return;
-            };
-            state.phase = Phase::Downloading;
-            state.downloaded = 0;
-            state.path = None;
-            package
-        };
-        self.cancelled.store(false, Ordering::Relaxed);
-        let shared = self.state.clone();
-        let cancelled = self.cancelled.clone();
-        let ctx = ctx.clone();
-        std::thread::spawn(move || {
-            let result = download_package(&package, &cancelled, |downloaded, verifying| {
-                let mut state = shared.lock().unwrap_or_else(|p| p.into_inner());
-                state.downloaded = downloaded;
-                if verifying {
-                    state.phase = Phase::Verifying;
-                }
-                ctx.request_repaint();
-            });
-            let mut state = shared.lock().unwrap_or_else(|p| p.into_inner());
-            match result {
-                Ok(Some(path)) => {
-                    state.path = Some(path);
-                    state.phase = Phase::Ready;
-                }
-                Ok(None) => state.phase = Phase::Available,
-                Err(error) => state.phase = Phase::Error(error),
-            }
-            ctx.request_repaint();
-        });
+        let (_, download, _) = channel();
+        start_download(&self.state, &self.cancelled, &self.checking, ctx, download);
     }
 
-    pub fn show(&self, ui: &mut egui::Ui) {
+    pub fn show(&mut self, ui: &mut egui::Ui) {
         let state = self.snapshot();
         let downloading = matches!(state.phase, Phase::Downloading | Phase::Verifying);
         let progress = state
             .package
             .as_ref()
-            .map_or(0., |p| state.downloaded as f32 / p.asset.size as f32)
+            .map_or(0., |p| state.downloaded as f32 / p.asset.size.max(1) as f32)
             .clamp(0., 1.);
         let label = match &state.phase {
-            Phase::Idle => "Check for updates".into(),
-            Phase::Checking => "Checking…".into(),
+            Phase::Idle => "Updates".into(),
+            Phase::Checking => "Checking updates…".into(),
             Phase::Current => "Up to date".into(),
-            Phase::Unpublished => "No releases yet".into(),
-            Phase::Available => "Update available".into(),
-            Phase::Downloading => format!("Downloading {:3.0}%", progress * 100.),
-            Phase::Verifying => "Verifying…".into(),
-            Phase::Ready => "Update ready".into(),
-            Phase::Error(_) => "Update unavailable".into(),
+            Phase::Unpublished => "Updates".into(),
+            Phase::Available => "Preparing download…".into(),
+            Phase::Paused => "Download paused".into(),
+            Phase::Downloading => format!("Downloading {:.0}%", progress * 100.),
+            Phase::Verifying => "Preparing update…".into(),
+            Phase::Ready => "Restart to update".into(),
+            Phase::Error(_) => "Update issue".into(),
         };
-        let accent = if matches!(state.phase, Phase::Available | Phase::Ready) {
-            egui::Color32::from_rgb(181, 221, 190)
+        // Paint inside a fixed hit rectangle. Button's default minimum height
+        // and title-bar padding must not extend below the 23-point title strip.
+        let (hit, response) =
+            ui.allocate_exact_size(egui::vec2(CONTROL_WIDTH - 6., 23.), egui::Sense::click());
+        let rect = hit.shrink2(egui::vec2(1., 2.));
+        let ready = state.phase == Phase::Ready;
+        let accent = if ready || downloading {
+            egui::Color32::from_rgb(115, 202, 242)
         } else {
-            egui::Color32::from_gray(220)
+            egui::Color32::from_gray(155)
         };
-        let response = ui
-            .add_sized(
-                [CONTROL_WIDTH - 6., 20.],
-                egui::Button::new(
-                    egui::RichText::new(format!("↓  {label}"))
-                        .size(11.)
-                        .color(accent),
-                )
-                .fill(egui::Color32::from_gray(60))
-                .corner_radius(9),
-            )
-            .on_hover_text("PCBCraft updates · stable GitHub Releases");
-        response.widget_info(|| {
-            egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Check for updates")
-        });
-        if downloading {
-            let track = egui::Rect::from_min_size(
-                response.rect.left_bottom() - egui::vec2(0., 2.),
-                egui::vec2(response.rect.width(), 2.),
-            );
-            ui.painter()
-                .rect_filled(track, 1., egui::Color32::from_gray(90));
-            ui.painter().rect_filled(
-                egui::Rect::from_min_size(track.min, egui::vec2(track.width() * progress, 2.)),
+        let fill = if response.is_pointer_button_down_on() {
+            39
+        } else if response.hovered() {
+            85
+        } else {
+            49
+        };
+        ui.painter().rect(
+            rect,
+            7.,
+            egui::Color32::from_gray(fill),
+            egui::Stroke::new(
                 1.,
-                accent,
-            );
+                if downloading {
+                    egui::Color32::from_gray(105)
+                } else {
+                    accent
+                },
+            ),
+            egui::StrokeKind::Inside,
+        );
+        ui.painter().text(
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            &label,
+            egui::FontId::proportional(11.5),
+            egui::Color32::WHITE,
+        );
+        if downloading {
+            let points = perimeter(rect.shrink(1.), 6.);
+            let count = ((points.len() - 1) as f32 * progress).floor() as usize;
+            let mut visible = points[..=count].to_vec();
+            if count + 1 < points.len() {
+                visible.push(points[count].lerp(
+                    points[count + 1],
+                    (points.len() - 1) as f32 * progress - count as f32,
+                ));
+            }
+            ui.painter()
+                .add(egui::Shape::line(visible, egui::Stroke::new(2., accent)));
         }
-        if response.clicked()
-            && !state.phase.busy()
-            && matches!(
-                state.phase,
-                Phase::Idle | Phase::Current | Phase::Unpublished | Phase::Error(_)
-            )
-        {
-            self.check(ui.ctx());
+        response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &label));
+        let response = response.on_hover_text(if ready {
+            "Restart PCBCraft to install the downloaded update"
+        } else {
+            "Automatic updates · checked at startup and every hour"
+        });
+        if response.clicked() && ready {
+            self.restart = true;
         }
+        let mut restart = false;
         egui::Popup::menu(&response)
             .id(egui::Id::new("desktop_updates_popup"))
             .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
             .show(|ui| {
-                crate::theme::dialog_contents(ui, 310., |ui| {
-                    // The title bar uses zero spacing; restore readable popup spacing.
-                    ui.spacing_mut().item_spacing = egui::vec2(8., 7.);
-                    ui.label(egui::RichText::new("PCBCraft updates").strong());
+                crate::theme::dialog_contents(ui, 340., |ui| {
+                    ui.spacing_mut().item_spacing = egui::vec2(8., 8.);
+                    ui.label(egui::RichText::new("PCBCraft updates").size(15.).strong());
                     ui.label(format!("Installed {VERSION} · Stable channel"));
                     ui.separator();
                     match &state.phase {
-                        Phase::Idle => {
-                            ui.label("Check GitHub Releases for a newer version.");
-                        }
-                        Phase::Checking => {
-                            ui.horizontal(|ui| {
-                                ui.spinner();
-                                ui.label("Checking for updates…");
-                            });
-                        }
-                        Phase::Current => {
-                            ui.label("You’re up to date.");
-                        }
-                        Phase::Unpublished => {
-                            ui.label(
-                        "No public release is available yet. The repository may still be private.",
-                    );
-                        }
-                        Phase::Available => {
-                            ui.label("A new version is available.");
-                        }
+                        Phase::Idle | Phase::Available => { ui.label("Updates download automatically."); }
+                        Phase::Paused => { ui.label("Download paused. Resume below or wait for the next hourly check."); }
+                        Phase::Checking => { ui.horizontal(|ui| { ui.spinner(); ui.label("Checking for updates…"); }); }
+                        Phase::Current => { ui.label("You’re up to date."); }
+                        Phase::Unpublished => { ui.label("No public release is available. The repository may still be private."); }
                         Phase::Downloading | Phase::Verifying => {
-                            ui.add(
-                                egui::ProgressBar::new(progress)
-                                    .show_percentage()
-                                    .desired_width(300.),
-                            );
+                            ui.add(egui::ProgressBar::new(progress).show_percentage().desired_width(320.));
                             if let Some(p) = &state.package {
-                                ui.label(format!(
-                                    "{:.1} / {:.1} MB",
-                                    state.downloaded as f64 / 1e6,
-                                    p.asset.size as f64 / 1e6
-                                ));
+                                ui.label(format!("{:.1} / {:.1} MB", state.downloaded as f64 / 1e6, p.asset.size as f64 / 1e6));
                             }
-                            if state.phase == Phase::Verifying {
-                                ui.label("Verifying SHA-256…");
-                            }
-                            if ui.button("Cancel download").clicked() {
-                                self.cancelled.store(true, Ordering::Relaxed);
-                            }
+                            if state.phase == Phase::Verifying { ui.label("Verifying and preparing installation…"); }
+                            if ui.button("Pause download").clicked() { self.cancelled.store(true, Ordering::Relaxed); }
                         }
                         Phase::Ready => {
-                            ui.label("Download complete · SHA-256 verified");
+                            ui.label("Update downloaded and verified.");
+                            ui.label("It will install when PCBCraft closes. You can also restart now.");
+                            if ui.button("Restart to update").clicked() { restart = true; }
                         }
                         Phase::Error(error) => {
-                            ui.colored_label(egui::Color32::from_rgb(244, 176, 164), error);
+                            ui.colored_label(egui::Color32::from_rgb(255, 194, 176), error);
+                            if state.pending_install && ui.button("Retry installation on restart").clicked() {
+                                restart = true;
+                            }
                         }
                     }
                     if let Some(package) = &state.package {
-                        ui.label(format!(
-                            "Version {} · {}",
-                            package.version, package.asset.name
-                        ));
-                        if !state.phase.busy()
-                            && state.phase != Phase::Ready
-                            && ui.button("Download update").clicked()
-                        {
-                            self.download(ui.ctx());
-                        }
-                        if state.phase == Phase::Ready {
-                            ui.label(package.distribution.instructions());
-                            if let Some(path) = &state.path {
-                                let open_folder = package.distribution == Distribution::AppImage;
-                                if ui
-                                    .button(if open_folder {
-                                        "Show downloaded AppImage"
-                                    } else {
-                                        "Open downloaded package"
-                                    })
-                                    .clicked()
-                                    && let Err(error) = open_path(if open_folder {
-                                        path.parent().unwrap_or(path)
-                                    } else {
-                                        path
-                                    })
-                                {
-                                    self.state.lock().unwrap_or_else(|p| p.into_inner()).phase =
-                                        Phase::Error(error);
-                                }
-                                ui.label(path.display().to_string());
-                            }
-                        }
+                        ui.label(format!("Version {}", package.version));
+                        if matches!(state.phase, Phase::Paused | Phase::Error(_))
+                            && ui.button("Retry download").clicked() { self.download(ui.ctx()); }
                         ui.hyperlink_to("Release notes", &package.release_url);
                     }
                     ui.separator();
-                    if ui
-                        .add_enabled(!state.phase.busy(), egui::Button::new("Check again"))
-                        .clicked()
-                    {
+                    ui.label("Checks at startup and every hour. Downloads are automatic.");
+                    if ui.add_enabled(!state.phase.busy() && !self.checking.load(Ordering::Relaxed)
+                        && state.phase != Phase::Ready, egui::Button::new("Check again")).clicked() {
                         self.check(ui.ctx());
                     }
-                    ui.hyperlink_to(
-                        "All releases",
-                        format!("https://github.com/{REPOSITORY}/releases"),
-                    );
-                })
+                });
             });
+        self.restart |= restart;
         ui.add_space(6.);
     }
+}
+
+enum ScheduleEvent {
+    Wake,
+    Stop,
+}
+type ReleaseCheck = Arc<dyn Fn() -> Result<(Phase, Option<Package>), String> + Send + Sync>;
+type Download =
+    fn(&Package, &AtomicBool, &mut dyn FnMut(u64, bool)) -> Result<Option<PathBuf>, String>;
+
+fn channel() -> (ReleaseCheck, Download, Duration) {
+    #[cfg(debug_assertions)]
+    if let Some(channel) = qa::channel() {
+        return channel;
+    }
+    (Arc::new(check_release), fetch_package, CHECK_INTERVAL)
+}
+
+fn wake_scheduler(shared: &Arc<Mutex<State>>) {
+    let send = shared
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .scheduler
+        .clone();
+    if let Some(send) = send {
+        let _ = send.send(ScheduleEvent::Wake);
+    }
+}
+
+fn check_due(last: Option<Instant>, now: Instant, interval: Duration) -> bool {
+    last.is_none_or(|last| now.saturating_duration_since(last) >= interval)
+}
+
+fn start_check(
+    shared: &Arc<Mutex<State>>,
+    checking: &Arc<AtomicBool>,
+    ctx: &egui::Context,
+    check: impl FnOnce() -> Result<(Phase, Option<Package>), String> + Send + 'static,
+) -> bool {
+    {
+        let mut state = shared.lock().unwrap_or_else(|p| p.into_inner());
+        if state.shutdown || state.phase.busy() || checking.swap(true, Ordering::Relaxed) {
+            return false;
+        }
+        if !state.pending_install {
+            *state = State {
+                phase: Phase::Checking,
+                scheduler: state.scheduler.clone(),
+                ..Default::default()
+            };
+        }
+    }
+    let shared = shared.clone();
+    let checking = checking.clone();
+    let ctx = ctx.clone();
+    ctx.request_repaint();
+    std::thread::spawn(move || {
+        let result = check();
+        let mut state = shared.lock().unwrap_or_else(|p| p.into_inner());
+        match result {
+            _ if state.pending_install => {}
+            Ok((phase, package)) => {
+                state.phase = phase;
+                state.package = package;
+            }
+            Err(error) => state.phase = Phase::Error(error),
+        }
+        checking.store(false, Ordering::Relaxed);
+        drop(state);
+        ctx.request_repaint();
+        wake_scheduler(&shared);
+    });
+    true
+}
+
+fn fetch_package(
+    package: &Package,
+    cancelled: &AtomicBool,
+    progress: &mut dyn FnMut(u64, bool),
+) -> Result<Option<PathBuf>, String> {
+    download_package(package, cancelled, progress)
+}
+
+fn start_download(
+    shared: &Arc<Mutex<State>>,
+    cancelled: &Arc<AtomicBool>,
+    checking: &Arc<AtomicBool>,
+    ctx: &egui::Context,
+    download: Download,
+) {
+    let package = {
+        let mut state = shared.lock().unwrap_or_else(|p| p.into_inner());
+        if state.shutdown || state.phase.busy() || checking.load(Ordering::Relaxed) {
+            return;
+        }
+        let Some(package) = state.package.clone() else {
+            return;
+        };
+        state.phase = Phase::Downloading;
+        state.downloaded = 0;
+        cancelled.store(false, Ordering::Relaxed);
+        package
+    };
+    let shared = shared.clone();
+    let cancelled = cancelled.clone();
+    let ctx = ctx.clone();
+    ctx.request_repaint();
+    std::thread::spawn(move || {
+        let result = download(&package, &cancelled, &mut |downloaded, verifying| {
+            let mut state = shared.lock().unwrap_or_else(|p| p.into_inner());
+            state.downloaded = downloaded;
+            if verifying {
+                state.phase = Phase::Verifying;
+            }
+            ctx.request_repaint();
+        });
+        // Persist the verified package before advertising Restart to update.
+        let result = result.and_then(|path| {
+            if let Some(path) = &path {
+                if cancelled.load(Ordering::Relaxed) {
+                    return Ok(None);
+                }
+                if !install::stage(&package, path, &cancelled)? {
+                    return Ok(None);
+                }
+            }
+            Ok(path)
+        });
+        let mut state = shared.lock().unwrap_or_else(|p| p.into_inner());
+        match result {
+            Ok(Some(_)) => {
+                state.phase = Phase::Ready;
+                state.pending_install = true;
+            }
+            Ok(None) => state.phase = Phase::Paused,
+            Err(error) => state.phase = Phase::Error(error),
+        }
+        drop(state);
+        ctx.request_repaint();
+        wake_scheduler(&shared);
+    });
+}
+
+/// Clockwise rounded perimeter, starting at the top center.
+fn perimeter(rect: egui::Rect, radius: f32) -> Vec<egui::Pos2> {
+    let mut points = vec![egui::pos2(rect.center().x, rect.top())];
+    for (center, start) in [
+        (
+            egui::pos2(rect.right() - radius, rect.top() + radius),
+            -90.0_f32,
+        ),
+        (
+            egui::pos2(rect.right() - radius, rect.bottom() - radius),
+            0.,
+        ),
+        (
+            egui::pos2(rect.left() + radius, rect.bottom() - radius),
+            90.,
+        ),
+        (egui::pos2(rect.left() + radius, rect.top() + radius), 180.),
+    ] {
+        // Sample by arc length as well as straight edges for linear byte progress.
+        let first = center + egui::Vec2::angled(start.to_radians()) * radius;
+        let previous = *points.last().unwrap();
+        let steps = (previous.distance(first) / 2.).ceil().max(1.) as usize;
+        for i in 1..=steps {
+            points.push(previous.lerp(first, i as f32 / steps as f32));
+        }
+        for i in 1..=8 {
+            points.push(
+                center + egui::Vec2::angled((start + 90. * i as f32 / 8.).to_radians()) * radius,
+            );
+        }
+    }
+    let previous = *points.last().unwrap();
+    let end = points[0];
+    let steps = (previous.distance(end) / 2.).ceil().max(1.) as usize;
+    for i in 1..=steps {
+        points.push(previous.lerp(end, i as f32 / steps as f32));
+    }
+    points
 }
 
 fn client() -> Result<Client, String> {
@@ -686,7 +862,7 @@ fn transfer(
         .sync_all()
         .map_err(|e| format!("Cannot flush update to disk: {e}"))?;
     // Separate directories allow safe retries without deleting or executing an
-    // existing file. They remain in the user's cache for manual installation.
+    // existing file. They remain in the user's cache for the restart hand-off.
     let destination = tempfile::Builder::new()
         .prefix("release-")
         .tempdir_in(directory)
@@ -696,18 +872,6 @@ fn transfer(
         .map_err(|e| format!("Cannot finish update download: {e}"))?;
     let _ = destination.keep();
     Ok(Some(path))
-}
-
-fn open_path(path: &Path) -> Result<(), String> {
-    #[cfg(target_os = "windows")]
-    let mut command = std::process::Command::new("explorer.exe");
-    #[cfg(target_os = "macos")]
-    let mut command = std::process::Command::new("open");
-    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
-    let mut command = std::process::Command::new("xdg-open");
-    command.arg(path).spawn().map(|_| ()).map_err(|e| {
-        format!("Cannot open the downloaded package: {e}. Open it from its displayed path.")
-    })
 }
 
 #[cfg(test)]

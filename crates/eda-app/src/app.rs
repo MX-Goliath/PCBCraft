@@ -1700,6 +1700,9 @@ impl PcbCraft {
                 });
             });
             if choice == 3 {
+                if matches!(pending, Pending::Quit) {
+                    crate::updates::install::cancel_restart();
+                }
                 self.pending = None;
             }
             if choice == 1 || choice == 2 {
@@ -1881,6 +1884,7 @@ impl PcbCraft {
 
 impl eframe::App for PcbCraft {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.updates.tick(ctx);
         if self.git_pull_frame(ctx) {
             return;
         }
@@ -1921,6 +1925,10 @@ impl eframe::App for PcbCraft {
             self.shortcuts(ctx);
         }
         self.title_bar(ctx);
+        if self.updates.take_restart() {
+            crate::updates::install::request_restart();
+            self.run(Command::Quit, ctx);
+        }
         self.menus(ctx);
         self.status(ctx);
         if !self.layer_stack_active() {

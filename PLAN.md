@@ -4487,3 +4487,78 @@ Data: `docs/pcb-update/artwork-groups-performance-2026-10-25.json`.
   registry JSON with 91 unique IDs; native saved four UID pairs found in regression
   source; original 15/15 and QA schematic 9/9 hashes unchanged. The updated Cancel
   reopening regression remains uncompiled/unrun.
+
+### 2026-11-12 - Automatic desktop updates and title control
+
+- Observation: the existing updater checked only on a manual click and opened
+  downloaded packages/archives for manual installation. It did not replace files
+  or restart. The title control used a normal button in a 23-point title strip.
+- Implementation: startup/hourly scheduling and automatic background downloads;
+  retained ready/error state during later checks; length/SHA-256 verification,
+  persistent per-installation pending package and a cached executable worker.
+  Normal close installs without reopening; Restart to update uses the existing
+  unsaved-work guard and reopens after installation. Startup recovers a pending
+  hand-off. Failed installation is retained with a retry action, without a loop.
+- Portable Windows replaces the complete shipped payload, removes obsolete
+  managed files, preserves Data/portable.flag/unrelated files, and uses backup,
+  rollback and a persisted recovery journal. No elevation or shell/archive UI.
+  Installed Windows uses the silent per-user Inno installer. Implemented full
+  AppImage/DEB/macOS installation paths; their native execution remains unverified
+  on this Windows host. System DEB installation can require OS authorization.
+- Interface: explicit 23-point hit area, inset rounded border, high-contrast
+  status labels, byte-driven blue perimeter progress over a muted track, and
+  readable wrapped popup text. This user-requested control is an extension to
+  the Altium chrome, not a newly measured native Altium equivalent.
+- Regression sources cover hourly deadlines, duplicate checks, retained pending
+  errors, title clipping/lower-edge clicks, perimeter progress at 1/1.5/2 DPI,
+  archive rejection, complete portable replacement, obsolete-file cleanup,
+  user-data preservation, rollback/recovery, tampering and AppImage replacement.
+  Added scripts/verify-desktop-update.py for real worker-process fixtures.
+- Final verification PASS: cargo fmt --all -- --check; strict all-target workspace
+  Clippy; 954 workspace tests and doc tests; Windows dev executable build; eight
+  Python packaging tests; Python script compilation and git diff --check. Native
+  and real-worker results follow below. No release was published.
+
+
+### 2026-11-12 - Native updater and Git Pull interface regression
+
+- Observed the real Windows app at 1440x900, DPI 1.0, using the computer-use skill
+  and stable-sky adapter. Only one PCBCraft GUI ran at a time. All app/repository
+  writes were inside disposable target/desktop-qa-62f14513 fixtures. QA records:
+  qa-state.json, qa-results.json and first/second-pending.json in that directory.
+- Updater UI PASS: no release, checking/current, metadata error, corrupted package
+  rejection with unchanged executable, automatic byte progress (44/65 percent),
+  blue perimeter contained in the title strip, lower-edge click, pause/retry,
+  ready state and readable popup. Cancel in the normal unsaved-work guard kept
+  the old window/document and pending package. Save of the document and project
+  group allowed a real worker install and a single new GUI window.
+- Portable payload PASS: executable/runtime/licenses replaced, obsolete.dll
+  removed, exact Data/sentinel.txt and portable.flag retained. No elevation prompt.
+  A second package carried a different EXE: d9694628... -> d36dc4ad... SHA-256.
+  Ordinary Close installed it without reopening. Startup with a retained pending
+  checkpoint resumed before opening the editor and restored the stale payload.
+- Minimized scheduling PASS: debug fixture interval scaled to two seconds;
+  production interval remains 3,600 seconds and has independent no-frame tests.
+  No UI capture/repaint was requested between Minimize and the pending checkpoint,
+  which appeared after 2.26 seconds. Restoring showed Restart to update.
+- Four real-worker process scenarios PASS: parent wait/full payload, corruption
+  refusal, rollback, and relaunch of a different executable preserving cwd and
+  Unicode arguments while removing the temporary worker environment variable.
+- Git Pull UI PASS: Fetch leaves HEAD/files unchanged; unsaved editor edits,
+  disk changes and staged files block Pull without loss. Undo clears the editor
+  blocker. Clean fast-forward updates the whole repo, including README outside
+  the Altium filter, and reloads open SCH/LIB content (10k -> 12k, Vendor). No-op,
+  disabled missing-upstream action and divergent-branch refusal passed; no merge,
+  rebase or auto-stash occurred.
+- Reported two native defects to the user-named agent: its Pull busy path removed
+  all chrome/panels/tabs, and closing an unreadable updated tab selected an
+  unrelated document and lost the reload error after context changes. Agent
+  fixed both in 9d47669. Installed its checksummed EXE through the actual updater,
+  then confirmed normal chrome under the progress modal, same-repository Main
+  fallback after Extra closed, and persistent Error in automatically opened
+  Messages after switching outside the repo and back. Also confirmed modal
+  Minimize/background completion and Close after Pull waiting then opening the
+  ordinary Save guard. Saved QA document/group and closed the test GUI normally.
+- Runtime limits: local debug release metadata/package transfer rather than live
+  GitHub download; Windows installer, Linux and macOS native installation were
+  not run on this host. This checks updates and Git Pull, not every EDA command.

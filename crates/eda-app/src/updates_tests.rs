@@ -1,6 +1,6 @@
 use super::*;
 
-fn release(tag: &str, distribution: Distribution, arch: &str) -> Release {
+pub(super) fn release(tag: &str, distribution: Distribution, arch: &str) -> Release {
     let version = Version::parse(tag.strip_prefix('v').unwrap_or(tag)).unwrap();
     let name = distribution.filename(&version, arch);
     Release {
@@ -18,7 +18,7 @@ fn release(tag: &str, distribution: Distribution, arch: &str) -> Release {
     }
 }
 
-fn select(release: Release) -> Result<(Phase, Option<Package>), String> {
+pub(super) fn select(release: Release) -> Result<(Phase, Option<Package>), String> {
     select_release(
         release,
         &Version::parse("0.1.0").unwrap(),
@@ -344,18 +344,20 @@ fn popup_and_title_control_render_in_every_phase() {
         Phase::Current,
         Phase::Unpublished,
         Phase::Available,
+        Phase::Paused,
         Phase::Downloading,
         Phase::Verifying,
         Phase::Ready,
         Phase::Error("Offline".into()),
     ] {
         let ctx = egui::Context::default();
-        let updater = Updater::default();
+        let mut updater = Updater::default();
         *updater.state.lock().unwrap() = State {
             phase,
             package: package.clone(),
             downloaded: 60,
-            path: None,
+            pending_install: false,
+            ..State::default()
         };
         let mut text = String::new();
         for _ in 0..2 {
@@ -384,8 +386,260 @@ fn popup_and_title_control_render_in_every_phase() {
         assert!(text.contains("PCBCraft updates"), "{text}");
         assert!(text.contains(&format!("Installed {VERSION}")), "{text}");
         if updater.snapshot().phase == Phase::Downloading {
-            assert!(text.contains("Downloading  49%"), "{text}");
-            assert!(text.contains("Cancel download"), "{text}");
+            assert!(text.contains("Downloading 49%"), "{text}");
+            assert!(text.contains("Pause download"), "{text}");
         }
     }
+}
+
+#[test]
+fn checks_on_startup_and_exactly_after_an_hour_even_after_errors() {
+    let now = Instant::now();
+    assert!(check_due(None, now, CHECK_INTERVAL));
+    assert!(!check_due(
+        Some(now),
+        now + CHECK_INTERVAL - Duration::from_millis(1),
+        CHECK_INTERVAL
+    ));
+    assert!(check_due(Some(now), now + CHECK_INTERVAL, CHECK_INTERVAL));
+    let ctx = egui::Context::default();
+    let mut updater = Updater::default();
+    *updater.state.lock().unwrap() = State::default();
+    let (send, receive) = std::sync::mpsc::channel();
+    updater.check_using(&ctx, move || {
+        receive.recv().unwrap();
+        Err("offline".into())
+    });
+    assert_eq!(updater.snapshot().phase, Phase::Checking);
+    assert!(updater.last_check.is_some());
+    // A manual or timer-triggered duplicate cannot enter the network worker.
+    let (duplicate_send, duplicate_receive) = std::sync::mpsc::channel();
+    updater.check_using(&ctx, move || {
+        duplicate_send.send(()).unwrap();
+        Ok((Phase::Current, None))
+    });
+    assert!(matches!(
+        duplicate_receive.recv_timeout(Duration::from_secs(2)),
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected)
+    ));
+    send.send(()).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while updater.checking.load(Ordering::Relaxed) {
+        assert!(Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+    assert_eq!(updater.snapshot().phase, Phase::Error("offline".into()));
+    assert!(check_due(
+        updater.last_check,
+        updater.last_check.unwrap() + CHECK_INTERVAL,
+        CHECK_INTERVAL
+    ));
+}
+
+#[test]
+fn hourly_network_failure_keeps_a_prepared_update_and_install_error_visible() {
+    let ctx = egui::Context::default();
+    for phase in [Phase::Ready, Phase::Error("installation failed".into())] {
+        let mut updater = Updater::default();
+        *updater.state.lock().unwrap() = State {
+            phase: phase.clone(),
+            pending_install: true,
+            ..State::default()
+        };
+        updater.check_using(&ctx, || Err("offline".into()));
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while updater.checking.load(Ordering::Relaxed) {
+            assert!(Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        assert_eq!(updater.snapshot().phase, phase);
+    }
+}
+
+#[test]
+fn title_control_text_fits_and_its_bottom_edge_accepts_restart_clicks() {
+    let ctx = egui::Context::default();
+    let mut updater = Updater::default();
+    *updater.state.lock().unwrap() = State {
+        phase: Phase::Ready,
+        ..State::default()
+    };
+    let draw = |ctx: &egui::Context, updater: &mut Updater, events| {
+        ctx.run(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1000., 650.),
+                )),
+                events,
+                ..Default::default()
+            },
+            |ctx| {
+                egui::TopBottomPanel::top("title")
+                    .exact_height(23.)
+                    .frame(egui::Frame::NONE)
+                    .show(ctx, |ui| {
+                        ui.horizontal_centered(|ui| updater.show(ui));
+                    });
+            },
+        )
+    };
+    let output = draw(&ctx, &mut updater, vec![]);
+    let mut found = false;
+    for shape in &output.shapes {
+        if let egui::Shape::Text(text) = &shape.shape
+            && text.galley.job.text == "Restart to update"
+        {
+            let bounds = egui::Rect::from_min_size(text.pos, text.galley.size());
+            assert!(
+                shape.clip_rect.contains_rect(bounds),
+                "clipped text: {bounds:?} / {:?}",
+                shape.clip_rect
+            );
+            assert!(bounds.bottom() < 23.);
+            found = true;
+        }
+    }
+    assert!(found);
+    let pos = egui::pos2(70., 21.);
+    let _ = draw(
+        &ctx,
+        &mut updater,
+        vec![
+            egui::Event::PointerMoved(pos),
+            egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            },
+        ],
+    );
+    let _ = draw(
+        &ctx,
+        &mut updater,
+        vec![egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: egui::Modifiers::NONE,
+        }],
+    );
+    assert!(
+        updater.take_restart(),
+        "bottom of title button did not receive click"
+    );
+}
+
+#[test]
+fn progress_stroke_is_visible_inside_the_title_strip_at_multiple_dpi_scales() {
+    let package = select(release("v0.2.0", Distribution::WindowsInstaller, "x86_64"))
+        .unwrap()
+        .1;
+    for scale in [1., 1.5, 2.] {
+        let ctx = egui::Context::default();
+        ctx.set_pixels_per_point(scale);
+        let mut updater = Updater::default();
+        let mut counts = Vec::new();
+        for downloaded in [0, 60, 123] {
+            *updater.state.lock().unwrap() = State {
+                phase: Phase::Downloading,
+                package: package.clone(),
+                downloaded,
+                pending_install: false,
+                ..State::default()
+            };
+            let output = ctx.run(egui::RawInput::default(), |ctx| {
+                egui::TopBottomPanel::top("title")
+                    .exact_height(23.)
+                    .frame(egui::Frame::NONE)
+                    .show(ctx, |ui| {
+                        ui.horizontal_centered(|ui| updater.show(ui));
+                    });
+            });
+            let stroke = output
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Path(path) if path.stroke.width == 2. => {
+                        Some((shape.clip_rect, path))
+                    }
+                    _ => None,
+                })
+                .expect("missing progress perimeter");
+            for point in &stroke.1.points {
+                assert!(stroke.0.contains(*point));
+                assert!(point.y >= 2. && point.y <= 21.);
+            }
+            counts.push(stroke.1.points.len());
+        }
+        assert!(
+            counts[0] < counts[1] && counts[1] < counts[2],
+            "progress does not advance: {counts:?}"
+        );
+    }
+}
+
+#[test]
+fn background_clock_checks_without_ui_frames_and_stops_when_the_app_closes() {
+    let ctx = egui::Context::default();
+    let mut updater = Updater::default();
+    *updater.state.lock().unwrap() = State::default();
+    let (send, receive) = std::sync::mpsc::channel();
+    updater.start_schedule(
+        &ctx,
+        Duration::from_millis(30),
+        Arc::new(move || {
+            send.send(()).unwrap();
+            Ok((Phase::Current, None))
+        }),
+        fetch_package,
+    );
+    // No Context::run or additional tick is needed for either check.
+    receive.recv_timeout(Duration::from_secs(2)).unwrap();
+    receive.recv_timeout(Duration::from_secs(2)).unwrap();
+    drop(updater);
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        assert!(Instant::now() < deadline, "background clock did not stop");
+        match receive.recv_timeout(Duration::from_secs(2)) {
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+            Ok(()) => {} // A check already in flight is allowed to finish.
+            Err(error) => panic!("background clock did not stop: {error}"),
+        }
+    }
+}
+
+#[test]
+fn a_new_release_starts_downloading_without_another_ui_frame() {
+    fn fake_download(
+        package: &Package,
+        cancelled: &AtomicBool,
+        progress: &mut dyn FnMut(u64, bool),
+    ) -> Result<Option<PathBuf>, String> {
+        assert!(!cancelled.load(Ordering::Relaxed));
+        assert_eq!(package.version, Version::parse("0.2.0").unwrap());
+        progress(package.asset.size, true);
+        // A cancelled transfer avoids publishing a real installation checkpoint.
+        Ok(None)
+    }
+    let ctx = egui::Context::default();
+    let mut updater = Updater::default();
+    *updater.state.lock().unwrap() = State::default();
+    let (_, package) = select(release("v0.2.0", Distribution::WindowsInstaller, "x86_64")).unwrap();
+    updater.start_schedule(
+        &ctx,
+        CHECK_INTERVAL,
+        Arc::new(move || Ok((Phase::Available, package.clone()))),
+        fake_download,
+    );
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while updater.snapshot().phase != Phase::Paused {
+        assert!(
+            Instant::now() < deadline,
+            "automatic download did not run without UI frames"
+        );
+        std::thread::yield_now();
+    }
+    assert_eq!(updater.snapshot().downloaded, 123);
 }

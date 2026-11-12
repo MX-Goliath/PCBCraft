@@ -10,7 +10,20 @@ fn main() -> eframe::Result {
                 .unwrap_or_else(|_| "pcbcraft=info,eda_app=info,wgpu_hal=error".into()),
         )
         .init();
-    eframe::run_native(
+    match updates::install::before_start() {
+        Ok(true) => return Ok(()),
+        Err(error) => {
+            tracing::error!("Update startup: {error}");
+            if std::env::args_os()
+                .nth(1)
+                .is_some_and(|a| a == "--pcbcraft-apply-update")
+            {
+                return Ok(());
+            }
+        }
+        Ok(false) => {}
+    }
+    let result = eframe::run_native(
         "PCBCraft",
         eframe::NativeOptions {
             viewport: egui::ViewportBuilder::default()
@@ -33,5 +46,17 @@ fn main() -> eframe::Result {
             ..Default::default()
         },
         Box::new(|cc| Ok(Box::new(app::PcbCraft::new(cc)))),
-    )
+    );
+    if result.is_ok()
+        && let Err(error) = updates::install::after_exit()
+    {
+        rfd::MessageDialog::new()
+            .set_title("PCBCraft update")
+            .set_description(format!(
+                "The update is retained for the next launch. {error}"
+            ))
+            .set_level(rfd::MessageLevel::Error)
+            .show();
+    }
+    result
 }

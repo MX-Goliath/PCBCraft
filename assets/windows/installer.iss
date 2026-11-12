@@ -35,6 +35,11 @@ Source: "{#SourceDir}\*.dll"; DestDir: "{app}"; Flags: ignoreversion skipifsourc
 Source: "{#SourceDir}\licenses\*"; DestDir: "{app}\licenses"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#SourceDir}\build-info.json"; DestDir: "{app}"; Flags: ignoreversion
 
+[InstallDelete]
+; These are application-owned files. Remove obsolete runtime DLLs/notices too.
+Type: files; Name: "{app}\*.dll"
+Type: filesandordirs; Name: "{app}\licenses"
+
 [Icons]
 Name: "{group}\PCBCraft"; Filename: "{app}\pcbcraft.exe"
 Name: "{autodesktop}\PCBCraft"; Filename: "{app}\pcbcraft.exe"; Tasks: desktopicon

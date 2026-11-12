@@ -21,7 +21,7 @@ impl PcbCraft {
             .frame(egui::Frame::NONE.fill(egui::Color32::from_gray(74)))
             .show(ctx, |ui| {
                 ui.spacing_mut().item_spacing.x = 0.0;
-                ui.horizontal(|ui| {
+                ui.horizontal_centered(|ui| {
                     for (icon, command, tip) in [
                         (Icon::New, Command::NewBoard, "New PCB document"),
                         (Icon::Save, Command::Save, "Save"),

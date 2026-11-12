@@ -1,13 +1,23 @@
 # Release channel and desktop updates
 
 The default stable channel is [MX-Goliath/PCBCraft Releases](https://github.com/MX-Goliath/PCBCraft/releases).
-The application checks `GET /repos/MX-Goliath/PCBCraft/releases/latest` only when
-the user presses **Check for updates**, immediately left of Search in the title
-bar. The compact rounded control opens a popover, shows checking/error/current/
-available/ready states, and shows real byte progress while downloading, both in
-the title bar and in the popover. There is a cancel action and a retry action.
-This is an explicit user-requested departure from the Altium reference chrome;
-ChatGPT Desktop is an approximate visual inspiration, not measured pixel parity.
+The application checks `GET /repos/MX-Goliath/PCBCraft/releases/latest` at
+startup and every hour while running, including after network failures. A dedicated
+background clock drives checks and starts downloads without requiring redraws,
+including while the application is minimized. A newer
+native stable package downloads automatically in a background thread. Only one
+check/download runs at a time. A verified, durable pending update is retained
+while hourly metadata checks continue, so a later network error cannot hide it.
+
+The title-bar control immediately left of Search displays readable status text.
+During downloads a blue progress stroke follows its rounded perimeter, using
+received bytes; the popover also shows percentage and MB. **Pause download**
+stops the current transfer; **Retry download** resumes with a fresh verified
+transfer, and the next hourly check also retries. **Restart to update** runs the
+normal unsaved-document Save/Discard/Cancel flow. Cancelling that flow cancels
+the restart. The 23-point hit rectangle stays within the title strip, with the
+painted border inset on all sides. This update control is an explicit requested
+extension to the Altium reference chrome, not a claim of Altium pixel parity.
 
 ## Package selection
 
@@ -52,14 +62,46 @@ Verified packages remain in their own `release-*` subdirectories under:
 - Linux: `$XDG_CACHE_HOME/PCBCraft/updates` or `~/.cache/PCBCraft/updates`.
 - macOS: `~/Library/Caches/PCBCraft/updates`.
 
-Installation is user initiated, not an unattended replacement/restart. **Open
-downloaded package** opens the Windows installer, portable ZIP, DEB, or DMG with
-the native shell. AppImage offers **Show downloaded AppImage** to avoid launching
-a second GUI. Save work and close PCBCraft before installing. For portable ZIP,
-replace application files while retaining `Data` and `portable.flag`. For
-AppImage, replace the old file and preserve executable permission. For DMG,
-drag the app to Applications. No updater action edits EDA documents, history or
-project files. Existing downloaded versions can be removed manually from cache.
+After verification, a per-installation `pending.json` records the package,
+version, SHA-256 and destination executable. **Restart to update** closes the GUI,
+flushes application settings, starts a copy of PCBCraft in update-worker mode,
+and relaunches after installation, preserving command-line arguments and the
+original working directory for relative project paths. An ordinary close installs without relaunching.
+If an earlier process ended before hand-off, the next launch applies the pending
+package before opening the editor. The worker waits for the old process to exit
+before changing files and serializes replacement with an exclusive file lock.
+It rechecks the package hash immediately before installation.
+
+- **Windows portable:** validates/extracts the ZIP, replaces the executable,
+  runtime DLLs, licenses and other shipped files in the same directory. Removes
+  obsolete files using the previous managed-file inventory (older releases use
+  `build-info.json` and known shipped paths). Preserves `Data`, `portable.flag`
+  and unrelated user files. Backup and a persisted replacement journal support
+  rollback on replacement errors and recovery on a subsequent worker attempt.
+  No elevation, installer, PowerShell or archive UI is used; the portable folder
+  must be writable by its owner. Archive traversal, symlinks, Windows device
+  names, alternate streams and case-duplicate file paths are rejected.
+- **Windows installed:** runs the verified per-user Inno installer silently,
+  targeting the current installation directory, with OS reboot and automatic
+  application closing/relaunching disabled. Obsolete DLLs and license files are
+  removed by the installer. Installer results are checked and logged.
+- **AppImage:** copies to a temporary file beside the original AppImage, sets
+  executable permissions and atomically replaces the original pathname. No
+  elevation is requested for a user-owned writable location.
+- **DEB:** invokes `pkexec /usr/bin/dpkg --install` on the verified DEB after exit,
+  preserving package-manager ownership of all installed files. System package
+  installation can require the operating system's administrator authorization.
+- **macOS:** mounts the DMG read-only, stages and verifies the full app bundle,
+  replaces the original bundle and restores the previous one on rename failure.
+  The enclosing application directory must be writable.
+
+Errors retain the downloaded package and are displayed on the next launch, with
+**Retry installation on restart**. A failed install does not trigger an endless
+startup/restart loop. Update-worker copies and packages stay in the update cache
+and may be removed while no update is running. EDA documents and project files
+are never installation targets. The updater code reaches existing installations
+only after they install a release containing it; old executables retain their
+previous update behavior until that first upgrade.
 
 ## Preparing a release
 
@@ -129,13 +171,40 @@ packages as publisher signed/notarized until those release credentials are set u
 
 ## Verification limits
 
-Offline Rust regressions cover platform selection, semantic versions, release
-filtering, URL/checksum rejection, streamed integrity, cancellation and partial
-file cleanup. Python regressions cover tag/version agreement, complete artifact
-sets, tampering, bundle metadata and Debian control metadata. Native Windows UI
-and workspace gate results are recorded in `PLAN.md`. Linux/macOS native package
-builds and installation require their CI runners; a workflow definition alone
-does not establish runtime compatibility or visual parity on those platforms.
+Offline Rust regressions cover platform selection, scheduling deadlines,
+semantic versions, release filtering, URL/checksum rejection, streamed integrity,
+cancellation, title-strip clipping and hit testing, portable payload replacement,
+obsolete-file cleanup, preserved user data, archive rejection, rollback, journal
+recovery, package tampering and AppImage byte replacement. Python regressions
+cover release metadata and checksums. Windows live UI and process-handoff results
+and workspace gate outcomes are recorded in `PLAN.md`. Linux/macOS native update
+execution and administrator prompts require platform testing; source coverage
+alone does not establish native installation compatibility or visual parity.
 
 Protocol reference: [GitHub Releases REST API](https://docs.github.com/en/rest/releases/releases).
 Signing reference: [Apple notarization](https://developer.apple.com/documentation/security/notarizing-macos-software-before-distribution).
+
+## Native UI regression fixtures (debug Windows only)
+
+`python scripts/prepare-desktop-qa.py` creates a new disposable folder under
+`target/desktop-qa-*`: a portable debug application, local release templates,
+a native schematic/library project, two clones and a local bare Git remote.
+It does not change installed applications or publish a release. The test channel
+requires both `portable.flag` and `update-qa.flag` beside the debug executable,
+plus its `UpdateQA` directory. This code is excluded from normal release builds.
+Without the explicit marker the debug application uses the production channel.
+
+The optional `UpdateQA/release.json` is GitHub-shaped metadata; missing metadata
+means no public release. `release-current.json` and `release-new.json` are prepared
+templates. Metadata still goes through the production native/version/URL/size
+selection; package bytes come from the corresponding local filename and pass
+through the same streamed SHA-256 verifier, checkpoint and real update worker.
+`check-delay-ms` and `chunk-ms` allow the transient controls to be inspected.
+`interval-ms` can scale the hour down for a minimized-window regression; production
+always uses 3,600 seconds. Record the interval override when reporting results.
+Local fixture QA does not establish a successful live GitHub package transfer.
+
+`python scripts/verify-desktop-update.py target/debug/pcbcraft.exe` exercises the
+real worker in disposable directories: parent-process waiting, complete payload
+replacement, corruption refusal, rollback and relaunch of a different executable
+that records Unicode arguments, working directory and environment cleanup.
