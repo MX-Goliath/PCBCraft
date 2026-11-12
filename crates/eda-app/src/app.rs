@@ -677,6 +677,9 @@ impl PcbCraft {
     }
 
     fn run(&mut self, command: Command, ctx: &egui::Context) {
+        if self.defer_git_pull_command(command) {
+            return;
+        }
         // Dock navigation does not edit a document or its pending editor draft.
         // Keep it available in specialized workspaces as well as normal tabs.
         match command {
@@ -1415,6 +1418,7 @@ impl PcbCraft {
             self.layer_stack_workspace(ctx);
             return;
         }
+        let pulling = self.git_pull_active();
         egui::CentralPanel::default()
             .frame(
                 egui::Frame::NONE
@@ -1422,6 +1426,9 @@ impl PcbCraft {
                     .inner_margin(egui::Margin::symmetric(5, 0)),
             )
             .show(ctx, |ui| {
+                if pulling {
+                    ui.disable();
+                }
                 ui.spacing_mut().item_spacing.y = 0.0;
                 self.document_tabs(ui);
                 if let Some(index) = self.active {
@@ -1467,38 +1474,40 @@ impl PcbCraft {
                     );
                     let pcb_input = doc.view.pcb.input.take();
                     self.cursor_mm = output.cursor_mm;
-                    if let Some(input) = &output.schematic_input
-                        && self.documents[index].sch_editor.compiled_path.is_some()
-                    {
-                        if input.clicked {
-                            self.documents[index].view.selected = input.hit;
+                    if !pulling {
+                        if let Some(input) = &output.schematic_input
+                            && self.documents[index].sch_editor.compiled_path.is_some()
+                        {
+                            if input.clicked {
+                                self.documents[index].view.selected = input.hit;
+                            }
+                            self.variant_canvas_input(index, input);
                         }
-                        self.variant_canvas_input(index, input);
-                    }
-                    if let Some(input) = output.schematic_input
-                        && self.documents[index].sch_editor.compiled_path.is_none()
-                        && !self.sheet_sync_input(index, &input, ctx)
-                        && !self.hierarchy_click(index, &input, ctx)
-                        && !self.cross_probe_input(
-                            index,
-                            input.hit,
-                            input.clicked,
-                            input.secondary_clicked,
-                            ctx,
-                        )
-                    {
-                        self.schematic_input(index, input, ctx);
-                    }
-                    if let Some(input) = pcb_input
-                        && !self.cross_probe_input(
-                            index,
-                            input.hit,
-                            input.clicked,
-                            input.secondary_clicked,
-                            ctx,
-                        )
-                    {
-                        self.pcb_input(index, input, ctx);
+                        if let Some(input) = output.schematic_input
+                            && self.documents[index].sch_editor.compiled_path.is_none()
+                            && !self.sheet_sync_input(index, &input, ctx)
+                            && !self.hierarchy_click(index, &input, ctx)
+                            && !self.cross_probe_input(
+                                index,
+                                input.hit,
+                                input.clicked,
+                                input.secondary_clicked,
+                                ctx,
+                            )
+                        {
+                            self.schematic_input(index, input, ctx);
+                        }
+                        if let Some(input) = pcb_input
+                            && !self.cross_probe_input(
+                                index,
+                                input.hit,
+                                input.clicked,
+                                input.secondary_clicked,
+                                ctx,
+                            )
+                        {
+                            self.pcb_input(index, input, ctx);
+                        }
                     }
                     if self.documents[index].model.kind == DocumentKind::Schematic {
                         self.schematic_harness_overlay(ctx, canvas, index);
@@ -1732,6 +1741,9 @@ impl PcbCraft {
     }
 
     fn shortcuts(&mut self, ctx: &egui::Context) {
+        if self.git_pull_active() {
+            return;
+        }
         if !self.documents.is_empty()
             && self.pending.is_none()
             && !self.file_state.modal()
@@ -1869,7 +1881,7 @@ impl PcbCraft {
 
 impl eframe::App for PcbCraft {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        if self.poll_git_pull(ctx) {
+        if self.git_pull_frame(ctx) {
             return;
         }
         self.poll_git(ctx);
@@ -1920,7 +1932,7 @@ impl eframe::App for PcbCraft {
         self.workspace(ctx);
         self.finish_docks(ctx);
         self.library_editor_dialogs(ctx);
-        if !self.git_review_active() {
+        if !self.git_review_active() && !self.git_pull_active() {
             self.finish_schematic_interaction();
             self.finish_pcb_interaction(ctx);
             self.finish_library_drag(ctx);
@@ -1976,6 +1988,7 @@ impl eframe::App for PcbCraft {
         if changed {
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
         }
+        self.git_pull_progress(ctx);
     }
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         self.save_dock_visibility();

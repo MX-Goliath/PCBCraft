@@ -1,5 +1,40 @@
 # PCBCraft implementation plan
 
+### Git Pull native QA fixes - November 12, 2026
+
+User-reported native QA at 1440x900 on the shared copied executable confirmed:
+Fetch leaves HEAD/files unchanged and reports behind 1; unsaved editor dragging,
+dirty/staged README changes outside the Altium filter reject Pull without losing
+content/staging; clean Pull updates SchDoc, SchLib and README, including open U1
+changing 10k to 12k, Vendor=Example and an updated library definition; no-op Pull
+reports Already up to date. QA data stays outside Git under target/desktop-qa-62f14513.
+
+Two native regressions were reproduced by that QA owner: the early-return busy
+path painted a blank central panel instead of the application, and an unreadable
+active SchDoc closed safely but selected an unrelated tab and lost its browser-only
+reload error. These are observations, not successful verification of the fixes.
+
+Implemented normal title/menu/status/dock/tab/canvas painting behind a modal while
+the Pull worker owns editing. Commands, shortcuts, raw editor input, dock input
+and asynchronous model publications stay blocked. The requesting frame also shows
+the modal, covering slow fetches and fast local refusals without a gray workspace.
+Minimize remains available in the modal. Close requests wait for the worker, then
+use the ordinary Quit/unsaved-work flow; updater restart/download state is retained.
+Reload failures now open global Messages and stay in the application log across
+browser refreshes/context switches. Closing the active file selects another tab
+in the same repository, or Home with the originating browser if none remains.
+
+Seven Pull tests pass, including headless 1440x900 UI/minimize, native close deferral,
+same-repository fallback and persistent reload errors. Format and strict workspace/
+all-target Clippy pass. All 954 shared workspace tests pass (264 app, 379 core,
+1 geometry, 177 I/O, 133 render), together with doc tests. The Windows dev build
+passes. The handoff copy target/git-pull-native-fixes/pcbcraft.exe is 50,816,512 bytes
+and matches target/debug/pcbcraft.exe by SHA-256:
+`d36dc4ade1d6b7575b7f5ff1a4223449648c43ca45508925e9b2aa91af2838f9`.
+Desktop input and native fix retesting remain exclusively with the update QA owner,
+who will use the actual EXE in the next isolated updater payload. This task does not
+launch another GUI or change that fixture/pending cache. Native fix retest is pending.
+
 ### Git Pull from the project panel - November 12, 2026
 
 Observation: the existing down-arrow action only fetched refs; no command applied

@@ -316,8 +316,12 @@ impl PcbCraft {
         if ctx.available_rect().width() < 600. || ctx.available_rect().height() < 100. {
             return;
         }
-        self.update_dock_drag(ctx);
-        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::F4)) {
+        if !self.git_pull_active() {
+            self.update_dock_drag(ctx);
+        }
+        if !self.git_pull_active()
+            && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::F4))
+        {
             self.dock_runtime.floating_hidden = !self.dock_runtime.floating_hidden;
         }
         if let Some(i) = self.active
@@ -432,6 +436,9 @@ impl PcbCraft {
         node: &Node,
         properties: &mut impl FnMut(&mut Self, &mut egui::Ui),
     ) {
+        if self.git_pull_active() {
+            ui.disable();
+        }
         match node {
             Node::Group { id, tabs, .. } => {
                 let Some(panel) = self.active_in_node(node) else {
@@ -1016,8 +1023,12 @@ impl PcbCraft {
                                 });
                         } else {
                             if ctx.input(|i| i.viewport().close_requested()) {
-                                for panel in root.tree.panels() {
-                                    self.close_panel(panel);
+                                if self.git_pull_active() {
+                                    ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                                } else {
+                                    for panel in root.tree.panels() {
+                                        self.close_panel(panel);
+                                    }
                                 }
                             }
                             let main_scale = self.dock_runtime.main_scale;
@@ -1041,8 +1052,12 @@ impl PcbCraft {
                                     rect.height() * scale,
                                 ];
                             }
-                            self.update_dock_drag(ctx);
-                            if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::F4)) {
+                            if !self.git_pull_active() {
+                                self.update_dock_drag(ctx);
+                            }
+                            if !self.git_pull_active()
+                                && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::F4))
+                            {
                                 self.dock_runtime.floating_hidden =
                                     !self.dock_runtime.floating_hidden;
                                 ctx.request_repaint_of(egui::ViewportId::ROOT);

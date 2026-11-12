@@ -18,6 +18,81 @@ struct Outcome {
     group_changed: bool,
 }
 impl PcbCraft {
+    pub(in crate::app) fn git_pull_active(&self) -> bool {
+        self.git.pull_job.is_some() || self.git.pull_request.is_some()
+    }
+
+    pub(in crate::app) fn defer_git_pull_command(&mut self, command: Command) -> bool {
+        if !self.git_pull_active() {
+            return false;
+        }
+        if matches!(command, Command::Quit) {
+            self.git.pull_close_after = true;
+        }
+        true
+    }
+
+    pub(in crate::app) fn git_pull_frame(&mut self, ctx: &egui::Context) -> bool {
+        if !self.poll_git_pull(ctx) {
+            return false;
+        }
+        self.show_git_pull_ui(ctx);
+        true
+    }
+
+    /// Paint the ordinary workspace, with editing disabled, throughout the job.
+    /// Input finishers, shortcuts and asynchronous model publications stay paused.
+    pub(in crate::app) fn show_git_pull_ui(&mut self, ctx: &egui::Context) {
+        self.title_bar(ctx);
+        self.menus(ctx);
+        self.status(ctx);
+        self.left_dock(ctx);
+        self.right_dock(ctx);
+        self.workspace(ctx);
+        self.finish_docks(ctx);
+        self.resize_edges(ctx);
+        if let Some(command) = self.command.take() {
+            self.defer_git_pull_command(command);
+        }
+        self.git_pull_progress(ctx);
+    }
+
+    /// Also drawn on the requesting frame, so the modal owns input before the
+    /// first worker frame, including fast local refusals and slow fetches.
+    pub(in crate::app) fn git_pull_progress(&mut self, ctx: &egui::Context) {
+        if !self.git_pull_active() {
+            return;
+        }
+        egui::Modal::new(egui::Id::new("git_pull_progress"))
+            .backdrop_color(Color32::from_black_alpha(65))
+            .show_stable(ctx, 410., |ui| {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.heading("Pulling changes…");
+                });
+                ui.label("Fetching upstream, updating files and reloading changed documents.");
+                ui.label(if self.git.pull_close_after {
+                    "PCBCraft will close after Pull finishes, using the normal unsaved-work dialog."
+                } else {
+                    "Editing is paused until Pull finishes. You can minimize the window."
+                });
+                ui.horizontal(|ui| {
+                    if ui.button("Minimize").clicked() {
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+                    }
+                    if ui
+                        .add_enabled(
+                            !self.git.pull_close_after,
+                            egui::Button::new("Close after Pull"),
+                        )
+                        .clicked()
+                    {
+                        self.git.pull_close_after = true;
+                    }
+                });
+            });
+    }
+
     fn git_pull_blocker(&self, root: &std::path::Path) -> Option<&'static str> {
         if self.document_loader.busy()
             || self.git.job.is_some()
@@ -58,6 +133,7 @@ impl PcbCraft {
             || self.variants.dialog.is_some()
             || self.layer_stack.is_some()
             || self.pad_edit.is_some()
+            || self.git.push_confirm
         {
             return Some("Close editor dialogs and Layer Stack Manager before pulling.");
         }
@@ -67,6 +143,14 @@ impl PcbCraft {
     /// Called before any editor input, including shortcuts, imports and pours.
     /// A request is checked on the next frame, after the requesting frame's edits.
     pub(in crate::app) fn poll_git_pull(&mut self, ctx: &egui::Context) -> bool {
+        let busy = self.poll_git_pull_job(ctx);
+        if !busy && std::mem::take(&mut self.git.pull_close_after) {
+            self.command = Some(Command::Quit);
+        }
+        busy
+    }
+
+    fn poll_git_pull_job(&mut self, ctx: &egui::Context) -> bool {
         if let Some(repo) = self.git.pull_request.take() {
             if let Some(reason) = self.git_pull_blocker(&repo.root) {
                 self.git.feedback = Some((true, reason.into()));
@@ -190,22 +274,14 @@ impl PcbCraft {
                         d.read_only = true;
                     }
                 }
+                self.message(true, "Pull worker stopped. Check repository files in Git and reopen the project before editing.");
                 false
             }
             Err(mpsc::TryRecvError::Empty) => {
                 if ctx.input(|i| i.viewport().close_requested()) {
                     ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                    self.git.pull_close_after = true;
                 }
-                egui::CentralPanel::default().show(ctx, |ui| {
-                    ui.vertical_centered(|ui| {
-                        ui.add_space(40.);
-                        ui.spinner();
-                        ui.heading("Pulling changes…");
-                        ui.label(
-                            "Fetching upstream, updating files and reloading changed documents.",
-                        );
-                    });
-                });
                 ctx.request_repaint_after(Duration::from_millis(60));
                 true
             }
@@ -213,6 +289,16 @@ impl PcbCraft {
     }
 
     fn finish_git_pull(&mut self, outcome: Outcome) {
+        let active_id = self
+            .active
+            .and_then(|i| self.documents.get(i))
+            .map(|d| d.session_id);
+        let repository_root = outcome
+            .snapshot
+            .as_ref()
+            .ok()
+            .or(self.git.snapshot.as_ref())
+            .map(|s| s.repository.root.clone());
         let mut errors = vec![];
         if outcome.group_changed {
             // Keep the current workspace, but never save its stale membership
@@ -272,6 +358,23 @@ impl PcbCraft {
                 }
             }
         }
+        if active_id.is_some_and(|id| !self.documents.iter().any(|d| d.session_id == id)) {
+            // Removing the active tab must not switch Git to an unrelated document.
+            // If no repository tab survives, Home retains the current Git browser.
+            self.active = repository_root.as_ref().and_then(|root| {
+                self.documents.iter().position(|d| {
+                    d.path
+                        .as_ref()
+                        .or(d.source_path.as_ref())
+                        .is_some_and(|p| p.starts_with(root))
+                        || self
+                            .git
+                            .reviews
+                            .get(&d.session_id)
+                            .is_some_and(|r| &r.repository == root)
+                })
+            });
+        }
         for reload in outcome.symbols {
             match reload.result {
                 Ok(library) => {
@@ -330,7 +433,7 @@ impl PcbCraft {
             Ok(snapshot) => self.git.snapshot = Some(snapshot),
             Err(error) => errors.push(format!("Repository refresh failed: {error}")),
         }
-        self.git.feedback = Some(if errors.is_empty() {
+        let feedback = if errors.is_empty() {
             feedback
         } else {
             (
@@ -341,13 +444,248 @@ impl PcbCraft {
                     errors.join("\n")
                 ),
             )
-        });
+        };
+        // Browser refresh/context changes may clear local feedback. Application
+        // errors persist in Messages, which is opened even if the active tab closed.
+        if feedback.0 {
+            self.message(true, feedback.1.clone());
+        }
+        self.git.feedback = Some(feedback);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn frame(
+        app: &mut PcbCraft,
+        ctx: &egui::Context,
+        events: Vec<egui::Event>,
+    ) -> egui::FullOutput {
+        ctx.run(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1440., 900.),
+                )),
+                events,
+                ..Default::default()
+            },
+            |ctx| {
+                assert!(app.git_pull_frame(ctx));
+            },
+        )
+    }
+
+    fn painted_text(output: &egui::FullOutput) -> Vec<(String, egui::Pos2)> {
+        fn collect(shape: &egui::Shape, result: &mut Vec<(String, egui::Pos2)>) {
+            match shape {
+                egui::Shape::Text(text) => result.push((
+                    text.galley.job.text.clone(),
+                    text.pos + text.galley.size() * 0.5,
+                )),
+                egui::Shape::Vec(shapes) => {
+                    for shape in shapes {
+                        collect(shape, result);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut result = vec![];
+        for shape in &output.shapes {
+            collect(&shape.shape, &mut result);
+        }
+        result
+    }
+
+    fn failed_outcome() -> Outcome {
+        Outcome {
+            result: Err("Simulated local refusal".into()),
+            snapshot: Err("Simulated unavailable snapshot".into()),
+            documents: vec![],
+            projects: vec![],
+            symbols: vec![],
+            footprints: vec![],
+            group_changed: false,
+        }
+    }
+
+    #[test]
+    fn busy_pull_keeps_chrome_docks_tabs_canvas_and_minimize_control() {
+        let mut app = crate::app::schematic_editor::tests::app();
+        let original = app.documents[0].model.clone();
+        let revision = app.documents[0].history.revision;
+        app.show_panel(Panel::Git);
+        app.show_panel(Panel::Properties);
+        let (_sender, receiver) = mpsc::channel();
+        app.git.pull_job = Some(Job { receiver });
+        let ctx = egui::Context::default();
+        theme::apply(&ctx);
+        let mut output = frame(&mut app, &ctx, vec![]);
+        for _ in 0..3 {
+            output = frame(&mut app, &ctx, vec![]);
+        }
+        let text = painted_text(&output);
+        for expected in [
+            "File",
+            "Git",
+            "Properties",
+            "Interaction test",
+            "Pulling changes…",
+            "Minimize",
+            "Close after Pull",
+        ] {
+            assert!(
+                text.iter().any(|(text, _)| text.contains(expected)),
+                "Missing {expected}"
+            );
+        }
+        app.run(Command::NewBoard, &ctx);
+        app.run(Command::Close, &ctx);
+        app.run(Command::SchEdit(SchAction::Delete), &ctx);
+        app.shortcuts(&ctx);
+        let position = text.iter().find(|(text, _)| text == "Minimize").unwrap().1;
+        for pressed in [true, false] {
+            output = frame(
+                &mut app,
+                &ctx,
+                vec![
+                    egui::Event::PointerMoved(position),
+                    egui::Event::PointerButton {
+                        pos: position,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+            );
+        }
+        assert!(
+            output.viewport_output[&egui::ViewportId::ROOT]
+                .commands
+                .iter()
+                .any(|command| matches!(command, egui::ViewportCommand::Minimized(true)))
+        );
+        assert_eq!(app.documents.len(), 1);
+        assert_eq!(app.documents[0].model, original);
+        assert_eq!(app.documents[0].history.revision, revision);
+        assert!(app.pending.is_none());
+        assert!(!app.allow_exit);
+    }
+
+    #[test]
+    fn busy_pull_defers_native_close_until_normal_unsaved_work_prompt() {
+        let mut app = crate::app::schematic_editor::tests::app();
+        let original = app.documents[0].model.clone();
+        let (sender, receiver) = mpsc::channel();
+        app.git.pull_job = Some(Job { receiver });
+        let ctx = egui::Context::default();
+        let mut input = egui::RawInput::default();
+        input
+            .viewports
+            .get_mut(&egui::ViewportId::ROOT)
+            .unwrap()
+            .events
+            .push(egui::ViewportEvent::Close);
+        let output = ctx.run(input, |ctx| {
+            assert!(app.poll_git_pull(ctx));
+        });
+        assert!(
+            output.viewport_output[&egui::ViewportId::ROOT]
+                .commands
+                .iter()
+                .any(|command| matches!(command, egui::ViewportCommand::CancelClose))
+        );
+        assert!(app.git.pull_close_after);
+        assert!(app.command.is_none());
+        assert!(!app.allow_exit);
+        assert!(sender.send(failed_outcome()).is_ok());
+        assert!(!app.poll_git_pull(&ctx));
+        assert!(matches!(app.command, Some(Command::Quit)));
+        let command = app.command.take().unwrap();
+        app.run(command, &ctx);
+        assert!(matches!(app.pending, Some(Pending::Quit)));
+        assert!(!app.allow_exit);
+        assert_eq!(app.documents[0].model, original);
+    }
+
+    #[test]
+    fn unreadable_active_tab_falls_back_within_repository_and_reports_global_error() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("working");
+        std::fs::create_dir(&root).unwrap();
+        let mut app = crate::app::schematic_editor::tests::app();
+        app.documents[0].path = Some(temp.path().join("Controller.pcbcraft.json"));
+        let unrelated = app.documents[0].model.clone();
+        for name in ["Main.SchDoc", "Extra.SchDoc"] {
+            app.documents.push(OpenDocument::new(
+                Document::new(DocumentKind::Schematic, name),
+                Some(root.join(name)),
+            ));
+        }
+        app.active = Some(2);
+        let removed_id = app.documents[2].session_id;
+        app.git.directory = Some(root.clone());
+        let snapshot = Snapshot {
+            repository: Repository {
+                root: root.clone(),
+                scope: String::new(),
+            },
+            branch: "main".into(),
+            upstream: Some("origin/main".into()),
+            ahead: 0,
+            behind: 0,
+            head: Some("a".repeat(40)),
+            files: vec![],
+            commits: vec![],
+            refs: vec![],
+            remotes: vec!["origin".into()],
+            operation: None,
+        };
+        app.finish_git_pull(Outcome {
+            result: Ok(vec!["Extra.SchDoc".into()]),
+            snapshot: Ok(snapshot),
+            documents: vec![(
+                removed_id,
+                Reload {
+                    path: root.join("Extra.SchDoc"),
+                    result: Err("Invalid native schematic bytes".into()),
+                },
+            )],
+            projects: vec![],
+            symbols: vec![],
+            footprints: vec![],
+            group_changed: false,
+        });
+        assert_eq!(app.active, Some(1));
+        assert_eq!(app.documents[0].model, unrelated);
+        assert!(app.documents[0].dirty());
+        assert!(!app.documents.iter().any(|d| d.session_id == removed_id));
+        assert!(app.panel_open(Panel::Messages));
+        let notice = app
+            .log
+            .iter()
+            .find(|(error, text)| *error && text.contains("Extra.SchDoc"))
+            .unwrap()
+            .1
+            .clone();
+        assert!(notice.contains("Invalid native schematic bytes"));
+        let ctx = egui::Context::default();
+        app.active = Some(0);
+        app.git.activate(&ctx, Some(temp.path().to_path_buf()));
+        app.git.activate(&ctx, Some(root));
+        assert!(
+            app.git.feedback.is_none(),
+            "Browser refresh should exercise feedback clearing"
+        );
+        assert!(
+            app.log
+                .iter()
+                .any(|(error, text)| *error && text == &notice)
+        );
+    }
 
     #[test]
     fn pull_worker_fetches_native_document_and_installs_clean_import() {

@@ -57,11 +57,17 @@ not observations of Altium's version-control implementation.
   active Git operations, detached HEAD and divergent branches reject the update.
   Pull never creates merge commits or rebases/stashes automatically. Ignored local
   files cannot be overwritten. Changes to HEAD/branch/upstream during fetch require
-  a refresh. While pulling, editor input is suspended; changed open documents and
+  a refresh. While pulling, the ordinary title bar, docks, tabs and editor remain
+  visible behind a modal progress indicator. Editing and commands are suspended;
+  the modal offers Minimize and Close after Pull. Closing waits for the worker,
+  then uses the usual unsaved-work protection. Changed open documents and
   cached libraries are reimported on the worker and project references are refreshed.
   Working tabs keep their identities but reset editor/history/view state. Historical
   review tabs retain their captured snapshots. Deleted or unreadable working files
-  close with a visible reload error. A changed DsnWrk requires reopening the group;
+  close with a reload error recorded in global Messages, which opens automatically.
+  If the active tab closes, another tab in that repository becomes active; with
+  none remaining, Home retains the repository browser. Errors remain in Messages
+  across document and Git-browser switches. A changed DsnWrk requires reopening the group;
   its old in-memory membership is detached from the updated file to prevent a stale save.
   Authentication uses the installed Git setup; interactive terminal
   and credential-manager prompts are disabled in the background job.

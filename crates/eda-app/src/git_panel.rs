@@ -106,6 +106,7 @@ impl Default for Browser {
 pub(super) struct State {
     pull_request: Option<Repository>,
     pull_job: Option<pull::Job>,
+    pull_close_after: bool,
     browser: Browser,
     browsers: BTreeMap<Option<PathBuf>, Browser>,
     followed: Option<(Option<Uuid>, Option<PathBuf>)>,
